@@ -16,7 +16,7 @@ const messageComponentsSource = readSource(
   'MessageComponents.tsx',
 );
 const callOmoAgentStepSource = readSource(
-  [joinFromRoot('webview', 'shared', 'src', 'chat', 'components', 'CallOmoAgentStep.tsx')],
+  [joinFromRoot('webview', 'shared', 'src', 'chat', 'components', 'activity-steps', 'CallOmoAgentStep.tsx')],
   'CallOmoAgentStep.tsx',
 );
 const messageHandlerSource = readSource(
@@ -40,7 +40,7 @@ test('progressItemsFromSteps extracts diffStats from steps', () => {
   );
 });
 
-test('Activity filter excludes step lifecycle bookkeeping rows from the timeline', () => {
+test('Activity filter keeps step lifecycle rows visible in the timeline', () => {
   assert.match(
     messageComponentsSource,
     /const\s+hasUserFacingActivity\s*=/,
@@ -51,10 +51,10 @@ test('Activity filter excludes step lifecycle bookkeeping rows from the timeline
     /Boolean\(filePath\)[\s\S]*Boolean\(diffStats && \(diffStats\.added > 0 \|\| diffStats\.deleted > 0\)\)[\s\S]*Boolean\(activityDetail\)/,
     'User-facing guard should include file path, diff stats, and activity detail',
   );
-  assert.match(
+  assert.doesNotMatch(
     messageComponentsSource,
     /normalizedPartType === "step-start"[\s\S]*normalizedPartType === "step-finish"/,
-    'step-start and step-finish rows should be filtered before they reach the progress timeline',
+    'step-start and step-finish rows should no longer be filtered before they reach the progress timeline',
   );
 });
 

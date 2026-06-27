@@ -2,6 +2,7 @@ import React, { createContext, useContext, useMemo, useReducer } from 'react';
 import logger from './logger';
 import {
   getCentralizedAssistantContentFromRawSdkEventPayloads,
+  normalizedCentralizedEventIdentity,
 } from "./messageHandler";
 import {
   getInteractiveEventsFromRawSdkEventPayloads,
@@ -682,6 +683,73 @@ function mergeCachedAssistantMessageLocal(
       incoming.interactiveEvents,
     ),
     subagents: mergeActivityArraysLocal(existing.subagents, incoming.subagents),
+  };
+}
+
+function mergeStreamingSnapshotLocal(
+  existing: StreamingState | null | undefined,
+  incoming: StreamingState,
+): StreamingState {
+  const shouldResetTimeline =
+    !!existing?.messageId &&
+    !!incoming.messageId &&
+    existing.messageId !== incoming.messageId;
+  if (!existing || shouldResetTimeline) {
+    return {
+      ...incoming,
+      hasRenderableContent: incoming.hasRenderableContent ?? false,
+      reasoningEvents: incoming.reasoningEvents ?? [],
+      steps: incoming.steps ?? [],
+      progressEvents: incoming.progressEvents ?? [],
+      edits: incoming.edits ?? [],
+      interactiveEvents: incoming.interactiveEvents ?? [],
+      rawSdkEventPayloads: incoming.rawSdkEventPayloads ?? [],
+    };
+  }
+
+  const mergedSteps = mergeActivityArraysLocal(existing.steps, incoming.steps);
+  const mergedProgressEvents = mergeActivityArraysLocal(
+    existing.progressEvents,
+    incoming.progressEvents,
+  );
+  const mergedReasoningEvents = mergeActivityArraysLocal(
+    existing.reasoningEvents,
+    incoming.reasoningEvents,
+  );
+  const mergedEdits = mergeActivityArraysLocal(existing.edits, incoming.edits);
+  const mergedInteractiveEvents = mergeActivityArraysLocal(
+    existing.interactiveEvents,
+    incoming.interactiveEvents,
+  );
+
+  return {
+    ...existing,
+    ...incoming,
+    messageId: incoming.messageId ?? existing.messageId,
+    content:
+      incoming.content.trim().length > 0 ? incoming.content : existing.content,
+    reasoning:
+      incoming.reasoning.trim().length > 0 ? incoming.reasoning : existing.reasoning,
+    steps: mergedSteps ?? existing.steps ?? incoming.steps ?? [],
+    progressEvents: mergedProgressEvents ?? existing.progressEvents ?? incoming.progressEvents ?? [],
+    reasoningEvents: mergedReasoningEvents ?? existing.reasoningEvents ?? incoming.reasoningEvents ?? [],
+    edits: mergedEdits ?? existing.edits ?? incoming.edits ?? [],
+    interactiveEvents: mergedInteractiveEvents ?? existing.interactiveEvents ?? incoming.interactiveEvents ?? [],
+    hasRenderableContent:
+      existing.hasRenderableContent || incoming.hasRenderableContent || false,
+    hasAssistantFinishSignal:
+      existing.hasAssistantFinishSignal || incoming.hasAssistantFinishSignal || false,
+    hasTerminalStepSignal:
+      existing.hasTerminalStepSignal || incoming.hasTerminalStepSignal || false,
+    contentStartSeq:
+      existing.contentStartSeq ??
+      incoming.contentStartSeq ??
+      (incoming.content.trim().length > 0 ? Date.now() : undefined),
+    plan: incoming.plan ?? existing.plan,
+    structuredOutput: incoming.structuredOutput ?? existing.structuredOutput,
+    rawSdkEventPayloads: dedupeCentralizedDebugPayloads(
+      [...(existing.rawSdkEventPayloads ?? []), ...(incoming.rawSdkEventPayloads ?? [])],
+    ),
   };
 }
 
@@ -1377,6 +1445,16 @@ export function dedupeMirrorMessagesForCanonical(messages: Message[]): Message[]
     const rec = asRecordLocal(value);
     if (!rec) {
       return `primitive:${String(value)}`;
+    }
+    const identity = normalizedCentralizedEventIdentity(rec);
+    if (identity) {
+      const payloadRecord = asRecordLocal(rec.payload);
+      const syncEvent = asRecordLocal(payloadRecord?.syncEvent);
+      const seq = asStringLocal(rec.seq, syncEvent?.seq, payloadRecord?.seq);
+      if (seq) {
+        return `identity:${identity}|seq:${seq}`;
+      }
+      return `identity:${identity}`;
     }
     const id = asStringLocal(rec.id);
     if (id) {
@@ -2917,7 +2995,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     }
     case "SET_STREAMING": {
       const streaming = action.payload
-        ? {
+        ? mergeStreamingSnapshotLocal(state.streaming, {
           ...action.payload,
           hasRenderableContent: action.payload.hasRenderableContent ?? false,
           reasoningEvents: action.payload.reasoningEvents ?? [],
@@ -2929,7 +3007,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           rawSdkEventPayloads: dedupeCentralizedDebugPayloads(
             (action.payload.rawSdkEventPayloads ?? []).filter(shouldIncludeCentralizedDebugPayload),
           ),
-        }
+        })
         : null;
       logger.info("[LOADING][STORE] SET_STREAMING", {
         payloadIsNull: action.payload === null,
@@ -2959,8 +3037,11 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       };
     }
     case "SET_SESSION_STREAMING": {
+      const existingSessionStreaming =
+        state.streamingBySessionId[action.payload.sessionId] ??
+        (state.currentSessionId === action.payload.sessionId ? state.streaming : null);
       const streaming = action.payload.streaming
-        ? {
+        ? mergeStreamingSnapshotLocal(existingSessionStreaming, {
           ...action.payload.streaming,
           hasRenderableContent:
             action.payload.streaming.hasRenderableContent ?? false,
@@ -2974,7 +3055,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           rawSdkEventPayloads: dedupeCentralizedDebugPayloads(
             (action.payload.streaming.rawSdkEventPayloads ?? []).filter(shouldIncludeCentralizedDebugPayload),
           ),
-        }
+        })
         : null;
       const streamingBySessionId = cacheStreamingForSession(
         state.streamingBySessionId,

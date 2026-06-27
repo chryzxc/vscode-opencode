@@ -102,6 +102,7 @@ function normalizeInteractiveChoices(raw: unknown): InteractiveChoice[] {
 function interactiveEventFromQuestionRecord(
   record: Record<string, unknown> | null,
   fallbackId: string,
+  requestMeta?: { requestID?: string; questionIndex?: number },
 ): InteractiveEvent | null {
   if (!record) {
     return null;
@@ -150,6 +151,8 @@ function interactiveEventFromQuestionRecord(
     type: "question",
     id: firstNonEmptyString(record.id) || fallbackId,
     title: firstNonEmptyString(record.title) || undefined,
+    requestID: requestMeta?.requestID,
+    questionIndex: requestMeta?.questionIndex,
     question: prompt,
     options,
     multiSelect: record.multiSelect === true,
@@ -160,6 +163,7 @@ function interactiveEventFromQuestionRecord(
 function interactiveEventsFromStructuredQuestionRecord(
   record: Record<string, unknown> | null | undefined,
   fallbackId: string,
+  requestID?: string,
 ): InteractiveEvent[] {
   if (!record) {
     return [];
@@ -180,7 +184,47 @@ function interactiveEventsFromStructuredQuestionRecord(
     : [record.question ?? record];
 
   return entries
-    .map((entry, index) => interactiveEventFromQuestionRecord(asRecord(entry), `${fallbackId}-${index}`))
+    .map((entry, index) =>
+      interactiveEventFromQuestionRecord(
+        asRecord(entry),
+        `${fallbackId}-${index}`,
+        requestID ? { requestID, questionIndex: index } : undefined,
+      ),
+    )
+    .filter((entry): entry is InteractiveEvent => !!entry);
+}
+
+function interactiveEventsFromQuestionAskedEvent(
+  payload: Record<string, unknown> | null,
+): InteractiveEvent[] {
+  if (!payload) {
+    return [];
+  }
+
+  const properties = asRecord(payload.properties);
+  const request = properties || payload;
+  const requestID = firstNonEmptyString(
+    request.id,
+    request.requestID,
+    request.requestId,
+  );
+  const questions = Array.isArray(request.questions)
+    ? request.questions
+    : Array.isArray(payload.questions)
+      ? payload.questions
+      : [];
+  if (!requestID || questions.length === 0) {
+    return [];
+  }
+
+  return questions
+    .map((entry, index) =>
+      interactiveEventFromQuestionRecord(
+        asRecord(entry),
+        `${requestID}-${index}`,
+        { requestID, questionIndex: index },
+      ),
+    )
     .filter((entry): entry is InteractiveEvent => !!entry);
 }
 
@@ -497,15 +541,51 @@ export function getInteractiveEventsFromRawSdkEventPayloads(
     return [];
   }
 
+  const collected: InteractiveEvent[] = [];
+  const seen = new Set<string>();
+  const collect = (events: InteractiveEvent[]) => {
+    for (const event of events) {
+      const requestAwareKey =
+        event.type === "question"
+          ? [
+              event.requestID ? `request:${event.requestID}` : "",
+              typeof event.questionIndex === "number"
+                ? `index:${event.questionIndex}`
+                : "",
+              event.id,
+              event.question,
+            ]
+              .filter(Boolean)
+              .join("|")
+          : `${event.type}|${event.id}`;
+      if (seen.has(requestAwareKey)) {
+        continue;
+      }
+      seen.add(requestAwareKey);
+      collected.push(event);
+    }
+  };
+
   for (let index = rawSdkEventPayloads.length - 1; index >= 0; index -= 1) {
+    const payload = asRecord(rawSdkEventPayloads[index]);
+    const eventType = firstNonEmptyString(payload?.type, payload?.event, payload?.kind)?.toLowerCase();
+    if (eventType === "question.asked") {
+      collect(interactiveEventsFromQuestionAskedEvent(payload));
+    }
+
     const rec = rawSdkEventPartRecord(rawSdkEventPayloads[index]);
     if (!rec?.part) {
       continue;
     }
-
     const partRec = rec.part;
     const toolName = firstNonEmptyString(partRec.tool, partRec.name)?.toLowerCase();
-    if (toolName === "structuredoutput" || toolName === "structured_output") {
+    if (
+      toolName === "structuredoutput" ||
+      toolName === "structured_output" ||
+      toolName === "question" ||
+      toolName?.includes("request_user_input") ||
+      toolName?.includes("request-user-input")
+    ) {
       const state = asRecord(partRec.state);
       const input = asRecord(state?.input) || asRecord(partRec.input) || asRecord(partRec.arguments);
       if (input) {
@@ -522,21 +602,18 @@ export function getInteractiveEventsFromRawSdkEventPayloads(
         )?.toLowerCase();
         const question = questionRecord ?? (responseType === "question" ? input : null);
         if (question) {
-          const events = interactiveEventsFromStructuredQuestionRecord(
+          collect(interactiveEventsFromStructuredQuestionRecord(
             {
               ...input,
               ...question,
               type: firstNonEmptyString(question.type, input.type, responseType) || "question",
             },
             `${firstNonEmptyString(partRec.id, partRec.callID, partRec.callId, rec.event.id) || "question"}`,
-          );
-          if (events.length > 0) {
-            return events;
-          }
+          ));
         }
       }
     }
   }
 
-  return [];
+  return collected;
 }

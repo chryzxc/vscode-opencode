@@ -10,6 +10,7 @@ import {
   getCentralizedAssistantContentChunksFromRawSdkEventPayloads,
   getCentralizedAssistantTurnCompletionIndex,
   isAiResponseEvent,
+  structuredOutputFromRawSdkEventPayloads,
 } from './messageHandler';
 
 describe('normalizeMessage - responseType handling', () => {
@@ -288,6 +289,48 @@ describe('normalizeMessage - structuredOutput handling', () => {
       structuredOutput?.message,
       'Hey! What can I help you with today?',
       'structuredOutput.message should come from the centralized tool input',
+    );
+  });
+
+  it('should rehydrate structured output from centralized properties.info payloads', () => {
+    const rawSdkEventPayloads = [
+      {
+        payload: {
+          type: 'message.updated',
+          properties: {
+            sessionID: 'ses-test',
+            info: {
+              id: 'msg-final-info-structured',
+              role: 'assistant',
+              structuredOutput: {
+                responseType: 'message',
+                message: 'Hey there from rehydrated structured output.',
+              },
+            },
+          },
+        },
+      },
+    ];
+
+    const structuredOutput = structuredOutputFromRawSdkEventPayloads(rawSdkEventPayloads);
+    assert.ok(structuredOutput, 'structured output should be recovered from payload.properties.info');
+    assert.strictEqual(structuredOutput?.responseType, 'message');
+    assert.strictEqual(structuredOutput?.message, 'Hey there from rehydrated structured output.');
+
+    const result = normalizeMessage(
+      {
+        id: 'msg-final-info-structured',
+        role: 'assistant',
+        rawSdkEventPayloads,
+      } as Message,
+      null,
+    );
+
+    assert.ok(result, 'normalizeMessage should still produce an assistant message');
+    assert.strictEqual(
+      result?.content,
+      'Hey there from rehydrated structured output.',
+      'assistant content should be rebuilt from the persisted structured output payload',
     );
   });
 

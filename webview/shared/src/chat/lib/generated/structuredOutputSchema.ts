@@ -17,8 +17,7 @@
 
 export type StructuredResponseType =
   | "message"
-  | "implementation_plan"
-  | "question";
+  | "implementation_plan";
 
 export type StructuredOutputSchema = {
   type: "json_schema";
@@ -38,15 +37,15 @@ export const structuredOutputSchema: StructuredOutputSchema = {
   schema: {
     type: "object",
     description:
-      "Return a JSON object with a type field. Use 'message' for normal responses, 'implementation_plan' for multi-step plans with a plan object (plan.file is required and must be a markdown filepath; you MUST create/write this markdown file before finalizing whenever you can edit files. If the file is not already written, include the full markdown in plan.content so the extension can persist it), or 'question' for any final assistant turn whose intent is to ask the user a question or present choices. If the intent is a question, type MUST be 'question' and the question payload MUST be in the top-level question object. If emitting subagent/background-task payloads through compatible fields, include a stable background task id as 'backgroundTaskId' (for example 'bg_123abc') and subagent role hints as 'agentRole' (or 'agentType') such as 'explorer' or 'librarian'.",
+      "Return a JSON object with a type field. Use 'message' for normal responses or 'implementation_plan' for multi-step plans with a plan object (plan.file is required and must be a markdown filepath; you MUST create/write this markdown file before finalizing whenever you can edit files. If the file is not already written, include the full markdown in plan.content so the extension can persist it). If emitting subagent/background-task payloads through compatible fields, include a stable background task id as 'backgroundTaskId' (for example 'bg_123abc') and subagent role hints as 'agentRole' (or 'agentType') such as 'explorer' or 'librarian'.",
     additionalProperties: false,
     required: ["type"],
     properties: {
       type: {
         type: "string",
-        enum: ["message", "implementation_plan", "question"],
+        enum: ["message", "implementation_plan"],
         description:
-          "Response type: 'message' for normal text, 'implementation_plan' for plans (must include plan.file and ensure the file is created/writable), 'question' for a final user-input prompt that completes this assistant turn and is shown as a popover; use this whenever the assistant is asking the user to choose or clarify",
+          "Response type: 'message' for normal text, 'implementation_plan' for plans (must include plan.file and ensure the file is created/writable)",
       },
 
       text: {
@@ -71,32 +70,6 @@ export const structuredOutputSchema: StructuredOutputSchema = {
           },
         },
         required: ["title", "file"],
-      },
-
-      question: {
-        type: "object",
-        description: "Question/choice payload. This is terminal for the assistant turn like an implementation_plan response: render it as the final assistant message and show the question popover; do not keep the turn open waiting for input.",
-        properties: {
-          question: { type: "string", description: "Question text to display" },
-          type: {
-            type: "string",
-            enum: ["question", "confirm", "quick_actions"],
-            description: "Interaction type",
-          },
-          options: {
-            type: "array",
-            description: "Available choices for the user. For type='question', provide at least two choices unless custom free-form input is explicitly enabled by the host. Each option.value must be the exact answer text to send back to the assistant on selection (human-readable, not snake_case/id slugs).",
-            items: {
-              type: "object",
-              properties: {
-                label: { type: "string", description: "Option label" },
-                value: { type: "string", description: "Answer text that should be sent back if selected. Use natural language text (e.g. 'English only'), not identifiers like 'english_only'." },
-              },
-              required: ["label"],
-            },
-          },
-        },
-        required: ["question"],
       },
     },
   },

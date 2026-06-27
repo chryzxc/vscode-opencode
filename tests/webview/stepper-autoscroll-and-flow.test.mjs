@@ -280,30 +280,16 @@ test('thoughtItemsFromMessage deduplicates reasoning text via normalised fingerp
 });
 
 // ---------------------------------------------------------------------------
-// 5. Timeline construction
+// 5. Display-event ordering and grouping
 // ---------------------------------------------------------------------------
 
-test('buildTimeline sorts thinking and step entries by arrival sequence', () => {
-    const body = extractFunctionBody(messageComponentsSource, 'function buildTimeline(');
-    assert.ok(body, 'buildTimeline must exist');
+test('buildDisplayEvents sorts normalized source entries by arrival sequence', () => {
+    const body = extractFunctionBody(messageComponentsSource, 'function buildDisplayEvents(');
+    assert.ok(body, 'buildDisplayEvents must exist');
     assert.match(
         body,
         /entries\.sort\(\(a,\s*b\)\s*=>\s*a\.seq\s*-\s*b\.seq\)/,
-        'buildTimeline should sort all timeline entries by their arrival seq',
-    );
-});
-
-test('buildTimeline groups consecutive same-kind entries into blocks', () => {
-    const body = extractFunctionBody(messageComponentsSource, 'function buildTimeline(');
-    assert.match(
-        body,
-        /last\?\.kind\s*===\s*["']thinking["']/,
-        'Consecutive thinking entries should merge into the same ThinkingBlock',
-    );
-    assert.match(
-        body,
-        /last\?\.kind\s*===\s*["']steps["']/,
-        'Consecutive step entries should merge into the same StepsBlock',
+        'buildDisplayEvents should sort normalized source entries by arrival seq',
     );
 });
 
@@ -315,12 +301,11 @@ test('timeline rendering skips mirrored Assistant Response commentary rows', () 
     );
 });
 
-test('buildTimeline falls back to parts-based layout for persisted messages without timing', () => {
-    const body = extractFunctionBody(messageComponentsSource, 'function buildTimeline(');
-    assert.match(
-        body,
-        /Array\.isArray\(parts\)\s*&&\s*parts\.length > 0/,
-        'Should use message.parts as layout source when timing data is absent',
+test('display-event pipeline no longer falls back to parts-based timeline replay', () => {
+    assert.doesNotMatch(
+        messageComponentsSource,
+        /function buildTimeline\(/,
+        'legacy buildTimeline bridge should be removed',
     );
 });
 
@@ -328,22 +313,22 @@ test('buildTimeline falls back to parts-based layout for persisted messages with
 // 6. Display events construction
 // ---------------------------------------------------------------------------
 
-test('buildDisplayEvents skips content blocks', () => {
+test('buildDisplayEvents no longer depends on timeline content blocks', () => {
     const body = extractFunctionBody(messageComponentsSource, 'function buildDisplayEvents(');
     assert.ok(body, 'buildDisplayEvents must exist');
-    assert.match(
+    assert.doesNotMatch(
         body,
-        /block\.kind\s*===\s*["']content["'][\s\S]*?continue/,
-        'buildDisplayEvents should skip timeline blocks of kind "content"',
+        /block\.kind\s*===\s*["']content["']/,
+        'buildDisplayEvents should work from normalized sources instead of timeline content blocks',
     );
 });
 
-test('buildDisplayEvents emits reasoning display events from thinking blocks', () => {
+test('buildDisplayEvents emits reasoning display events from thought items', () => {
     const body = extractFunctionBody(messageComponentsSource, 'function buildDisplayEvents(');
     assert.match(
         body,
-        /block\.kind\s*===\s*["']thinking["']/,
-        'buildDisplayEvents should process thinking blocks',
+        /entry\.kind\s*===\s*["']reasoning["']/,
+        'buildDisplayEvents should process normalized reasoning entries',
     );
     assert.match(
         body,
@@ -615,29 +600,34 @@ test('activityStatusCounts derives pending/done/error counts from userFacingDisp
 // 10. Hydration flow – completed message display events
 // ---------------------------------------------------------------------------
 
-test('AssistantMessage computes displayEvents from timelineBlocks via buildDisplayEvents', () => {
+test('AssistantMessage computes displayEvents directly from normalized centralized sources', () => {
     assert.match(
         messageComponentsSource,
-        /const events = buildDisplayEvents\(timelineBlocks,\s*message,\s*isStreamingActive,\s*assistantTurnPending\);/,
-        'displayEvents should be derived from buildDisplayEvents(timelineBlocks, message, isStreamingActive, assistantTurnPending)',
+        /const events = buildDisplayEvents\([\s\S]*?thoughtItems,[\s\S]*?mergedProgressItems,[\s\S]*?commentaryItems,[\s\S]*?fileChanges,[\s\S]*?messageId,[\s\S]*?\);/s,
+        'displayEvents should be derived directly from normalized centralized sources',
     );
     assert.match(
         messageComponentsSource,
-        /\[timelineBlocks,\s*message,\s*isStreamingActive,\s*assistantTurnPending\]/,
-        'displayEvents memo deps should include timelineBlocks, message, isStreamingActive and assistantTurnPending',
+        /\[thoughtItems,\s*mergedProgressItems,\s*commentaryItems,\s*fileChanges,\s*messageId\]/,
+        'displayEvents memo deps should follow the direct centralized-source pipeline',
     );
 });
 
-test('AssistantMessage builds timelineBlocks from both streaming and message data', () => {
+test('AssistantMessage keeps live and finalized activity sources separate before rendering', () => {
     assert.match(
         messageComponentsSource,
-        /streaming\s*\?\s*progressItemsFromStreaming\(streaming\)\s*:\s*progressItemsFromMessage\(message\)/,
-        'progressItems should come from streaming when active, message otherwise',
+        /const progressItems = useMemo[\s\S]*progressItemsFromCentralizedData/s,
+        'finalized progress items should come from centralized data',
     );
     assert.match(
         messageComponentsSource,
-        /streaming\s*\?\s*thoughtItemsFromStreaming\(streaming\)\s*:\s*thoughtItemsFromMessage\(message\)/,
-        'thoughtItems should come from streaming when active, message otherwise',
+        /const liveProgressItems = useMemo[\s\S]*progressItemsFromSteps/s,
+        'live progress items should come from the streaming state',
+    );
+    assert.match(
+        messageComponentsSource,
+        /const commentaryItems = useMemo[\s\S]*commentaryItemsFromRawEventPayloads/s,
+        'commentary should come from centralized raw event payloads',
     );
 });
 
@@ -654,8 +644,8 @@ test('AssistantResponseCardInner merges live streaming progress rows into the ac
     );
     assert.match(
         messageComponentsSource,
-        /buildTimeline\(\s*thoughtItems,\s*mergedProgressItems,/s,
-        'AssistantResponseCardInner should feed merged progress rows into buildTimeline',
+        /buildDisplayEvents\([\s\S]*?thoughtItems,[\s\S]*?mergedProgressItems,[\s\S]*?commentaryItems,[\s\S]*?fileChanges,[\s\S]*?messageId,[\s\S]*?\)/s,
+        'AssistantResponseCardInner should feed merged progress rows directly into buildDisplayEvents',
     );
 });
 

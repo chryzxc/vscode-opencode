@@ -55,7 +55,9 @@ import type { Session } from "@opencode-ai/sdk";
 import { createLogger } from "../utils/Logger";
 import { LoggingCategories } from "../utils/LoggingSchema";
 import { restoreCheckpointIfPresent } from "./CheckpointRestore";
-import { shouldIncludeCentralizedDebugPayload } from "../shared/centralizedDebugPayloadFilter";
+import {
+  getCentralizedDebugPayloadIdentity,
+} from "../shared/centralizedDebugPayloadFilter";
 
 const log = createLogger(LoggingCategories.SESSION_SERVICE);
 const MAX_CACHED_MESSAGES_PER_SESSION = 200;
@@ -237,6 +239,73 @@ function compactProgressEventForPersistence(event: unknown): unknown {
     return sanitizeForPersistence(event);
   }
   return compact;
+}
+
+function rawSdkEventPersistenceRichness(event: unknown): number {
+  const rec =
+    event && typeof event === "object"
+      ? (event as Record<string, unknown>)
+      : null;
+  if (!rec) {
+    return 0;
+  }
+
+  const properties =
+    rec.properties && typeof rec.properties === "object"
+      ? (rec.properties as Record<string, unknown>)
+      : null;
+  const info =
+    (properties?.info && typeof properties.info === "object"
+      ? (properties.info as Record<string, unknown>)
+      : null) ??
+    (rec.info && typeof rec.info === "object"
+      ? (rec.info as Record<string, unknown>)
+      : null);
+  const part =
+    (properties?.part && typeof properties.part === "object"
+      ? (properties.part as Record<string, unknown>)
+      : null) ??
+    (rec.part && typeof rec.part === "object"
+      ? (rec.part as Record<string, unknown>)
+      : null);
+  const state =
+    part?.state && typeof part.state === "object"
+      ? (part.state as Record<string, unknown>)
+      : null;
+
+  let score = 0;
+  if (typeof rec.id === "string" && rec.id.trim()) score += 2;
+  if (typeof rec.type === "string" && rec.type.trim()) score += 2;
+  if (part) {
+    score += 6;
+    if (typeof part.id === "string" && part.id.trim()) score += 2;
+    if (typeof part.type === "string" && part.type.trim()) score += 2;
+    if (typeof part.tool === "string" && part.tool.trim()) score += 2;
+    if (typeof part.messageID === "string" && part.messageID.trim()) score += 2;
+    if (typeof part.text === "string" && part.text.trim()) score += 3;
+    if (typeof part.content === "string" && part.content.trim()) score += 3;
+  }
+  if (state) {
+    score += 8;
+    if (typeof state.status === "string" && state.status.trim()) score += 2;
+    if (typeof state.input !== "undefined") score += 6;
+    if (typeof state.output !== "undefined") score += 4;
+    if (typeof state.metadata !== "undefined") score += 2;
+    if (typeof state.title === "string" && state.title.trim()) score += 1;
+  }
+  if (info) {
+    score += 4;
+    if (typeof info.id === "string" && info.id.trim()) score += 2;
+    if (typeof info.role === "string" && info.role.trim()) score += 1;
+  }
+
+  try {
+    score += JSON.stringify(rec).length;
+  } catch {
+    // Ignore serialization issues; structural richness already covers the fallback.
+  }
+
+  return score;
 }
 
 function compactSubagentForPersistence(subagent: unknown): unknown {
@@ -1198,16 +1267,7 @@ export class SessionService {
   }
 
   private shouldPersistRawSdkEventPayload(event: unknown): boolean {
-    if (!event || typeof event !== "object") {
-      return true;
-    }
-    const record = event as Record<string, unknown>;
-    // Keep the persisted tape aligned with the centralized debug contract.
-    // The shared filter excludes transient delta chunks and other hidden
-    // payloads; we only preserve the session-scoped tape we actually want to
-    // rehydrate and render.
-    return record.source !== "/global/event" &&
-      shouldIncludeCentralizedDebugPayload(event);
+    return !!event;
   }
 
   private filterPersistedRawSdkEventPayloads(events: unknown[] | undefined): unknown[] {
@@ -2029,7 +2089,7 @@ export class SessionService {
     sessionId: string,
     events: unknown[],
   ): Promise<void> {
-    const persisted = this.filterPersistedRawSdkEventPayloads(events).map((event) =>
+    const persisted = events.map((event) =>
       this.cloneRawSdkEventPayload(event),
     );
     this.rawSdkEventPayloadCache.set(sessionId, persisted);
@@ -2055,7 +2115,7 @@ export class SessionService {
     const value = this.context.workspaceState.get<unknown[]>(
       `${SessionService.RAW_SDK_EVENT_PAYLOADS_PREFIX}${sessionId}`,
     );
-    const raw = this.filterPersistedRawSdkEventPayloads(Array.isArray(value) ? value : []);
+    const raw = Array.isArray(value) ? value : [];
     this.rawSdkEventPayloadCache.set(sessionId, [...raw]);
     return raw;
   }
@@ -2178,14 +2238,20 @@ export class SessionService {
     }
     const events = await this.loadSessionRawSdkEventPayloads(sessionId);
     const snapshot = this.cloneRawSdkEventPayload(event);
-    const eventRecord = event as Record<string, unknown>;
-    const eventId = typeof eventRecord?.id === "string" ? eventRecord.id : undefined;
-    if (eventId) {
-      const alreadyExists = events.some((existing) => {
-        const existingRecord = existing as Record<string, unknown>;
-        return typeof existingRecord?.id === "string" && existingRecord.id === eventId;
+    const eventIdentity = getCentralizedDebugPayloadIdentity(event);
+    if (eventIdentity) {
+      const existingIndex = events.findIndex((existing) => {
+        return getCentralizedDebugPayloadIdentity(existing) === eventIdentity;
       });
-      if (alreadyExists) {
+      if (existingIndex >= 0) {
+        const existingEvent = events[existingIndex];
+        if (
+          rawSdkEventPersistenceRichness(snapshot) >=
+          rawSdkEventPersistenceRichness(existingEvent)
+        ) {
+          events[existingIndex] = snapshot;
+          this.rawSdkEventPayloadCache.set(sessionId, events);
+        }
         return;
       }
     }

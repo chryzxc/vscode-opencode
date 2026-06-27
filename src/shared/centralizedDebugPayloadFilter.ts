@@ -58,6 +58,12 @@ const CENTRALIZED_DEBUG_EXCLUDED_PATH_RULES = [
   },
 ] as const;
 
+const CENTRALIZED_SESSION_PERSISTED_EVENT_TYPES = new Set([
+  "message.updated",
+  "message.part.updated",
+  "session.diff",
+]);
+
 /*
  * Previously excluded rules. Kept here commented during the blacklist
  * reduction pass so we can restore them without re-deriving the paths:
@@ -102,6 +108,66 @@ function candidatePayloads(event: Record<string, unknown>): unknown[] {
     payloads.push(wrappedPayload);
   }
   return payloads;
+}
+
+function normalizedCentralizedEventType(event: Record<string, unknown>): string {
+  const directType = asString(event.type).trim();
+  const payloadRecord = asRecord(event.payload);
+  const payloadType = asString(payloadRecord?.type).trim();
+  const payloadSyncType = asString(asRecord(payloadRecord?.syncEvent)?.type).trim();
+  const syncType = asString(asRecord(event.syncEvent)?.type).trim();
+
+  const rawType =
+    directType && directType !== "sync"
+      ? directType
+      : payloadSyncType || syncType || payloadType || directType;
+
+  return rawType.replace(/\.\d+$/, "");
+}
+
+export function getCentralizedDebugPayloadIdentity(payload: unknown): string {
+  const event = asRecord(payload);
+  if (!event) {
+    return "";
+  }
+
+  const properties = asRecord(event.properties);
+  const info = asRecord(properties?.info) ?? asRecord(event.info);
+  const part = asRecord(properties?.part) ?? asRecord(event.part);
+  const syncEvent = asRecord(event.syncEvent);
+  const payloadRecord = asRecord(event.payload);
+  const payloadSyncEvent = asRecord(payloadRecord?.syncEvent);
+  const payloadSyncData = asRecord(payloadSyncEvent?.data);
+
+  const id = [
+    event.id,
+    payloadRecord?.id,
+    syncEvent?.id,
+    payloadSyncEvent?.id,
+    info?.id,
+    info?.messageID,
+    info?.messageId,
+    part?.id,
+    part?.partID,
+    part?.partId,
+  ]
+    .map((value) => asString(value).trim())
+    .find((value) => value.length > 0);
+
+  if (!id) {
+    return "";
+  }
+
+  const type = normalizedCentralizedEventType(event);
+  const sessionId =
+    asString(event.sessionId).trim() ||
+    asString(event.sessionID).trim() ||
+    asString(properties?.sessionID).trim() ||
+    asString(properties?.sessionId).trim() ||
+    asString(payloadSyncData?.sessionID).trim() ||
+    asString(payloadSyncData?.sessionId).trim();
+
+  return [type, sessionId, id].filter(Boolean).join("|");
 }
 
 function centralizedDebugPayloadFingerprint(payload: unknown): string {
@@ -181,7 +247,9 @@ export function dedupeCentralizedDebugPayloads(payloads: unknown[]): unknown[] {
   const seen = new Set<string>();
 
   for (const payload of payloads) {
-    const key = centralizedDebugPayloadFingerprint(payload);
+    const key =
+      getCentralizedDebugPayloadIdentity(payload) ||
+      centralizedDebugPayloadFingerprint(payload);
     if (seen.has(key)) {
       continue;
     }
@@ -274,4 +342,23 @@ export function shouldIncludeCentralizedDebugPayload(payload: unknown): boolean 
   }
 
   return true;
+}
+
+export function shouldPersistCentralizedSessionEventPayload(payload: unknown): boolean {
+  const event = asRecord(payload);
+  if (!event) {
+    return true;
+  }
+
+  if (!shouldIncludeCentralizedDebugPayload(payload)) {
+    return false;
+  }
+
+  // NOTE: Removed source filtering for "/global/event" to allow tool events
+  // to be persisted. Tool events like bash, webfetch, etc. often come from
+  // "/global/event" source and should be included in centralized data.
+
+  return CENTRALIZED_SESSION_PERSISTED_EVENT_TYPES.has(
+    normalizedCentralizedEventType(event),
+  );
 }

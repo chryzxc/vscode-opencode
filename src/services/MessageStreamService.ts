@@ -160,15 +160,7 @@ export class MessageStreamService {
   /** Prefer unscoped stream subscriptions after a transport failure. */
   private preferUnscopedStreamSubscription = false;
 
-  /**
-   * Dedupes mirrored events when both /event and /global/event are active.
-   * Stores source metadata so we only collapse cross-stream mirrors and keep
-   * same-stream incremental updates.
-   */
-  private recentEventSignatures: Map<
-    string,
-    { timestamp: number; source?: string }
-  > = new Map();
+  private recentEventSignatures: Map<string, { timestamp: number }> = new Map();
 
   private isHeartbeatEvent(eventType: unknown): boolean {
     return (
@@ -984,54 +976,15 @@ export class MessageStreamService {
   }
 
   private getEventSignature(event: StreamEvent): string {
-    const properties = this.asRecord(event.properties) ?? {};
-    const part = this.asRecord(properties.part);
-    const info = this.asRecord(properties.info);
-    const todos = Array.isArray(properties.todos)
-      ? properties.todos
-        .map((todo) => {
-          const todoRecord = this.asRecord(todo) ?? {};
-          return {
-            id: typeof todoRecord.id === "string" ? todoRecord.id : undefined,
-            content:
-              typeof todoRecord.content === "string"
-                ? todoRecord.content
-                : undefined,
-            status:
-              typeof todoRecord.status === "string"
-                ? todoRecord.status
-                : undefined,
-            priority:
-              typeof todoRecord.priority === "string"
-                ? todoRecord.priority
-                : undefined,
-          };
-        })
-      : undefined;
+    const directory =
+      typeof (event as Record<string, unknown>).directory === "string"
+        ? ((event as Record<string, unknown>).directory as string)
+        : undefined;
 
     return JSON.stringify({
       type: event.type,
-      messageID:
-        (typeof properties.messageID === "string" && properties.messageID) ||
-        (typeof info?.id === "string" && info.id) ||
-        undefined,
-      partID: typeof part?.id === "string" ? part.id : undefined,
-      partType: typeof part?.type === "string" ? part.type : undefined,
-      delta:
-        (() => {
-          const raw = (typeof part?.delta === "string" && part.delta) ||
-            (typeof properties.delta === "string" && properties.delta);
-          return raw ? raw.trim() : undefined;
-        })(),
-      text:
-        (typeof part?.text === "string" && part.text.trim()) ||
-        (typeof properties.text === "string" && properties.text.trim()) ||
-        undefined,
-      directory:
-        typeof (event as Record<string, unknown>).directory === "string"
-          ? (event as Record<string, unknown>).directory
-          : undefined,
-      todos,
+      properties: event.properties,
+      directory,
     });
   }
 
@@ -1039,19 +992,10 @@ export class MessageStreamService {
     const now = Date.now();
     const signature = this.getEventSignature(event);
     const duplicateWindowMs = 750;
-    const staleEntryWindowMs = 10_000;
-    const source =
-      typeof (event as Record<string, unknown>).source === "string"
-        ? ((event as Record<string, unknown>).source as string)
-        : undefined;
 
     const previousSeen = this.recentEventSignatures.get(signature);
-    this.recentEventSignatures.set(signature, { timestamp: now, source });
+    this.recentEventSignatures.set(signature, { timestamp: now });
 
-    // Memory/CPU fix: replace the O(n) full-scan stale sweep with a cheap
-    // FIFO eviction cap. Map preserves insertion order, so iterating keys
-    // and deleting only the overage is O(overage) — not O(size) — and avoids
-    // repeated Array.from allocations on every event during heavy streaming.
     const MAX_SIGNATURE_ENTRIES = 200;
     if (this.recentEventSignatures.size > MAX_SIGNATURE_ENTRIES) {
       const overage = this.recentEventSignatures.size - MAX_SIGNATURE_ENTRIES;
@@ -1072,11 +1016,7 @@ export class MessageStreamService {
       return false;
     }
 
-    if (!source || !previousSeen.source) {
-      return true;
-    }
-
-    return previousSeen.source !== source;
+    return true;
   }
 
   /**

@@ -155,6 +155,30 @@ test('normalizePartType maps toolcall/tool_call/tool-call to "tool"', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 2b. Centralized sync envelopes – step start / finish normalization
+// ---------------------------------------------------------------------------
+
+test('getCentralizedEventPart reads syncEvent.data.part for step-start envelopes', () => {
+    const body = extractFunctionBody(messageHandlerSource, 'function getCentralizedEventPart');
+    assert.ok(body, 'getCentralizedEventPart must exist');
+    assert.match(
+        body,
+        /payloadSyncEvent[\s\S]{1,180}payloadSyncPart[\s\S]{1,120}return\s+payloadSyncPart/,
+        'must read nested syncEvent.data.part envelopes',
+    );
+});
+
+test('getCentralizedEventType reads nested syncEvent.type and strips version suffixes', () => {
+    const body = extractFunctionBody(messageHandlerSource, 'function getCentralizedEventType');
+    assert.ok(body, 'getCentralizedEventType must exist');
+    assert.match(
+        body,
+        /payloadSyncType[\s\S]*syncType[\s\S]*return\s+rawType\.replace\(/,
+        'must prefer nested syncEvent.type when the transport envelope is sync-wrapped',
+    );
+});
+
+// ---------------------------------------------------------------------------
 // 3. isInternalToolName – detection contract
 // ---------------------------------------------------------------------------
 
@@ -366,7 +390,10 @@ test("handleStreamEvent error case dispatches SET_PROCESSING false then FINISH_S
     assert.ok(body, 'handleStreamEvent must exist');
     const errorCaseIdx = body.indexOf("case 'session.error':");
     assert.ok(errorCaseIdx >= 0, "session.error case must exist");
-    const errorCaseBody = body.slice(errorCaseIdx, errorCaseIdx + 400);
+    const nextCaseIdx = body.indexOf("case 'start':", errorCaseIdx);
+    const errorCaseBody = nextCaseIdx > errorCaseIdx
+        ? body.slice(errorCaseIdx, nextCaseIdx)
+        : body.slice(errorCaseIdx);
     assert.match(
         errorCaseBody,
         /SET_PROCESSING['",\s]+payload\s*:\s*false/,
@@ -376,6 +403,11 @@ test("handleStreamEvent error case dispatches SET_PROCESSING false then FINISH_S
         errorCaseBody,
         /FINISH_STREAMING/,
         "error case must dispatch FINISH_STREAMING",
+    );
+    assert.doesNotMatch(
+        errorCaseBody,
+        /ADD_ERROR_MESSAGE/,
+        "session.error should no longer surface as a toast",
     );
 });
 
@@ -468,6 +500,16 @@ test('handleStreamEvent message.updated uses string-aware finish detection', () 
         body,
         /const\s+finish\s*=\s*resolveMessageUpdatedFinishSignal\(/,
         'message.updated must use resolveMessageUpdatedFinishSignal for string-aware finish detection',
+    );
+});
+
+test("createMessageHandler preserves provider info.error on the assistant message card", () => {
+    const body = extractFunctionBody(messageHandlerSource, 'function createMessageHandler');
+    assert.ok(body, 'createMessageHandler must exist');
+    assert.match(
+        body,
+        /const\s+infoRec\s*=\s*asRecord\(sanitized\.info\);[\s\S]*const\s+errorRec\s*=\s*asRecord\(infoRec\?\.error\);[\s\S]*\(sanitized as unknown as UnknownRecord\)\.error\s*=\s*errorName/,
+        'final message normalization should map provider info.error into message.error so the assistant card can render it inline',
     );
 });
 

@@ -15,7 +15,7 @@ export const StepIndicator = React.forwardRef<
     switch (status) {
       case 'pending':
         return (
-          <div className="oc-step-indicator-pending animate-pulse" />
+          <div className="oc-step-indicator-pending" />
         )
       case 'done':
         return <Check size={14} className="oc-step-indicator-done" />

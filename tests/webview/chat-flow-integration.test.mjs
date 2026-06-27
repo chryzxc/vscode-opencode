@@ -241,16 +241,39 @@ test('centralized debug data keeps raw event stream and raw rehydrated data sepa
   );
 });
 
-test('chat shell keeps the just-sent user bubble visible until the tape catches up', () => {
+test('chat shell renders conversation messages strictly from the centralized tape', () => {
   assert.match(
     chatShellSource,
-    /role !== "user"[\s\S]*merged\.push\(message\)/,
-    'the centralized render pass should keep a transient user-message fallback for tape lag',
+    /STRICT CENTRALIZED DATA ENFORCEMENT[\s\S]*All data that will be rendered[\s\S]*rawSdkEventPayloads/s,
+    'the centralized render pass should document centralized-only rendering',
   );
   assert.match(
     chatShellSource,
-    /const tapeUserMessageSignatures = new Set<string>\(\);[\s\S]*renderMessageContentSignature\(message\)/,
-    'the fallback should be suppressed once the tape contains the same user text',
+    /const userDescriptors:[\s\S]*Strictly ONLY push if it is a user text part from the tape/s,
+    'user messages should be reconstructed from user-owned tape parts',
+  );
+});
+
+test('chat shell creates hydrated assistant shells from assistant-owned centralized part events', () => {
+  assert.match(
+    chatShellSource,
+    /latestAssistantMessageIdFromCentralizedTape\(normalizedRawSdkEventPayloads\)/,
+    'hydrated assistant shell reconstruction should consult the centralized latest assistant id',
+  );
+  assert.match(
+    chatShellSource,
+    /function isAssistantOwnedCentralizedPartEvent\([\s\S]*toolName[\s\S]*partType === "tool"[\s\S]*partType === "reasoning"[\s\S]*messageId === latestAssistantMessageId/s,
+    'assistant shell reconstruction should classify tool and latest-assistant part events as assistant-owned',
+  );
+  assert.match(
+    chatShellSource,
+    /assistantDescriptorsByParent\.set\([\s\S]*messageId,[\s\S]*createdAt/s,
+    'assistant-owned part events should create assistant shell descriptors during hydration',
+  );
+  assert.match(
+    chatShellSource,
+    /rawEventsByMessageId\.get\(descriptor\.messageId\)[\s\S]*rawSdkEventPayloads/s,
+    'hydrated assistant shells should carry their own centralized raw event payloads',
   );
 });
 
@@ -262,7 +285,7 @@ test('streaming card stays mounted for active assistant turns even before visibl
   );
   assert.match(
     streamingComponentsSource,
-    /if\s*\(\s*streaming\.isActive\s*\)\s*\{\s*return\s*!hasMatchingAssistantTurnInTranscript;/,
+    /if\s*\(\s*hasTranscriptAssistantForCurrentTurn\s*\)\s*return false;[\s\S]*if\s*\(\s*hasMatchingAssistantTurnInTranscript\s*\)\s*return false;[\s\S]*if\s*\(\s*streaming\.isActive\s*\)\s*\{\s*return\s+true;/s,
     'an active assistant turn should render the streaming response shell immediately unless that turn is already present in the transcript',
   );
 });

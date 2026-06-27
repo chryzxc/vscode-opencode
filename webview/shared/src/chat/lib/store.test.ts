@@ -616,6 +616,40 @@ describe("appReducer render-stability guards", () => {
     );
   });
 
+  it("preserves empty streaming arrays when a partial snapshot is merged", () => {
+    const seededState = {
+      ...initialState,
+      streaming: {
+        messageId: "msg-1",
+        content: "",
+        reasoning: "",
+        reasoningEvents: [],
+        steps: [],
+        progressEvents: [],
+        edits: [],
+        interactiveEvents: [],
+        isActive: true,
+      } as any,
+    };
+
+    const nextState = appReducer(seededState, {
+      type: "SET_STREAMING",
+      payload: {
+        messageId: "msg-1",
+        content: "",
+        reasoning: "",
+        isActive: true,
+        hasRenderableContent: false,
+      } as any,
+    });
+
+    assert.deepStrictEqual(nextState.streaming?.steps, []);
+    assert.deepStrictEqual(nextState.streaming?.progressEvents, []);
+    assert.deepStrictEqual(nextState.streaming?.reasoningEvents, []);
+    assert.deepStrictEqual(nextState.streaming?.edits, []);
+    assert.deepStrictEqual(nextState.streaming?.interactiveEvents, []);
+  });
+
   it("preserves rawSdkEventPayloads order when canonicalizing duplicate assistant turns", () => {
     const messages: Message[] = [
       {

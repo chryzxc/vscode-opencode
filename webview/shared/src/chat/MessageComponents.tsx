@@ -48,6 +48,9 @@ import { DiffPreviewStep } from "./components/activity-steps/DiffPreviewStep";
 import { ActivityDiffExcerpt } from "./components/ActivityDiffExcerpt";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 import { SubagentDetailModal } from "./SubagentDetailModal";
+
+// NEW: Import custom hooks for subagent data access
+import { useSubagentsForParentMessage } from "./hooks/useSubagents";
 import { DiffStats } from "./DiffStats";
 import {
   asString,
@@ -57,6 +60,7 @@ import {
   normalizeCentralizedEventPayloads,
   structuredOutputFromRawSdkEventPayloads,
   isAiResponseEvent,
+  extractEventMessageId,
 } from "./lib/messageHandler";
 import {
   hasActiveAssistantReplyInCentralizedTape,
@@ -1179,7 +1183,6 @@ function interactiveChoiceTextsFromMessage(message?: Message): string[] {
     asRecord(infoRec?.structuredOutput) ||
     asRecord(infoRec?.structured_output) ||
     asRecord(infoRec?.structured);
-  const question = asRecord(structured?.question);
 
   const choiceTexts: string[] = [];
   const addChoiceText = (value: unknown) => {
@@ -1291,6 +1294,10 @@ function collectMessageIdentityCandidates(message?: Message): Set<string> {
     (message as any).messageId,
     info?.id,
     info?.messageId,
+    // Safely collect any extra message IDs that were merged into this 
+    // unified turn during coalescing (e.g. from tool call phases), 
+    // ensuring their centralized streaming events remain in scope.
+    ...(Array.isArray((message as any).coalescedIds) ? (message as any).coalescedIds : []),
   ];
   for (const value of values) {
     if (typeof value === "string" && value.trim().length > 0) {
@@ -1300,51 +1307,50 @@ function collectMessageIdentityCandidates(message?: Message): Set<string> {
   return candidates;
 }
 
-function collectAssistantTurnMessageIds(
-  messages: Message[] | undefined,
-  rootMessageId: string | null,
+function collectCentralizedTurnMessageIdCandidates(
+  rawSdkEventPayloads: unknown[] | undefined,
 ): Set<string> {
-  const scopedIds = new Set<string>();
-  const normalizedRootId = (rootMessageId || "").trim();
-  if (!Array.isArray(messages) || messages.length === 0 || !normalizedRootId) {
-    return scopedIds;
+  const candidates = new Set<string>();
+  if (!Array.isArray(rawSdkEventPayloads) || rawSdkEventPayloads.length === 0) {
+    return candidates;
   }
 
-  const queue: string[] = [normalizedRootId];
-  while (queue.length > 0) {
-    const currentId = queue.shift()!;
-    if (scopedIds.has(currentId)) {
-      continue;
-    }
-    scopedIds.add(currentId);
+  for (const payload of rawSdkEventPayloads) {
+    const rec = asRecord(payload);
+    if (!rec) continue;
 
-    for (const candidate of messages) {
-      const candidateInfo = asRecord(candidate.info);
-      const candidateRole = (candidate.role ?? candidateInfo?.role ?? "").toString().toLowerCase();
-      if (candidateRole !== "assistant") {
-        continue;
-      }
+    const part = getCentralizedEventPart(rec);
+    const properties = asRecord(rec.properties);
+    const payloadRecord = asRecord(rec.payload);
+    const payloadSyncEvent = asRecord(payloadRecord?.syncEvent);
+    const payloadSyncPart = asRecord(payloadSyncEvent?.data)?.part as Record<string, unknown> | null;
+    const syncEvent = asRecord(rec.syncEvent);
+    const syncPart = asRecord(syncEvent?.data)?.part as Record<string, unknown> | null;
 
-      const candidateIds = collectMessageIdentityCandidates(candidate);
-      const parentId = firstNonEmptyString(
-        candidateInfo?.parentID,
-        candidateInfo?.parentId,
-      );
-      if (!parentId || !candidateIds.size) {
-        continue;
-      }
+    const ids = [
+      asString(part?.messageID),
+      asString(part?.messageId),
+      asString(properties?.messageID),
+      asString(properties?.messageId),
+      asString(payloadRecord?.messageID),
+      asString(payloadRecord?.messageId),
+      asString(payloadSyncPart?.messageID),
+      asString(payloadSyncPart?.messageId),
+      asString(syncPart?.messageID),
+      asString(syncPart?.messageId),
+      asString(rec.messageID),
+      asString(rec.messageId),
+    ];
 
-      if (parentId === currentId) {
-        for (const id of candidateIds) {
-          if (!scopedIds.has(id)) {
-            queue.push(id);
-          }
-        }
+    for (const id of ids) {
+      const trimmed = id.trim();
+      if (trimmed) {
+        candidates.add(trimmed);
       }
     }
   }
 
-  return scopedIds;
+  return candidates;
 }
 
 function normalizeComparableText(value: unknown): string {
@@ -1447,18 +1453,6 @@ function hasQuestionLikeInteractiveContent(message?: Message): boolean {
     asRecord(infoRec?.structuredOutput) ||
     asRecord(infoRec?.structured_output) ||
     asRecord(infoRec?.structured);
-  const questionType = firstNonEmptyString(
-    asRecord(structured?.question)?.type,
-  )?.toLowerCase();
-
-  if (
-    questionType === "question" ||
-    questionType === "confirm" ||
-    questionType === "quick_actions" ||
-    questionType === "quick-actions"
-  ) {
-    return true;
-  }
 
   if (!Array.isArray(message.interactiveEvents)) {
     return false;
@@ -1474,83 +1468,6 @@ function hasQuestionLikeInteractiveContent(message?: Message): boolean {
     );
   });
 }
-
-function rawMessagePartsFromRawSdkEventPayloads(
-  rawSdkEventPayloads?: unknown[],
-): MessagePart[] {
-  if (!Array.isArray(rawSdkEventPayloads) || rawSdkEventPayloads.length === 0) {
-    return [];
-  }
-
-  // Collapse canonical + sync mirror entries by stable identity so the same
-  // logical part does not render twice during event-stream playback.
-  const parts: MessagePart[] = [];
-  const partsByKey = new Map<string, MessagePart>();
-  const statusRank = (value?: unknown): number => {
-    const status = asString(value).toLowerCase();
-    if (status === "done" || status === "completed" || status === "complete") return 3;
-    if (status === "error" || status === "failed") return 2;
-    if (status === "running" || status === "pending") return 1;
-    return 0;
-  };
-
-  for (const payload of rawSdkEventPayloads) {
-    const eventRec = asRecord(payload);
-    if (!eventRec) {
-      continue;
-    }
-
-    const partRec = getCentralizedEventPart(eventRec);
-    if (partRec) {
-      const candidate = partRec as MessagePart;
-      const candidateRec = asRecord(candidate);
-      const partID = firstNonEmptyString(
-        asString(candidateRec?.id),
-        asString(candidateRec?.partID),
-        asString(candidateRec?.partId),
-      );
-      const messageID = firstNonEmptyString(
-        asString(candidateRec?.messageID),
-        asString(candidateRec?.messageId),
-      );
-      const partType = firstNonEmptyString(
-        asString(candidateRec?.type),
-        asString(candidateRec?.kind),
-      )?.toLowerCase();
-      const textKey = normalizeComparableText(
-        firstNonEmptyString(
-          asString(candidateRec?.text),
-          asString(candidateRec?.content),
-          asString(candidateRec?.message),
-          asString(asRecord(candidateRec?.state)?.output),
-          asString(candidateRec?.delta),
-        ),
-      );
-      const mergeKey = partID
-        ? `part:${partID}`
-        : messageID
-          ? `msg:${messageID}`
-          : `${partType || "part"}:${textKey}`;
-
-      const existing = partsByKey.get(mergeKey);
-      if (!existing) {
-        partsByKey.set(mergeKey, candidate);
-        continue;
-      }
-
-      const existingRec = asRecord(existing);
-      const existingStatus = asRecord(existingRec?.state)?.status;
-      const candidateStatus = asRecord(candidateRec?.state)?.status;
-      if (statusRank(candidateStatus) >= statusRank(existingStatus)) {
-        partsByKey.set(mergeKey, candidate);
-      }
-    }
-  }
-
-  parts.push(...partsByKey.values());
-  return parts;
-}
-
 
 function summaryText(message?: Message): string {
   // Check both nested info and top-level properties (for persisted messages)
@@ -2339,7 +2256,7 @@ type ProgressItem = {
   messageID?: string;
   sessionID?: string;
   title: string;
-  status: "pending" | "done" | "error";
+  status: "pending" | "running" | "done" | "error";
   source?: "stream" | "final" | "raw_debug";
   partType?: string;
   internal?: boolean;
@@ -2358,18 +2275,12 @@ type CommentaryItem = {
   text: string;
   streamSeq?: number;
   kind?: "commentary" | "ai_response";
-  status?: "pending" | "done" | "error";
+  status?: "pending" | "running" | "done" | "error";
   messageID?: string;
   partID?: string;
 };
 
-type ThinkingBlock = { kind: "thinking"; items: ThoughtItem[] };
-type StepsBlock = { kind: "steps"; items: ProgressItem[] };
-type ContentBlock = { kind: "content"; html: string };
-type CommentaryBlock = { kind: "commentary"; text: string; label?: string; messageID?: string; partID?: string };
-type TimelineBlock = ThinkingBlock | StepsBlock | ContentBlock | CommentaryBlock;
-
-function AssistantResponseBodyCard({
+function ResponseMessageBody({
   content,
   parts,
   className,
@@ -2787,9 +2698,27 @@ function mergeProgressItemsForTimeline(
 function progressItemsFromRawEventPayloads(
   rawSdkEventPayloads?: unknown[],
 ): ProgressItem[] {
+  console.log('[DEBUG] progressItemsFromRawEventPayloads called', {
+    isArray: Array.isArray(rawSdkEventPayloads),
+    length: rawSdkEventPayloads?.length,
+  });
+
   if (!Array.isArray(rawSdkEventPayloads) || rawSdkEventPayloads.length === 0) {
+    console.log('[DEBUG] No rawSdkEventPayloads to process');
     return [];
   }
+
+  console.log('[DEBUG] Processing rawSdkEventPayloads', {
+    count: rawSdkEventPayloads.length,
+    sample: rawSdkEventPayloads.slice(0, 2).map((e: unknown) => {
+      const rec = e as Record<string, unknown>;
+      return {
+        type: rec.type,
+        hasPayload: !!rec.payload,
+        hasSyncEvent: !!rec.syncEvent,
+      };
+    }),
+  });
 
   const rawSteps: Array<MessageStep | StreamingStep> = [];
   const diagnostics = {
@@ -2912,6 +2841,12 @@ function progressItemsFromRawEventPayloads(
 
     const part = getCentralizedEventPart(event);
     if (!part) {
+      console.log('[PROGRESS_ITEMS] No part found for event', {
+        index,
+        eventType: event.type,
+        hasPayload: !!event.payload,
+        hasSyncEvent: !!event.syncEvent,
+      });
       diagnostics.noPart += 1;
       rememberSkipped("no_part", event, index);
       continue;
@@ -2931,6 +2866,17 @@ function progressItemsFromRawEventPayloads(
       asString(part.partType),
       asString(structured?.kind),
     );
+
+    console.log('[PROGRESS_ITEMS] Processing part', {
+      index,
+      tool,
+      partType,
+      partTool: part.tool,
+      partName: part.name,
+      partType_raw: part.type,
+      stateStatus: state?.status,
+    });
+
     // Reasoning belongs in the dedicated thinking lane, not the activity step
     // lane. If we let it through here, the same assistant text can render once
     // as a reasoning block and again as a raw activity row, which is the
@@ -2996,6 +2942,11 @@ function progressItemsFromRawEventPayloads(
 
     if (partType === "text") {
       diagnostics.textSkipped += 1;
+      console.log('[PROGRESS_ITEMS] Skipped text part', {
+        index,
+        partType,
+        messageId: partMessageID,
+      });
       rememberSkipped("text_response_lane", event, index);
       continue;
     }
@@ -3032,9 +2983,31 @@ function progressItemsFromRawEventPayloads(
       !!partType;
     if (!hasRenderableProgress) {
       diagnostics.noRenderableProgress += 1;
+      console.log('[PROGRESS_ITEMS] Skipped - no renderable progress', {
+        index,
+        title,
+        tool,
+        partType,
+        hasCallID: !!callID,
+        hasId: !!id,
+        hasFilePath: !!filePath,
+        hasOutput: !!output,
+        hasPreview: !!preview,
+      });
       rememberSkipped("no_renderable_progress", event, index);
       continue;
     }
+
+    console.log('[PROGRESS_ITEMS] Adding progress item', {
+      index,
+      title,
+      tool,
+      partType,
+      messageId: partMessageID,
+      callID,
+      status,
+      filePath,
+    });
 
     rawSteps.push({
       id,
@@ -3074,6 +3047,18 @@ function progressItemsFromRawEventPayloads(
     rememberPushed(event, index);
   }
 
+  console.log('[PROGRESS_ITEMS] Summary', {
+    total: diagnostics.total,
+    pushed: diagnostics.pushed,
+    noRecord: diagnostics.noRecord,
+    fileWatcher: diagnostics.fileWatcher,
+    structuredThinkingSkipped: diagnostics.structuredThinkingSkipped,
+    noPart: diagnostics.noPart,
+    reasoningSkipped: diagnostics.reasoningSkipped,
+    textSkipped: diagnostics.textSkipped,
+    noRenderableProgress: diagnostics.noRenderableProgress,
+  });
+
   const rawStepFilterPreview = rawSteps.slice(0, 12).map((step, index) => {
     const stepRec = step as StreamingStep;
     return {
@@ -3109,8 +3094,16 @@ function progressItemsFromRawEventPayloads(
 
 function normalizeProgressStatus(
   value?: string | null,
-): "pending" | "done" | "error" {
+): "pending" | "running" | "done" | "error" {
   const v = value?.toLowerCase();
+  if (
+    v === "running" ||
+    v === "in_progress" ||
+    v === "processing" ||
+    v === "streaming"
+  ) {
+    return "running";
+  }
   if (
     v === "done" ||
     v === "completed" ||
@@ -3147,17 +3140,6 @@ function isActionProgressStep(step: MessageStep | StreamingStep): boolean {
     Boolean(activityDetail);
   const normalizedTitle = (step.title ?? "").trim().toLowerCase();
 
-  // Step-start / step-finish are lifecycle markers, not user-facing timeline
-  // entries. Keep them out of the UI entirely so they do not duplicate the
-  // meaningful activity rows that surround them.
-  if (
-    normalizedPartType === "step-start" ||
-    normalizedPartType === "step-finish" ||
-    type === "step-start" ||
-    type === "step-finish"
-  ) {
-    return false;
-  }
   // Reasoning is rendered in the thinking timeline, not as a progress step.
   // Keeping it out of this path prevents the same assistant text from showing
   // twice with and without the raw badge.
@@ -3170,34 +3152,98 @@ function isActionProgressStep(step: MessageStep | StreamingStep): boolean {
     return false;
   }
 
-  const activityTool = (
-    ("activityDetail" in step ? (step as StreamingStep).activityDetail?.tool : undefined) ?? ""
-  ).toLowerCase();
-  const stepTitleLower = (step.title ?? "").toLowerCase();
-  const normalizedRunPrefix = stepTitleLower.replace(/^running\s+/, "");
-  if (
-    type === "tool" &&
-    step.partType?.toLowerCase() !== "step-start" &&
-    step.partType?.toLowerCase() !== "step-finish" &&
-    !hasUserFacingActivity &&
-    (
-      activityTool === "question" ||
-      activityTool === "request_user_input" ||
-      activityTool === "request-user-input" ||
-      normalizedRunPrefix === "question" ||
-      normalizedRunPrefix === "request_user_input" ||
-      normalizedRunPrefix === "request-user-input"
-    )
-  ) {
-    return false;
-  }
-
   // Filter placeholder rows that only say "step" and carry no user-facing data.
   if (!hasUserFacingActivity && normalizedTitle === "step" && type !== "tool") {
     return false;
   }
 
   return true;
+}
+
+function progressItemStatusRank(status: ProgressItem["status"]): number {
+  switch (status) {
+    case "error":
+      return 3;
+    case "done":
+      return 2;
+    case "running":
+      return 1;
+    case "pending":
+    default:
+      return 0;
+  }
+}
+
+function progressItemIdentityKey(item: {
+  id?: string;
+  callID?: string;
+  messageID?: string;
+  title?: string;
+  filePath?: string;
+  partType?: string;
+  activityDetail?: ActivityDetail;
+}): string {
+  const detailSummary = firstNonEmptyString(
+    asString(item.activityDetail?.summary),
+    asString(item.activityDetail?.output),
+    asString(item.activityDetail?.title),
+    asString(item.activityDetail?.tool),
+  );
+
+  return [
+    item.callID ? `call:${item.callID}` : "",
+    item.id ? `id:${item.id}` : "",
+    item.messageID ? `msg:${item.messageID}` : "",
+    `title:${normalizeComparableText(item.title)}`,
+    item.filePath ? `file:${normalizeComparableText(item.filePath)}` : "",
+    detailSummary ? `summary:${normalizeComparableText(detailSummary)}` : "",
+    item.partType ? `part:${normalizeComparableText(item.partType)}` : "",
+  ]
+    .filter((segment) => segment.length > 0)
+    .join("|");
+}
+
+function mergeProgressItemRecord(existing: ProgressItem, incoming: ProgressItem): ProgressItem {
+  const existingRank = progressItemStatusRank(existing.status);
+  const incomingRank = progressItemStatusRank(incoming.status);
+  const shouldPromoteStatus =
+    incomingRank > existingRank ||
+    (incomingRank === existingRank &&
+      typeof incoming.streamSeq === "number" &&
+      typeof existing.streamSeq === "number" &&
+      incoming.streamSeq >= existing.streamSeq);
+
+  const merged: ProgressItem = {
+    ...existing,
+    ...incoming,
+    status: shouldPromoteStatus ? incoming.status : existing.status,
+    internal: Boolean(existing.internal || incoming.internal),
+  };
+
+  if (!merged.id && incoming.id) merged.id = incoming.id;
+  if (!merged.callID && incoming.callID) merged.callID = incoming.callID;
+  if (!merged.messageID && incoming.messageID) merged.messageID = incoming.messageID;
+  if (!merged.sessionID && incoming.sessionID) merged.sessionID = incoming.sessionID;
+  if (!merged.startedAt && incoming.startedAt) merged.startedAt = incoming.startedAt;
+  if (!merged.endedAt && incoming.endedAt) merged.endedAt = incoming.endedAt;
+  if (!merged.source && incoming.source) merged.source = incoming.source;
+  if (!merged.partType && incoming.partType) merged.partType = incoming.partType;
+  if (!merged.meta && incoming.meta) merged.meta = incoming.meta;
+  if (!merged.filePath && incoming.filePath) merged.filePath = incoming.filePath;
+  if (!merged.activityDetail && incoming.activityDetail) {
+    merged.activityDetail = incoming.activityDetail;
+  }
+  if (incoming.diffStats) {
+    merged.diffStats = incoming.diffStats;
+  }
+  if (typeof incoming.streamSeq === "number") {
+    merged.streamSeq =
+      typeof existing.streamSeq === "number"
+        ? Math.max(existing.streamSeq, incoming.streamSeq)
+        : incoming.streamSeq;
+  }
+
+  return merged;
 }
 
 function progressItemsFromSteps(
@@ -3251,68 +3297,54 @@ function progressItemsFromSteps(
         "partType" in step ? (step.partType as string | undefined) : undefined;
       const stepInternal =
         "internal" in step ? Boolean(step.internal) : false;
+      const candidate: ProgressItem = {
+        key: `${prefix}-${index}-${title}`,
+        mergeKey:
+          progressItemIdentityKey({
+            id: stepId,
+            callID: stepCallId,
+            messageID: stepMessageId,
+            title,
+            filePath: stepFilePath,
+            partType: stepPartType,
+            activityDetail:
+              "activityDetail" in step
+                ? (step.activityDetail as ActivityDetail | undefined)
+                : undefined,
+          }) || mergeKey,
+        id: stepId,
+        callID: stepCallId,
+        messageID: stepMessageId,
+        sessionID: stepSessionId,
+        title,
+        status,
+        source: stepSource,
+        partType: stepPartType,
+        internal: stepInternal,
+        meta,
+        filePath: stepFilePath,
+        startedAt: stepStartedAt,
+        endedAt: stepEndedAt,
+        diffStats:
+          "diffStats" in step
+            ? (step.diffStats as { added: number; deleted: number })
+            : undefined,
+        activityDetail:
+          "activityDetail" in step
+            ? (step.activityDetail as ActivityDetail | undefined)
+            : undefined,
+        streamSeq:
+          "streamSeq" in step
+            ? (step as { streamSeq?: number }).streamSeq
+            : undefined,
+      };
 
-      if (stepMap.has(mergeKey)) {
-        const existing = stepMap.get(mergeKey)!;
-        // Do not regress terminal statuses back to pending on noisy updates.
-        if (
-          status === "error" ||
-          status === "done" ||
-          existing.status === "pending"
-        ) {
-          existing.status = status;
-        }
-        if (title) existing.title = title;
-        if (meta) existing.meta = meta;
-        if (stepFilePath) existing.filePath = stepFilePath;
-        if (!existing.id && stepId) existing.id = stepId;
-        if (!existing.callID && stepCallId) existing.callID = stepCallId;
-        if (!existing.messageID && stepMessageId) existing.messageID = stepMessageId;
-        if (!existing.sessionID && stepSessionId) existing.sessionID = stepSessionId;
-        if (!existing.startedAt && stepStartedAt) existing.startedAt = stepStartedAt;
-        if (!existing.endedAt && stepEndedAt) existing.endedAt = stepEndedAt;
-        if (!existing.source && stepSource) existing.source = stepSource;
-        if (!existing.partType && stepPartType) existing.partType = stepPartType;
-        existing.internal = Boolean(existing.internal || stepInternal);
-        if ("diffStats" in step)
-          existing.diffStats = step.diffStats as {
-            added: number;
-            deleted: number;
-          };
-        if ("activityDetail" in step && step.activityDetail) {
-          existing.activityDetail = step.activityDetail as ActivityDetail;
-        }
-      } else {
-        stepMap.set(mergeKey, {
-          key: `${prefix}-${index}-${title}`,
-          mergeKey,
-          id: stepId,
-          callID: stepCallId,
-          messageID: stepMessageId,
-          sessionID: stepSessionId,
-          title,
-          status,
-          source: stepSource,
-          partType: stepPartType,
-          internal: stepInternal,
-          meta,
-          filePath: stepFilePath,
-          startedAt: stepStartedAt,
-          endedAt: stepEndedAt,
-          diffStats:
-            "diffStats" in step
-              ? (step.diffStats as { added: number; deleted: number })
-              : undefined,
-          activityDetail:
-            "activityDetail" in step
-              ? (step.activityDetail as ActivityDetail | undefined)
-              : undefined,
-          streamSeq:
-            "streamSeq" in step
-              ? (step as { streamSeq?: number }).streamSeq
-              : undefined,
-        });
+      const existing = stepMap.get(candidate.mergeKey);
+      if (!existing) {
+        stepMap.set(candidate.mergeKey, candidate);
+        return;
       }
+      stepMap.set(candidate.mergeKey, mergeProgressItemRecord(existing, candidate));
     });
 
   return Array.from(stepMap.values());
@@ -3385,6 +3417,14 @@ function progressItemsFromRawResponseParts(
       asString(partRec.partID),
       asString(partRec.partId),
     );
+    const partMessageID = firstNonEmptyString(
+      asString(partRec.messageID),
+      asString(partRec.messageId),
+      asString(event.messageID),
+      asString(event.messageId),
+      asString(eventProperties?.messageID),
+      asString(eventProperties?.messageId),
+    );
 
     if (toolName !== "read" && !callID && !id) {
       continue;
@@ -3410,7 +3450,26 @@ function progressItemsFromRawResponseParts(
 
     items.push({
       key: `raw-${callID ?? id ?? partRec.messageID ?? index}`,
-      mergeKey: callID ? `call:${callID}` : id ? `id:${id}` : `index:${index}`,
+      mergeKey:
+        progressItemIdentityKey({
+          id,
+          callID,
+          messageID: partMessageID || undefined,
+          title: rawTitle,
+          filePath,
+          partType: asString(partRec.type) || "tool",
+          activityDetail: {
+            kind: toolName === "read" ? "read" : toolName || "tool_call",
+            summary: filePath || preview || rawTitle,
+            tool: toolName,
+            file: filePath,
+            input: inputRec ?? undefined,
+            output: output || undefined,
+            // Store the display title (e.g., relative path) from state.title for read steps
+            title: firstNonEmptyString(asString(stateRec?.title), asString(partRec.title)) || undefined,
+            metadata: Object.keys(compactMetadata).length > 0 ? compactMetadata : undefined,
+          },
+        }) || `index:${index}`,
       id,
       callID,
       messageID: partMessageID || undefined,
@@ -3447,33 +3506,18 @@ function progressItemsFromCentralizedData(
   const stepMap = new Map<string, ProgressItem>();
 
   for (const item of rawItems) {
-    const mergeKey = item.mergeKey || item.callID || item.id || item.key;
+    const mergeKey =
+      item.mergeKey ||
+      progressItemIdentityKey(item) ||
+      item.callID ||
+      item.id ||
+      item.key;
     const existing = stepMap.get(mergeKey);
     if (!existing) {
       stepMap.set(mergeKey, { ...item });
       continue;
     }
-
-    if (
-      item.status === "error" ||
-      item.status === "done" ||
-      existing.status === "pending"
-    ) {
-      existing.status = item.status;
-    }
-    if (item.title) existing.title = item.title;
-    if (item.meta) existing.meta = item.meta;
-    if (item.filePath) existing.filePath = item.filePath;
-    if (item.id && !existing.id) existing.id = item.id;
-    if (item.callID && !existing.callID) existing.callID = item.callID;
-    if (item.sessionID && !existing.sessionID) existing.sessionID = item.sessionID;
-    if (item.startedAt && !existing.startedAt) existing.startedAt = item.startedAt;
-    if (item.endedAt && !existing.endedAt) existing.endedAt = item.endedAt;
-    if (item.source && !existing.source) existing.source = item.source;
-    if (item.partType && !existing.partType) existing.partType = item.partType;
-    existing.internal = Boolean(existing.internal || item.internal);
-    if (item.diffStats) existing.diffStats = item.diffStats;
-    if (item.activityDetail) existing.activityDetail = item.activityDetail;
+    stepMap.set(mergeKey, mergeProgressItemRecord(existing, item));
   }
 
   const items = Array.from(stepMap.values());
@@ -4156,220 +4200,6 @@ function isFileChangeSubset(small: Set<string>, large: Set<string>): boolean {
 }
 
 
-/**
- * LEGACY NORMALIZATION LAYER.
- *
- * This timeline builder is still in place so the current UI can keep working
- * during the migration, but it is not the long-term architecture. The new
- * conversation flow should render directly from the centralized raw event tape
- * and delete this re-sorting / grouping pass once the v2 path is complete.
- *
- * For now it still handles both streaming and hydrated messages by sorting
- * thoughtItems and progressItems, then falling back to parts-based replay when
- * timing data is missing.
- */
-function buildTimeline(
-  thoughtItems: ThoughtItem[],
-  progressItems: ProgressItem[],
-  commentaryItems: CommentaryItem[],
-  html: string,
-  /** Only used for the parts-based fallback path; null during streaming */
-  messageParts?: MessagePart[],
-): TimelineBlock[] {
-  // Check if we have any timing data for sorted interleaving.
-  const hasTimedThoughts = thoughtItems.some(
-    (t) => seqFromThoughtKey(t.key) > 0,
-  );
-  const hasTimedSteps = progressItems.some((p) => p.streamSeq != null);
-  const hasTimedCommentary = commentaryItems.some((c) => c.streamSeq != null);
-
-  if (hasTimedThoughts || hasTimedSteps || progressItems.length > 0 || hasTimedCommentary || commentaryItems.length > 0) {
-    type RawEntry =
-      | { seq: number; kind: "thinking"; item: ThoughtItem }
-      | { seq: number; kind: "step"; item: ProgressItem }
-      | { seq: number; kind: "commentary"; item: CommentaryItem }
-      | { seq: number; kind: "content" };
-
-    const entries: RawEntry[] = [];
-
-    for (const item of thoughtItems) {
-      entries.push({
-        kind: "thinking",
-        item,
-        seq: seqFromThoughtKey(item.key),
-      });
-    }
-
-  for (const item of progressItems) {
-      entries.push({
-        kind: "step",
-        item,
-        // +1 offset so a step at the same millisecond as a thinking event
-        // always sorts after it (consistent with original streaming logic).
-        seq:
-          item.streamSeq != null
-            ? item.streamSeq + 1
-            : Number.MAX_SAFE_INTEGER,
-      });
-    }
-
-    for (const item of commentaryItems) {
-      const text = (item.text || "").trim();
-      if (!text) continue;
-      entries.push({
-        kind: "commentary",
-        item,
-        seq:
-          item.streamSeq != null
-            ? item.streamSeq + 1
-            : Number.MAX_SAFE_INTEGER,
-      });
-    }
-
-    // Preserve the merged raw response body when available. It renders in the
-    // assistant response section, while commentary chunks remain available as
-    // timeline blocks for live/step-by-step rendering.
-    if (html) {
-      entries.push({ kind: "content", seq: Number.MAX_SAFE_INTEGER });
-    }
-
-    entries.sort((a, b) => a.seq - b.seq);
-
-    const blocks: TimelineBlock[] = [];
-    for (const entry of entries) {
-      const last = blocks[blocks.length - 1];
-      if (entry.kind === "thinking") {
-        if (last?.kind === "thinking") {
-          (last as ThinkingBlock).items.push(entry.item);
-        } else {
-          blocks.push({ kind: "thinking", items: [entry.item] });
-        }
-      } else if (entry.kind === "step") {
-        if (last?.kind === "steps") {
-          (last as StepsBlock).items.push(entry.item);
-        } else {
-          blocks.push({ kind: "steps", items: [entry.item] });
-        }
-      } else if (entry.kind === "commentary") {
-        blocks.push({
-          kind: "commentary",
-          text: entry.item.text,
-          messageID: entry.item.messageID,
-          partID: entry.item.partID,
-          label:
-            entry.item.kind === "ai_response"
-              ? "Assistant Response"
-              : "Commentary",
-        });
-      } else {
-        blocks.push({ kind: "content", html });
-      }
-    }
-
-    return blocks;
-  }
-
-  // ── Fallback: parts-based approach for server-loaded messages with no timing ──
-  const parts = messageParts;
-
-  if (Array.isArray(parts) && parts.length > 0) {
-    const blocks: TimelineBlock[] = [];
-
-    for (const part of parts) {
-      if (isReasoningPart(part)) {
-        const text = (
-          part.reasoning ??
-          part.thought ??
-          part.thinking ??
-          (isReasoningPart(part) ? (part.text ?? part.content ?? "") : "")
-        ).trim();
-        if (!text) continue;
-        const last = blocks[blocks.length - 1];
-        if (last?.kind === "thinking") {
-          (last as ThinkingBlock).items.push({
-            key: `msg-think-${blocks.length}`,
-            text,
-          });
-        } else {
-          blocks.push({
-            kind: "thinking",
-            items: [{ key: `msg-think-${blocks.length}`, text }],
-          });
-        }
-      } else {
-        const partText = (part.text ?? part.content ?? "").trim();
-        if (!partText) continue;
-        const last = blocks[blocks.length - 1];
-        if (last?.kind === "content") {
-          (last as ContentBlock).html += partText;
-        } else {
-          blocks.push({ kind: "content", html: partText });
-        }
-      }
-    }
-
-    // Steps don't appear in parts; insert them before the first content block
-    if (progressItems.length > 0) {
-      const firstContentIdx = blocks.findIndex((b) => b.kind === "content");
-      const stepsBlock: TimelineBlock = { kind: "steps", items: progressItems };
-      if (firstContentIdx >= 0) {
-        blocks.splice(firstContentIdx, 0, stepsBlock);
-      } else {
-        blocks.push(stepsBlock);
-      }
-    }
-
-    // If parts had no reasoning entries but the message has reasoningEvents,
-    // insert them before the first content block.
-    const hasThinkingBlock = blocks.some((b) => b.kind === "thinking");
-    if (!hasThinkingBlock && thoughtItems.length > 0) {
-      const firstContentIdx = blocks.findIndex((b) => b.kind === "content");
-      const thinkingBlock: TimelineBlock = {
-        kind: "thinking",
-        items: thoughtItems,
-      };
-      if (firstContentIdx >= 0) {
-        blocks.splice(firstContentIdx, 0, thinkingBlock);
-      } else {
-        blocks.unshift(thinkingBlock);
-      }
-    }
-
-    return blocks.filter((b) => {
-      if (b.kind === "content") return !!(b as ContentBlock).html;
-      return (b as ThinkingBlock | StepsBlock).items.length > 0;
-    });
-  }
-
-  // Fallback for messages with no parts array
-  const blocks: TimelineBlock[] = [];
-  if (thoughtItems.length > 0)
-    blocks.push({ kind: "thinking", items: thoughtItems });
-  if (progressItems.length > 0)
-    blocks.push({ kind: "steps", items: progressItems });
-  if (html) blocks.push({ kind: "content", html });
-
-  return blocks;
-}
-
-function buildMessageTimeline(
-  message?: Message,
-  html = "",
-  rawSdkEventPayloads?: unknown[],
-): TimelineBlock[] {
-  const centralizedRawSdkEventPayloads =
-    rawSdkEventPayloads ?? message?.rawSdkEventPayloads;
-  return buildTimeline(
-    thoughtItemsFromRawEventPayloads(centralizedRawSdkEventPayloads),
-    progressItemsFromCentralizedData(
-      centralizedRawSdkEventPayloads
-    ),
-    commentaryItemsFromRawEventPayloads(centralizedRawSdkEventPayloads),
-    html,
-    message?.parts,
-  );
-}
-
 type MessageViewState = {
   showActivityDetails: boolean;
   showThinkingDetails: boolean;
@@ -4384,7 +4214,7 @@ type DisplayEvent = {
   summary: string;
   description?: string;
   detail?: string;
-  status: "pending" | "done" | "error";
+  status: "pending" | "running" | "done" | "error";
   source?: "stream" | "final" | "raw_debug";
   partType?: string;
   internal?: boolean;
@@ -4403,6 +4233,48 @@ type DisplayEvent = {
 };
 
 const ACTIVITY_TIMELINE_DIAGNOSTIC_LOG = "[ACTIVITY-TIMELINE-DIAG]";
+
+// Constants for activity event identity prefixes
+const ACTIVITY_IDENTITY_PREFIXES = {
+  CALL: "activity-call",
+  PART: "activity-part",
+  MESSAGE: "activity-msg",
+  KEY: "activity-key",
+} as const;
+
+// System event types that may lack standard IDs but have stable keys
+const SYSTEM_EVENT_PATTERNS = {
+  FILE_WATCHER: ["file.watcher", "file_watcher"],
+  // Add other system event patterns here as needed
+  // e.g., FILE_SYSTEM: ["file.system", "file_system"],
+} as const;
+
+/**
+ * Checks if an event is a known system event type that may lack standard IDs.
+ * @param partType - The event's part type
+ * @param activityTool - The activity detail's tool name
+ * @returns true if this is a known system event type
+ */
+function isSystemEventWithoutStandardIds(
+  partType: string,
+  activityTool: string,
+): boolean {
+  const normalizedPartType = partType.toLowerCase();
+  const normalizedTool = activityTool.toLowerCase();
+
+  for (const patterns of Object.values(SYSTEM_EVENT_PATTERNS)) {
+    for (const pattern of patterns) {
+      if (
+        normalizedPartType.includes(pattern.toLowerCase()) ||
+        normalizedTool.includes(pattern.toLowerCase())
+      ) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
 
 function summarizeCentralizedEventForTimelineDiagnostics(
   value: unknown,
@@ -4515,6 +4387,64 @@ function displayEventSourcePriority(source?: DisplayEvent["source"]): number {
   }
 }
 
+/**
+ * Generates a stable identity key for activity events to enable proper deduplication.
+ *
+ * Priority order for identity generation:
+ * 1. callID (highest priority - most stable)
+ * 2. partID (second priority - stable within a message)
+ * 3. messageID + filePath (third priority - message-scoped)
+ * 4. event.key (fallback for system events without standard IDs)
+ *
+ * @param event - The display event to generate an identity for
+ * @returns A stable identity string, or empty string if no stable identity can be generated
+ */
+function activityDisplayEventIdentity(event: DisplayEvent): string {
+  const callID = (event.callID ?? "").trim().toLowerCase();
+  const partID = (event.partID ?? "").trim().toLowerCase();
+  const messageID = (event.messageID ?? "").trim().toLowerCase();
+  const label = (event.label ?? "").trim().toLowerCase();
+  const activityTool = (event.activityDetail?.tool ?? "").trim().toLowerCase();
+  const filePath = (event.filePath ?? "").trim().toLowerCase();
+  const partType = (event.partType ?? "").trim().toLowerCase();
+
+  // Priority 1: Use callID if available (most stable identity)
+  if (callID) {
+    return [ACTIVITY_IDENTITY_PREFIXES.CALL, callID, activityTool || label].join("|");
+  }
+
+  // Priority 2: Use partID if available (stable within a message)
+  if (partID) {
+    return [ACTIVITY_IDENTITY_PREFIXES.PART, partID, activityTool || label].join("|");
+  }
+
+  // Priority 3: Use messageID + filePath (message-scoped identity)
+  if (messageID) {
+    return [ACTIVITY_IDENTITY_PREFIXES.MESSAGE, messageID, activityTool || label, filePath].join("|");
+  }
+
+  // Priority 4: Use event.key as fallback for system events without standard IDs
+  // This handles file watcher events and other system-generated events that
+  // don't have callID/partID/messageID but still need stable deduplication
+  if (event.key) {
+    const key = event.key.trim().toLowerCase();
+    if (!key) {
+      return "";
+    }
+
+    // For known system event types, use a more specific identity
+    if (isSystemEventWithoutStandardIds(partType, activityTool)) {
+      return [ACTIVITY_IDENTITY_PREFIXES.KEY, key, partType, filePath].join("|");
+    }
+
+    // Generic fallback for other events with key but no standard IDs
+    return [ACTIVITY_IDENTITY_PREFIXES.KEY, key, activityTool || label, filePath].join("|");
+  }
+
+  // No stable identity available
+  return "";
+}
+
 function displayEventFingerprint(event: DisplayEvent): string {
   const label = event.label.trim().toLowerCase();
   const filePath = (event.filePath ?? "").trim().toLowerCase();
@@ -4526,6 +4456,10 @@ function displayEventFingerprint(event: DisplayEvent): string {
   const activityTool = (event.activityDetail?.tool ?? "").trim().toLowerCase();
 
   if (event.kind === "activity") {
+    const stableIdentity = activityDisplayEventIdentity(event);
+    if (stableIdentity) {
+      return stableIdentity;
+    }
     // Activity rows may surface multiple times across canonical/sync mirrors and
     // across lifecycle states (running -> pending -> done). Their visible
     // summary text can change as the raw payload stabilizes, so key them by
@@ -4560,6 +4494,81 @@ function displayEventFingerprint(event: DisplayEvent): string {
     partType,
       String(event.internal ?? false),
   ].join("|");
+}
+
+function mergeStickyDisplayEventsForTurn(
+  previousEvents: DisplayEvent[],
+  nextEvents: DisplayEvent[],
+): DisplayEvent[] {
+  if (previousEvents.length === 0) {
+    return nextEvents;
+  }
+  if (nextEvents.length === 0) {
+    return previousEvents;
+  }
+
+  const merged: DisplayEvent[] = [...previousEvents];
+  const identityIndex = new Map<string, number>();
+  const fingerprintIndex = new Map<string, number>();
+
+  const remember = (event: DisplayEvent, index: number) => {
+    const identity =
+      event.kind === "activity"
+        ? activityDisplayEventIdentity(event)
+        : firstNonEmptyString(
+            event.partID ? `part:${event.partID}` : undefined,
+            event.messageID ? `msg:${event.messageID}:${event.kind}` : undefined,
+          );
+    if (identity) {
+      identityIndex.set(identity, index);
+    }
+    fingerprintIndex.set(displayEventFingerprint(event), index);
+  };
+
+  previousEvents.forEach((event, index) => remember(event, index));
+
+  for (const event of nextEvents) {
+    const identity =
+      event.kind === "activity"
+        ? activityDisplayEventIdentity(event)
+        : firstNonEmptyString(
+            event.partID ? `part:${event.partID}` : undefined,
+            event.messageID ? `msg:${event.messageID}:${event.kind}` : undefined,
+          );
+    const fingerprint = displayEventFingerprint(event);
+
+    const matchingIndex =
+      (identity && identityIndex.get(identity)) ??
+      fingerprintIndex.get(fingerprint);
+
+    if (typeof matchingIndex === "number") {
+      const existing = merged[matchingIndex];
+      const existingFingerprint = displayEventFingerprint(existing);
+      const existingPriority = displayEventSourcePriority(existing.source);
+      const incomingPriority = displayEventSourcePriority(event.source);
+
+      if (
+        existingFingerprint !== fingerprint ||
+        incomingPriority > existingPriority
+      ) {
+        merged[matchingIndex] = {
+          ...existing,
+          ...event,
+          updateCount: existing.updateCount + 1,
+        };
+      }
+      continue;
+    }
+
+    const nextIndex = merged.length;
+    merged.push(event);
+    if (identity) {
+      identityIndex.set(identity, nextIndex);
+    }
+    fingerprintIndex.set(fingerprint, nextIndex);
+  }
+
+  return merged;
 }
 
 function sourceFromThoughtKey(
@@ -5138,22 +5147,32 @@ function parseTimelineStepTitle(rawTitle: string): {
   return { label: "event", summary: stripTrailingEllipsis(title) };
 }
 
-// LEGACY NORMALIZATION LAYER.
-//
-// This second pass reshapes the already-built timeline into UI-friendly rows.
-// It is intentionally retained only as a migration bridge and should be
-// removed when the centralized raw event tape becomes the sole render source.
 function buildDisplayEvents(
-  timelineBlocks: TimelineBlock[],
+  thoughtItems: ThoughtItem[],
+  progressItems: ProgressItem[],
+  commentaryItems: CommentaryItem[],
   fileChanges: StructuredFileChange[] | undefined,
-  isStreamingActive: boolean,
-  assistantTurnPending: boolean,
-  currentMessageId?: string | null,
+  messageScopeIds?: Set<string>,
 ): DisplayEvent[] {
   const stripTrailingEllipsis = (value?: string) =>
     (value || "").replace(/\s*(?:\.{3}|…)\s*$/u, "").trim();
   const normalizePathForMatch = (value?: string) =>
     (value || "").replace(/\\/g, "/").toLowerCase();
+  const isMessageInScope = (messageId?: string | null): boolean => {
+    // The centralized tape can describe one assistant turn through several
+    // equivalent message IDs (root assistant message, child assistant reply,
+    // or a later finalized snapshot). We therefore scope by the whole turn
+    // identity set instead of a single message id, but we still keep rows that
+    // do not carry an explicit message id because they already belong to the
+    // current rendered turn.
+    if (!messageScopeIds || messageScopeIds.size === 0) {
+      return true;
+    }
+    if (!messageId) {
+      return true;
+    }
+    return messageScopeIds.has(messageId);
+  };
   /**
    * Extract file paths from text while avoiding false positives.
    *
@@ -5193,21 +5212,6 @@ function buildDisplayEvents(
     return match?.[1];
   };
 
-  /**
-   * Check if a string IS a valid file path (not contains one).
-   * Unlike extractFilePathFromText which finds paths within text,
-   * this validates that the entire string is a valid file path.
-   */
-  const isValidFilePath = (value?: string): boolean => {
-    if (!value) return false;
-    // Match the entire string as a file path, not just finding one within text
-    // This prevents arbitrary text with "/" from being treated as file paths
-    const isValid = value.match(
-      /^(?:\.{1,2}\/|\/|[A-Za-z]:\\)?[a-zA-Z0-9_][a-zA-Z0-9_.-]*[a-zA-Z0-9](?:\/[a-zA-Z0-9_][a-zA-Z0-9_.-]*[a-zA-Z0-9])*\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|c|cpp|h|hpp|java|rb|php|sh|bash|zsh|fish|json|yaml|yml|toml|md|mdx|css|scss|less|html|xml|svg|sql|prisma|lock|env|gitignore|dockerfile|makefile)$/,
-    );
-    return !!isValid;
-  };
-
   // Clean event labels - remove unwanted prefixes and filter out system noise
   const cleanEventLabel = (label: string): string => {
     const cleaned = label
@@ -5234,269 +5238,288 @@ function buildDisplayEvents(
     return cleaned.trim() || label;
   };
 
+  type RawRenderEntry =
+    | { seq: number; kind: "reasoning"; item: ThoughtItem }
+    | { seq: number; kind: "activity"; item: ProgressItem }
+    | { seq: number; kind: "commentary"; item: CommentaryItem };
+
+  const entries: RawRenderEntry[] = [];
+
+  for (const item of thoughtItems) {
+    entries.push({
+      kind: "reasoning",
+      item,
+      seq: seqFromThoughtKey(item.key),
+    });
+  }
+
+  for (const item of progressItems) {
+    entries.push({
+      kind: "activity",
+      item,
+      seq:
+        item.streamSeq != null
+          ? item.streamSeq + 1
+          : Number.MAX_SAFE_INTEGER,
+    });
+  }
+
+  for (const item of commentaryItems) {
+    const text = (item.text || "").trim();
+    if (!text) {
+      continue;
+    }
+    entries.push({
+      kind: "commentary",
+      item,
+      seq:
+        item.streamSeq != null
+          ? item.streamSeq + 1
+          : Number.MAX_SAFE_INTEGER,
+    });
+  }
+
+  entries.sort((a, b) => a.seq - b.seq);
+
   const rawEvents: DisplayEvent[] = [];
 
-  for (const block of timelineBlocks) {
-    if (block.kind === "content") {
-      continue;
-    }
-
-    if (block.kind === "thinking") {
-      for (const item of block.items) {
-        const text = (item.text || "").trim();
-        if (!text) continue;
-        if (currentMessageId && item.messageID && item.messageID !== currentMessageId) {
-          continue;
-        }
-        const source = sourceFromThoughtKey(item.key);
-        rawEvents.push({
-          key: `reasoning-${item.key}`,
-          kind: "reasoning",
-          label: "Reasoning",
-          summary: text,
-          status: item.status || ((isStreamingActive || assistantTurnPending) && source === "stream" ? "pending" : "done"),
-          source,
-          messageID: item.messageID,
-          partID: item.partID,
-          isImportant: false,
-          updateCount: 1,
-        });
-      }
-      continue;
-    }
-
-    if (block.kind === "commentary") {
-      const text = (block.text || "").trim();
+  for (const entry of entries) {
+    if (entry.kind === "reasoning") {
+      const item = entry.item;
+      const text = (item.text || "").trim();
       if (!text) continue;
-      if (
-        currentMessageId &&
-        "messageID" in block &&
-        block.messageID &&
-        block.messageID !== currentMessageId
-      ) {
+      if (!isMessageInScope(item.messageID)) {
         continue;
       }
+      const source = item.source ?? sourceFromThoughtKey(item.key);
       rawEvents.push({
-        key: `commentary-${rawEvents.length}`,
-        kind: "commentary",
-        label: block.label ?? "Commentary",
+        key: `reasoning-${item.key}`,
+        kind: "reasoning",
+        label: "Reasoning",
         summary: text,
-        status: "done",
-        messageID: "messageID" in block ? block.messageID : undefined,
-        partID: "partID" in block ? block.partID : undefined,
+        status: item.status || "done",
+        source,
+        messageID: item.messageID,
+        partID: item.partID,
         isImportant: false,
         updateCount: 1,
       });
       continue;
     }
 
-    for (const event of block.items) {
-      if (currentMessageId && event.messageID && event.messageID !== currentMessageId) {
+    if (entry.kind === "commentary") {
+      const item = entry.item;
+      const text = (item.text || "").trim();
+      if (!text) continue;
+      if (!isMessageInScope(item.messageID)) {
         continue;
       }
-      const rawTitle = event.title || "";
-      const labelText = (event.label ?? "").toString();
-      const labelLower = labelText.trim().toLowerCase();
-      const parsed = parseTimelineStepTitle(rawTitle);
-      const cleanedRawTitle = stripTrailingEllipsis(rawTitle);
-      const activityDetail = event.activityDetail;
-      const source = event.source;
-      const partType = event.partType;
-      const internal = Boolean(event.internal);
-      let filePath = event.filePath || activityDetail?.file;
-      if (!filePath) {
-        filePath =
-          extractFilePathFromText(event.meta) ||
-          extractFilePathFromText(activityDetail?.command) ||
-          extractFilePathFromText(rawTitle);
-      }
-      if (
-        !filePath &&
-        /edit|writ|modif|updat|patch/i.test(rawTitle) &&
-        fileChanges?.length
-      ) {
-        filePath = fileChanges[0].file;
-      }
+      rawEvents.push({
+        key: item.id ? `commentary-${item.id}` : `commentary-${rawEvents.length}`,
+        kind: "commentary",
+        label: item.kind === "ai_response" ? "Assistant Response" : "Commentary",
+        summary: text,
+        status: item.status || "done",
+        messageID: item.messageID,
+        partID: item.partID,
+        isImportant: false,
+        updateCount: 1,
+      });
+      continue;
+    }
 
-      // Extract filename from filePath, but validate it looks like a real filename
-      // This prevents arbitrary text like "attachment handling in chat" from being treated as a filename
-      const fileName = (() => {
-        if (!filePath) return undefined;
-        const segments = filePath.split(/[/\\]/);
-        const lastSegment = segments.pop();
+    const event = entry.item;
+    if (!isMessageInScope(event.messageID)) {
+      continue;
+    }
+    const rawTitle = event.title || "";
+    const parsed = parseTimelineStepTitle(rawTitle);
+    const cleanedRawTitle = stripTrailingEllipsis(rawTitle);
+    const activityDetail = event.activityDetail;
+    const source = event.source;
+    const partType = event.partType;
+    const internal = Boolean(event.internal);
+    let filePath = event.filePath || activityDetail?.file;
+    if (!filePath) {
+      filePath =
+        extractFilePathFromText(event.meta) ||
+        extractFilePathFromText(activityDetail?.command) ||
+        extractFilePathFromText(rawTitle);
+    }
+    if (
+      !filePath &&
+      /edit|writ|modif|updat|patch/i.test(rawTitle) &&
+      fileChanges?.length
+    ) {
+      filePath = fileChanges[0].file;
+    }
 
-        // A valid filename should:
-        // 1. Have a file extension (contains a dot with extension after it)
-        // 2. Not be too long (arbitrary text segments tend to be long)
-        // 3. Not have excessive whitespace
-        // 4. Not contain special characters that suggest it's not a filename
-        const hasExtension = /\.[a-zA-Z0-9]{1,10}$/.test(lastSegment || "");
-        const notTooLong = (lastSegment || "").length <= 100;
-        const notExcessiveWhitespace = ((lastSegment || "").match(/\s/g) || []).length <= 2;
-        const looksLikeFilename = hasExtension && notTooLong && notExcessiveWhitespace;
-
-        return looksLikeFilename ? lastSegment : undefined;
-      })();
-      const fallbackEdit = Array.isArray(fileChanges)
-        ? filePath
-          ? fileChanges.find(
+    const fileName = (() => {
+      if (!filePath) return undefined;
+      const segments = filePath.split(/[/\\]/);
+      const lastSegment = segments.pop();
+      const hasExtension = /\.[a-zA-Z0-9]{1,10}$/.test(lastSegment || "");
+      const notTooLong = (lastSegment || "").length <= 100;
+      const notExcessiveWhitespace = ((lastSegment || "").match(/\s/g) || []).length <= 2;
+      const looksLikeFilename = hasExtension && notTooLong && notExcessiveWhitespace;
+      return looksLikeFilename ? lastSegment : undefined;
+    })();
+    const fallbackEdit = Array.isArray(fileChanges)
+      ? filePath
+        ? fileChanges.find(
             (edit) =>
               normalizePathForMatch(edit?.file) ===
               normalizePathForMatch(filePath),
           )
-          : fileChanges[0]
-        : undefined;
-      const fallbackDiffStats =
-        fallbackEdit && fallbackEdit.diffStats &&
-          (typeof fallbackEdit.diffStats.added === "number" ||
-            typeof fallbackEdit.diffStats.deleted === "number")
-          ? {
+        : fileChanges[0]
+      : undefined;
+    const fallbackDiffStats =
+      fallbackEdit && fallbackEdit.diffStats &&
+      (typeof fallbackEdit.diffStats.added === "number" ||
+        typeof fallbackEdit.diffStats.deleted === "number")
+        ? {
             added: Math.max(0, Number(fallbackEdit.diffStats.added) || 0),
             deleted: Math.max(0, Number(fallbackEdit.diffStats.deleted) || 0),
           }
-          : undefined;
-      const detailDiffStats =
-        activityDetail?.diffExcerpt &&
-          (typeof activityDetail.diffExcerpt.added === "number" ||
-            typeof activityDetail.diffExcerpt.deleted === "number")
-          ? {
+        : undefined;
+    const detailDiffStats =
+      activityDetail?.diffExcerpt &&
+      (typeof activityDetail.diffExcerpt.added === "number" ||
+        typeof activityDetail.diffExcerpt.deleted === "number")
+        ? {
             added: Math.max(0, Number(activityDetail.diffExcerpt.added) || 0),
             deleted: Math.max(0, Number(activityDetail.diffExcerpt.deleted) || 0),
           }
-          : undefined;
-      const diffStats = event.diffStats || fallbackDiffStats || detailDiffStats;
+        : undefined;
+    const diffStats = event.diffStats || fallbackDiffStats || detailDiffStats;
 
-      const metaText = stripTrailingEllipsis(event.meta);
-      const baseSummary = filePath
-        ? fileName || filePath
-        : activityDetail?.summary ||
+    const metaText = stripTrailingEllipsis(event.meta);
+    const baseSummary = filePath
+      ? fileName || filePath
+      : activityDetail?.summary ||
         parsed.summary ||
         metaText ||
         (parsed.label === "event" ? cleanedRawTitle : "");
-      const normalizedBaseSummary = (baseSummary || "").trim().toLowerCase();
-      const fallbackSummaryFromActivity =
-        stripTrailingEllipsis(
-          activityDetail?.command ||
+    const normalizedBaseSummary = (baseSummary || "").trim().toLowerCase();
+    const fallbackSummaryFromActivity =
+      stripTrailingEllipsis(
+        activityDetail?.command ||
           activityDetail?.query ||
           activityDetail?.output ||
           event.meta,
-        ) || "";
-      let summary =
-        normalizedBaseSummary === "step" && fallbackSummaryFromActivity
-          ? fallbackSummaryFromActivity
-          : baseSummary;
-      // Filter out metaText if it is a duplicate of the filePath or summary to avoid displaying it in the code block
-      const cleanedMetaText =
-        metaText &&
-        metaText !== filePath &&
-        metaText !== summary
-          ? metaText
-          : undefined;
+      ) || "";
+    let summary =
+      normalizedBaseSummary === "step" && fallbackSummaryFromActivity
+        ? fallbackSummaryFromActivity
+        : baseSummary;
+    const cleanedMetaText =
+      metaText &&
+      metaText !== filePath &&
+      metaText !== summary
+        ? metaText
+        : undefined;
 
-      const description =
-        filePath || parsed.summary || activityDetail?.summary
-          ? cleanedMetaText || activityDetail?.command || activityDetail?.query
-          : cleanedMetaText && cleanedMetaText !== summary
-            ? cleanedMetaText
-            : undefined;
-      const detail =
-        filePath && fileName && filePath !== fileName ? filePath : undefined;
-      const viewDiffFile =
-        event.status === "done" &&
-          (diffStats || /edit|writ|modif|updat|patch/i.test(rawTitle))
-          ? filePath || fileChanges?.[0]?.file
+    const description =
+      filePath || parsed.summary || activityDetail?.summary
+        ? cleanedMetaText || activityDetail?.command || activityDetail?.query
+        : cleanedMetaText && cleanedMetaText !== summary
+          ? cleanedMetaText
           : undefined;
-      const metadataFirstLabel =
-        stripTrailingEllipsis(
-          (activityDetail?.tool || "").toLowerCase() ||
+    const detail =
+      filePath && fileName && filePath !== fileName ? filePath : undefined;
+    const viewDiffFile =
+      event.status === "done" &&
+      (diffStats || /edit|writ|modif|updat|patch/i.test(rawTitle))
+        ? filePath || fileChanges?.[0]?.file
+        : undefined;
+    const metadataFirstLabel =
+      stripTrailingEllipsis(
+        (activityDetail?.tool || "").toLowerCase() ||
           (activityDetail?.kind || "").toLowerCase() ||
           (partType || "").toLowerCase(),
-        ) || parsed.label;
-      const normalizedLabelForSummary = metadataFirstLabel.trim().toLowerCase();
-      const normalizedSummaryForDisplay = (summary || "").trim().toLowerCase();
-      if (
-        normalizedLabelForSummary === "tool_call" &&
-        (normalizedSummaryForDisplay === "step" ||
-          normalizedSummaryForDisplay === "starting step" ||
-          normalizedSummaryForDisplay === "finishing step")
-      ) {
-        const normalizedDescription = (description || "").trim().toLowerCase();
-        const hasMeaningfulDescription =
-          normalizedDescription.length > 0 &&
-          normalizedDescription !== "step" &&
-          normalizedDescription !== "starting step" &&
-          normalizedDescription !== "finishing step";
-        if (hasMeaningfulDescription) {
-          summary = description || "";
-        } else {
-          // Drop low-signal TOOL_CALL placeholders when they have no useful detail.
-          continue;
-        }
-      }
-
-      const cleanedLabel = cleanEventLabel(metadataFirstLabel);
-      const normalizedSummary = (summary || cleanedRawTitle || "")
-        .trim()
-        .toLowerCase();
-      const normalizedLabel = cleanedLabel.trim().toLowerCase();
-
-      // Skip filtered events (like starting/finishing)
-      if (!cleanedLabel) {
+      ) || parsed.label;
+    const normalizedLabelForSummary = metadataFirstLabel.trim().toLowerCase();
+    const normalizedSummaryForDisplay = (summary || "").trim().toLowerCase();
+    if (
+      normalizedLabelForSummary === "tool_call" &&
+      (normalizedSummaryForDisplay === "step" ||
+        normalizedSummaryForDisplay === "starting step" ||
+        normalizedSummaryForDisplay === "finishing step")
+    ) {
+      const normalizedDescription = (description || "").trim().toLowerCase();
+      const hasMeaningfulDescription =
+        normalizedDescription.length > 0 &&
+        normalizedDescription !== "step" &&
+        normalizedDescription !== "starting step" &&
+        normalizedDescription !== "finishing step";
+      if (hasMeaningfulDescription) {
+        summary = description || "";
+      } else {
         continue;
       }
-
-      // Suppress low-signal placeholder timeline rows like
-      // label=step + summary=step when no concrete activity exists.
-      if (
-        normalizedLabel === "step" &&
-        normalizedSummary === "step" &&
-        !filePath &&
-        !diffStats &&
-        !activityDetail
-      ) {
-        continue;
-      }
-
-      rawEvents.push({
-        key: event.key,
-        kind: "activity",
-        label: cleanedLabel,
-        summary: summary || cleanedRawTitle || "Activity update",
-        description,
-        detail: detail || undefined,
-        status: event.status,
-        source,
-        partType,
-        internal,
-        filePath,
-        callID: event.callID,
-        messageID: event.messageID,
-        sessionID: event.sessionID || activityDetail?.sessionID,
-        startedAt: event.startedAt,
-        endedAt: event.endedAt,
-        diffStats,
-        activityDetail,
-        viewDiffFile,
-        partID: (event as { partID?: string }).partID,
-        isImportant: Boolean(
-          event.status === 'error' ||
-          (event.status === 'done' && (filePath || diffStats || viewDiffFile)) ||
-          cleanedLabel === 'error'
-        ),
-        updateCount: 1,
-      });
     }
+
+    const cleanedLabel = cleanEventLabel(metadataFirstLabel);
+    const normalizedSummary = (summary || cleanedRawTitle || "")
+      .trim()
+      .toLowerCase();
+    const normalizedLabel = cleanedLabel.trim().toLowerCase();
+
+    if (!cleanedLabel) {
+      continue;
+    }
+
+    if (
+      normalizedLabel === "step" &&
+      normalizedSummary === "step" &&
+      !filePath &&
+      !diffStats &&
+      !activityDetail
+    ) {
+      continue;
+    }
+
+    rawEvents.push({
+      key: event.key,
+      kind: "activity",
+      label: cleanedLabel,
+      summary: summary || cleanedRawTitle || "Activity update",
+      description,
+      detail: detail || undefined,
+      status: event.status,
+      source,
+      partType,
+      internal,
+      filePath,
+      callID: event.callID,
+      messageID: event.messageID,
+      sessionID: event.sessionID || activityDetail?.sessionID,
+      startedAt: event.startedAt,
+      endedAt: event.endedAt,
+      diffStats,
+      activityDetail,
+      viewDiffFile,
+      partID: event.partID,
+      isImportant: Boolean(
+        event.status === "error" ||
+          (event.status === "done" && (filePath || diffStats || viewDiffFile)) ||
+          cleanedLabel === "error",
+      ),
+      updateCount: 1,
+    });
   }
 
   const deduped: DisplayEvent[] = [];
   const dedupedIndexByFingerprint = new Map<string, number>();
   const dedupedIndexByIdentity = new Map<string, number>();
   for (const event of rawEvents) {
-    const stableIdentity = firstNonEmptyString(
-      event.partID ? `part:${event.partID}` : undefined,
-      event.messageID ? `msg:${event.messageID}:${event.kind}` : undefined,
-      event.callID ? `call:${event.callID}:${event.kind}` : undefined,
-    );
+    const stableIdentity =
+      event.kind === "activity"
+        ? activityDisplayEventIdentity(event)
+        : firstNonEmptyString(
+            event.partID ? `part:${event.partID}` : undefined,
+            event.messageID ? `msg:${event.messageID}:${event.kind}` : undefined,
+          );
     if (stableIdentity) {
       const existingIdentityIndex = dedupedIndexByIdentity.get(stableIdentity);
       if (typeof existingIdentityIndex === "number") {
@@ -6008,6 +6031,11 @@ function getCentralizedEventInfo(payload: unknown): Record<string, unknown> | nu
     return null;
   }
 
+  const payloadPropertiesInfo = asRecord(asRecord(asRecord(event.payload)?.properties)?.info);
+  if (payloadPropertiesInfo) {
+    return payloadPropertiesInfo;
+  }
+
   const payloadSyncInfo = asRecord(
     asRecord(asRecord(event.payload)?.syncEvent)?.data?.info,
   );
@@ -6028,75 +6056,7 @@ function getCentralizedEventInfo(payload: unknown): Record<string, unknown> | nu
   return asRecord(event.info);
 }
 
-function collectCentralizedTurnMessageIds(
-  rawSdkEventPayloads: unknown[] | undefined,
-  rootMessageId: string | null,
-): Set<string> {
-  const scopedIds = new Set<string>();
-  const normalizedRootId = (rootMessageId || "").trim();
-  if (!Array.isArray(rawSdkEventPayloads) || rawSdkEventPayloads.length === 0 || !normalizedRootId) {
-    return scopedIds;
-  }
-
-  const childrenByParent = new Map<string, Set<string>>();
-
-  for (const payload of rawSdkEventPayloads) {
-    const record = asRecord(payload);
-    if (!record) continue;
-
-    const part = getCentralizedEventPart(record);
-    const info = getCentralizedEventInfo(record);
-    const messageId =
-      firstNonEmptyString(
-        asString(info?.id),
-        asString(info?.messageID),
-        asString(info?.messageId),
-        asString(part?.messageID),
-        asString(part?.messageId),
-        asString(record.messageID),
-        asString(record.messageId),
-      ) || "";
-    const parentMessageId =
-      firstNonEmptyString(
-        asString(info?.parentID),
-        asString(info?.parentId),
-        asString(part?.parentMessageId),
-        asString(part?.parentMessageID),
-        asString(record.parentID),
-        asString(record.parentId),
-      ) || "";
-
-    if (messageId && parentMessageId) {
-      const existing = childrenByParent.get(parentMessageId) ?? new Set<string>();
-      existing.add(messageId);
-      childrenByParent.set(parentMessageId, existing);
-    }
-  }
-
-  const queue: string[] = [normalizedRootId];
-  while (queue.length > 0) {
-    const currentId = queue.shift()!;
-    if (scopedIds.has(currentId)) {
-      continue;
-    }
-    scopedIds.add(currentId);
-
-    const children = childrenByParent.get(currentId);
-    if (!children) {
-      continue;
-    }
-
-    for (const childId of children) {
-      if (!scopedIds.has(childId)) {
-        queue.push(childId);
-      }
-    }
-  }
-
-  return scopedIds;
-}
-
-function AssistantResponseCardInner({
+function ResponseMessageInner({
   message,
   streaming,
   hideLoadingText = false,
@@ -6131,12 +6091,15 @@ function AssistantResponseCardInner({
     streamingBySessionId,
     rawSdkEventPayloadsBySessionId,
   } = useAppState();
+
+  // NEW: Use custom hooks for subagent data access
+  const messageId = message?.id || message?.info?.id;
+  const formattedSubagents = useSubagentsForParentMessage(messageId);
+
   const [showSubagents, setShowSubagents] = useState(true);
   const [showAllSubagents, setShowAllSubagents] = useState(false);
   const [showTodoChecklist, setShowTodoChecklist] = useState(true);
-  const [selectedSubagentId, setSelectedSubagentId] = useState<string | null>(
-    null,
-  );
+  const [selectedSubagentId, setSelectedSubagentId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [copiedDebugPanel, setCopiedDebugPanel] = useState<"sdk" | "centralized" | null>(null);
   const [previewImageSrc, setPreviewImageSrc] = useState<string | null>(null);
@@ -6200,6 +6163,19 @@ function AssistantResponseCardInner({
       ? latestAssistantMessageIdFromCentralizedTape(sessionScopedRawSdkEventPayloads)
       : null,
   ) || null;
+  const latestSyncWrappedAssistantMessageId = useMemo(() => {
+    if (isLiveAssistantTurn) {
+      return null;
+    }
+    const candidates = Array.from(
+      collectCentralizedTurnMessageIdCandidates(sessionScopedRawSdkEventPayloads),
+    );
+    return candidates.length > 0 ? candidates[candidates.length - 1] : null;
+  }, [isLiveAssistantTurn, sessionScopedRawSdkEventPayloads]);
+  const assistantTurnAnchorMessageId = firstNonEmptyString(
+    assistantTurnRootMessageId,
+    latestSyncWrappedAssistantMessageId,
+  ) || null;
   const assistantScopeMessageIds = useMemo(() => {
     const ids = new Set<string>();
     for (const candidate of [
@@ -6207,6 +6183,7 @@ function AssistantResponseCardInner({
       activityTimelineStreaming?.messageId,
       assistantTurnMessageId,
       assistantTurnRootMessageId,
+      assistantTurnAnchorMessageId,
     ]) {
       if (typeof candidate === "string" && candidate.trim().length > 0) {
         ids.add(candidate.trim());
@@ -6223,48 +6200,145 @@ function AssistantResponseCardInner({
     activityTimelineStreaming?.messageId,
     assistantTurnMessageId,
     assistantTurnRootMessageId,
+    assistantTurnAnchorMessageId,
     message,
   ]);
-  const assistantTurnMessageIds = useMemo(() => {
-    const ids = collectAssistantTurnMessageIds(messages, assistantTurnRootMessageId);
-    for (const id of collectCentralizedTurnMessageIds(sessionScopedRawSdkEventPayloads, assistantTurnRootMessageId)) {
-      ids.add(id);
-    }
-    return ids;
-  }, [messages, assistantTurnRootMessageId, sessionScopedRawSdkEventPayloads]);
+  const messageAttachedRawSdkEventPayloads = useMemo(
+    () => (Array.isArray(message?.rawSdkEventPayloads) ? message.rawSdkEventPayloads : []),
+    [message?.rawSdkEventPayloads],
+  );
   const centralizedRawSdkEventPayloads = useMemo(() => {
-    if (assistantTurnMessageIds.size === 0 && assistantScopeMessageIds.size === 0) {
+    // Filter centralized events to only show those belonging to the current message
+    // This ensures activity timeline is rendered in the correct message card
+
+    console.log('[ACTIVITY_TIMELINE] Filtering events for current message', {
+      sessionScopedCount: sessionScopedRawSdkEventPayloads.length,
+      messageAttachedCount: messageAttachedRawSdkEventPayloads.length,
+      currentMessageId: assistantMessageId,
+      messagesCount: messages?.length,
+      hasMessage: !!message,
+    });
+
+    // Handle case where message is undefined
+    if (!message) {
+      console.log('[ACTIVITY_TIMELINE] No message available, using session-scoped payloads');
+      return sessionScopedRawSdkEventPayloads;
+    }
+
+    // Get all candidate message IDs for the current message
+    const messageCandidateIds = new Set<string>();
+    for (const candidate of collectMessageIdentityCandidates(message)) {
+      if (typeof candidate === 'string' && candidate.trim().length > 0) {
+        messageCandidateIds.add(candidate.trim());
+      }
+    }
+
+    // Filter session-scoped events to only those belonging to this message
+    const messageSpecificEvents: unknown[] = [];
+
+    for (const event of sessionScopedRawSdkEventPayloads) {
+      const eventMessageId = extractEventMessageId(event);
+
+      // Check if this event belongs to the current message
+      if (eventMessageId && messageCandidateIds.has(eventMessageId)) {
+        messageSpecificEvents.push(event);
+      }
+    }
+
+    console.log('[ACTIVITY_TIMELINE] Filtered events for current message', {
+      messageCandidateIds: Array.from(messageCandidateIds),
+      filteredCount: messageSpecificEvents.length,
+    });
+
+    // If we found message-specific events, use those
+    if (messageSpecificEvents.length > 0) {
+      return messageSpecificEvents;
+    }
+
+    // Fallback: Use message-attached payloads if available
+    if (messageAttachedRawSdkEventPayloads.length > 0) {
+      console.log('[ACTIVITY_TIMELINE] Using message-attached payloads as fallback');
+      return messageAttachedRawSdkEventPayloads;
+    }
+
+    // Final fallback: Collect from all messages (for backwards compatibility)
+    if (!Array.isArray(messages) || messages.length === 0) {
+      console.log('[ACTIVITY_TIMELINE] No messages available');
       return [];
     }
 
-    return sessionScopedRawSdkEventPayloads.filter((payload) => {
-      const rec = asRecord(payload);
-      if (!rec) return false;
+    console.log('[ACTIVITY_TIMELINE] Collecting from all messages as final fallback');
 
-      // Use the shared centralized part extractor so we cover both raw shapes:
-      // - direct `properties.part`
-      // - wrapped `payload.syncEvent.data.part` / `syncEvent.data.part`
-      //
-      // This keeps sync-only tool updates and later turn events from being
-      // dropped before they reach the assistant response timeline.
-      const part = getCentralizedEventPart(rec);
-      const info = getCentralizedEventInfo(rec);
-      const msgId =
-        firstNonEmptyString(
-          asString(info?.id),
-          asString(info?.messageID),
-          asString(info?.messageId),
-          asString(part?.messageID),
-          asString(part?.messageId),
-        ) || "";
+    const collectedEvents: unknown[] = [];
+    const seenEventSignatures = new Set<string>();
 
-      if (!msgId) return false;
-      if (assistantScopeMessageIds.has(msgId)) {
-        return true;
+    for (const msg of messages) {
+      const msgEvents = Array.isArray((msg as Record<string, unknown>)?.rawSdkEventPayloads)
+        ? (msg as Record<string, unknown>).rawSdkEventPayloads as unknown[]
+        : [];
+
+      for (const event of msgEvents) {
+        const signature = centralizedDebugPayloadFingerprint(event);
+        if (signature && !seenEventSignatures.has(signature)) {
+          seenEventSignatures.add(signature);
+          collectedEvents.push(event);
+        }
       }
-      return assistantTurnMessageIds.has(msgId);
+    }
+
+    console.log('[ACTIVITY_TIMELINE] Collected events from all messages', {
+      totalCount: collectedEvents.length,
+      uniqueSignatures: seenEventSignatures.size,
     });
-  }, [assistantScopeMessageIds, assistantTurnMessageIds, sessionScopedRawSdkEventPayloads]);
+
+    return collectedEvents;
+  }, [
+    sessionScopedRawSdkEventPayloads,
+    messageAttachedRawSdkEventPayloads,
+    messages,
+    message,
+    assistantMessageId,
+  ]);
+  const activityTimelineTurnMessageId = firstNonEmptyString(
+    assistantMessageId,
+    assistantTurnAnchorMessageId,
+    assistantTurnMessageId,
+    activityTimelineStreaming?.messageId,
+  ) || null;
+  const stickyCentralizedRawSdkEventPayloadsRef = useRef<{
+    messageId: string | null;
+    payloads: unknown[];
+  }>({ messageId: null, payloads: [] });
+  if (
+    stickyCentralizedRawSdkEventPayloadsRef.current.messageId !==
+    activityTimelineTurnMessageId
+  ) {
+    // Preserve the rendered timeline for a turn even if a later rerender
+    // temporarily produces an empty hydrated payload set. This matches the
+    // streaming content latch below and prevents activity rows from vanishing
+    // after they have already been painted once.
+    //
+    // IMPORTANT: We preserve the existing payloads instead of clearing them
+    // to respect the rule that already-rendered components should not be removed.
+    // Only update the messageId tracking without resetting payloads to empty.
+    const existingPayloads = stickyCentralizedRawSdkEventPayloadsRef.current.payloads;
+    stickyCentralizedRawSdkEventPayloadsRef.current = {
+      messageId: activityTimelineTurnMessageId,
+      payloads: existingPayloads, // Preserve existing rendered components
+    };
+  }
+  if (centralizedRawSdkEventPayloads.length > 0) {
+    stickyCentralizedRawSdkEventPayloadsRef.current = {
+      messageId: activityTimelineTurnMessageId,
+      payloads: centralizedRawSdkEventPayloads,
+    };
+  }
+  const effectiveCentralizedRawSdkEventPayloads =
+    centralizedRawSdkEventPayloads.length > 0
+      ? centralizedRawSdkEventPayloads
+      : stickyCentralizedRawSdkEventPayloadsRef.current.messageId === activityTimelineTurnMessageId
+        ? stickyCentralizedRawSdkEventPayloadsRef.current.payloads
+        : centralizedRawSdkEventPayloads;
   const scopedActivityTimelineStreaming = useMemo(() => {
     if (!activityTimelineStreaming) {
       return undefined;
@@ -6287,20 +6361,17 @@ function AssistantResponseCardInner({
   const turnMetadata = useMemo(
     () =>
       getAssistantTurnMetadataFromCentralizedEvents(
-        sessionScopedRawSdkEventPayloads,
+        effectiveCentralizedRawSdkEventPayloads,
       ),
-    [sessionScopedRawSdkEventPayloads],
+    [effectiveCentralizedRawSdkEventPayloads],
   );
   // Normalize the centralized tape once at the boundary so downstream helpers
   // only see a single event shape, regardless of whether the original entry was
   // stored as `properties.part` or `payload.syncEvent.data.part`.
   const normalizedCentralizedRawSdkEventPayloads = useMemo(
-    () => normalizeCentralizedEventPayloads(centralizedRawSdkEventPayloads),
-    [centralizedRawSdkEventPayloads],
+    () => normalizeCentralizedEventPayloads(effectiveCentralizedRawSdkEventPayloads),
+    [effectiveCentralizedRawSdkEventPayloads],
   );
-  const activityTimelineRawEventParts = useMemo(() => {
-    return rawMessagePartsFromRawSdkEventPayloads(normalizedCentralizedRawSdkEventPayloads);
-  }, [normalizedCentralizedRawSdkEventPayloads]);
   const cardMessage = activityTimelineMessage;
   const rawContentChunks = useMemo(
     () =>
@@ -6390,17 +6461,6 @@ function AssistantResponseCardInner({
     [normalizedCentralizedRawSdkEventPayloads],
   );
 
-  /** Unified chronological list of timeline blocks to render. */
-  const timelineBlocks = useMemo<TimelineBlock[]>(() => {
-    return buildTimeline(
-      thoughtItems,
-      mergedProgressItems,
-      commentaryItems,
-      resolvedContentChunks.join(""),
-      activityTimelineRawEventParts as MessagePart[],
-  );
-  }, [thoughtItems, mergedProgressItems, commentaryItems, resolvedContentChunks, activityTimelineRawEventParts]);
-  
   const structured = useMemo(
     () => structuredOutputFromRawSdkEventPayloads(normalizedCentralizedRawSdkEventPayloads),
     [normalizedCentralizedRawSdkEventPayloads]
@@ -6415,20 +6475,15 @@ function AssistantResponseCardInner({
   const info = activityTimelineMessage?.info;
   const messageRec = asRecord(activityTimelineMessage);
   const infoRec = asRecord(messageRec?.info);
-  const messageId =
-    assistantMessageId ||
-    (activityTimelineMessage as any)?.messageId ||
-    (info as any)?.messageId ||
-    null;
   
   const displayEvents = useMemo(
     () => {
       const events = buildDisplayEvents(
-        timelineBlocks,
+        thoughtItems,
+        mergedProgressItems,
+        commentaryItems,
         fileChanges,
-        isStreamingActive,
-        assistantTurnPending,
-        messageId,
+        assistantScopeMessageIds,
       );
       // Debug: Log all display events with read/edit labels
       const readEditEvents = events.filter(e => e.label.toLowerCase() === 'read' || e.label.toLowerCase() === 'edit');
@@ -6448,7 +6503,7 @@ function AssistantResponseCardInner({
       }
       return events;
     },
-    [timelineBlocks, fileChanges, isStreamingActive, assistantTurnPending, messageId],
+    [thoughtItems, mergedProgressItems, commentaryItems, fileChanges, assistantScopeMessageIds],
   );
   // Centralized debug is the long-term source of truth for this assistant turn.
   // Keep it raw and complete so future UI rendering can consume the same data
@@ -6516,23 +6571,26 @@ function AssistantResponseCardInner({
         .map((item, index) => summarizeProgressItemForTimelineDiagnostics(item, index)),
       thoughtItemCount: thoughtItems.length,
       commentaryItemCount: commentaryItems.length,
-      timelineBlocks: timelineBlocks.map((block, index) => {
-        if (block.kind === "steps") {
-          return { index, kind: block.kind, count: block.items.length };
-        }
-        if (block.kind === "thinking") {
-          return { index, kind: block.kind, count: block.items.length };
-        }
-        if (block.kind === "commentary") {
-          return {
-            index,
-            kind: block.kind,
-            messageID: block.messageID,
-            textLength: block.text.length,
-          };
-        }
-        return { index, kind: block.kind, htmlLength: block.html.length };
-      }),
+      thoughtSamples: thoughtItems.slice(0, 12).map((item, index) => ({
+        index,
+        key: item.key,
+        textLength: item.text.length,
+        source: item.source,
+        status: item.status,
+        messageID: item.messageID,
+        partID: item.partID,
+        streamSeq: item.streamSeq,
+      })),
+      commentarySamples: commentaryItems.slice(0, 12).map((item, index) => ({
+        index,
+        id: item.id,
+        textLength: item.text.length,
+        kind: item.kind,
+        status: item.status,
+        messageID: item.messageID,
+        partID: item.partID,
+        streamSeq: item.streamSeq,
+      })),
       displayEventCount: displayEvents.length,
       displaySamples: displayEvents
         .slice(0, 12)
@@ -6549,7 +6607,7 @@ function AssistantResponseCardInner({
     normalizedCentralizedRawSdkEventPayloads,
     progressItems,
     thoughtItems,
-    timelineBlocks,
+    mergedProgressItems,
   ]);
   const shouldShowFileChanges = useMemo(() => {
     // Implementation plan turns already surface their own plan card, so the
@@ -6678,7 +6736,39 @@ function AssistantResponseCardInner({
   const internalDisplayEvents = visibleDisplayEvents.filter(
     (event) => event.internal,
   );
-  let timelineDisplayEvents = visibleDisplayEvents;
+  const stickyTimelineDisplayEventsRef = useRef<{
+    messageId: string | null;
+    events: DisplayEvent[];
+  }>({ messageId: null, events: [] });
+  if (
+    stickyTimelineDisplayEventsRef.current.messageId !==
+    activityTimelineTurnMessageId
+  ) {
+    // Preserve already-rendered activity rows for the current assistant turn
+    // even if a later hydrated snapshot only contains a partial subset of the
+    // events. A turn change still hard-resets the latch so rows do not bleed
+    // into the next assistant response.
+    stickyTimelineDisplayEventsRef.current = {
+      messageId: activityTimelineTurnMessageId,
+      events: [],
+    };
+  }
+  if (visibleDisplayEvents.length > 0) {
+    stickyTimelineDisplayEventsRef.current = {
+      messageId: activityTimelineTurnMessageId,
+      events: mergeStickyDisplayEventsForTurn(
+        stickyTimelineDisplayEventsRef.current.events,
+        visibleDisplayEvents,
+      ),
+    };
+  }
+  const timelineDisplayEvents =
+    visibleDisplayEvents.length > 0
+      ? stickyTimelineDisplayEventsRef.current.events
+      : stickyTimelineDisplayEventsRef.current.messageId ===
+          activityTimelineTurnMessageId
+        ? stickyTimelineDisplayEventsRef.current.events
+        : visibleDisplayEvents;
 
   const timelineDisplayEventGroups = useMemo(() => {
     const groups: Array<{ type: "activity", events: DisplayEvent[] } | { type: "commentary", event: DisplayEvent }> = [];
@@ -6812,7 +6902,6 @@ function AssistantResponseCardInner({
     isLatestAssistantMessage,
     message,
   ]);
-  const shouldShowTodoInlineSummary = scopedTodoItems.length > 0;
   const { planStatus, isRevisedPlan } = useMemo(() => {
     let status: "Draft" | "Executing" | "Revision Requested" | undefined;
     let revised = false;
@@ -6879,96 +6968,40 @@ function AssistantResponseCardInner({
     return { planStatus: status, isRevisedPlan: revised };
   }, [plan, message, messageId, messages]);
 
-// Merge subagents from message data and from the store lookup by parent message ID.
-  // Prefer store-scoped entries so subagent cards cannot bleed into unrelated messages.
-  const subagents = useMemo(() => {
-    const activeSessionId = currentSessionId;
-    const dedupeSubagentsById = (entries: SubagentSummary[]): SubagentSummary[] => {
-      const deduped = new Map<string, SubagentSummary>();
-      for (const entry of entries) {
-        if (!entry?.id) {
-          continue;
-        }
-        const existing = deduped.get(entry.id);
-        // Later updates for the same subagent should win so the inline card and
-        // modal show the freshest progress / status instead of duplicate rows.
-        deduped.set(entry.id, existing ? { ...existing, ...entry } : entry);
-      }
-      return Array.from(deduped.values());
-    };
-    const isInActiveSession = (subagent: SubagentSummary): boolean => {
-      if (!activeSessionId) {
-        return true;
-      }
-      return subagent.parentSessionId === activeSessionId;
-    };
-    const scopedStore = messageId ? (subagentsByParentMessageId?.[messageId] ?? []) : [];
+// NEW: Use custom hooks for simplified subagent data access
+	// The custom hooks handle all the filtering, formatting, and data processing
+	const subagents = useMemo(() => {
+		console.log('🟢 [MODULAR_HOOKS] Using custom hooks for subagent data', {
+			messageId,
+			formattedSubagentsCount: formattedSubagents.length,
+		});
 
-    if (getGlobalShowBrowserConsole()) {
-      console.log('===SUBAGENT_SPAWN=== [MEMO] Subagent lookup', {
-        messageId,
-        activeSessionId,
-        hasStoreData: Boolean(subagentsByParentMessageId),
-        storeKeys: subagentsByParentMessageId ? Object.keys(subagentsByParentMessageId) : [],
-        scopedStoreCount: scopedStore.length,
-        messageSubagentCount: Array.isArray(message?.subagents) ? message.subagents.length : 0,
-      });
-    }
+		// Filter for active session and current message only
+		const activeSessionId = currentSessionId;
+		const filtered = formattedSubagents.filter((subagent) => {
+			// Check if in active session
+			if (activeSessionId && subagent.summary.parentSessionId !== activeSessionId) {
+				return false;
+			}
+			// Check if belongs to current message
+			if (!messageId) {
+				return true;
+			}
+			// More flexible message ID matching to handle different ID formats
+			return subagent.summary.parentMessageId === messageId ||
+			       subagent.summary.id === messageId ||
+			       messageId.includes(subagent.summary.parentMessageId);
+		});
 
-    const fromStore = dedupeSubagentsById(scopedStore.filter((subagent: SubagentSummary) => {
-      if (!isInActiveSession(subagent)) {
-        return false;
-      }
-      if (!messageId) {
-        return true;
-      }
-      return subagent.parentMessageId === messageId;
-    }));
-    const messageSubagents = Array.isArray(message?.subagents) ? message.subagents : [];
-    const fromMessage = dedupeSubagentsById(messageSubagents.filter((subagent: SubagentSummary) => {
-      if (!isInActiveSession(subagent)) {
-        return false;
-      }
-      if (!messageId) {
-        return true;
-      }
-      return subagent.parentMessageId === messageId;
-    }));
+		if (getGlobalShowBrowserConsole()) {
+			console.log('===SUBAGENT_SPAWN=== [MODULAR] Custom hooks results', {
+				filteredCount: filtered.length,
+				filteredIds: filtered.map(s => s.summary.id),
+			});
+		}
 
-    if (getGlobalShowBrowserConsole()) {
-      console.log('===SUBAGENT_SPAWN=== [MEMO] Filter results', {
-        fromStoreCount: fromStore.length,
-        fromMessageCount: fromMessage.length,
-        fromStoreIds: fromStore.map(s => s.id),
-        fromMessageIds: fromMessage.map(s => s.id),
-      });
-    }
-
-    if (fromStore.length === 0) return fromMessage;
-    if (fromMessage.length === 0) return fromStore;
-
-    // Merge by ID so the same subagent cannot appear twice when the message
-    // payload and the store snapshot both report it during hydration/streaming.
-    const mergedById = new Map<string, SubagentSummary>();
-    for (const subagent of fromStore) {
-      mergedById.set(subagent.id, subagent);
-    }
-    for (const subagent of fromMessage) {
-      if (!mergedById.has(subagent.id)) {
-        mergedById.set(subagent.id, subagent);
-      }
-    }
-    const result = Array.from(mergedById.values());
-
-    if (getGlobalShowBrowserConsole()) {
-      console.log('===SUBAGENT_SPAWN=== [MEMO] Final result', {
-        resultCount: result.length,
-        resultIds: result.map(s => s.id),
-      });
-    }
-
-    return result;
-  }, [message, messageId, subagentsByParentMessageId, currentSessionId]);
+		return filtered;
+	}, [messageId, currentSessionId, formattedSubagents]);
   const previousSubagentCount = useRef(subagents.length);
 
   useEffect(() => {
@@ -7188,8 +7221,6 @@ function AssistantResponseCardInner({
   );
   const showThinkingPlaceholder =
     !streaming && thoughtItems.length === 0 && reasoningTok > 0;
-  const thinkingPlaceholderText =
-    "Reasoning tokens were used, but this provider did not expose reasoning text.";
   const hasActiveTimelineWork = timelineDisplayEvents.some(
     (event) => event.status === "pending",
   );
@@ -7314,17 +7345,21 @@ function AssistantResponseCardInner({
   // assistant response. If the response text is present, render it directly
   // instead of hiding it behind a live-stream flag.
   const showResponseBody = !isLiveStreamingCard && hasVisibleResponseBody;
+  // Use the sticky timeline snapshot, not the ephemeral live array, so rows
+  // already painted in the UI remain visible through hydration rerenders.
+  const hasStickyTimelineActivity = timelineDisplayEvents.length > 0;
+  const hasLiveTimelineActivity =
+    hasStreamingActivity ||
+    hasActiveTimelineWork ||
+    hasActiveReasoningPart ||
+    hasPendingReasoningDisplayEvent;
   const showResponseSection =
     !isLiveStreamingCard &&
     !isAborted &&
     (shouldShowPlanCard ||
       hasVisibleResponseBody ||
-      (isLiveStream &&
-        (hasStreamingActivity ||
-          displayEvents.length > 0 ||
-          hasActiveTimelineWork ||
-          hasActiveReasoningPart ||
-          hasPendingReasoningDisplayEvent)));
+      hasStickyTimelineActivity ||
+      (isLiveStream && hasLiveTimelineActivity));
   useEffect(() => {
     if (
       !streaming?.isActive &&
@@ -7729,14 +7764,14 @@ function AssistantResponseCardInner({
         )}
 
         <div className="space-y-2">
-          {(displayEvents.length > 0 ||
+          {(hasStickyTimelineActivity ||
             showThinkingPlaceholder) && (
               <section data-assistant-section="activity" className="space-y-2">
                 {timelineDisplayEventGroups.map((group, groupIdx) => {
                   if (group.type === "commentary") {
                     return (
                       <div key={`commentary-${groupIdx}`} className="px-1 mb-2 mt-1">
-                        <AssistantResponseBodyCard
+                        <ResponseMessageBody
                           content={[group.event.summary]}
                           className="oc-response-commentary-block"
                         />
@@ -7755,14 +7790,9 @@ function AssistantResponseCardInner({
                     >
                       {group.events.map((event, index) => {
                         const isLast = groupIdx === timelineDisplayEventGroups.length - 1 && index === group.events.length - 1;
-                        const isLatestStreamingEvent =
-                          isStreamingActive && isLast;
-                        const showRunning =
-                          (isLatestStreamingEvent || assistantTurnPending) &&
-                          event.status === "pending";
                         const indicatorNode = (
                           <StepIndicator
-                            status={showRunning ? "running" : event.status}
+                            status={event.status}
                           />
                         );
                         const shouldShowDetail = viewState.showActivityDetails;
@@ -7790,7 +7820,7 @@ function AssistantResponseCardInner({
                             indicator={indicatorNode}
                             className={cn(
                               "oc-refined-stepper-item group",
-                              showRunning
+                              event.status === "running"
                                 ? "is-streaming"
                                 : "",
                             )}
@@ -7842,7 +7872,7 @@ function AssistantResponseCardInner({
                                   return (
                                   <div className="flex items-start justify-between gap-2 w-full">
                                     <ExpandableStep className="flex-1">
-                                {labelLower === "call_omo_agent" ? (
+                                {labelLower === "call_omo_agent" || labelLower === "omo_agent" ? (
                                   <CallOmoAgentStep
                                     callID={event.callID}
                                     sessionID={event.sessionID}
@@ -8149,29 +8179,6 @@ function AssistantResponseCardInner({
                   );
                 })}
 
-                    {showThinkingPlaceholder && !hasThinkingEvents && timelineDisplayEvents.length === 0 && (
-                      <Stepper className="mt-2 max-h-[120px] overflow-y-auto">
-                        <StepperItem
-                          isLast={true}
-                          indicator={<StepIndicator status="pending" />}
-                        >
-                          <div className="flex min-w-0 items-start gap-2 flex-wrap">
-                            <span className="oc-refined-event-label reasoning">
-                              Reasoning
-                            </span>
-                            <span
-                              className={cn(
-                                "flex-1 whitespace-pre-wrap break-words text-[11px] oc-text-secondary",
-                                !viewState.showThinkingDetails && "line-clamp-2",
-                              )}
-                            >
-                              {thinkingPlaceholderText}
-                            </span>
-                          </div>
-                        </StepperItem>
-                      </Stepper>
-                    )}
-
               </section>
             )}
 
@@ -8184,14 +8191,6 @@ function AssistantResponseCardInner({
             setShowAllSubagents={setShowAllSubagents}
             openSubagentModal={openSubagentModal}
           />
-
-          {shouldShowTodoInlineSummary && (
-            <TodoInlineSummary
-              todoItems={scopedTodoItems}
-              showTodoChecklist={showTodoChecklist}
-              setShowTodoChecklist={setShowTodoChecklist}
-            />
-          )}
 
           {showResponseSection && (
             <section
@@ -8260,7 +8259,7 @@ function AssistantResponseCardInner({
               {showResponseBody && !shouldShowPlanCard && (
                 <div className="mt-1.5 space-y-1.5">
                   {responseBodyChunks.map((chunk, index) => (
-                    <AssistantResponseBodyCard
+                    <ResponseMessageBody
                       key={`${messageId || "assistant"}-response-${index}`}
                       content={[chunk]}
                       className="oc-response-body-block"
@@ -8869,7 +8868,7 @@ export const FileChangesSection = memo(function FileChangesSection({
   );
 });
 
-export function AssistantResponseCard({
+export function ResponseMessage({
   message,
   streaming,
   hideLoadingText,
@@ -8877,6 +8876,8 @@ export function AssistantResponseCard({
   interactiveEvents,
   messages,
   currentSessionId,
+  // Note: subagentsByParentMessageId and subagentDetailsById are kept for compatibility
+  // but the component now uses custom hooks internally
   subagentsByParentMessageId,
   subagentDetailsById,
   availableAgents,
@@ -8897,7 +8898,7 @@ export function AssistantResponseCard({
   todoItems?: AppState["todoItems"];
 }) {
   return (
-    <AssistantResponseCardInner
+    <ResponseMessageInner
       message={message}
       streaming={streaming}
       hideLoadingText={hideLoadingText}
@@ -9057,7 +9058,37 @@ export function InfoBanner({ message, error }: InfoBannerProps) {
   );
 }
 
-export const ThinkingBubble = memo(function ThinkingBubble() {
+function formatThinkingStatusLabel(statusType?: string | null): string | null {
+  const normalized = typeof statusType === "string" ? statusType.trim().toLowerCase() : "";
+  if (!normalized || normalized === "busy") {
+    return null;
+  }
+
+  switch (normalized) {
+    case "running":
+      return "Running tasks";
+    case "processing":
+      return "Processing request";
+    case "in_progress":
+      return "Working through steps";
+    case "streaming":
+      return "Streaming response";
+    default:
+      return normalized
+        .split(/[_\s-]+/)
+        .filter(Boolean)
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(" ");
+  }
+}
+
+export const ThinkingBubble = memo(function ThinkingBubble({
+  statusType,
+}: {
+  statusType?: string | null;
+}) {
+  const statusLabel = formatThinkingStatusLabel(statusType);
+
   return (
     <div className="mb-4 px-4">
       <div className="inline-flex items-center gap-2 rounded-full border border-oc-border-soft bg-oc-panel px-3 py-1.5 text-[11px] font-medium text-oc-text-soft shadow-sm">
@@ -9066,7 +9097,7 @@ export const ThinkingBubble = memo(function ThinkingBubble() {
           <div className="h-2 w-2 rounded-full bg-oc-accent animate-[pulse_1.4s_ease-in-out_infinite]" style={{ animationDelay: "0.2s" }} />
           <div className="h-2 w-2 rounded-full bg-oc-accent animate-[pulse_1.4s_ease-in-out_infinite]" style={{ animationDelay: "0.4s" }} />
         </div>
-        <span>AI is responding...</span>
+        <span>{statusLabel ? `AI is responding... ${statusLabel}.` : "AI is responding..."}</span>
       </div>
     </div>
   );

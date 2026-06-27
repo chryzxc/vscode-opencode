@@ -21,7 +21,7 @@ function firstNonEmptyString(...values: unknown[]): string | undefined {
   return undefined;
 }
 
-function latestSessionStatusTypeFromCentralizedTape(
+export function latestSessionStatusTypeFromCentralizedTape(
   rawSdkEventPayloads?: unknown[],
 ): string | null {
   if (!Array.isArray(rawSdkEventPayloads) || rawSdkEventPayloads.length === 0) {

@@ -45,7 +45,7 @@ test('session switching shows the session loading spinner', () => {
 test('empty state appears when there are no messages and no streaming activity', () => {
   assert.match(
     chatContentBody,
-    /state\.messages\.length === 0[\s\S]*!state\.streaming[\s\S]*!isAiResponding[\s\S]*<EmptyState[\s\S]*currentSessionId=\{state\.currentSessionId\}/s,
+    /!hasAnyRenderableConversation[\s\S]*!state\.streaming[\s\S]*!isAiResponding[\s\S]*<EmptyState[\s\S]*currentSessionId=\{state\.currentSessionId\}/s,
     'empty chat should show the empty state card',
   );
 });
@@ -59,7 +59,12 @@ test('permission responses render PermissionCard and assistants use AssistantMes
   assert.match(chatContentBody, /else if \(\(msg as Record<string, unknown>\)\.type === "permission"\) \{[\s\S]*<PermissionCard perm=\{msg\} \/>/s, 'permission messages should render PermissionCard');
   assert.match(chatContentBody, /const liveTurnMessageId =[\s\S]*state\.assistantTurnMessageId \?\? streamingMessageId/s, 'ChatShell should use the assistant turn message id when suppressing the live assistant turn');
   assert.match(chatContentBody, /const isLiveStreamingAssistantTurn =[\s\S]*state\.streaming\?\.isActive[\s\S]*liveTurnMessageId === messageId/s, 'ChatShell should identify the live assistant turn from the active turn id');
+  assert.match(chatContentBody, /const transcriptAssistantMessageIds = useMemo\(/s, 'ChatShell should derive transcript assistant ids from the centralized transcript');
+  assert.match(chatContentBody, /const hasTranscriptAssistantForCurrentTurn = useMemo\(/s, 'ChatShell should detect when the current turn is already represented by a transcript assistant card');
+  assert.match(chatContentBody, /!\s*hasTranscriptAssistantForCurrentTurn\s*\?\s*\(\s*<StreamingCard/s, 'ChatShell should only mount the live streaming card while the centralized transcript does not yet own the current turn');
   assert.match(chatContentBody, /<StreamingCard[\s\S]*assistantTurnMessageId=\{state\.assistantTurnMessageId\}/s, 'ChatShell should pass the assistant turn message id into the live streaming card');
+  assert.match(chatContentBody, /<StreamingCard[\s\S]*transcriptAssistantMessageIds=\{transcriptAssistantMessageIds\}/s, 'ChatShell should pass centralized transcript assistant ids into the live streaming card');
+  assert.match(chatContentBody, /<StreamingCard[\s\S]*hasTranscriptAssistantForCurrentTurn=\{hasTranscriptAssistantForCurrentTurn\}/s, 'ChatShell should pass current-turn transcript ownership into the live streaming card');
   assert.match(chatContentBody, /if \(isLiveStreamingAssistantTurn\) \{\s*messageNode = null;/s, 'ChatShell should skip the in-flight assistant turn in the message list');
 });
 
@@ -81,7 +86,7 @@ test('thinking bubble appears while AI is responding before assistant text arriv
   );
   assert.match(
     chatContentBody,
-    /<ThinkingBubble \/>/,
+    /<ThinkingBubble statusType=\{latestSessionStatusType\} \/>/,
     'thinking bubble should be rendered when loading is active',
   );
 });
@@ -97,17 +102,17 @@ test('streaming card is rendered at the bottom of the message list', () => {
 test('live streaming assistant card stays activity-only while the final message owns the response block', () => {
   assert.match(
     messageComponentsSource,
-    /const isStreamingOnlyCard = isLiveStreamingCard;/,
+    /const isLiveStreamingCard = !cardMessage && !!streaming\?\.isActive;/,
     'live streaming cards should opt into activity-only mode',
   );
   assert.match(
     messageComponentsSource,
-    /const showResponseSection =[\s\S]*timelineDisplayEvents\.length > 0/s,
+    /const showResponseSection =[\s\S]*displayEvents\.length > 0/s,
     'activity-only streaming cards should still render the activity timeline',
   );
   assert.match(
     messageComponentsSource,
-    /!isStreamingOnlyCard && showRawResponseDebug/,
+    /{showRawResponseDebug && \(/,
     'activity-only streaming cards should not render raw response debug content',
   );
 });
@@ -136,7 +141,7 @@ test('compaction divider renders around compacted history boundaries', () => {
   );
   assert.match(
     chatContentBody,
-    /!isCompressed && compactionDividerIndex === idx \?[\s\S]*<CompactionDivider at=\{state\.lastCompactedAt\} \/>/,
+    /const dividerHere = !isCompressed && compactionDividerIndex === messageCountSeen;[\s\S]*dividerHere \? <CompactionDivider at=\{state\.lastCompactedAt\} \/> : null/s,
     'compaction divider should render at the saved divider index',
   );
   assert.match(

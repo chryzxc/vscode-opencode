@@ -28,7 +28,49 @@ test("AssistantResponseCardInner merges live streaming progress rows into the ac
 
   assert.match(
     messageComponentsSource,
-    /buildTimeline\(\s*thoughtItems,\s*mergedProgressItems,/s,
-    "Merged progress rows should be passed into buildTimeline",
+    /function progressItemIdentityKey\(/,
+    "Progress rows should use a centralized identity key before rendering",
+  );
+
+  assert.match(
+    messageComponentsSource,
+    /function mergeProgressItemRecord\(/,
+    "Progress rows should merge repeated status updates into one canonical row",
+  );
+
+  assert.match(
+    messageComponentsSource,
+    /function mergeStickyDisplayEventsForTurn\(/,
+    "Activity timeline rows should be merged through a sticky turn-scoped helper",
+  );
+
+  assert.match(
+    messageComponentsSource,
+    /const stickyTimelineDisplayEventsRef = useRef<\{\s*messageId: string \| null;\s*events: DisplayEvent\[\];\s*\}>/s,
+    "The timeline should keep a per-turn sticky snapshot so partial hydration cannot clear already rendered rows",
+  );
+
+  assert.match(
+    messageComponentsSource,
+    /const hasStickyTimelineActivity = timelineDisplayEvents\.length > 0;/,
+    "The assistant card should keep showing the timeline once sticky rows exist",
+  );
+
+  assert.match(
+    messageComponentsSource,
+    /const showResponseSection =[\s\S]*hasStickyTimelineActivity/s,
+    "The response section should stay mounted when the sticky timeline has activity",
+  );
+
+  assert.match(
+    messageComponentsSource,
+    /mergeStickyDisplayEventsForTurn\(\s*stickyTimelineDisplayEventsRef\.current\.events,\s*visibleDisplayEvents,\s*\)/s,
+    "Incoming timeline rows should be merged into the sticky snapshot instead of replacing it",
+  );
+
+  assert.match(
+    messageComponentsSource,
+    /const events = buildDisplayEvents\([\s\S]*?thoughtItems,[\s\S]*?mergedProgressItems,[\s\S]*?commentaryItems,[\s\S]*?fileChanges,[\s\S]*?assistantScopeMessageIds,[\s\S]*?\)/,
+    "Merged progress rows should be passed directly into buildDisplayEvents using message-scoped ids",
   );
 });

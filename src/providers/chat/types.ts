@@ -14,6 +14,7 @@ import type {
  */
 export type QueuedPrompt = {
   id: string;
+  clientRequestId?: string;
   sessionId: string;
   createdAt: number;
   text: string;
@@ -307,21 +308,6 @@ export type StructuredAssistantOutput = {
     summary?: string;
     files?: any[]; // To match ImplementationPlan structure
     fileCount?: number;
-  };
-  question?: {
-    type?: string;
-    id?: string;
-    title?: string;
-    question?: string;
-    multiSelect?: boolean;
-    allowCustomInput?: boolean;
-    options?: Array<{ id?: string; label?: string; value?: string; description?: string }>;
-    actions?: Array<{ id?: string; label?: string; value?: string; description?: string }>;
-    confirmLabel?: string;
-    cancelLabel?: string;
-    dismissLabel?: string;
-    message?: string;
-    content?: string;
   };
 };
 

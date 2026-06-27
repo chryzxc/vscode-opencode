@@ -49,9 +49,10 @@ test('progress updates flow through the structured-output pipeline', () => {
   assert.doesNotMatch(messageHandler, /progressUpdates: progressUpdates\.length > 0 \? progressUpdates : undefined/, 'progress update normalization should be removed');
 });
 
-test('todo updates are surfaced through the inline todo summary path', () => {
-  assert.match(messageComponents, /scopedTodoItems\.length > 0/, 'todo summary gate is missing');
-  assert.match(messageComponents, /TodoInlineSummary/, 'todo inline summary renderer is missing');
+test('todo updates are surfaced through activity-step rendering only', () => {
+  assert.match(messageComponents, /function TodoWriteStep/, 'todo activity-step renderer is missing');
+  assert.match(messageComponents, /<TodoInlineSummary[\s\S]*todoItems=\{todos\}/s, 'todo checklist content should still render inside the todo activity step');
+  assert.doesNotMatch(messageComponents, /\{shouldShowTodoInlineSummary && \(/, 'standalone todo summary rendering should be removed once the checklist is rendered inside the activity step');
 });
 
 test('retryWithoutStructuredOutput falls back to plain text', () => {
@@ -156,8 +157,10 @@ test('non-plan assistant turns do not render the implementation plan section', (
 
 test('raw stream debug can be converted back into structured output', () => {
   assert.match(messageHandler, /function structuredOutputFromRawSdkEventPayloads\(rawSdkEventPayloads\?: unknown\[\]\): StructuredOutput \| undefined/, 'raw structured output helper is missing');
+  assert.match(messageHandler, /function structuredOutputFromCentralizedEventPayload\([\s\S]*includeFallbackCandidate\?: boolean[\s\S]*\): StructuredOutput \| undefined/, 'centralized structured output extractor is missing');
   const body = extractFunctionBody(messageHandler, 'function structuredOutputFromRawSdkEventPayloads(rawSdkEventPayloads?: unknown[]): StructuredOutput | undefined {');
-  assert.match(body, /structuredOutputFromStructuredOutputToolPart\(part\)/, 'raw structured output extraction is missing');
+  assert.match(body, /normalizeCentralizedEventPayloads\(rawSdkEventPayloads\)/, 'raw structured output helper should normalize centralized events first');
+  assert.match(body, /structuredOutputFromCentralizedEventPayload\(/, 'raw structured output helper should reuse the centralized extractor');
 });
 
 test('question payloads preserve allowCustomInput and options', () => {

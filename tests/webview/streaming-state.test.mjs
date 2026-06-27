@@ -117,6 +117,29 @@ test('SET_PROCESSING reducer creates streaming state when processing starts', ()
   );
 });
 
+test('StreamingCard matches transcript ownership using centralized assistant ids', () => {
+  assert.match(
+    streamingComponentsSource,
+    /transcriptAssistantMessageIds\?: string\[];/,
+    'StreamingCard should accept centralized transcript assistant ids instead of the full legacy message list',
+  );
+  assert.match(
+    streamingComponentsSource,
+    /transcriptAssistantMessageIds\.some\(\(messageId\) => candidateIds\.has\(messageId\)\)/,
+    'StreamingCard should decide duplicate ownership from centralized transcript assistant ids',
+  );
+  assert.doesNotMatch(
+    streamingComponentsSource,
+    /messages\.some\(\(message\)/,
+    'StreamingCard should no longer scan the legacy messages list to decide transcript ownership',
+  );
+  assert.match(
+    streamingComponentsSource,
+    /hasTranscriptAssistantForCurrentTurn\?: boolean;/,
+    'StreamingCard should accept a current-turn transcript ownership flag',
+  );
+});
+
 test('SET_PROCESSING keeps completed streaming state when processing ends', () => {
   const setProcessingCase = storeSource.match(
     /case ['"]SET_PROCESSING['"]:[\s\S]*?case ['"][\w]+['"]:|case ['"]SET_PROCESSING['"]:[\s\S]*?\n\s{2}\}/
@@ -400,14 +423,14 @@ test('getDuration helper provides type-safe duration extraction', () => {
 test('AssistantMessage uses type-safe helpers instead of type assertions', () => {
   // Check that the AssistantMessage function exists
   assert.ok(
-    messageComponentsSource.includes('AssistantMessage'),
-    'AssistantMessage export should exist'
+    messageComponentsSource.includes('AssistantResponseCard'),
+    'AssistantResponseCard export should exist'
   );
 
   // Verify helpers are used in the source
   assert.match(
     messageComponentsSource,
-    /const agentName = getAgentName\(message,\s*streaming\)/,
+    /const agentName = turnMetadata\.agent \|\| getAgentName\(message,\s*streaming\)/,
     'Should use getAgentName helper'
   );
 
@@ -424,7 +447,7 @@ test('AssistantMessage uses type-safe helpers instead of type assertions', () =>
   );
 
   // Should NOT have unsafe type assertions (checking for common patterns)
-  const assistantStart = messageComponentsSource.indexOf('export const AssistantMessage');
+  const assistantStart = messageComponentsSource.indexOf('export function AssistantResponseCard');
   const assistantEnd = messageComponentsSource.indexOf('export const PermissionCard');
   const assistantMessageSection =
     assistantStart >= 0 && assistantEnd > assistantStart
@@ -469,19 +492,24 @@ test('StreamingCard visibility hides when the same assistant turn is already in 
 
   assert.match(
     streamingComponentsSource,
-    /getMessageRoleForCanonical\(message\) !== "assistant"/,
-    'Should only consider assistant transcript messages when checking for duplicates'
+    /transcriptAssistantMessageIds\?: string\[];/,
+    'Should use centralized transcript assistant ids when checking for duplicates'
   );
 
   assert.match(
     streamingComponentsSource,
-    /if\s*\(\s*streaming\.isActive\s*\)\s*\{[\s\S]*return\s*!hasMatchingAssistantTurnInTranscript;/s,
+    /if\s*\(\s*hasMatchingAssistantTurnInTranscript\s*\)\s*return false;/s,
     'Should hide the live streaming card once the same assistant turn is already rendered in the transcript'
   );
+  assert.match(
+    streamingComponentsSource,
+    /if\s*\(\s*hasTranscriptAssistantForCurrentTurn\s*\)\s*return false;/s,
+    'Should hide the live streaming card once any transcript assistant card already owns the current turn'
+  );
 
   assert.match(
     streamingComponentsSource,
-    /\[hasMatchingAssistantTurnInTranscript,\s*interactiveEvents,\s*streaming,\s*subagentsByParentMessageId\]/,
+    /\[\s*hasMatchingAssistantTurnInTranscript,\s*hasTranscriptAssistantForCurrentTurn,\s*interactiveEvents,\s*streaming,\s*subagentsByParentMessageId,\s*\]/,
     'Should include the duplicate-suppression guard in the memo dependencies'
   );
 

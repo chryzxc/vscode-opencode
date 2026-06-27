@@ -190,7 +190,7 @@ export interface StreamingStep {
   sessionID?: string;
   title: string;
   type: "step" | "tool" | "reasoning";
-  status: "pending" | "running" | "done" | "completed" | "error";
+  status: "pending" | "running" | "done" | "error";
   source?: "stream" | "final" | "raw_debug";
   partType?: string;
   internal?: boolean;
@@ -581,20 +581,101 @@ export type InteractiveEvent =
   | InteractiveMessageEvent;
 
 // REFACTORED: Subagent types now exported from modular system
-// These imports maintain backward compatibility while using the single source of truth
-import type { SubagentStatus } from './subagents/types';
-import type { SubagentReference } from './subagents/types';
-import type { SubagentTimelineEvent } from './subagents/types';
-import type { SubagentThinkingEvent } from './subagents/types';
-import type { SubagentConversationEvent } from './subagents/types';
-import type { SubagentProgressEvent } from './subagents/types';
-import type { SubagentSummary } from './subagents/types';
-import type { SubagentDetail } from './subagents/types';
-import type { NormalizedSubagentEvent } from './subagents/types';
+// These re-exports maintain backward compatibility while using the single source of truth
+export type {
+  SubagentStatus,
+  SubagentReference,
+  SubagentTimelineEvent,
+  SubagentThinkingEvent,
+  SubagentConversationEvent,
+  SubagentProgressEvent,
+  SubagentSummary,
+  SubagentDetail,
+  NormalizedSubagentEvent,
+} from './subagents/types';
 
-// Re-export for backward compatibility
-export type { SubagentStatus, SubagentReference, SubagentTimelineEvent, SubagentThinkingEvent, SubagentConversationEvent, SubagentProgressEvent, SubagentSummary, SubagentDetail, NormalizedSubagentEvent, SubagentPresentationPolicy };
+// Legacy export for backward compatibility
+export type SubagentStatus = 'pending' | 'running' | 'done' | 'error' | 'orphaned';
 
+export interface SubagentReference {
+  messageID?: string;
+  partID?: string;
+  callID?: string;
+}
+
+export interface SubagentTimelineEvent {
+  key: string;
+  type: string;
+  label: string;
+  createdAt: number;
+  messageID?: string;
+  partID?: string;
+  callID?: string;
+}
+
+export interface SubagentThinkingEvent {
+  id: string;
+  text: string;
+  createdAt: number;
+  messageID?: string;
+  partID?: string;
+}
+
+export interface SubagentConversationEvent {
+  id: string;
+  role: string;
+  kind: 'message' | 'reasoning' | 'step';
+  text: string;
+  createdAt: number;
+  messageID?: string;
+  partID?: string;
+}
+
+export interface SubagentProgressEvent {
+  id: string;
+  title: string;
+  status: 'pending' | 'done' | 'error';
+  meta?: string;
+  filePath?: string;
+  createdAt: number;
+  messageID?: string;
+  partID?: string;
+  callID?: string;
+}
+
+export interface SubagentSummary {
+  id: string;
+  backgroundTaskId?: string;
+  parentSessionId: string;
+  parentMessageId: string;
+  childSessionId?: string;
+  agentId?: string;
+  agentRole?: string;
+  providerID?: string;
+  modelID?: string;
+  startedAt?: number;
+  endedAt?: number;
+  durationMs?: number;
+  status: SubagentStatus;
+  latestActivity: string;
+  references: SubagentReference[];
+}
+
+export interface SubagentDetail extends SubagentSummary {
+  thinkingEvents: SubagentThinkingEvent[];
+  conversationEvents?: SubagentConversationEvent[];
+  rawConversationEvents?: unknown[];
+  progressEvents: SubagentProgressEvent[];
+  timelineEvents: SubagentTimelineEvent[];
+  tokenUsage?: {
+    input?: number;
+    output?: number;
+    reasoning?: number;
+    cache?: { read?: number; write?: number };
+  };
+  errorText?: string;
+  hydrationUnavailable?: boolean;
+}
 
 export interface Message {
   role?: string;

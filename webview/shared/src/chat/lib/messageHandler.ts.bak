@@ -35,7 +35,6 @@ import type {
   SubagentProgressEvent,
   SubagentConversationEvent,
   SubagentTimelineEvent,
-  SubagentPresentationPolicy,
   TodoItem,
 } from "./types";
 import type { StructuredResponseType } from "./generated/structuredOutputSchema";
@@ -55,27 +54,6 @@ import {
   mergeSubagentDetailPayload,
   mergeSubagentSummaryPayload
 } from './subagents/stateManager';
-import {
-  sanitizeSubagentLabel,
-  normalizeSubagentDetail
-} from './subagents/dataNormalizer';
-import {
-  normalizeSubagentProgressEventsForPresentation,
-  normalizeSubagentTimelineEventsForPresentation
-} from './subagents/eventBuilder';
-import {
-  normalizeHydratedSubagentDetail,
-  hydrateSubagentSummary,
-  areSubagentListsEquivalent,
-  shouldFreezeSubagentForPresentation,
-  applyStructuredSubagentPayload
-} from './subagents/compatUtils';
-
-// Export modular function with original name for backward compatibility
-export const extractSubagentsFromCentralizedEvents = modularExtractSubagentsFromCentralizedEvents;
-
-// Export modular subagent functions for backward compatibility
-export { normalizeSubagentDetail } from './subagents/dataNormalizer';
 
 const STREAM_DEBUG_ENABLED = false;
 
@@ -115,59 +93,25 @@ function isHeartbeatEventType(eventType: string): boolean {
   return eventType === "server.heartbeat";
 }
 
-export function extractEventMessageId(event: unknown): string | null {
-  const eventRecord = asRecord(event);
-  if (!eventRecord) return null;
-
-  // Sometimes the raw stream wraps the actual payload in a `payload` property.
-  const payloadRecord = asRecord(eventRecord.payload);
-
-  const info =
-    asRecord(asRecord(eventRecord.properties)?.info) ||
-    asRecord(eventRecord.info) ||
-    asRecord(asRecord(payloadRecord?.properties)?.info) ||
-    asRecord(payloadRecord?.info);
-
-  const part =
-    asRecord(asRecord(eventRecord.properties)?.part) ||
-    asRecord(eventRecord.part) ||
-    asRecord(asRecord(payloadRecord?.properties)?.part) ||
-    asRecord(payloadRecord?.part);
-
-  const syncData =
-    asRecord(asRecord(eventRecord.syncEvent)?.data) ||
-    asRecord(asRecord(payloadRecord?.syncEvent)?.data);
-  const syncInfo = asRecord(syncData?.info);
-  const syncPart = asRecord(syncData?.part);
-
-  const messageRecord =
-    asRecord(eventRecord.message) ||
-    asRecord(asRecord(eventRecord.properties)?.message) ||
-    asRecord(payloadRecord?.message) ||
-    asRecord(asRecord(payloadRecord?.properties)?.message);
+function extractEventMessageId(payload: UnknownRecord): string | null {
+  const properties = asRecord(payload.properties);
+  const infoRecord = asRecord(payload.info) ?? asRecord(properties?.info);
+  const partRecord = asRecord(payload.part) ?? asRecord(properties?.part);
+  const messageRecord = asRecord(payload.message) ?? asRecord(properties?.message);
 
   return firstNonEmptyString(
-    asString(info?.id),
-    asString(info?.messageID),
-    asString(info?.messageId),
-    asString(part?.messageID),
-    asString(part?.messageId),
-    asString(syncInfo?.id),
-    asString(syncInfo?.messageID),
-    asString(syncInfo?.messageId),
-    asString(syncPart?.messageID),
-    asString(syncPart?.messageId),
+    asString(payload.messageId),
+    asString(payload.messageID),
+    asString(payload.id),
+    asString(infoRecord?.id),
+    asString(infoRecord?.messageID),
+    asString(infoRecord?.messageId),
+    asString(partRecord?.messageID),
+    asString(partRecord?.messageId),
     asString(messageRecord?.id),
     asString(messageRecord?.messageID),
     asString(messageRecord?.messageId),
-    asString(eventRecord.messageId),
-    asString(eventRecord.messageID),
-    asString(payloadRecord?.messageId),
-    asString(payloadRecord?.messageID),
-    // Finally fall back to the wrapper's own ID
-    asString(payloadRecord?.id),
-    asString(eventRecord.id)
-  ) || null;
+  );
 }
 
 function summarizeStreamEventForLog(payload: UnknownRecord): Record<string, unknown> {
@@ -388,25 +332,15 @@ export function getCentralizedEventPart(payload: unknown): UnknownRecord | null 
   }
 
   const payloadSyncEvent = asRecord(payloadRecord?.syncEvent);
-  const payloadSyncPart = asRecord(asRecord(payloadSyncEvent?.data)?.part) ?? asRecord(payloadSyncEvent?.part);
+  const payloadSyncPart = asRecord(asRecord(payloadSyncEvent?.data)?.part);
   if (payloadSyncPart) {
     return payloadSyncPart;
   }
 
   const syncEvent = asRecord(event.syncEvent);
-  const syncPart = asRecord(asRecord(syncEvent?.data)?.part) ?? asRecord(syncEvent?.part);
+  const syncPart = asRecord(asRecord(syncEvent?.data)?.part);
   if (syncPart) {
     return syncPart;
-  }
-
-  const dataPart = asRecord(asRecord(event.data)?.part);
-  if (dataPart) {
-    return dataPart;
-  }
-
-  const payloadDataPart = asRecord(asRecord(payloadRecord?.data)?.part) ?? asRecord(payloadRecord?.part);
-  if (payloadDataPart) {
-    return payloadDataPart;
   }
 
   const propertiesPart = asRecord(asRecord(event.properties)?.part) ?? asRecord(event.part);
@@ -430,15 +364,13 @@ export function getCentralizedEventInfo(payload: unknown): UnknownRecord | null 
   }
 
   const payloadSyncEvent = asRecord(payloadRecord?.syncEvent);
-  const payloadSyncData = asRecord(payloadSyncEvent?.data);
-  const payloadSyncInfo = asRecord(payloadSyncData?.info);
+  const payloadSyncInfo = asRecord(asRecord(payloadSyncEvent?.data)?.info);
   if (payloadSyncInfo) {
     return payloadSyncInfo;
   }
 
   const syncEvent = asRecord(event.syncEvent);
-  const syncData = asRecord(syncEvent?.data);
-  const syncInfo = asRecord(syncData?.info);
+  const syncInfo = asRecord(asRecord(syncEvent?.data)?.info);
   if (syncInfo) {
     return syncInfo;
   }
@@ -448,20 +380,7 @@ export function getCentralizedEventInfo(payload: unknown): UnknownRecord | null 
     return propertiesInfo;
   }
 
-  const info = asRecord(event.info);
-  if (info) {
-    return info;
-  }
-
-  const isInfoLike = (obj: Record<string, unknown> | null) => 
-    obj && (obj.role || obj.id || obj.messageID || obj.messageId);
-
-  if (isInfoLike(payloadSyncData)) return payloadSyncData;
-  if (isInfoLike(syncData)) return syncData;
-  if (isInfoLike(payloadRecord)) return payloadRecord;
-  if (isInfoLike(event)) return event;
-
-  return null;
+  return asRecord(event.info);
 }
 
 export function getCentralizedEventType(payload: unknown): string {
@@ -541,7 +460,7 @@ export function normalizeCentralizedEventPayload(payload: unknown): UnknownRecor
   };
 }
 
-export function normalizedCentralizedEventIdentity(event: UnknownRecord): string {
+function normalizedCentralizedEventIdentity(event: UnknownRecord): string {
   const eventType = getCentralizedEventType(event);
   if (!eventType) {
     return "";
@@ -789,16 +708,7 @@ export function latestAssistantMessageIdFromCentralizedTape(
       }
     }
 
-    const partType = asString(part?.type).trim().toLowerCase();
-    const toolName = firstNonEmptyString(part?.tool, part?.name)?.toLowerCase();
-
-    if (
-      partType === "step-finish" ||
-      partType === "step-start" ||
-      partType === "reasoning" ||
-      partType === "tool" ||
-      !!toolName
-    ) {
+    if (asString(part?.type).trim().toLowerCase() === "step-finish") {
       const assistantId = firstNonEmptyString(
         part?.messageID,
         part?.messageId,
@@ -838,7 +748,7 @@ export function latestAssistantMessageIdFromCentralizedTape(
       }
       continue;
     }
-    if (partType !== "text" && partType !== "message" && partType !== "output_text" && partType !== "reasoning" && partType !== "step-start") {
+    if (partType !== "text" && partType !== "message" && partType !== "output_text") {
       continue;
     }
 
@@ -908,7 +818,7 @@ export function getCentralizedAssistantTurnCompletionIndex(
   return -1;
 }
 
-export function asNumber(value: unknown, fallback = 0): number {
+function asNumber(value: unknown, fallback = 0): number {
   return typeof value === 'number' ? value : fallback;
 }
 
@@ -1463,7 +1373,7 @@ type StructuredProgressUpdate = {
 
 function normalizeProgressStatus(
   value?: string | null,
-): "pending" | "running" | "done" | "completed" | "error" {
+): "pending" | "running" | "done" | "error" {
   const v = value?.toLowerCase();
   if (
     v === "running" ||
@@ -1474,15 +1384,11 @@ function normalizeProgressStatus(
     return "running";
   }
   if (
-    v === "completed" ||
-    v === "complete"
-  ) {
-    return "completed";
-  }
-  if (
     v === "done" ||
+    v === "completed" ||
     v === "success" ||
-    v === "finished"
+    v === "finished" ||
+    v === "complete"
   ) {
     return "done";
   }
@@ -2147,45 +2053,31 @@ function normalizeActivitySteps(
     mergedSteps: summarizeStepListForLog(merged),
   });
 
-  const editSteps = merged.filter(isEditLikeStep);
-  if (editSteps.length > 0) {
-    logger.info("[ACTIVITY STEP][EDIT] Rehydrated edit steps", {
-      messageId,
-      editCount: editSteps.length,
-      editSteps: editSteps.map((s) => ({
-        title: s.title,
-        type: s.type,
-        partType: s.partType,
-        status: s.status,
-        content: s.content,
-        diffStats: s.diffStats,
-        activityDetail: s.activityDetail,
-      })),
-    });
+  if (merged.length > 0) {
+    const editSteps = merged.filter(isEditLikeStep);
+    if (editSteps.length > 0) {
+      logger.info("[ACTIVITY STEP][EDIT] Rehydrated edit steps", {
+        messageId,
+        editCount: editSteps.length,
+        editSteps: editSteps.map((s) => ({
+          title: s.title,
+          type: s.type,
+          partType: s.partType,
+          status: s.status,
+          content: s.content,
+          diffStats: s.diffStats,
+          activityDetail: s.activityDetail,
+        })),
+      });
+    }
+    return merged;
   }
-
   const fallback = extractActivityStepsFromParts(sanitizedMergedParts, "final");
-  if (fallback.length > 0) {
-    streamDebug("Timeline normalization: extracting fallback steps from parts", {
-      messageId,
-      fallbackSteps: summarizeStepListForLog(fallback),
-    });
-    fallback.forEach((normalized) => {
-      const key = activityStepMergeKey(normalized, merged.length);
-      const existingIndex = indexByKey.get(key);
-      if (typeof existingIndex !== "number") {
-        indexByKey.set(key, merged.length);
-        merged.push(normalized);
-        return;
-      }
-      merged[existingIndex] = mergeCanonicalActivityStep(
-        merged[existingIndex],
-        normalized,
-      );
-    });
-  }
-
-  return merged;
+  streamDebug("Timeline normalization: fallback to parts extraction", {
+    messageId,
+    fallbackSteps: summarizeStepListForLog(fallback),
+  });
+  return fallback;
 }
 
 type StructuredInteractiveEvent = {
@@ -5327,28 +5219,26 @@ export function normalizeMessage(message: Message, streaming: StreamingState | n
     .map((part) => asRecord(part))
     .filter((part): part is UnknownRecord => !!part)
     .filter((part) => isReasoningPart(part))
-    .map((part) => {
-      const text = sanitizeReasoningChunk(
+    .map((part) =>
+      sanitizeReasoningChunk(
         asRichString(part.reasoning) ||
         asRichString(part.thought) ||
         asRichString(part.thinking) ||
         asRichString(part.text) ||
         asRichString(part.content),
-      ).trim();
-      const timeStart = typeof asRecord(part.time)?.start === "number" ? asRecord(part.time)?.start as number : (typeof part.createdAt === "number" ? part.createdAt : Date.now());
-      return { text, createdAt: timeStart };
-    })
-    .filter((chunk) => chunk.text.length > 0);
+      ).trim(),
+    )
+    .filter((text) => text.length > 0);
   if (explicitReasoningFromFinalParts.length > 0) {
     reasoningSources.add("final");
     for (const chunk of explicitReasoningFromFinalParts) {
-      const norm = normalizeComparableText(chunk.text);
+      const norm = normalizeComparableText(chunk);
       if (!norm) continue;
       const alreadyTracked = mergedReasoningEvents.some(
         (event) => normalizeComparableText(asString(event.text)) === norm,
       );
       if (!alreadyTracked) {
-        mergedReasoningEvents.push(chunk);
+        mergedReasoningEvents.push({ text: chunk, createdAt: Date.now() });
       }
     }
   }
@@ -5357,27 +5247,25 @@ export function normalizeMessage(message: Message, streaming: StreamingState | n
     .map((part) => asRecord(part))
     .filter((part): part is UnknownRecord => !!part)
     .filter((part) => normalizePartType(part.type) === "reasoning")
-    .map((part) => {
-      const text = sanitizeReasoningChunk(
+    .map((part) =>
+      sanitizeReasoningChunk(
         asRichString(part.reasoning) ||
         asRichString(part.text) ||
         asRichString(part.content) ||
         asRichString(part.delta),
-      ).trim();
-      const timeStart = typeof asRecord(part.time)?.start === "number" ? asRecord(part.time)?.start as number : (typeof part.createdAt === "number" ? part.createdAt : Date.now());
-      return { text, createdAt: timeStart };
-    })
-    .filter((chunk) => chunk.text.length > 0);
+      ).trim(),
+    )
+    .filter((text) => text.length > 0);
   if (explicitReasoningFromRawParts.length > 0) {
     reasoningSources.add("raw_debug");
     for (const chunk of explicitReasoningFromRawParts) {
-      const norm = normalizeComparableText(chunk.text);
+      const norm = normalizeComparableText(chunk);
       if (!norm) continue;
       const alreadyTracked = mergedReasoningEvents.some(
         (event) => normalizeComparableText(asString(event.text)) === norm,
       );
       if (!alreadyTracked) {
-        mergedReasoningEvents.push(chunk);
+        mergedReasoningEvents.push({ text: chunk, createdAt: Date.now() });
       }
     }
   }
@@ -5635,15 +5523,6 @@ function isMessage(value: unknown): value is Message {
 // - applyStructuredSubagentPayload → (removed, disabled)
 // ============================================================================
 
-// ESSENTIAL UTILITIES - Still needed in messageHandler (not moved to modules)
-function getMessageId(message: Message): string | null {
-  return (
-    asString(asRecord(message.info)?.id) ||
-    asString((message as unknown as UnknownRecord).id) ||
-    null
-  );
-}
-
 // Updated handler to use modular system
 function handleSubagentUpdatesFromCentralizedEvents(
   dispatch: Dispatch<AppAction>,
@@ -5659,6 +5538,7 @@ function handleSubagentUpdatesFromCentralizedEvents(
 
   // Dispatch updates to store
   if (Object.keys(summariesByParentMessageId).length > 0) {
+    console.log('🟢 [DISPATCH] Updating subagent summaries in store');
     dispatch({
       type: "UPSERT_SUBAGENT_SUMMARIES",
       payload: summariesByParentMessageId,
@@ -5666,9 +5546,1853 @@ function handleSubagentUpdatesFromCentralizedEvents(
   }
 
   if (Object.keys(detailsById).length > 0) {
+    console.log('🟢 [DISPATCH] Updating subagent details in store');
     dispatch({ type: "UPSERT_SUBAGENT_DETAIL", payload: detailsById });
   }
 }
+  events: SubagentProgressEvent[],
+): SubagentProgressEvent[] {
+  if (events.length <= 1) {
+    return events;
+  }
+
+  const byCallId = new Map<string, SubagentProgressEvent>();
+  const ordered: SubagentProgressEvent[] = [];
+  for (const event of events) {
+    if (!event.callID) {
+      ordered.push(event);
+      continue;
+    }
+    const current = byCallId.get(event.callID);
+    if (!current) {
+      byCallId.set(event.callID, event);
+      ordered.push(event);
+      continue;
+    }
+    current.createdAt = Math.max(current.createdAt, event.createdAt);
+    current.status =
+      event.status === 'error'
+        ? 'error'
+        : event.status === 'done' || current.status === 'done'
+          ? 'done'
+          : 'pending';
+    current.title = event.title || current.title;
+    current.meta = event.meta || current.meta;
+    current.filePath = event.filePath || current.filePath;
+  }
+
+  const deduped: SubagentProgressEvent[] = [];
+  const seen = new Set<string>();
+  for (const event of ordered) {
+    const key = [
+      event.callID || '',
+      normalizeComparableText(event.title),
+      normalizeComparableText(event.meta || ''),
+      normalizeComparableText(event.filePath || ''),
+      event.status,
+    ].join('|');
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(event);
+  }
+  return deduped;
+}
+
+function normalizeSubagentTimelineEventsForPresentation(
+  events: SubagentTimelineEvent[],
+): SubagentTimelineEvent[] {
+  if (events.length <= 1) {
+    return events;
+  }
+  const sorted = [...events].sort((a, b) => a.createdAt - b.createdAt);
+  const deduped: SubagentTimelineEvent[] = [];
+  for (const event of sorted) {
+    const previous = deduped[deduped.length - 1];
+    if (
+      previous &&
+      previous.type === event.type &&
+      normalizeComparableText(previous.label) ===
+      normalizeComparableText(event.label)
+    ) {
+      previous.createdAt = Math.max(previous.createdAt, event.createdAt);
+      previous.messageID = event.messageID || previous.messageID;
+      previous.partID = event.partID || previous.partID;
+      previous.callID = event.callID || previous.callID;
+      continue;
+    }
+    deduped.push(event);
+  }
+  return deduped;
+}
+
+function normalizeSubagentSummary(value: unknown): SubagentSummary | null {
+  const rec = asRecord(value);
+  if (!rec) {
+    return null;
+  }
+
+  const id = asString(rec.id);
+  const parentSessionId = asString(rec.parentSessionId);
+  const parentMessageId = asString(rec.parentMessageId);
+  if (!id || !parentSessionId || !parentMessageId) {
+    return null;
+  }
+
+  const references = Array.isArray(rec.references)
+    ? rec.references
+      .map((entry) => {
+        const ref = asRecord(entry);
+        if (!ref) {
+          return null;
+        }
+        const res: SubagentReference = {
+          messageID: asString(ref.messageID) || undefined,
+          partID: asString(ref.partID) || undefined,
+          callID: asString(ref.callID) || undefined,
+        };
+        if (!res.messageID && !res.partID && !res.callID) {
+          return null;
+        }
+        return res;
+      })
+      .filter((entry): entry is SubagentReference => !!entry)
+    : [];
+
+  return {
+    id,
+    parentSessionId,
+    parentMessageId,
+    childSessionId: asString(rec.childSessionId) || undefined,
+    backgroundTaskId:
+      asString(rec.backgroundTaskId) ||
+      asString(rec.background_task_id) ||
+      undefined,
+    agentId: asString(rec.agentId) || asString(rec.agent) || undefined,
+    agentRole: asString(rec.agentRole) || undefined,
+    providerID: asString(rec.providerID) || undefined,
+    modelID: asString(rec.modelID) || undefined,
+    startedAt: asOptionalNumber(rec.startedAt),
+    endedAt: asOptionalNumber(rec.endedAt),
+    durationMs: asOptionalNumber(rec.durationMs),
+    status: isSubagentStatus(rec.status) ? rec.status : 'pending',
+    latestActivity: sanitizeSubagentLabel(asString(rec.latestActivity)) || 'Subagent update',
+    references
+  };
+}
+
+function normalizeSubagentDetail(value: unknown): SubagentDetail | null {
+  const summary = normalizeSubagentSummary(value);
+  if (!summary) {
+    return null;
+  }
+  const rec = asRecord(value);
+  if (!rec) {
+    return null;
+  }
+
+  const thinkingEvents = Array.isArray(rec.thinkingEvents)
+    ? rec.thinkingEvents
+      .map((entry, index) => {
+        const evt = asRecord(entry);
+        if (!evt) {
+          return null;
+        }
+        const text = asString(evt.text);
+        if (!text) {
+          return null;
+        }
+        const res: SubagentThinkingEvent = {
+          id: asString(evt.id) || `${summary.id}:thinking:${index}`,
+          text,
+          createdAt: asNumber(evt.createdAt, Date.now()),
+          messageID: asString(evt.messageID) || undefined,
+          partID: asString(evt.partID) || undefined,
+        };
+        return res;
+      })
+      .filter((entry): entry is SubagentThinkingEvent => !!entry)
+    : [];
+
+  const conversationEvents = Array.isArray(rec.conversationEvents)
+    ? rec.conversationEvents
+      .map((entry, index) => {
+        const evt = asRecord(entry);
+        if (!evt) {
+          return null;
+        }
+        const text = asString(evt.text);
+        if (!text) {
+          return null;
+        }
+        const rawKind = asString(evt.kind).toLowerCase();
+        const kind =
+          rawKind === 'reasoning' || rawKind === 'step'
+            ? rawKind
+            : 'message';
+        return {
+          id: asString(evt.id) || `${summary.id}:conversation:${index}`,
+          role: asString(evt.role) || 'assistant',
+          kind,
+          text,
+          createdAt: asNumber(evt.createdAt, Date.now()),
+          messageID: asString(evt.messageID) || undefined,
+          partID: asString(evt.partID) || undefined,
+        };
+      })
+      .filter((entry): entry is SubagentConversationEvent => !!entry)
+    : [];
+  const rawConversationEvents = Array.isArray(rec.conversationEvents)
+    ? [...rec.conversationEvents]
+    : [];
+
+  const progressEvents = Array.isArray(rec.progressEvents)
+    ? rec.progressEvents
+      .map((entry, index) => {
+        const evt = asRecord(entry);
+        if (!evt) {
+          return null;
+        }
+        const title = sanitizeSubagentLabel(asString(evt.title));
+        if (!title) {
+          return null;
+        }
+        const res: SubagentProgressEvent = {
+          id: asString(evt.id) || `${summary.id}:progress:${index}`,
+          title,
+          status: normalizeProgressStatus(asString(evt.status)),
+          meta: asString(evt.meta) || undefined,
+          filePath: asString(evt.filePath) || undefined,
+          createdAt: asNumber(evt.createdAt, Date.now()),
+          messageID: asString(evt.messageID) || undefined,
+          partID: asString(evt.partID) || undefined,
+          callID: asString(evt.callID) || undefined,
+        };
+        return res;
+      })
+      .filter((entry): entry is SubagentProgressEvent => !!entry)
+    : [];
+
+  const timelineEvents = Array.isArray(rec.timelineEvents)
+    ? rec.timelineEvents
+      .map((entry, index) => {
+        const evt = asRecord(entry);
+        if (!evt) {
+          return null;
+        }
+        const key = asString(evt.key);
+        const type = asString(evt.type);
+        const label = sanitizeSubagentLabel(asString(evt.label));
+        if (!key || !type || !label) {
+          return null;
+        }
+        const res: SubagentTimelineEvent = {
+          key: key || `${summary.id}:timeline:${index}`,
+          type,
+          label,
+          createdAt: asNumber(evt.createdAt, Date.now()),
+          messageID: asString(evt.messageID) || undefined,
+          partID: asString(evt.partID) || undefined,
+          callID: asString(evt.callID) || undefined,
+        };
+        return res;
+      })
+      .filter((entry): entry is SubagentTimelineEvent => !!entry)
+    : [];
+
+  const normalizedProgressEvents =
+    normalizeSubagentProgressEventsForPresentation(progressEvents);
+  const normalizedTimelineEvents =
+    normalizeSubagentTimelineEventsForPresentation(timelineEvents);
+
+  const tokenUsageRec = asRecord(rec.tokenUsage);
+  const tokenCacheRec = asRecord(tokenUsageRec?.cache);
+
+  return {
+    ...summary,
+    thinkingEvents,
+    conversationEvents,
+    rawConversationEvents,
+    progressEvents: normalizedProgressEvents,
+    timelineEvents: normalizedTimelineEvents,
+    tokenUsage: tokenUsageRec
+      ? {
+        input: asOptionalNumber(tokenUsageRec.input),
+        output: asOptionalNumber(tokenUsageRec.output),
+        reasoning: asOptionalNumber(tokenUsageRec.reasoning),
+        cache: tokenCacheRec
+          ? {
+            read: asOptionalNumber(tokenCacheRec.read),
+            write: asOptionalNumber(tokenCacheRec.write)
+          }
+          : undefined
+      }
+      : undefined,
+    errorText: asString(rec.errorText) || undefined,
+    hydrationUnavailable: asBoolean(rec.hydrationUnavailable, false)
+  };
+}
+
+function normalizeSubagentSummaryMap(value: unknown): Record<string, SubagentSummary[]> {
+  const rec = asRecord(value);
+  if (!rec) {
+    return {};
+  }
+  const out: Record<string, SubagentSummary[]> = {};
+  for (const [key, item] of Object.entries(rec)) {
+    if (!Array.isArray(item)) {
+      continue;
+    }
+    const entries = item
+      .map((raw) => normalizeSubagentSummary(raw))
+      .filter((entry): entry is SubagentSummary => !!entry);
+    if (entries.length > 0) {
+      out[key] = entries;
+    }
+  }
+  return out;
+}
+
+function normalizeSubagentDetailMap(value: unknown): Record<string, SubagentDetail> {
+  const rec = asRecord(value);
+  if (!rec) {
+    return {};
+  }
+  const out: Record<string, SubagentDetail> = {};
+  for (const [key, item] of Object.entries(rec)) {
+    const detail = normalizeSubagentDetail(item);
+    if (!detail) {
+      continue;
+    }
+    out[key] = detail;
+  }
+  return out;
+}
+
+/**
+ * Unified subagent extraction and dispatch handler - single source of truth
+ * Extracts subagents from centralized events and updates the store atomically
+ */
+function handleSubagentUpdatesFromCentralizedEvents(
+  dispatch: Dispatch,
+  getState: () => State
+): void {
+  const currentState = getState();
+
+  console.log('🔍 [STORE_STATE] Current store state when extraction called', {
+    hasRawSdkEventPayloads: Boolean(currentState.rawSdkEventPayloads),
+    rawSdkEventPayloadsCount: currentState.rawSdkEventPayloads?.length || 0,
+    rawSdkEventPayloadsSample: currentState.rawSdkEventPayloads?.slice(0, 3).map(e => ({
+      type: asRecord(e)?.type,
+      source: asRecord(e)?.source,
+    })),
+    hasMessages: Boolean(currentState.messages),
+    messagesCount: currentState.messages?.length || 0,
+    hasSubagentsByParentMessageId: Boolean(currentState.subagentsByParentMessageId),
+    subagentsByParentMessageIdKeys: Object.keys(currentState.subagentsByParentMessageId || {}),
+  });
+
+  console.log('🟢 [CENTRALIZED_EXTRACTION] Starting extraction from centralized events', {
+    eventCount: currentState.rawSdkEventPayloads?.length || 0,
+  });
+
+  const { summariesByParentMessageId, detailsById } =
+    extractSubagentsFromCentralizedEvents(currentState.rawSdkEventPayloads);
+
+  console.log('🟢 [CENTRALIZED_EXTRACTION] Extraction complete', {
+    summaryCount: Object.keys(summariesByParentMessageId).length,
+    detailCount: Object.keys(detailsById).length,
+    parentMessageIds: Object.keys(summariesByParentMessageId),
+    subagentIds: Object.keys(detailsById),
+  });
+
+  // Log detailed info for each subagent
+  Object.entries(detailsById).forEach(([subagentId, detail]) => {
+    console.log('🟢 [CENTRALIZED_EXTRACTION] Subagent details', {
+      subagentId,
+      status: detail.status,
+      latestActivity: detail.latestActivity,
+      conversationEventsCount: detail.conversationEvents?.length || 0,
+      progressEventsCount: detail.progressEvents?.length || 0,
+      timelineEventsCount: detail.timelineEvents?.length || 0,
+      // Sample first conversation event to see bash tools
+      firstConversationEvent: detail.conversationEvents?.[0],
+      hasBashTools: detail.conversationEvents?.some(e =>
+        e.kind?.toLowerCase().includes('bash') ||
+        e.kind?.toLowerCase().includes('tool')
+      ),
+    });
+  });
+
+  if (Object.keys(summariesByParentMessageId).length > 0) {
+    console.log('🟢 [DISPATCH] Updating subagent summaries in store');
+    dispatch({
+      type: "UPSERT_SUBAGENT_SUMMARIES",
+      payload: summariesByParentMessageId,
+    });
+  }
+
+  if (Object.keys(detailsById).length > 0) {
+    console.log('🟢 [DISPATCH] Updating subagent details in store');
+    dispatch({ type: "UPSERT_SUBAGENT_DETAIL", payload: detailsById });
+  }
+}
+
+function extractSubagentsFromMessages(messages: Message[]): {
+  summariesByParentMessageId: Record<string, SubagentSummary[]>;
+  detailsById: Record<string, SubagentDetail>;
+} {
+  const summariesByParentMessageId: Record<string, SubagentSummary[]> = {};
+  const detailsById: Record<string, SubagentDetail> = {};
+
+  for (const message of messages) {
+    const messageId = asString(asRecord(message.info)?.id) || asString((message as unknown as UnknownRecord).id);
+    if (!messageId || !Array.isArray(message.subagents)) {
+      continue;
+    }
+    const details = message.subagents
+      .map((entry) => {
+        const rec = asRecord(entry);
+        if (rec && !asString(rec.parentMessageId)) {
+          rec.parentMessageId = messageId;
+        }
+        return normalizeSubagentDetail(rec ?? entry);
+      })
+      .filter((entry): entry is SubagentDetail => !!entry);
+    if (details.length === 0) {
+      continue;
+    }
+    summariesByParentMessageId[messageId] = details.map((detail) => normalizeSubagentSummary(detail) as SubagentSummary);
+    details.forEach((detail) => {
+      detailsById[detail.id] = detail;
+    });
+  }
+
+  return { summariesByParentMessageId, detailsById };
+}
+
+// ============================================================================
+// SUBAGENT EXTRACTION UTILITIES
+// ============================================================================
+
+/**
+ * Normalized subagent event data structure
+ * Provides a consistent interface for processing events from different sources
+ */
+interface NormalizedSubagentEvent {
+  part: Record<string, unknown>;
+  toolName: string;
+  callID: string;
+  messageID: string;
+  timestamp: number;
+  isSubagentTool: boolean;
+}
+
+/**
+ * Extract part data from various event structures
+ * Centralizes the logic for finding event data across different SDK event formats
+ */
+function extractEventPart(event: Record<string, unknown>): Record<string, unknown> | null {
+  const properties = asRecord(event.properties);
+  const syncEvent = asRecord(event.syncEvent);
+  const payloadRecord = asRecord(event.payload);
+  const payloadSyncEvent = asRecord(payloadRecord?.syncEvent);
+  const payloadSyncData = asRecord(payloadSyncEvent?.data);
+
+  return asRecord(properties?.part) ?? asRecord(event.part) ?? asRecord(payloadSyncData?.part);
+}
+
+/**
+ * Extract message ID from various event properties
+ * Handles multiple possible locations for message ID data
+ */
+function extractEventMessageID(event: Record<string, unknown>, part: Record<string, unknown>): string {
+  const properties = asRecord(event.properties);
+  const syncData = asRecord(asRecord(event.syncEvent)?.data);
+  const payloadRecord = asRecord(event.payload);
+  const payloadSyncEvent = asRecord(payloadRecord?.syncEvent);
+  const payloadSyncData = asRecord(payloadSyncEvent?.data);
+
+  return asString(
+    properties?.info?.id || properties?.info?.messageID || properties?.info?.messageId
+  ).trim() ||
+  asString(part.messageID || part.messageId).trim() ||
+  asString(
+    syncData?.info?.id || syncData?.info?.messageID || syncData?.info?.messageId
+  ).trim() ||
+  asString(
+    payloadSyncData?.info?.id || payloadSyncData?.info?.messageID || payloadSyncData?.info?.messageId
+  ).trim() ||
+  asString(
+    payloadSyncData?.part?.messageID || payloadSyncData?.part?.messageId
+  ).trim() ||
+  asString(event.messageID || event.messageId).trim();
+}
+
+/**
+ * Check if a tool name represents a subagent tool
+ */
+function isSubagentToolName(toolName: string): boolean {
+  const normalized = toolName.toLowerCase();
+  return normalized === 'omo_agent' || normalized === 'subagent' || normalized === 'agent_call';
+}
+
+/**
+ * Normalize a raw event into a consistent structure for processing
+ */
+function normalizeSubagentEvent(payload: unknown): NormalizedSubagentEvent | null {
+  const event = asRecord(payload);
+  if (!event) return null;
+
+  const part = extractEventPart(event);
+  if (!part) return null;
+
+  const toolName = asString(part.tool)?.toLowerCase() || '';
+  const callID = asString(part.callID || part.id) || '';
+  const messageID = extractEventMessageID(event, part);
+
+  const properties = asRecord(event.properties);
+  const timestamp = asNumber(properties?.time || event.time || event.createdAt || Date.now());
+
+  return {
+    part,
+    toolName,
+    callID,
+    messageID,
+    timestamp,
+    isSubagentTool: isSubagentToolName(toolName),
+  };
+}
+
+/**
+ * Extract subagents from centralized event data (rawSdkEventPayloads).
+ * This ensures subagent modal data comes from the source of truth during rehydration.
+ *
+ * REFACTORED: Now delegates to modular subagent processing system.
+ *
+ * @param rawSdkEventPayloads - Centralized event data from session persistence
+ * @param parentMessageId - Optional parent message ID to filter events
+ * @returns Subagent data extracted from centralized events
+ */
+export function extractSubagentsFromCentralizedEvents(
+  rawSdkEventPayloads?: unknown[],
+  parentMessageId?: string
+): {
+  summariesByParentMessageId: Record<string, SubagentSummary[]>;
+  detailsById: Record<string, SubagentDetail>;
+} {
+  console.log('🟢 [REFACTORED] Using modular subagent extraction system');
+
+  // Delegate to the modular extraction system
+  return modularExtractSubagentsFromCentralizedEvents(rawSdkEventPayloads, parentMessageId);
+}
+
+/**
+ * Extract SubagentDetail from centralized events for a specific callID.
+ * This includes ALL tool events (bash, glob, etc.) that are part of the subagent workflow.
+ */
+/**
+ * Extract basic subagent metadata from the parent omo_agent event
+ */
+function extractSubagentMetadata(event: Record<string, unknown>): {
+  toolName: string;
+  status: string;
+  backgroundTaskId: string;
+  agentRole: string;
+  inputPrompt: string;
+  inputTask: string;
+  output: string;
+} | null {
+  const properties = asRecord(event.properties);
+  const part = asRecord(properties?.part ?? event.part);
+  if (!part) return null;
+
+  const state = asRecord(part?.state);
+  const input = asRecord(state?.input || part.input);
+  const output = state?.output || part.output;
+
+  const toolName = asString(part.tool || 'omo_agent');
+  const status = asString(state?.status || part.status || 'pending');
+  const backgroundTaskId = asString(input?.task_id || input?.taskId || part.backgroundTaskId) || '';
+  const agentRole = asString(input?.agent || input?.subagent_type || 'assistant');
+  const inputPrompt = asString(input?.prompt || input?.description || '');
+  const inputTask = asString(input?.task || '');
+  const outputText = asString(output || '');
+
+  return {
+    toolName,
+    status,
+    backgroundTaskId,
+    agentRole,
+    inputPrompt,
+    inputTask,
+    output: outputText,
+  };
+}
+
+/**
+ * Build conversation events from normalized events
+ */
+function buildConversationEvents(
+  normalizedEvents: NormalizedSubagentEvent[],
+  subagentId: string
+): SubagentDetail['conversationEvents'] {
+  const conversationEvents: SubagentDetail['conversationEvents'] = [];
+
+  for (const normalized of normalizedEvents) {
+    if (normalized.isSubagentTool) continue;
+
+    const partType = asString(normalized.part.type)?.toLowerCase();
+    if (partType === 'text' || partType === 'message') {
+      const text = asString(normalized.part.text || normalized.part.content || normalized.part.message);
+      if (text) {
+        conversationEvents.push({
+          id: `${subagentId}-conv-${conversationEvents.length}`,
+          role: 'assistant',
+          kind: 'message',
+          text,
+          createdAt: normalized.timestamp,
+        });
+      }
+    }
+  }
+
+  return conversationEvents;
+}
+
+/**
+ * Build progress events from normalized events
+ */
+function buildProgressEvents(
+  normalizedEvents: NormalizedSubagentEvent[],
+  subagentId: string
+): SubagentDetail['progressEvents'] {
+  const progressEvents: SubagentDetail['progressEvents'] = [];
+
+  for (const normalized of normalizedEvents) {
+    if (normalized.isSubagentTool) continue;
+
+    const partType = asString(normalized.part.type)?.toLowerCase();
+    if (partType === 'tool' || normalized.toolName) {
+      const input = asRecord(normalized.part.input || normalized.part.params);
+      const toolCommand = asString(input?.command || input?.url || input?.query || '');
+      const description = asString(normalized.part.description || '');
+
+      progressEvents.push({
+        id: `${subagentId}-progress-${progressEvents.length}`,
+        title: normalized.toolName || asString(normalized.part.name) || 'tool',
+        description: toolCommand || description,
+        createdAt: normalized.timestamp,
+        status: 'done',
+      });
+    }
+  }
+
+  return progressEvents;
+}
+
+/**
+ * Build timeline events from normalized events
+ */
+function buildTimelineEvents(
+  normalizedEvents: NormalizedSubagentEvent[],
+  subagentId: string
+): SubagentDetail['timelineEvents'] {
+  const timelineEvents: SubagentDetail['timelineEvents'] = [];
+
+  for (const normalized of normalizedEvents) {
+    const partType = asString(normalized.part.type)?.toLowerCase();
+    const title = asString(normalized.part.text || normalized.part.description || '');
+
+    timelineEvents.push({
+      id: `${subagentId}-timeline-${timelineEvents.length}`,
+      type: partType,
+      label: normalized.toolName || asString(normalized.part.name) || 'event',
+      createdAt: normalized.timestamp,
+      title,
+    });
+  }
+
+  return timelineEvents;
+}
+
+/**
+ * Build complete subagent detail from centralized events
+ */
+function extractSubagentDetailFromCentralizedEvents(
+  events: unknown[],
+  callID: string,
+  parentMessageId: string
+): SubagentDetail | null {
+  if (events.length === 0) return null;
+
+  // Step 1: Find the parent omo_agent event and extract metadata
+  const parentEvent = events.find(e => {
+    const normalized = normalizeSubagentEvent(e);
+    return normalized?.isSubagentTool && normalized.callID === callID;
+  });
+
+  if (!parentEvent) return null;
+
+  const metadata = extractSubagentMetadata(asRecord(parentEvent));
+  if (!metadata) return null;
+
+  // Step 2: Normalize all events for processing
+  const normalizedEvents = events
+    .map(e => normalizeSubagentEvent(e))
+    .filter((e): e is NormalizedSubagentEvent => e !== null);
+
+  // Step 3: Build the event collections
+  const conversationEvents = buildConversationEvents(normalizedEvents, callID);
+  const progressEvents = buildProgressEvents(normalizedEvents, callID);
+  const timelineEvents = buildTimelineEvents(normalizedEvents, callID);
+
+  // Step 4: Build the complete SubagentDetail
+  const detail: SubagentDetail = {
+    id: callID,
+    backgroundTaskId: metadata.backgroundTaskId || callID,
+    parentMessageId,
+    parentSessionId: asString(asRecord(parentEvent).sessionId || asRecord(parentEvent).sessionID),
+    agentId: metadata.toolName,
+    agentRole: metadata.agentRole,
+    status: metadata.status as 'pending' | 'running' | 'done' | 'error' | 'orphaned',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    input: {
+      prompt: metadata.inputPrompt,
+      task: metadata.inputTask,
+    },
+    output: metadata.output,
+    conversationEvents,
+    progressEvents,
+    timelineEvents,
+    thinkingEvents: [],
+    rawConversationEvents: conversationEvents,
+    references: [],
+    latestActivity: conversationEvents.length > 0
+      ? conversationEvents[conversationEvents.length - 1].text
+      : undefined,
+  };
+
+  return detail;
+}
+
+/**
+ * Extract SubagentDetail from a group of events with the same callID.
+ */
+function extractSubagentDetailFromEvents(
+  events: unknown[],
+  callID: string,
+  parentMessageId: string
+): SubagentDetail | null {
+  if (events.length === 0) return null;
+
+  // Find the most recent event with complete information
+  const latestEvent = events[events.length - 1];
+  const event = asRecord(latestEvent);
+  if (!event) return null;
+
+  const properties = asRecord(event.properties);
+  const syncEvent = asRecord(event.syncEvent);
+  const payloadRecord = asRecord(event.payload);
+  const payloadSyncEvent = asRecord(payloadRecord?.syncEvent);
+  const payloadSyncData = asRecord(payloadSyncEvent?.data);
+  const part = asRecord(properties?.part) ?? asRecord(event.part) ?? asRecord(payloadSyncData?.part);
+  const state = asRecord(part?.state);
+
+  if (!part) return null;
+
+  // Extract basic information
+  const toolName = asString(part.tool || 'omo_agent');
+  const status = asString(state?.status || part.status || 'pending');
+  const input = asRecord(state?.input || part.input);
+  const output = state?.output || part.output;
+
+  // Build SubagentDetail object
+  const subagentId = callID;
+  const backgroundTaskId = asString(input?.task_id || input?.taskId || part.backgroundTaskId) || subagentId;
+
+  const conversationEvents: SubagentDetail['conversationEvents'] = [];
+  const progressEvents: SubagentDetail['progressEvents'] = [];
+  const timelineEvents: SubagentDetail['timelineEvents'] = [];
+
+  // Extract conversation and progress events from the centralized tape
+  for (const eventPayload of events) {
+    const evt = asRecord(eventPayload);
+    if (!evt) continue;
+
+    const evtProps = asRecord(evt.properties);
+    const evtPart = asRecord(evtProps?.part ?? evt.part);
+
+    if (!evtPart) continue;
+
+    const evtPartType = asString(evtPart.type)?.toLowerCase();
+    const evtCreatedAt = asNumber(evtProps?.time || evt.time || evt.createdAt || Date.now());
+
+    // Process conversation events (text responses)
+    if (evtPartType === 'text' || evtPartType === 'message') {
+      const text = asString(evtPart.text || evtPart.content || evtPart.message);
+      if (text) {
+        conversationEvents.push({
+          id: `${subagentId}-conv-${conversationEvents.length}`,
+          role: 'assistant',
+          kind: 'message',
+          text,
+          createdAt: evtCreatedAt,
+        });
+      }
+    }
+
+    // Process progress events
+    if (evtPartType === 'reasoning' || evtPartType === 'step' || evtPartType === 'tool') {
+      progressEvents.push({
+        id: `${subagentId}-progress-${progressEvents.length}`,
+        title: toolName,
+        description: asString(evtPart.text || evtPart.description || ''),
+        createdAt: evtCreatedAt,
+        status: 'done',
+      });
+    }
+
+    // Add to timeline
+    timelineEvents.push({
+      id: `${subagentId}-timeline-${timelineEvents.length}`,
+      type: evtPartType,
+      label: toolName,
+      createdAt: evtCreatedAt,
+      title: asString(evtPart.text || evtPart.description || ''),
+    });
+  }
+
+  // Build the SubagentDetail
+  const detail: SubagentDetail = {
+    id: subagentId,
+    backgroundTaskId,
+    parentMessageId,
+    parentSessionId: asString(part.sessionID || part.sessionId),
+    agentId: toolName,
+    agentRole: asString(input?.agent || input?.subagent_type || 'assistant'),
+    status: status as 'pending' | 'running' | 'done' | 'error' | 'orphaned',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    input: {
+      prompt: asString(input?.prompt || input?.description || ''),
+      task: asString(input?.task || ''),
+    },
+    output: asString(output || ''),
+    conversationEvents,
+    progressEvents,
+    timelineEvents,
+    thinkingEvents: [],
+    rawConversationEvents: conversationEvents,
+    references: [],
+    latestActivity: conversationEvents.length > 0
+      ? conversationEvents[conversationEvents.length - 1].text
+      : undefined,
+  };
+
+  return detail;
+}
+
+function hydrateSubagentSummary(
+  summary: SubagentSummary,
+  detailsById: Record<string, SubagentDetail>,
+): SubagentDetail {
+  const detail = detailsById[summary.id];
+  if (!detail) {
+    return {
+      ...(summary as SubagentDetail),
+      thinkingEvents: [],
+      conversationEvents: [],
+      progressEvents: [],
+      timelineEvents: [],
+    };
+  }
+  return {
+    ...summary,
+    ...detail,
+    parentSessionId: detail.parentSessionId || summary.parentSessionId,
+    parentMessageId: detail.parentMessageId || summary.parentMessageId,
+    status: detail.status || summary.status,
+    latestActivity: detail.latestActivity || summary.latestActivity,
+    references:
+      Array.isArray(detail.references) && detail.references.length > 0
+        ? detail.references
+        : summary.references,
+    thinkingEvents: Array.isArray(detail.thinkingEvents)
+      ? detail.thinkingEvents
+      : [],
+    conversationEvents: Array.isArray(detail.conversationEvents)
+      ? detail.conversationEvents
+      : [],
+    rawConversationEvents: Array.isArray(detail.rawConversationEvents)
+      ? detail.rawConversationEvents
+      : Array.isArray(detail.conversationEvents)
+        ? detail.conversationEvents
+        : [],
+    progressEvents: Array.isArray(detail.progressEvents)
+      ? detail.progressEvents
+      : [],
+    timelineEvents: Array.isArray(detail.timelineEvents)
+      ? detail.timelineEvents
+      : [],
+  };
+}
+
+function latestSubagentEventTimestamp(detail: SubagentDetail): number | undefined {
+  const candidates: number[] = [];
+  if (Array.isArray(detail.thinkingEvents)) {
+    detail.thinkingEvents.forEach((event) => {
+      if (typeof event.createdAt === "number" && Number.isFinite(event.createdAt)) {
+        candidates.push(event.createdAt);
+      }
+    });
+  }
+  if (Array.isArray(detail.progressEvents)) {
+    detail.progressEvents.forEach((event) => {
+      if (typeof event.createdAt === "number" && Number.isFinite(event.createdAt)) {
+        candidates.push(event.createdAt);
+      }
+    });
+  }
+  if (Array.isArray(detail.timelineEvents)) {
+    detail.timelineEvents.forEach((event) => {
+      if (typeof event.createdAt === "number" && Number.isFinite(event.createdAt)) {
+        candidates.push(event.createdAt);
+      }
+    });
+  }
+  if (candidates.length === 0) {
+    return undefined;
+  }
+  return Math.max(...candidates);
+}
+
+function messageCompletedAt(message: Message): number | undefined {
+  const info = asRecord(message.info);
+  const infoTime = asRecord(info?.time);
+  const topTime = asRecord((message as unknown as UnknownRecord).time);
+  const candidates = [
+    asOptionalNumber(infoTime?.completed),
+    asOptionalNumber(infoTime?.updated),
+    asOptionalNumber(info?.duration),
+    asOptionalNumber(topTime?.completed),
+    asOptionalNumber(topTime?.updated),
+    asOptionalNumber((message as unknown as UnknownRecord).completed),
+    asOptionalNumber((message as unknown as UnknownRecord).createdAt),
+    asOptionalNumber(message.created),
+  ].filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  if (candidates.length === 0) {
+    return undefined;
+  }
+  return Math.max(...candidates);
+}
+
+type SubagentPresentationPolicy = {
+  mode: "stream" | "hydration";
+  sessionProcessing?: boolean;
+  liveParentMessageIds?: Set<string>;
+};
+
+function isAssistantMessageFinalized(message: Message | undefined): boolean {
+  if (!message) {
+    return false;
+  }
+  const role = (message.role || asString(asRecord(message.info)?.role) || "").toLowerCase();
+  if (role && role !== "assistant") {
+    return false;
+  }
+
+  const info = asRecord(message.info);
+  const infoTime = asRecord(info?.time);
+  const topTime = asRecord((message as unknown as UnknownRecord).time);
+  const completedAt =
+    asOptionalNumber(infoTime?.completed) ??
+    asOptionalNumber(topTime?.completed) ??
+    asOptionalNumber((message as unknown as UnknownRecord).completed);
+  if (typeof completedAt === "number" && Number.isFinite(completedAt) && completedAt > 0) {
+    return true;
+  }
+
+  const finish = asString(info?.finish).toLowerCase();
+  if (finish === "done" || finish === "stop" || finish === "tool-calls" || finish === "error") {
+    return true;
+  }
+
+  if (typeof message.content === "string" && message.content.trim().length > 0) {
+    return true;
+  }
+  if (Array.isArray(message.parts) && message.parts.length > 0) {
+    return true;
+  }
+  return false;
+}
+
+function shouldFreezeSubagentForPresentation(
+  detail: SubagentDetail,
+  message: Message | undefined,
+  policy: SubagentPresentationPolicy | undefined,
+  explicitFreezeFlag?: boolean,
+): boolean {
+  if (explicitFreezeFlag === true) {
+    return true;
+  }
+  if (!policy || policy.mode !== "hydration") {
+    return false;
+  }
+
+  const status = detail.status;
+  if (status !== "pending" && status !== "running" && status !== "orphaned") {
+    return false;
+  }
+
+  if (policy.liveParentMessageIds?.has(detail.parentMessageId)) {
+    return false;
+  }
+
+  if (isAssistantMessageFinalized(message)) {
+    return true;
+  }
+
+  return policy.sessionProcessing !== true;
+}
+
+function normalizeHydratedSubagentDetail(
+  detail: SubagentDetail,
+  message: Message | undefined,
+  freezeIncompleteStatuses: boolean,
+): SubagentDetail {
+  const cleanedLatestActivity =
+    sanitizeSubagentLabel(detail.latestActivity) || "Subagent update";
+  const normalizedForPresentation: SubagentDetail = {
+    ...detail,
+    latestActivity: cleanedLatestActivity,
+    progressEvents: normalizeSubagentProgressEventsForPresentation(
+      Array.isArray(detail.progressEvents) ? detail.progressEvents : [],
+    ),
+    timelineEvents: normalizeSubagentTimelineEventsForPresentation(
+      Array.isArray(detail.timelineEvents) ? detail.timelineEvents : [],
+    ),
+  };
+
+  if (!freezeIncompleteStatuses) {
+    return normalizedForPresentation;
+  }
+
+  const status = normalizedForPresentation.status;
+  if (status !== "pending" && status !== "running" && status !== "orphaned") {
+    return normalizedForPresentation;
+  }
+
+  const completedAt =
+    (typeof normalizedForPresentation.endedAt === "number" &&
+      Number.isFinite(normalizedForPresentation.endedAt)
+      ? normalizedForPresentation.endedAt
+      : undefined) ??
+    (message ? messageCompletedAt(message) : undefined) ??
+    latestSubagentEventTimestamp(normalizedForPresentation) ??
+    normalizedForPresentation.startedAt;
+  const startedAt =
+    typeof normalizedForPresentation.startedAt === "number" &&
+      Number.isFinite(normalizedForPresentation.startedAt)
+      ? normalizedForPresentation.startedAt
+      : undefined;
+  const durationMs =
+    typeof startedAt === "number" && typeof completedAt === "number"
+      ? Math.max(0, completedAt - startedAt)
+      : normalizedForPresentation.durationMs;
+
+  const normalized: SubagentDetail = {
+    ...normalizedForPresentation,
+    status: "done",
+    endedAt:
+      typeof completedAt === "number"
+        ? completedAt
+        : normalizedForPresentation.endedAt,
+    durationMs,
+  };
+  if (
+    !normalized.latestActivity ||
+    normalized.latestActivity.trim().toLowerCase() === "running" ||
+    normalized.latestActivity.trim().toLowerCase() === "pending" ||
+    normalized.latestActivity.trim().toLowerCase() === "orphaned"
+  ) {
+    normalized.latestActivity = "Completed";
+  }
+  return normalized;
+}
+
+function normalizeHydratedSubagentSummary(
+  summary: SubagentSummary,
+  detail: SubagentDetail | undefined,
+  message: Message | undefined,
+  freezeIncompleteStatuses: boolean,
+): SubagentSummary {
+  if (!freezeIncompleteStatuses) {
+    return summary;
+  }
+  const normalizedDetail = normalizeHydratedSubagentDetail(
+    detail
+      ? detail
+      : ({
+        ...(summary as SubagentDetail),
+        thinkingEvents: [],
+        conversationEvents: [],
+        progressEvents: [],
+        timelineEvents: [],
+      } as SubagentDetail),
+    message,
+    true,
+  );
+  return {
+    ...summary,
+    status: normalizedDetail.status,
+    startedAt:
+      typeof normalizedDetail.startedAt === "number"
+        ? normalizedDetail.startedAt
+        : summary.startedAt,
+    endedAt:
+      typeof normalizedDetail.endedAt === "number"
+        ? normalizedDetail.endedAt
+        : summary.endedAt,
+    durationMs:
+      typeof normalizedDetail.durationMs === "number"
+        ? normalizedDetail.durationMs
+        : summary.durationMs,
+    latestActivity: normalizedDetail.latestActivity || summary.latestActivity,
+  };
+}
+
+function normalizeHydratedSubagentMaps(
+  summariesByParentMessageId: Record<string, SubagentSummary[]>,
+  detailsById: Record<string, SubagentDetail>,
+  messages: Message[],
+  freezeIncompleteStatuses: boolean,
+  policy?: SubagentPresentationPolicy,
+): {
+  summariesByParentMessageId: Record<string, SubagentSummary[]>;
+  detailsById: Record<string, SubagentDetail>;
+} {
+  if (!freezeIncompleteStatuses && (!policy || policy.mode !== "hydration")) {
+    return { summariesByParentMessageId, detailsById };
+  }
+
+  const messageById = new Map<string, Message>();
+  messages.forEach((message) => {
+    const id = getMessageId(message);
+    if (id) {
+      messageById.set(id, message);
+    }
+  });
+
+  const normalizedDetailsById: Record<string, SubagentDetail> = {};
+  for (const [detailId, detail] of Object.entries(detailsById)) {
+    const message = messageById.get(detail.parentMessageId);
+    const freeze = shouldFreezeSubagentForPresentation(
+      detail,
+      message,
+      policy,
+      freezeIncompleteStatuses,
+    );
+    normalizedDetailsById[detailId] = normalizeHydratedSubagentDetail(
+      detail,
+      message,
+      freeze,
+    );
+  }
+
+  const normalizedSummariesByParentMessageId: Record<string, SubagentSummary[]> = {};
+  for (const [parentMessageId, summaries] of Object.entries(summariesByParentMessageId)) {
+    const message = messageById.get(parentMessageId);
+    normalizedSummariesByParentMessageId[parentMessageId] = summaries.map((summary) =>
+      normalizeHydratedSubagentSummary(
+        summary,
+        normalizedDetailsById[summary.id] ?? detailsById[summary.id],
+        message,
+        shouldFreezeSubagentForPresentation(
+          normalizedDetailsById[summary.id] ?? (detailsById[summary.id] as SubagentDetail),
+          message,
+          policy,
+          freezeIncompleteStatuses,
+        ),
+      ),
+    );
+  }
+
+  return {
+    summariesByParentMessageId: normalizedSummariesByParentMessageId,
+    detailsById: normalizedDetailsById,
+  };
+}
+
+function areSubagentListsEquivalent(
+  previous: SubagentDetail[] | undefined,
+  next: SubagentDetail[],
+): boolean {
+  const prev = Array.isArray(previous) ? previous : [];
+  if (prev.length !== next.length) {
+    return false;
+  }
+  for (let index = 0; index < prev.length; index += 1) {
+    const a = prev[index];
+    const b = next[index];
+    if (
+      a.id !== b.id ||
+      a.status !== b.status ||
+      a.latestActivity !== b.latestActivity ||
+      (a.durationMs ?? 0) !== (b.durationMs ?? 0) ||
+      (a.progressEvents?.length ?? 0) !== (b.progressEvents?.length ?? 0) ||
+      (a.thinkingEvents?.length ?? 0) !== (b.thinkingEvents?.length ?? 0) ||
+      (a.conversationEvents?.length ?? 0) !== (b.conversationEvents?.length ?? 0) ||
+      (a.timelineEvents?.length ?? 0) !== (b.timelineEvents?.length ?? 0)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function deriveSessionIdFromMessage(
+  message: Message,
+  fallbackSessionId: string | null,
+): string | null {
+  const info = asRecord(message.info);
+  const infoSessionId =
+    asString(info?.sessionID) || asString(info?.sessionId);
+  if (infoSessionId) {
+    return infoSessionId;
+  }
+
+  if (Array.isArray(message.subagents)) {
+    for (const subagent of message.subagents) {
+      const sessionId = asString(asRecord(subagent)?.parentSessionId);
+      if (sessionId) {
+        return sessionId;
+      }
+    }
+  }
+
+  return fallbackSessionId;
+}
+
+function getMessageId(message: Message): string | null {
+  return (
+    asString(asRecord(message.info)?.id) ||
+    asString((message as unknown as UnknownRecord).id) ||
+    null
+  );
+}
+
+function mergeAssistantActivitySteps(
+  existing: MessageStep[] | undefined,
+  incoming: MessageStep[] | undefined,
+): MessageStep[] | undefined {
+  const existingSteps = Array.isArray(existing) ? existing : [];
+  const incomingSteps = Array.isArray(incoming) ? incoming : [];
+  if (existingSteps.length === 0) {
+    return incomingSteps.length > 0 ? incomingSteps : undefined;
+  }
+  if (incomingSteps.length === 0) {
+    return existingSteps;
+  }
+
+  const merged: MessageStep[] = [];
+  const indexByKey = new Map<string, number>();
+  [...existingSteps, ...incomingSteps].forEach((step, index) => {
+    const normalized = normalizeActivityStepRecord(step, "final");
+    if (!normalized) {
+      return;
+    }
+    const key = activityStepMergeKey(normalized, index);
+    const existingIndex = indexByKey.get(key);
+    if (typeof existingIndex !== "number") {
+      indexByKey.set(key, merged.length);
+      merged.push(normalized);
+      return;
+    }
+    merged[existingIndex] = mergeCanonicalActivityStep(
+      merged[existingIndex],
+      normalized,
+    );
+  });
+
+  return merged.length > 0 ? merged : undefined;
+}
+
+function activityArrayItemKey(item: unknown, index: number): string {
+  const rec = asRecord(item);
+  if (!rec) {
+    return `primitive:${String(item)}:${index}`;
+  }
+  const id = asString(rec.id).trim();
+  if (id) {
+    return `id:${id}`;
+  }
+  const callID = (asString(rec.callID) || asString(rec.callId)).trim();
+  if (callID) {
+    return `call:${callID}`;
+  }
+  const file = (
+    asString(rec.file) ||
+    asString(rec.path) ||
+    asString(rec.filePath)
+  ).trim();
+  if (file) {
+    return `file:${file}`;
+  }
+  const createdAt = asString(rec.createdAt).trim();
+  const text = normalizeComparableText(
+    asString(rec.text) ||
+      asString(rec.content) ||
+      asString(rec.reasoning) ||
+      asString(rec.question) ||
+      asString(rec.title) ||
+      asString(rec.message),
+  );
+  if (createdAt || text) {
+    return `text:${createdAt}|${text}`;
+  }
+  return `index:${index}`;
+}
+
+function mergeActivityArrays<T>(
+  existing: T[] | undefined,
+  incoming: T[] | undefined,
+): T[] | undefined {
+  const existingItems = Array.isArray(existing) ? existing : [];
+  const incomingItems = Array.isArray(incoming) ? incoming : [];
+  if (existingItems.length === 0) {
+    return incomingItems.length > 0 ? incomingItems : undefined;
+  }
+  if (incomingItems.length === 0) {
+    return existingItems;
+  }
+
+  const merged: T[] = [];
+  const indexByKey = new Map<string, number>();
+  [...existingItems, ...incomingItems].forEach((item, index) => {
+    const key = activityArrayItemKey(item, index);
+    const existingIndex = indexByKey.get(key);
+    if (typeof existingIndex !== "number") {
+      indexByKey.set(key, merged.length);
+      merged.push(item);
+      return;
+    }
+    const previous = merged[existingIndex];
+    if (asRecord(previous) && asRecord(item)) {
+      merged[existingIndex] = {
+        ...(previous as Record<string, unknown>),
+        ...(item as Record<string, unknown>),
+      } as T;
+    } else {
+      merged[existingIndex] = item;
+    }
+  });
+
+  return merged.length > 0 ? merged : undefined;
+}
+
+function mergeAssistantReplacement(existing: Message, incoming: Message): Message {
+  const mergedBurst = coalesceAssistantHistoryBurst([existing, incoming]);
+  const progressEvents = mergeAssistantActivitySteps(
+    existing.progressEvents,
+    incoming.progressEvents,
+  );
+  const steps = mergeAssistantActivitySteps(existing.steps, incoming.steps);
+  const reasoningEvents = mergeActivityArrays(
+    existing.reasoningEvents,
+    incoming.reasoningEvents,
+  );
+  const edits = mergeActivityArrays(existing.edits, incoming.edits);
+  const interactiveEvents = mergeActivityArrays(
+    existing.interactiveEvents,
+    incoming.interactiveEvents,
+  );
+  const subagents = mergeActivityArrays(existing.subagents, incoming.subagents);
+
+  streamDebug("Timeline: merging assistant replacement", {
+    existingMessageId: getMessageId(existing),
+    incomingMessageId: getMessageId(incoming),
+    existingSteps: summarizeStepListForLog(
+      Array.isArray(existing.steps) ? existing.steps : [],
+    ),
+    incomingSteps: summarizeStepListForLog(
+      Array.isArray(incoming.steps) ? incoming.steps : [],
+    ),
+    mergedSteps: summarizeStepListForLog(
+      Array.isArray(steps) ? steps : [],
+    ),
+    existingProgressEvents: summarizeStepListForLog(
+      Array.isArray(existing.progressEvents) ? existing.progressEvents : [],
+    ),
+    incomingProgressEvents: summarizeStepListForLog(
+      Array.isArray(incoming.progressEvents) ? incoming.progressEvents : [],
+    ),
+    mergedProgressEvents: summarizeStepListForLog(
+      Array.isArray(progressEvents) ? progressEvents : [],
+    ),
+  });
+
+  return {
+    ...mergedBurst,
+    reasoningEvents,
+    progressEvents,
+    steps,
+    edits,
+    interactiveEvents,
+    subagents,
+  };
+}
+
+function replaceMatchingAssistantTurn(
+  messages: Message[],
+  incoming: Message,
+  candidateIds: Array<string | null | undefined>,
+): Message[] {
+  const ids = new Set(candidateIds.map((id) => asString(id)).filter(Boolean));
+  if (ids.size === 0) {
+    streamDebug("Timeline: assistant turn append without ID", {
+      incomingMessageId: getMessageId(incoming),
+      incomingSummary: summarizeMessageForLog(incoming),
+      incomingSteps: summarizeStepListForLog(
+        Array.isArray(incoming.steps) ? incoming.steps : [],
+      ),
+      incomingProgressEvents: summarizeStepListForLog(
+        Array.isArray(incoming.progressEvents) ? incoming.progressEvents : [],
+      ),
+    });
+    return [...messages, incoming];
+  }
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!isAssistantHistoryMessage(message)) {
+      continue;
+    }
+    const id = getMessageId(message);
+    if (!id || !ids.has(id)) {
+      continue;
+    }
+    const next = [...messages];
+    streamDebug("Timeline: assistant turn matched and replacing", {
+      matchedId: id,
+      candidateIds: Array.from(ids),
+      existingSummary: summarizeMessageForLog(message),
+      incomingSummary: summarizeMessageForLog(incoming),
+      existingSteps: summarizeStepListForLog(
+        Array.isArray(message.steps) ? message.steps : [],
+      ),
+      incomingSteps: summarizeStepListForLog(
+        Array.isArray(incoming.steps) ? incoming.steps : [],
+      ),
+      existingProgressEvents: summarizeStepListForLog(
+        Array.isArray(message.progressEvents) ? message.progressEvents : [],
+      ),
+      incomingProgressEvents: summarizeStepListForLog(
+        Array.isArray(incoming.progressEvents) ? incoming.progressEvents : [],
+      ),
+    });
+    next[index] = mergeAssistantReplacement(message, incoming);
+    return next;
+  }
+
+  streamDebug("Timeline: assistant turn append without match", {
+    candidateIds: Array.from(ids),
+    incomingMessageId: getMessageId(incoming),
+    incomingSummary: summarizeMessageForLog(incoming),
+    incomingSteps: summarizeStepListForLog(
+      Array.isArray(incoming.steps) ? incoming.steps : [],
+    ),
+    incomingProgressEvents: summarizeStepListForLog(
+      Array.isArray(incoming.progressEvents) ? incoming.progressEvents : [],
+    ),
+  });
+  return [...messages, incoming];
+}
+
+function mergeSubagentSummaries(
+  existing: SubagentSummary[] | undefined,
+  incoming: SubagentSummary[],
+): SubagentSummary[] {
+  const statusRank = (status: SubagentSummary["status"] | undefined): number => {
+    if (status === "done" || status === "error" || status === "orphaned") return 2;
+    if (status === "running") return 1;
+    return 0;
+  };
+  const byId = new Map<string, SubagentSummary>();
+  const source = Array.isArray(existing) ? existing : [];
+  source.forEach((entry) => {
+    if (entry?.id) {
+      byId.set(entry.id, entry);
+    }
+  });
+  incoming.forEach((entry) => {
+    if (!entry?.id) {
+      return;
+    }
+    const prev = byId.get(entry.id);
+    if (!prev) {
+      byId.set(entry.id, entry);
+      return;
+    }
+    const merged = { ...prev, ...entry, id: entry.id };
+    if (statusRank(prev.status) > statusRank(entry.status)) {
+      merged.status = prev.status;
+    }
+    byId.set(entry.id, merged);
+  });
+  return Array.from(byId.values());
+}
+
+function hasSubagentSummaryEntries(
+  summariesByParentMessageId: Record<string, SubagentSummary[]>,
+): boolean {
+  return Object.values(summariesByParentMessageId).some(
+    (entries) => Array.isArray(entries) && entries.length > 0,
+  );
+}
+
+function getSubagentPayloadSessionId(
+  summariesByParentMessageId: Record<string, SubagentSummary[]>,
+  detailsById: Record<string, SubagentDetail>,
+): string | null {
+  for (const summaries of Object.values(summariesByParentMessageId)) {
+    if (!Array.isArray(summaries)) {
+      continue;
+    }
+    for (const summary of summaries) {
+      if (
+        typeof summary?.parentSessionId === "string" &&
+        summary.parentSessionId.length > 0
+      ) {
+        return summary.parentSessionId;
+      }
+    }
+  }
+
+  for (const detail of Object.values(detailsById)) {
+    if (
+      typeof detail?.parentSessionId === "string" &&
+      detail.parentSessionId.length > 0
+    ) {
+      return detail.parentSessionId;
+    }
+  }
+
+  return null;
+}
+
+function filterSubagentMapsForActiveSession(
+  state: AppState,
+  summariesByParentMessageId: Record<string, SubagentSummary[]>,
+  detailsById: Record<string, SubagentDetail>,
+): {
+  summariesByParentMessageId: Record<string, SubagentSummary[]>;
+  detailsById: Record<string, SubagentDetail>;
+} {
+  const activeSessionId = state.currentSessionId;
+  if (!activeSessionId) {
+    return { summariesByParentMessageId, detailsById };
+  }
+
+  const currentMessageIds = new Set<string>();
+  state.messages.forEach((message) => {
+    const messageId = getMessageId(message);
+    if (messageId) {
+      currentMessageIds.add(messageId);
+    }
+  });
+  const streamingMessageId = state.streaming?.messageId || null;
+
+  const filteredSummariesByParentMessageId: Record<string, SubagentSummary[]> = {};
+  const includedSubagentIds = new Set<string>();
+  for (const [parentMessageId, summaries] of Object.entries(
+    summariesByParentMessageId,
+  )) {
+    if (!Array.isArray(summaries) || summaries.length === 0) {
+      continue;
+    }
+
+    const filtered = summaries.filter((summary) => {
+      const explicitSessionId =
+        typeof summary.parentSessionId === "string" &&
+        summary.parentSessionId.length > 0
+          ? summary.parentSessionId
+          : null;
+      if (explicitSessionId) {
+        return explicitSessionId === activeSessionId;
+      }
+      return (
+        currentMessageIds.has(summary.parentMessageId) ||
+        (streamingMessageId !== null &&
+          summary.parentMessageId === streamingMessageId)
+      );
+    });
+
+    if (filtered.length === 0) {
+      continue;
+    }
+
+    filteredSummariesByParentMessageId[parentMessageId] = filtered;
+    filtered.forEach((entry) => {
+      includedSubagentIds.add(entry.id);
+    });
+  }
+
+  const filteredDetailsById: Record<string, SubagentDetail> = {};
+  for (const [detailId, detail] of Object.entries(detailsById)) {
+    if (includedSubagentIds.has(detailId)) {
+      filteredDetailsById[detailId] = detail;
+      continue;
+    }
+    if (
+      typeof detail.parentSessionId === "string" &&
+      detail.parentSessionId === activeSessionId
+    ) {
+      filteredDetailsById[detailId] = detail;
+    }
+  }
+
+  return {
+    summariesByParentMessageId: filteredSummariesByParentMessageId,
+    detailsById: filteredDetailsById,
+  };
+}
+
+function mergeSubagentSummaryPayload(
+  existingByParentMessageId: Record<string, SubagentSummary[]>,
+  incomingByParentMessageId: Record<string, SubagentSummary[]>,
+): Record<string, SubagentSummary[]> {
+  const merged: Record<string, SubagentSummary[]> = {};
+  for (const [parentMessageId, incoming] of Object.entries(
+    incomingByParentMessageId,
+  )) {
+    if (!Array.isArray(incoming) || incoming.length === 0) {
+      continue;
+    }
+    merged[parentMessageId] = mergeSubagentSummaries(
+      existingByParentMessageId[parentMessageId],
+      incoming,
+    );
+  }
+  return merged;
+}
+
+function mergeUniqueSubagentEntries<T>(
+  existing: T[] | undefined,
+  incoming: T[] | undefined,
+  keyBuilder: (item: T, index: number) => string,
+): T[] {
+  const out: T[] = [];
+  const byKey = new Map<string, T>();
+  const push = (items: T[] | undefined) => {
+    if (!Array.isArray(items) || items.length === 0) {
+      return;
+    }
+    items.forEach((item, index) => {
+      const key = keyBuilder(item, index);
+      if (!key) {
+        out.push(item);
+        return;
+      }
+      if (byKey.has(key)) {
+        const existingItemIndex = out.findIndex((entry, entryIndex) => {
+          const entryKey = keyBuilder(entry, entryIndex);
+          return entryKey === key;
+        });
+        if (existingItemIndex >= 0) {
+          out[existingItemIndex] = item;
+        }
+      } else {
+        out.push(item);
+      }
+      byKey.set(key, item);
+    });
+  };
+  push(existing);
+  push(incoming);
+  return out;
+}
+
+function mergeSubagentDetailRecord(
+  existing: SubagentDetail | undefined,
+  incoming: SubagentDetail,
+): SubagentDetail {
+  const latestActivity =
+    sanitizeSubagentLabel(incoming.latestActivity || "") ||
+    sanitizeSubagentLabel(existing?.latestActivity || "") ||
+    "Subagent update";
+
+  const references = mergeUniqueSubagentEntries(
+    existing?.references,
+    incoming.references,
+    (entry) =>
+      `${entry.messageID || ""}|${entry.partID || ""}|${entry.callID || ""}`,
+  );
+  const thinkingEvents = mergeUniqueSubagentEntries(
+    existing?.thinkingEvents,
+    incoming.thinkingEvents,
+    (event, index) =>
+      event.id || `${event.createdAt || 0}:${event.text || ""}:${index}`,
+  );
+  const conversationEvents = mergeUniqueSubagentEntries(
+    existing?.conversationEvents,
+    incoming.conversationEvents,
+    (event, index) =>
+      event.id ||
+      `${event.role || ""}:${event.kind || ""}:${event.createdAt || 0}:${event.text || ""}:${index}`,
+  );
+  const rawConversationEvents = mergeUniqueSubagentEntries(
+    existing?.rawConversationEvents,
+    incoming.rawConversationEvents,
+    (event, index) => {
+      const rec = asRecord(event);
+      return (
+        asString(rec?.id) ||
+        `${asString(rec?.messageID) || asString(rec?.messageId) || ""}:${asString(rec?.partID) || asString(rec?.partId) || ""}:${asString(rec?.kind) || asString(rec?.role) || ""}:${asString(rec?.text) || asString(rec?.content) || ""}:${asNumber(rec?.createdAt)}:${index}`
+      );
+    },
+  );
+  const progressEvents = normalizeSubagentProgressEventsForPresentation(
+    mergeUniqueSubagentEntries(
+      existing?.progressEvents,
+      incoming.progressEvents,
+      (event, index) =>
+        event.callID ||
+        event.id ||
+        `${event.title || ""}:${event.status || ""}:${event.createdAt || 0}:${index}`,
+    ),
+  );
+  const timelineEvents = normalizeSubagentTimelineEventsForPresentation(
+    mergeUniqueSubagentEntries(
+      existing?.timelineEvents,
+      incoming.timelineEvents,
+      (event, index) =>
+        event.key ||
+        `${event.type || ""}:${event.label || ""}:${event.createdAt || 0}:${index}`,
+    ),
+  );
+
+  return {
+    ...(existing || incoming),
+    ...incoming,
+    id: incoming.id || existing?.id || "",
+    parentSessionId:
+      incoming.parentSessionId || existing?.parentSessionId || "",
+    parentMessageId:
+      incoming.parentMessageId || existing?.parentMessageId || "",
+    status: incoming.status || existing?.status || "pending",
+    latestActivity,
+    references,
+    thinkingEvents,
+    conversationEvents,
+    rawConversationEvents,
+    progressEvents,
+    timelineEvents,
+  };
+}
+
+function mergeSubagentDetailPayload(
+  existingById: Record<string, SubagentDetail>,
+  incomingById: Record<string, SubagentDetail>,
+): Record<string, SubagentDetail> {
+  const merged: Record<string, SubagentDetail> = {};
+  for (const [detailId, incoming] of Object.entries(incomingById)) {
+    if (!incoming) {
+      continue;
+    }
+    merged[detailId] = mergeSubagentDetailRecord(
+      existingById[detailId],
+      incoming,
+    );
+  }
+  return merged;
+}
+
+function applyStructuredSubagentPayload(
+  dispatch: Dispatch<AppAction>,
+  getState: () => AppState,
+  structuredOutput: StructuredOutput,
+  messageId: string,
+): void {
+  logger.info('[SUBAGENT-DEBUG] applyStructuredSubagentPayload called', {
+    messageId,
+    responseType: structuredOutput.type || structuredOutput.responseType,
+    subagentsCount: structuredOutput.subagents?.length ?? 0,
+    subagentsDeltaItems: structuredOutput.subagentsDelta?.items?.length ?? 0,
+    subagentsDeltaParentMessageId: structuredOutput.subagentsDelta?.parentMessageId,
+    caller: new Error().stack?.split('\n')[2]?.trim() || 'unknown',
+  });
+
+  if ((structuredOutput.type || structuredOutput.responseType) === 'subagents') {
+    if (!structuredOutput.subagents || structuredOutput.subagents.length === 0) {
+      logger.warn('Structured subagents type received without subagents array');
+    }
+  }
+
+  // 🔍 STRUCTURED OUTPUT SUBAGENT DEBUGGING
+  if (structuredOutput.subagents && structuredOutput.subagents.length > 0) {
+    console.log('🔴 [LEGACY_DATA] Structured output trying to create subagent data', {
+      subagentCount: structuredOutput.subagents.length,
+      firstSubagentId: structuredOutput.subagents[0]?.id,
+      firstSubagentStatus: structuredOutput.subagents[0]?.status,
+      firstSubagentLatestActivity: structuredOutput.subagents[0]?.latestActivity,
+      hasConversationEvents: Boolean(structuredOutput.subagents[0]?.conversationEvents?.length),
+      conversationEventsCount: structuredOutput.subagents[0]?.conversationEvents?.length || 0,
+    });
+
+    // Update subagents from centralized events (single source of truth)
+    console.log('🟢 [CENTRALIZED] Extracting from centralized events instead');
+    handleSubagentUpdatesFromCentralizedEvents(dispatch, getState);
+  }
+
+  // 🔍 DELTA SUBAGENT DEBUGGING
+  if (structuredOutput.subagentsDelta && structuredOutput.subagentsDelta.items.length > 0) {
+    console.log('🔴 [LEGACY_DATA] Delta trying to create subagent data', {
+      deltaCount: structuredOutput.subagentsDelta.items.length,
+      firstDeltaId: structuredOutput.subagentsDelta.items[0]?.id,
+      firstDeltaStatus: structuredOutput.subagentsDelta.items[0]?.status,
+      firstDeltaLatestActivity: structuredOutput.subagentsDelta.items[0]?.latestActivity,
+      hasConversationEvents: Boolean(structuredOutput.subagentsDelta.items[0]?.conversationEvents?.length),
+      conversationEventsCount: structuredOutput.subagentsDelta.items[0]?.conversationEvents?.length || 0,
+    });
+
+    // Update subagents from centralized events (single source of truth)
+    console.log('🟢 [CENTRALIZED] Extracting from centralized events instead');
+    handleSubagentUpdatesFromCentralizedEvents(dispatch, getState);
+  }
+}
+
+function findLatestAssistantMessageIdForSession(
+  messages: Message[],
+  fallbackSessionId: string | null,
+  targetSessionId?: string,
+): string | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    const role = message.role ?? asString(asRecord(message.info)?.role) ?? "";
+    if (role !== "assistant") {
+      continue;
+    }
+    const messageId = getMessageId(message);
+    if (!messageId) {
+      continue;
+    }
+
+    if (targetSessionId) {
+      const sessionId = deriveSessionIdFromMessage(message, fallbackSessionId);
+      if (sessionId && sessionId !== targetSessionId) {
+        continue;
+      }
+    }
+
+    return messageId;
+  }
+
+  return null;
+}
+
 function syncSubagentMapsIntoMessages(
   dispatch: Dispatch<AppAction>,
   getState: () => AppState,
@@ -6002,16 +7726,6 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
     if (!rec) {
       return `primitive:${String(value)}`;
     }
-    const identity = normalizedCentralizedEventIdentity(rec);
-    if (identity) {
-      const payloadRecord = asRecord(rec.payload);
-      const syncEvent = asRecord(payloadRecord?.syncEvent);
-      const seq = asString(rec.seq, syncEvent?.seq, payloadRecord?.seq);
-      if (seq) {
-        return `identity:${identity}|seq:${seq}`;
-      }
-      return `identity:${identity}`;
-    }
     const id = asString(rec.id);
     if (id) {
       return `id:${id}`;
@@ -6163,17 +7877,6 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
     const messageId = getMessageId(message);
     if (messageId) {
       canonicalMessageId = messageId;
-      const baseRec = base as unknown as Record<string, unknown>;
-      // We must preserve all message IDs merged during this burst so that 
-      // the centralized event loop can properly map streamed events that 
-      // were tagged with earlier IDs (e.g. reasoning or step events prior 
-      // to a tool call finishing).
-      if (!Array.isArray(baseRec.coalescedIds)) {
-        baseRec.coalescedIds = [];
-      }
-      if (!baseRec.coalescedIds.includes(messageId)) {
-        baseRec.coalescedIds.push(messageId);
-      }
     }
 
     const content = extractRenderableAssistantTextForHydration(message).trim();
@@ -8863,9 +10566,8 @@ function handleStreamEvent(
       const errorMessage = asString(payload.message) || asString(payload.error) || asString(asRecord(payload.error)?.message);
       const errorReason = asString(payload.reason) || asString(payload.code);
 
-      // Only surface user-facing errors for genuine problems, not signaling events.
-      // The inline conversation card is driven by the matching message.updated
-      // sync event, so this branch only cleans up state and logging.
+      // Only show user-facing errors for genuine problems, not signaling events
+      // Error events are used for various purposes - only show toasts for actual errors
       const isGenuineError = errorMessage &&
         errorMessage.trim().length > 0 &&
         // Filter out signaling/completion messages
@@ -8888,6 +10590,7 @@ function handleStreamEvent(
           errorMessage,
           errorReason,
         });
+        dispatch({ type: "ADD_ERROR_MESSAGE", payload: errorMessage });
       } else {
         logger.debug("Skipping error event - not user-facing", {
           normalizedEventType,
@@ -8896,9 +10599,7 @@ function handleStreamEvent(
         });
       }
 
-      // The matching message.updated sync event carries info.error and renders
-      // the inline conversation card. Avoid duplicating that same failure as a
-      // toast, but always clean up the loading state.
+      // Always clean up processing state
       dispatch({
         type: "SET_ASSISTANT_TURN_PENDING",
         payload: { pending: false, messageId: null },

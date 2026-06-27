@@ -516,6 +516,13 @@ export class ChatViewProvider
   private executingQueueSessionIds: Set<string> = new Set();
 
   private processingSessionIds: Set<string> = new Set();
+  private recentPromptDispatch?:
+    | {
+      signature: string;
+      at: number;
+    }
+    | undefined;
+  private readonly seenClientRequestIds = new Map<string, number>();
   private recentlyAbortedSessionIds: Set<string> = new Set();
   private get isProcessingRequest(): boolean {
     return this.getEffectiveProcessingSessionIds().length > 0;
@@ -811,6 +818,7 @@ export class ChatViewProvider
     mode: PromptDispatchMode,
     payload: {
       sessionId?: string;
+      clientRequestId?: string;
       text?: string;
       files?: string[];
       contexts?: any[];
@@ -837,14 +845,82 @@ export class ChatViewProvider
       return;
     }
 
+    const clientRequestId =
+      typeof payload.clientRequestId === "string"
+        ? payload.clientRequestId.trim()
+        : "";
+    if (clientRequestId && this.hasSeenClientRequest(sessionId, clientRequestId)) {
+      this.logger.warn("[MessageFlow] Ignoring duplicate client request dispatch", {
+        mode,
+        sessionId,
+        clientRequestId,
+        textPreview: text.slice(0, 160),
+      });
+      return;
+    }
+
     this.logger.debug('[MessageFlow] Prompt dispatch initiated', {
       mode,
       sessionId,
+      clientRequestId: clientRequestId || undefined,
       textLength: text.length,
       hasFiles: (payload.files?.length ?? 0) > 0,
       hasContexts: (payload.contexts?.length ?? 0) > 0,
       hasImages: (payload.images?.length ?? 0) > 0
     });
+
+    if (mode === "send-now") {
+      const dedupeWindowMs = 1500;
+      const dedupeSignature = JSON.stringify({
+        sessionId,
+        text,
+        files: Array.isArray(payload.files) ? [...payload.files].sort() : [],
+        contexts: Array.isArray(payload.contexts)
+          ? payload.contexts.map((ctx) =>
+            JSON.stringify({
+              file: ctx?.file ?? null,
+              lineInfo: ctx?.lineInfo ?? null,
+              languageId: ctx?.languageId ?? null,
+              content: ctx?.content ?? null,
+            }),
+          )
+          : [],
+        images: Array.isArray(payload.images)
+          ? payload.images.map((image) =>
+            typeof image === "string"
+              ? image
+              : JSON.stringify({
+                filename: image?.filename ?? null,
+                dataUrl: image?.dataUrl ?? null,
+              }),
+          )
+          : [],
+        agent: payload.agent ?? null,
+        interactiveSubmit: payload.interactiveSubmit === true,
+      });
+      const now = Date.now();
+      if (
+        this.recentPromptDispatch &&
+        this.recentPromptDispatch.signature === dedupeSignature &&
+        now - this.recentPromptDispatch.at <= dedupeWindowMs
+      ) {
+        this.logger.warn("[MessageFlow] Ignoring duplicate send-now prompt dispatch", {
+          sessionId,
+          dedupeWindowMs,
+          interactiveSubmit: payload.interactiveSubmit === true,
+          textPreview: text.slice(0, 160),
+        });
+        return;
+      }
+      this.recentPromptDispatch = {
+        signature: dedupeSignature,
+        at: now,
+      };
+    }
+
+    if (clientRequestId) {
+      this.rememberClientRequest(sessionId, clientRequestId);
+    }
 
     const effectiveMode =
       mode === "send-now" &&
@@ -901,6 +977,7 @@ export class ChatViewProvider
         undefined,
         payload.userFacingText,
         {
+          clientRequestId: clientRequestId || undefined,
           interactiveSubmit: payload.interactiveSubmit === true,
         },
       );
@@ -911,6 +988,7 @@ export class ChatViewProvider
     this.queueItemSequence += 1;
     const prompt: QueuedPrompt = {
       id: promptId,
+      clientRequestId: clientRequestId || undefined,
       sessionId,
       createdAt: Date.now(),
       text,
@@ -951,6 +1029,35 @@ export class ChatViewProvider
     }
 
     await this.handleExecuteQueue(sessionId);
+  }
+
+  private clientRequestKey(sessionId: string, clientRequestId: string): string {
+    return `${sessionId}::${clientRequestId}`;
+  }
+
+  private pruneSeenClientRequests(now = Date.now()): void {
+    const ttlMs = 10 * 60 * 1000;
+    for (const [key, seenAt] of this.seenClientRequestIds.entries()) {
+      if (now - seenAt > ttlMs) {
+        this.seenClientRequestIds.delete(key);
+      }
+    }
+  }
+
+  private hasSeenClientRequest(sessionId: string, clientRequestId: string): boolean {
+    this.pruneSeenClientRequests();
+    return this.seenClientRequestIds.has(
+      this.clientRequestKey(sessionId, clientRequestId),
+    );
+  }
+
+  private rememberClientRequest(sessionId: string, clientRequestId: string): void {
+    const now = Date.now();
+    this.pruneSeenClientRequests(now);
+    this.seenClientRequestIds.set(
+      this.clientRequestKey(sessionId, clientRequestId),
+      now,
+    );
   }
 
   private async handleDispatchQueuedItem(
@@ -2737,6 +2844,7 @@ export class ChatViewProvider
           try {
             const isInteractiveSubmit = message?.interactiveSubmit === true;
             await this.schedulePromptDispatch("send-now", {
+              clientRequestId: message.clientRequestId,
               sessionId: message.sessionId,
               text: message.text,
               files: message.files,
@@ -3286,6 +3394,7 @@ export class ChatViewProvider
         }
         case "addToQueue": {
           await this.schedulePromptDispatch("queue", {
+            clientRequestId: message.clientRequestId,
             sessionId: message.sessionId,
             text: message.text,
             files: message.files,
@@ -6492,7 +6601,7 @@ export class ChatViewProvider
     retryWithoutStructuredOutput = false,
     structuredFallbackReason?: string,
     userFacingText?: string,
-    sendMeta?: { interactiveSubmit?: boolean },
+    sendMeta?: { interactiveSubmit?: boolean; clientRequestId?: string },
   ): Promise<void> {
     // Start feature flow tracking
     const flow = log.startFeatureFlow('SendMessage', {
@@ -6505,6 +6614,7 @@ export class ChatViewProvider
       hasImages: !!images?.length,
       imageCount: images?.length || 0,
       agent,
+      clientRequestId: sendMeta?.clientRequestId,
     });
 
     // Cache for retry
@@ -9521,6 +9631,7 @@ export class ChatViewProvider
     this.compactingSessions.clear();
     this.sessionsWithFileChangeEvidence.clear();
     this.processingSessionIds.clear();
+    this.seenClientRequestIds.clear();
     this.executingQueueSessionIds.clear();
     this.recentlyAbortedSessionIds.clear();
     this.sessionsNeedingTitle?.clear();

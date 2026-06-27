@@ -138,7 +138,7 @@ test('session service merges server/local messages and keeps richer duplicates',
   );
   assert.match(
     sessionServiceSource,
-    /function getAssistantContentAliasSignature\(message: unknown\): string \| undefined \{[\s\S]*getMessageRoleForSignature\(message\)[\s\S]*getMessageTextForSignature\(message\)[\s\S]*Math\.floor\(created \/ 15_000\)/,
+    /function getAssistantContentAliasSignatures\(message: unknown\): string\[\] \{[\s\S]*getMessageRoleForSignature\(message\)[\s\S]*getMessageTextForSignature\(message\)[\s\S]*Math\.floor\(created \/ 15_000\)/,
     'assistant alias signatures should use canonical role/text extraction and a time bucket to merge local assistant snapshots with SDK history',
   );
 });
@@ -210,6 +210,19 @@ test('chat provider stamps persisted assistant snapshots with session and create
     persistAssistantBody,
     /sessionID:\s*this\.firstNonEmptyString\([\s\S]*message\.message\?\.sessionID[\s\S]*sessionId[\s\S]*\)/,
     'persistAssistantMessage should stamp the active session id onto assistant snapshots before local caching',
+  );
+});
+
+test('session service upgrades duplicate raw sdk event identities to the richer payload', () => {
+  assert.match(
+    sessionServiceSource,
+    /function rawSdkEventPersistenceRichness\(event: unknown\): number/,
+    'session raw SDK persistence should define a richness scorer for duplicate event upgrades',
+  );
+  assert.match(
+    sessionServiceSource,
+    /const existingIndex = events\.findIndex\([\s\S]*getCentralizedDebugPayloadIdentity\(existing\) === eventIdentity[\s\S]*rawSdkEventPersistenceRichness\(snapshot\)\s*>=[\s\S]*rawSdkEventPersistenceRichness\(existingEvent\)/s,
+    'duplicate raw SDK events should keep the richer payload instead of dropping later updates',
   );
 });
 

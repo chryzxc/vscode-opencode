@@ -10,6 +10,10 @@ const panelSource = readSource(
   [joinFromRoot('webview', 'shared', 'src', 'chat', 'PanelComponents.tsx')],
   'PanelComponents.tsx',
 );
+const rawResponseSource = readSource(
+  [joinFromRoot('webview', 'shared', 'src', 'chat', 'lib', 'rawResponse.ts')],
+  'rawResponse.ts',
+);
 const handlerSource = readSource(
   [joinFromRoot('webview', 'shared', 'src', 'chat', 'lib', 'messageHandler.ts')],
   'messageHandler.ts',
@@ -220,6 +224,16 @@ test('final assistant normalization backfills live blocking question events when
 });
 
 test('SDK question replies use native question.reply transport', () => {
+  assert.match(
+    rawResponseSource,
+    /function interactiveEventsFromQuestionAskedEvent\(/,
+    'centralized raw event extraction should recognize SDK question.asked events directly',
+  );
+  assert.match(
+    rawResponseSource,
+    /interactiveEventFromQuestionRecord\([\s\S]*requestID,\s*questionIndex:\s*index/s,
+    'question.asked extraction should preserve request metadata for SDK-native replies',
+  );
   assert.match(
     panelSource,
     /const composerInteractiveEvents = useMemo\([\s\S]*candidate\.interactiveEvents[\s\S]*structuredInteractiveEvents/s,

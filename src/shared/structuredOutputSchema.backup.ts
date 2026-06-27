@@ -11,8 +11,7 @@
 
 export type StructuredResponseType =
   | "message"
-  | "implementation_plan"
-  | "question";
+  | "implementation_plan";
 
 export type StructuredOutputSchema = {
   type: "json_schema";
@@ -32,15 +31,15 @@ export const structuredOutputSchema: StructuredOutputSchema = {
   schema: {
     type: "object",
     description:
-      "Return a JSON object with a responseType field. Use 'message' for normal responses, 'implementation_plan' for multi-step plans with a plan object, or 'question' for user interactions with options.",
+      "Return a JSON object with a responseType field. Use 'message' for normal responses or 'implementation_plan' for multi-step plans with a plan object.",
     additionalProperties: false,
     required: ["responseType"],
     properties: {
       responseType: {
         type: "string",
-        enum: ["message", "implementation_plan", "question"],
+        enum: ["message", "implementation_plan"],
         description:
-          "Response type: 'message' for normal text, 'implementation_plan' for plans, 'question' for user choices",
+          "Response type: 'message' for normal text or 'implementation_plan' for plans",
       },
 
       message: {
@@ -61,32 +60,6 @@ export const structuredOutputSchema: StructuredOutputSchema = {
           summary: { type: "string", description: "One-line plan summary" },
         },
         required: ["title"],
-      },
-
-      question: {
-        type: "object",
-        description: "Interactive question requiring user input",
-        properties: {
-          question: { type: "string", description: "Question text to display" },
-          type: {
-            type: "string",
-            enum: ["question", "confirm", "quick_actions"],
-            description: "Interaction type",
-          },
-          options: {
-            type: "array",
-            description: "Available choices for the user",
-            items: {
-              type: "object",
-              properties: {
-                label: { type: "string", description: "Option label" },
-                value: { type: "string", description: "Option value" },
-              },
-              required: ["label"],
-            },
-          },
-        },
-        required: ["question"],
       },
     },
   },

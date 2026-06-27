@@ -371,7 +371,7 @@ export class StructuredOutputProcessor {
    */
   isInteractiveResponseType(value: unknown): boolean {
     const str = String(value).toLowerCase().trim();
-    return str === "question" || str === "interactive" || str === "confirm";
+    return str === "confirm" || str === "quick_actions";
   }
 
   /**
@@ -430,8 +430,7 @@ export class StructuredOutputProcessor {
     if (!rec) return false;
 
     const interactiveEvents =
-      (Array.isArray(rec.interactiveEvents) ? rec.interactiveEvents : undefined) ||
-      (Array.isArray(rec.question) ? [{ type: "question", question: rec.question }] : undefined);
+      Array.isArray(rec.interactiveEvents) ? rec.interactiveEvents : undefined;
 
     if (!interactiveEvents || interactiveEvents.length === 0) {
       return false;
@@ -909,11 +908,11 @@ export class StructuredOutputProcessor {
       rec.kind,
     );
     const normalizedResponseType = rawResponseType
-      ? rawResponseType.toLowerCase() === "interactive"
-        ? "question"
-        : rawResponseType.toLowerCase() === "conversation"
+      ? rawResponseType.toLowerCase() === "conversation"
           ? "message"
-          : rawResponseType.toLowerCase()
+          : ["question", "interactive", "confirm", "quick_actions"].includes(rawResponseType.toLowerCase())
+            ? undefined
+            : rawResponseType.toLowerCase()
       : undefined;
 
     const message =
@@ -942,35 +941,9 @@ export class StructuredOutputProcessor {
       ),
     );
 
-    const questionRec = this.asRecord(rec.question);
-    const topLevelOptions = Array.isArray(rec.options) ? rec.options : undefined;
-    const topLevelChoices = Array.isArray(rec.choices) ? rec.choices : undefined;
-    const topLevelActions = Array.isArray(rec.actions) ? rec.actions : undefined;
     const rawInteractiveEvents = Array.isArray(rec.interactiveEvents)
       ? (rec.interactiveEvents as StructuredAssistantOutput["interactiveEvents"])
       : undefined;
-    const hasQuestionPayload =
-      Boolean(questionRec) ||
-      Array.isArray(topLevelOptions) ||
-      Array.isArray(topLevelChoices) ||
-      Array.isArray(topLevelActions) ||
-      Array.isArray(rawInteractiveEvents);
-    const normalizedQuestion =
-      questionRec || hasQuestionPayload
-        ? {
-          ...(questionRec ?? {}),
-          ...(typeof (questionRec ?? {}).type === "undefined" ? { type: "question" } : {}),
-          ...(typeof (questionRec ?? {}).options === "undefined" && topLevelOptions
-            ? { options: topLevelOptions }
-            : {}),
-          ...(typeof (questionRec ?? {}).choices === "undefined" && topLevelChoices
-            ? { choices: topLevelChoices }
-            : {}),
-          ...(typeof (questionRec ?? {}).actions === "undefined" && topLevelActions
-            ? { actions: topLevelActions }
-            : {}),
-        }
-        : undefined;
 
     const fileChanges = this.normalizeStructuredFileChangesForValidation(
       rec.fileChanges,
@@ -986,7 +959,6 @@ export class StructuredOutputProcessor {
     const effectiveResponseType =
       normalizedResponseType ||
       (hasPlan ? "implementation_plan" : undefined) ||
-      (hasQuestionPayload ? "question" : undefined) ||
       (message ? "message" : undefined);
 
     if (
@@ -994,7 +966,6 @@ export class StructuredOutputProcessor {
       !message &&
       !hasPlan &&
       fileChanges.length === 0 &&
-      !normalizedQuestion &&
       !rawInteractiveEvents &&
       !subagents &&
       !subagentsDelta
@@ -1009,8 +980,6 @@ export class StructuredOutputProcessor {
       message,
       plan: hasPlan ? plan : undefined,
       fileChanges: fileChanges.length > 0 ? fileChanges : undefined,
-      question:
-        normalizedQuestion as StructuredAssistantOutput["question"] | undefined,
       interactiveEvents: rawInteractiveEvents,
       subagents: subagents as StructuredAssistantOutput["subagents"] | undefined,
       subagentsDelta:
@@ -1406,41 +1375,6 @@ export class StructuredOutputProcessor {
           return `Progress: ${titles}`;
         }
         return "📊 Working on tasks...";
-      case "question": {
-        const questionRecord = this.asRecord(structured.question);
-        const displayPrompt = this.firstNonEmptyString(
-          questionRecord?.displayPrompt,
-        );
-        if (displayPrompt) {
-          return displayPrompt;
-        }
-        const questionPrompt = this.firstNonEmptyString(
-          questionRecord?.question,
-          questionRecord?.message,
-          questionRecord?.content,
-        );
-        if (questionPrompt) {
-          return questionPrompt;
-        }
-        if (interactiveEvents && interactiveEvents.length > 0) {
-          const firstEvent = interactiveEvents[0];
-          const firstEventRecord = this.asRecord(firstEvent);
-          const eventDisplayPrompt = this.firstNonEmptyString(
-            firstEventRecord?.displayPrompt,
-          );
-          if (eventDisplayPrompt) {
-            return eventDisplayPrompt;
-          }
-          if (firstEvent.type === "question" && firstEvent.question) {
-            return firstEvent.question;
-          } else if (firstEvent.type === "confirm" && firstEvent.question) {
-            return firstEvent.question;
-          } else if (firstEvent.type === "message" && firstEvent.message) {
-            return firstEvent.message;
-          }
-        }
-        return "❓ Question for you";
-      }
       case "subagents":
         return "🤖 Subagents...";
       case "error":
@@ -1600,26 +1534,8 @@ export class StructuredOutputProcessor {
       updated.plan = structured.plan;
     }
 
-    if (structured.question && !updated.question) {
-      updated.question = structured.question;
-    }
-
     if (structured.reasoning && structured.reasoning.length > 0) {
       updated.reasoning = [...(updated.reasoning || []), ...structured.reasoning];
-    }
-
-    // Hydrated interactive/question turns should display the canonical prompt,
-    // not any leaked draft/reasoning body that a provider may have placed in
-    // content/text before the structured payload landed.
-    if (
-      (structured.type || structured.responseType) === "question" &&
-      fallbackMessage
-    ) {
-      updated.content = fallbackMessage;
-      updated.text = fallbackMessage;
-      if (!updated.message) {
-        updated.message = fallbackMessage;
-      }
     }
 
     updated.structuredOutput = structured;

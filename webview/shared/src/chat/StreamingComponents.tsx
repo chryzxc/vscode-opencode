@@ -1,5 +1,6 @@
 import { memo, useMemo, useState } from 'react';
 import {
+  Circle,
   Check,
   ChevronDown,
   ChevronRight,
@@ -10,15 +11,17 @@ import {
 
 import type { AppState, StreamingState, StreamingStep } from './lib/types';
 import vscode from './lib/vscode';
-import { getMessageIdForCanonical, getMessageRoleForCanonical } from './lib/store';
-import { AssistantResponseCard, FileIcon } from './MessageComponents';
+import { ResponseMessage, FileIcon } from './MessageComponents';
 
 export function ProgressStep({ step }: { step: StreamingStep }) {
   const isPending = step.status === 'pending';
+  const isRunning = step.status === 'running';
   const isError = step.status === 'error';
-  const isDone = !isPending && !isError;
+  const isDone = step.status === 'done';
 
   const statusIcon = isPending ? (
+    <Circle className="h-3.5 w-3.5 text-oc-text-dim" />
+  ) : isRunning ? (
     <Loader2 className="h-3.5 w-3.5 animate-spin text-oc-accent" />
   ) : isError ? (
     <X className="h-3.5 w-3.5 text-oc-red" />
@@ -135,8 +138,9 @@ type StreamingCardProps = {
   isContiguous?: boolean;
   streaming: StreamingState | null;
   interactiveEvents?: AppState["interactiveEvents"];
-  messages?: AppState["messages"];
   assistantTurnMessageId?: AppState["assistantTurnMessageId"];
+  transcriptAssistantMessageIds?: string[];
+  hasTranscriptAssistantForCurrentTurn?: boolean;
   currentSessionId?: AppState["currentSessionId"];
   subagentsByParentMessageId?: AppState["subagentsByParentMessageId"];
   subagentDetailsById?: AppState["subagentDetailsById"];
@@ -148,8 +152,9 @@ export const StreamingCard = memo(function StreamingCard({
   isContiguous,
   streaming,
   interactiveEvents,
-  messages,
   assistantTurnMessageId,
+  transcriptAssistantMessageIds,
+  hasTranscriptAssistantForCurrentTurn,
   currentSessionId,
   subagentsByParentMessageId,
   subagentDetailsById,
@@ -165,32 +170,27 @@ export const StreamingCard = memo(function StreamingCard({
         .map((value) => value.trim()),
     );
 
-    if (candidateIds.size === 0 || !Array.isArray(messages) || messages.length === 0) {
+    if (
+      candidateIds.size === 0 ||
+      !Array.isArray(transcriptAssistantMessageIds) ||
+      transcriptAssistantMessageIds.length === 0
+    ) {
       return false;
     }
 
-    return messages.some((message) => {
-      if (getMessageRoleForCanonical(message) !== "assistant") {
-        return false;
-      }
-      const messageId = getMessageIdForCanonical(message);
-      return !!messageId && candidateIds.has(messageId);
-    });
-  }, [assistantTurnMessageId, messages, streaming]);
+    return transcriptAssistantMessageIds.some((messageId) => candidateIds.has(messageId));
+  }, [assistantTurnMessageId, streaming, transcriptAssistantMessageIds]);
 
   // The live streaming card exists only for the in-flight assistant turn.
-  // Once the centralized assistant turn is finalized, the finalized
-  // AssistantResponseCard becomes the only source of truth for that turn's UI.
-  // Keeping this mounted after `isActive` flips false duplicates the entire
-  // assistant response block.
+  // Once the transcript owns the same turn, the finalized ResponseMessage
+  // becomes the only source of truth for that response block.
   const visible = useMemo(() => {
-    // A live assistant turn should show its response shell as soon as the SDK
-    // marks it active, even before the first visible token arrives. Otherwise
-    // the UI falls back to the global loading text and the response block
-    // appears to be missing during the first few stream ticks.
     if (!streaming) return false;
+    if (hasTranscriptAssistantForCurrentTurn) return false;
+    if (hasMatchingAssistantTurnInTranscript) return false;
+
     if (streaming.isActive) {
-      return !hasMatchingAssistantTurnInTranscript;
+      return true;
     }
 
     if (streaming.content.trim().length > 0) return true;
@@ -220,12 +220,18 @@ export const StreamingCard = memo(function StreamingCard({
     }
 
     return false;
-  }, [hasMatchingAssistantTurnInTranscript, interactiveEvents, streaming, subagentsByParentMessageId]);
+  }, [
+    hasMatchingAssistantTurnInTranscript,
+    hasTranscriptAssistantForCurrentTurn,
+    interactiveEvents,
+    streaming,
+    subagentsByParentMessageId,
+  ]);
 
   if (!visible || !streaming) return null;
 
   return (
-    <AssistantResponseCard
+    <ResponseMessage
       // TEMPORARY: keep the live streaming card activity-only. The canonical
       // assistant text is rendered by the finalized message card below.
       message={undefined}
@@ -233,7 +239,6 @@ export const StreamingCard = memo(function StreamingCard({
       hideLoadingText
       isContiguous={isContiguous}
       interactiveEvents={interactiveEvents}
-      messages={messages}
       currentSessionId={currentSessionId}
       subagentsByParentMessageId={subagentsByParentMessageId}
       subagentDetailsById={subagentDetailsById}

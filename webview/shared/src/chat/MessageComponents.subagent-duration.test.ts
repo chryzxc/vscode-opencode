@@ -4,7 +4,7 @@ import {
   getSubagentDisplayActivity,
   getSubagentDisplayDurationMs,
 } from "./lib/subagentDuration";
-import type { SubagentSummary } from "./lib/types";
+import type { SubagentSummary } from "./lib/subagents/types";
 
 function makeSubagent(overrides: Partial<SubagentSummary>): SubagentSummary {
   return {

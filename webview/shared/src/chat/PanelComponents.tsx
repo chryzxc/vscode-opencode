@@ -2086,7 +2086,10 @@ export function InputWrapper() {
   const normalizedTitleText = normalizePopoverText(eventTitleText);
   const normalizedContextText = normalizePopoverText(eventContextMessage);
   const hasDistinctTitle =
-    !!eventTitleText && normalizedTitleText !== normalizedBodyText;
+    !!eventTitleText &&
+    normalizedTitleText !== normalizedBodyText &&
+    !normalizedBodyText.includes(normalizedTitleText) &&
+    !normalizedTitleText.includes(normalizedBodyText);
   const hasDistinctContextMessage =
     !!eventContextMessage &&
     normalizedContextText !== normalizedBodyText &&
@@ -2298,10 +2301,16 @@ export function InputWrapper() {
     dispatch({ type: "SET_FILE_MENTION_PATHS", payload: {} }); // Clear file mention paths
     setSlashTrigger(null);
 
+    const clientRequestId =
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `req-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
     if (isProcessing) {
       const optimisticId = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       vscode.postMessage({
         type: "addToQueue",
+        clientRequestId,
         ...(sessionId ? { sessionId } : {}),
         text,
         files: currentFiles,
@@ -2336,6 +2345,7 @@ export function InputWrapper() {
 
     vscode.postMessage({
       type: "sendMessage",
+      clientRequestId,
       ...(sessionId ? { sessionId } : {}),
       text,
       files: currentFiles,
@@ -2523,9 +2533,21 @@ export function InputWrapper() {
     // Route question answers through questionReply and non-question events
     // (confirm, quick_actions, message) through the normal sendMessage path.
     const hasQuestionEvents = batch.some((resp) => resp.requestID);
-    if (hasQuestionEvents) {
+    const canReplyToSdkQuestion =
+      hasQuestionEvents &&
+      batch.every((resp) => typeof resp.requestID === "string" && resp.requestID.length > 0);
+    if (canReplyToSdkQuestion) {
+      dispatch({ type: "SET_PROCESSING", payload: false });
+      dispatch({ type: "SET_STEERING", payload: false });
+      dispatch({ type: "SET_STREAMING", payload: null });
       const answers = batch.map((resp) => [resp.text]);
       const requestID = batch.find((resp) => resp.requestID)?.requestID;
+      logger.info("[QUESTION DEBUG] submitting SDK question reply", {
+        requestID,
+        answerCount: answers.length,
+        answers,
+        sessionId: currentSessionId ?? null,
+      });
       vscode.postMessage({
         type: "questionReply",
         ...(currentSessionId ? { sessionId: currentSessionId } : {}),
@@ -2534,8 +2556,13 @@ export function InputWrapper() {
         text: displayText,
       });
     } else {
+      const clientRequestId =
+        typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+          ? crypto.randomUUID()
+          : `req-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
       vscode.postMessage({
         type: "sendMessage",
+        clientRequestId,
         ...(currentSessionId ? { sessionId: currentSessionId } : {}),
         text: displayText,
         agent: selectedAgent || null,
