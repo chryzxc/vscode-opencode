@@ -11,7 +11,7 @@ import * as cp from "child_process";
 import * as util from "util";
 import type { OpencodeServerManager } from "../../services/OpencodeServerManager";
 import type { ModelCapabilitiesService } from "../../services/ModelCapabilitiesService";
-import type { Command as SdkCommand } from "@opencode-ai/sdk" with { "resolution-mode": "import" };
+import type { Command as SdkCommand } from "@opencode-ai/sdk/v2" with { "resolution-mode": "import" };
 import type { ChatModelOption, ChatSlashCommand, SessionSettings } from "./types";
 import { LoggingCategories } from "../../utils/LoggingSchema";
 

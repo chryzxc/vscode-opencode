@@ -219,7 +219,7 @@ export class HistoryProcessor {
 
     return messages.map((message) => {
       const messageId = this.extractHistoryMessageId(message);
-      const override = overrides[messageId];
+      const override = messageId ? overrides[messageId] : undefined;
       if (!messageId || !override) {
         return message;
       }

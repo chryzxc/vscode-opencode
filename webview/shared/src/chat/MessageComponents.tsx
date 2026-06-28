@@ -1029,7 +1029,7 @@ export function FileIcon({
   useEffect(() => {
     setUseGenericFileIcon(!filePath);
     setShowSvgFallback(false);
-  }, [filePath, iconKeys.join("|")]);
+  }, [filePath, iconKeys.join("|"), themeCssVersion]);
 
   useEffect(() => {
     const icon = iconRef.current;
@@ -1039,10 +1039,6 @@ export function FileIcon({
 
     const frame = window.requestAnimationFrame(() => {
       if (hasThemeIcon(icon)) {
-        if (useGenericFileIcon || showSvgFallback) {
-          setUseGenericFileIcon(false);
-          setShowSvgFallback(false);
-        }
         return;
       }
 
@@ -1051,11 +1047,13 @@ export function FileIcon({
         return;
       }
 
-      setShowSvgFallback(true);
+      if (!showSvgFallback) {
+        setShowSvgFallback(true);
+      }
     });
 
     return () => window.cancelAnimationFrame(frame);
-  }, [filePath, iconKeys.join("|"), useGenericFileIcon, themeCssVersion]);
+  }, [filePath, iconKeys.join("|"), useGenericFileIcon, showSvgFallback, themeCssVersion]);
 
   return (
     <span
@@ -1992,12 +1990,9 @@ function TerminalBlockPreviewModal({
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-sm font-semibold">{title}</span>
-              <span className="rounded-full border border-oc-border-soft bg-oc-bg-soft px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] oc-text-secondary">
-                preview
-              </span>
             </div>
             <div className="mt-1 text-xs oc-text-secondary">
-              Full bash command and captured output
+              Command execution details and output
             </div>
           </div>
           <button
@@ -2131,12 +2126,9 @@ function SearchBlockPreviewModal({
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-sm font-semibold">{title}</span>
-              <span className="rounded-full border border-oc-border-soft bg-oc-bg-soft px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] oc-text-secondary">
-                details
-              </span>
             </div>
             <div className="mt-1 text-xs oc-text-secondary">
-              Full search block and output
+              Search query details and results
             </div>
           </div>
           <button
@@ -2247,6 +2239,9 @@ type ThoughtItem = {
   streamSeq?: number;
   source?: "stream" | "final" | "raw_debug";
   status?: "pending" | "done" | "error";
+  /** Unix-ms timestamps from part.time.start / part.time.end for duration display */
+  startedAt?: number;
+  endedAt?: number;
 };
 type ProgressItem = {
   key: string;
@@ -2459,10 +2454,14 @@ function thoughtItemsFromRawEventPayloads(
       continue;
     }
 
+    const partTimeStart = typeof partTime?.start === "number" ? partTime.start : undefined;
+    const partTimeEnd = typeof partTime?.end === "number" ? partTime.end : undefined;
     upsertThoughtItem({
       key,
       text: cleaned,
       status,
+      startedAt: partTimeStart,
+      endedAt: partTimeEnd,
       messageID:
         asString(part?.messageID) ||
         asString(part?.messageId) ||
@@ -5301,6 +5300,9 @@ function buildDisplayEvents(
         source,
         messageID: item.messageID,
         partID: item.partID,
+        // Carry timing through so the render layer can show "Thought for Xs"
+        startedAt: item.startedAt,
+        endedAt: item.endedAt,
         isImportant: false,
         updateCount: 1,
       });
@@ -5479,6 +5481,12 @@ function buildDisplayEvents(
       continue;
     }
 
+    // step-start / step-finish are internal lifecycle signals with no
+    // user-facing meaning — always suppress them to keep the timeline clean.
+    if (normalizedLabel === "step-start" || normalizedLabel === "step-finish") {
+      continue;
+    }
+
     rawEvents.push({
       key: event.key,
       kind: "activity",
@@ -5576,22 +5584,52 @@ export const SystemMessage = memo(function SystemMessage({
   content: string;
   accentColor?: string;
 }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const shouldCollapse = content.split("\n").length > 8 || content.length > 300;
+
   return (
-    <div className="oc-message-enter mb-4">
+    <div className="oc-message-enter mb-4 px-4">
       <div className="opacity-90 transition-opacity hover:opacity-100">
-        <div
-          className="mx-auto max-w-full rounded-r-md border-l pr-2"
-          style={{
-            borderLeftColor: accentColor,
-            backgroundColor: `color-mix(in srgb, ${accentColor} 4%, transparent)`,
+        <button
+          type="button"
+          onClick={() => {
+            if (shouldCollapse) setIsExpanded(!isExpanded);
           }}
+          className={cn(
+            "group relative block w-full max-w-full overflow-hidden rounded-lg border border-oc-border-soft text-left transition-colors hover:border-oc-border hover:bg-oc-panel-soft/60",
+            shouldCollapse ? "cursor-pointer" : "cursor-default"
+          )}
+          style={{
+            borderLeftWidth: "3px",
+            borderLeftColor: accentColor,
+            backgroundColor: `color-mix(in srgb, ${accentColor} 4%, var(--oc-bg-soft))`,
+          }}
+          aria-label={shouldCollapse ? (isExpanded ? "Collapse system prompt" : "Expand system prompt") : undefined}
         >
-          <pre
-            className="oc-code max-h-[220px] overflow-y-auto whitespace-pre-wrap break-words py-1 pl-4 pr-2 sm:pl-5"
+          <div
+            className={cn(
+              "relative overflow-hidden transition-all",
+              (shouldCollapse && !isExpanded) ? "max-h-[140px]" : "max-h-none"
+            )}
           >
-            {content}
-          </pre>
-        </div>
+            <pre className="oc-code whitespace-pre-wrap break-words p-3 pr-8 pb-3 text-[11px] leading-relaxed text-oc-text-soft font-medium">
+              {content}
+            </pre>
+            {shouldCollapse && !isExpanded && (
+              <div
+                className="pointer-events-none absolute inset-x-0 bottom-0 h-16"
+                style={{
+                  background: `linear-gradient(to top, color-mix(in srgb, ${accentColor} 4%, var(--oc-bg-soft)) 10%, transparent 100%)`
+                }}
+              />
+            )}
+          </div>
+          {shouldCollapse && (
+            <div className="oc-timeline-caret pointer-events-none absolute bottom-2 right-2 inline-flex h-6 w-6 items-center justify-center rounded-full">
+              <ChevronDown className={cn("h-3 w-3 oc-text-secondary transition-transform", isExpanded ? "rotate-180" : "")} />
+            </div>
+          )}
+        </button>
       </div>
     </div>
   );
@@ -6019,6 +6057,35 @@ function getAssistantTurnMetadataFromCentralizedEvents(
       if (modelID) metadata.modelID = modelID;
       if (providerID) metadata.providerID = providerID;
       if (variant) metadata.variant = variant;
+      continue;
+    }
+
+    const info = asRecord(properties?.info) || asRecord(syncData?.info);
+    if (info) {
+      if (normalizedType === "session.updated" || normalizedType === "session.updated.1") {
+        const agent = asString(info.agent);
+        if (agent) metadata.agent = agent;
+        const model = asRecord(info.model);
+        if (model) {
+          const modelID = asString(model.modelID) || asString(model.id);
+          const providerID = asString(model.providerID);
+          const variant = asString(model.variant);
+          if (modelID) metadata.modelID = modelID;
+          if (providerID) metadata.providerID = providerID;
+          if (variant) metadata.variant = variant;
+        }
+      } else if (normalizedType === "message.updated" || normalizedType === "message.updated.1") {
+        if (asString(info.role) === "assistant") {
+          const agent = asString(info.agent);
+          if (agent) metadata.agent = agent;
+          const modelID = asString(info.modelID);
+          const providerID = asString(info.providerID);
+          const variant = asString(info.variant);
+          if (modelID) metadata.modelID = modelID;
+          if (providerID) metadata.providerID = providerID;
+          if (variant) metadata.variant = variant;
+        }
+      }
     }
   }
 
@@ -7126,19 +7193,20 @@ function ResponseMessageInner({
     return match?.color ?? undefined;
   }, [agentName, availableAgents]);
   const modelName = useMemo(() => {
-    if (turnMetadata.modelID && turnMetadata.providerID) {
-      return `${turnMetadata.modelID}/${turnMetadata.providerID}`;
-    }
-    if (turnMetadata.modelID) {
-      return turnMetadata.modelID;
+    if (turnMetadata.providerID && turnMetadata.modelID) {
+      return `${turnMetadata.providerID}/${turnMetadata.modelID}`;
     }
     if (turnMetadata.providerID) {
       return turnMetadata.providerID;
     }
+    if (turnMetadata.modelID) {
+      return turnMetadata.modelID;
+    }
     if (streaming?.isActive) {
       if (streaming.model?.name) return streaming.model.name;
-      if (streaming.modelID && streaming.providerID)
-        return `${streaming.modelID}/${streaming.providerID}`;
+      if (streaming.providerID && streaming.modelID)
+        return `${streaming.providerID}/${streaming.modelID}`;
+      if (streaming.providerID) return streaming.providerID;
       if (streaming.modelID) return streaming.modelID;
     }
     return modelLabel(message ?? ({} as Message));
@@ -7672,38 +7740,41 @@ function ResponseMessageInner({
           </div>
         )}
 
-        {!isContiguous && (
-          <div className="oc-msg-header mb-2 flex flex-wrap items-start justify-between gap-1.5">
-            <div className="oc-msg-header-main flex min-w-0 flex-1 items-center gap-1.5">
-              <div className="oc-msg-header-left flex items-center gap-1.5 min-w-0">
-                <div className="oc-msg-header-text flex min-w-0 items-center gap-1.5 flex-wrap">
-                      <span
-                        className="oc-msg-agent-name font-semibold text-oc-sm truncate min-w-0"
-                        style={
-                          agentColor
-                            ? {
-                              color: `color-mix(in srgb, var(--oc-text) 88%, ${agentColor})`,
-                            }
-                            : undefined
-                        }
-                      >
-                        {agentName !== "assistant" ? agentName : "AI"}
-                      </span>
+        <div className="oc-msg-header mb-2 flex flex-wrap items-start justify-between gap-1.5">
+          <div className="oc-msg-header-main flex min-w-0 flex-1 items-center gap-1.5">
+            <div className="oc-msg-header-left flex items-center gap-1.5 min-w-0">
+              <div className="oc-msg-header-text flex min-w-0 items-center gap-1.5 flex-wrap">
                       {modelName && modelName !== "assistant" && (
-                        <div className="flex min-w-0 items-center gap-1 opacity-60">
-                          <span className="text-oc-xs font-medium shrink-0">
-                            •
-                          </span>
-                          <span className="oc-msg-model-label min-w-0 truncate text-oc-xs">
-                            {modelName}
-                          </span>
-                        </div>
+                        <span className="oc-msg-model-label font-semibold text-oc-sm truncate min-w-0">
+                          {modelName}
+                        </span>
                       )}
                       {showMessageThinking && (
                         <div className="flex items-center gap-1 opacity-60">
-                          <span className="text-oc-xs font-medium shrink-0">•</span>
-                          <span className="oc-msg-thinking-label">
+                          {modelName && modelName !== "assistant" && (
+                            <span className="text-oc-xs font-medium shrink-0">•</span>
+                          )}
+                          <span className="oc-msg-thinking-label text-oc-xs truncate min-w-0">
                             Think {formatThinkingVariantLabel(thinkingVariant || "")}
+                          </span>
+                        </div>
+                      )}
+                      {agentName && agentName !== "assistant" && (
+                        <div className="flex min-w-0 items-center gap-1 opacity-60">
+                          {((modelName && modelName !== "assistant") || showMessageThinking) && (
+                            <span className="text-oc-xs font-medium shrink-0">•</span>
+                          )}
+                          <span
+                            className="oc-msg-agent-name min-w-0 truncate text-oc-xs"
+                            style={
+                              agentColor
+                                ? {
+                                  color: `color-mix(in srgb, var(--oc-text) 88%, ${agentColor})`,
+                                }
+                                : undefined
+                            }
+                          >
+                            {agentName}
                           </span>
                         </div>
                       )}
@@ -7761,7 +7832,6 @@ function ResponseMessageInner({
               )}
             </div>
           </div>
-        )}
 
         <div className="space-y-2">
           {(hasStickyTimelineActivity ||
@@ -7788,7 +7858,7 @@ function ResponseMessageInner({
                       ref={groupIdx === timelineDisplayEventGroups.length - 1 ? progressTimelineRef : undefined}
                       autoScrollToBottom={isStreamingActive && groupIdx === timelineDisplayEventGroups.length - 1}
                     >
-                      {group.events.map((event, index) => {
+                       {group.events.map((event, index) => {
                         const isLast = groupIdx === timelineDisplayEventGroups.length - 1 && index === group.events.length - 1;
                         const indicatorNode = (
                           <StepIndicator
@@ -7828,44 +7898,72 @@ function ResponseMessageInner({
                             {(() => {
                               if (event.kind === "reasoning") {
                                 const isExpanded = viewState.expandedReasoningSteps.has(event.key);
+                                // Compute elapsed thinking time for "Thought for Xs" label.
+                                // Uses whole seconds (no ms) for a clean, human-friendly display.
+                                const thinkingDuration = (() => {
+                                  if (!event.startedAt) return null;
+                                  const ms = Math.max(0, (event.endedAt ?? Date.now()) - event.startedAt);
+                                  if (ms < 1000) return "< 1s";
+                                  const secs = Math.round(ms / 1000);
+                                  if (secs < 60) return `${secs}s`;
+                                  const mins = Math.floor(secs / 60);
+                                  const rem = secs % 60;
+                                  return rem > 0 ? `${mins}m ${rem}s` : `${mins}m`;
+                                })();
+                                const isPending = event.status === "pending" || event.status === "running";
+                                const headerLabel = isPending
+                                  ? "Thinking…"
+                                  : thinkingDuration
+                                    ? `Thought for ${thinkingDuration}`
+                                    : "Thought";
                                 return (
-                                  <div className="flex items-start justify-between gap-2 w-full">
-                                    <div className="flex-1 min-w-0 flex-col items-start gap-2 w-full">
-                                      <div className="flex items-center gap-2 flex-wrap">
+                                  // Compact single-line header: ● Thought for Xs >
+                                  <div className="w-full">
+                                    <button
+                                      type="button"
+                                      className={cn(
+                                        "oc-reasoning-row",
+                                        isExpanded && "is-expanded",
+                                        isPending && "is-pending",
+                                      )}
+                                      onClick={() => {
+                                        // Toggle this reasoning step's expansion in local view state
+                                        setViewState((prev) => {
+                                          const next = new Set(prev.expandedReasoningSteps);
+                                          if (next.has(event.key)) {
+                                            next.delete(event.key);
+                                          } else {
+                                            next.add(event.key);
+                                          }
+                                          return { ...prev, expandedReasoningSteps: next };
+                                        });
+                                      }}
+                                      aria-expanded={isExpanded}
+                                    >
+                                      {/* "Thought for Xs" label */}
+                                      <span className="oc-reasoning-row-label">{headerLabel}</span>
+                                      {/* Chevron: rotates 90° when expanded */}
+                                      {!isPending && (
                                         <span
                                           className={cn(
-                                            "oc-refined-event-label",
-                                            "reasoning",
+                                            "oc-reasoning-chevron",
+                                            isExpanded && "is-expanded",
                                           )}
-                                          data-operation={labelLower}
+                                          aria-hidden="true"
                                         >
-                                          {event.label}
+                                          &rsaquo;
                                         </span>
+                                      )}
+                                    </button>
+                                    {/* Expanded reasoning content */}
+                                    {isExpanded && event.summary && (
+                                      <div className="oc-reasoning-body">
+                                        <MarkdownRenderer
+                                          content={event.summary}
+                                          className="markdown-body"
+                                        />
                                       </div>
-
-                                      <div className="flex min-w-0 flex-1 flex-col gap-1 oc-refined-event-content w-full">
-                                        {event.summary && (
-                                          <div className={cn(
-                                            "w-full relative transition-all duration-200",
-                                            !isExpanded && "max-h-[80px] overflow-hidden",
-                                            isExpanded && "max-h-none",
-                                          )}>
-                                            <div className={cn(
-                                              "oc-refined-event-summary text-left w-full",
-                                              !isExpanded && "reasoning-subtle-fade"
-                                            )}>
-                                              <MarkdownRenderer
-                                                content={event.summary}
-                                                className="markdown-body"
-                                              />
-                                            </div>
-                                            {!isExpanded && (
-                                              <div className="reasoning-fade-indicator" />
-                                            )}
-                                          </div>
-                                        )}
-                                      </div>
-                                    </div>
+                                    )}
                                   </div>
                                 );
                               } else {
@@ -7894,28 +7992,20 @@ function ResponseMessageInner({
                                   />
                                 ) : (
                                   <div className="flex flex-col items-start gap-2 w-full min-w-0">
-                                    <div className="flex items-center gap-2 flex-wrap">
-                                      <span
-                                        className={cn(
-                                          "oc-refined-event-label",
-                                          "activity",
-                                        )}
-                                        data-operation={labelLower}
-                                      >
+                                    <div className="flex items-center gap-2 flex-wrap min-h-[20px]">
+                                      <span className="font-medium text-oc-text capitalize text-[13px]">
                                         {event.label}
                                       </span>
-                                      {event.source && event.source !== "stream" && event.source !== "final" && (
-                                        <span className="oc-refined-meta-badge">
-                                          {event.source === "raw_debug"
-                                            ? "raw"
-                                            : event.source}
-                                        </span>
-                                      )}
-                                      {event.internal && (
-                                        <span className="oc-refined-meta-badge">
-                                          internal
-                                        </span>
-                                      )}
+                                      {(() => {
+                                        const desc = (event.activityDetail?.metadata?.description as string) || (event.activityDetail?.input?.description as string);
+                                        return desc ? (
+                                          <span className="text-oc-text-soft text-xs flex items-center gap-2">
+                                            <span>&middot;</span>
+                                            <span>{desc}</span>
+                                          </span>
+                                        ) : null;
+                                      })()}
+                                      {/* Event source and internal badges intentionally hidden */}
                                     </div>
 
                                     <div className="flex flex-col gap-1 w-full">
@@ -7947,7 +8037,6 @@ function ResponseMessageInner({
                                                           )
                                                     }
                                                     patternInHeader={false}
-                                                    scope={event.label}
                                                     path={isGlobSearch ? undefined : event.filePath}
                                                     include={event.activityDetail?.input?.include as string || event.activityDetail?.input?.Include as string}
                                                   outputMode={event.activityDetail?.input?.output_mode as string || event.activityDetail?.input?.outputMode as string}
@@ -8000,7 +8089,6 @@ function ResponseMessageInner({
                                                         event.description,
                                                       )}
                                                       patternInHeader={true}
-                                                      scope={event.label}
                                                       path={undefined}
                                                       include={event.activityDetail?.input?.include as string || event.activityDetail?.input?.Include as string}
                                                       outputMode={event.activityDetail?.input?.output_mode as string || event.activityDetail?.input?.outputMode as string}
@@ -8014,7 +8102,6 @@ function ResponseMessageInner({
                                                         event.activityDetail?.query || event.summary,
                                                         event.description,
                                                       )}
-                                                      scope={event.label}
                                                       path={event.filePath}
                                                       include={event.activityDetail?.input?.include as string || event.activityDetail?.input?.Include as string}
                                                       outputMode={event.activityDetail?.input?.output_mode as string || event.activityDetail?.input?.outputMode as string}

@@ -51,7 +51,7 @@
 
 import * as vscode from "vscode";
 import { OpencodeServerManager } from "./OpencodeServerManager";
-import type { Session } from "@opencode-ai/sdk";
+import type { Session } from "@opencode-ai/sdk/v2";
 import { createLogger } from "../utils/Logger";
 import { LoggingCategories } from "../utils/LoggingSchema";
 import { restoreCheckpointIfPresent } from "./CheckpointRestore";
@@ -174,7 +174,7 @@ function sanitizeForPersistence(
 
 function estimateSerializedBytes(value: unknown): number {
   try {
-    return Buffer.RbyteLength(JSON.stringify(value), "utf8");
+    return Buffer.byteLength(JSON.stringify(value), "utf8");
   } catch {
     return Number.MAX_SAFE_INTEGER;
   }
@@ -740,7 +740,7 @@ function getAssistantContentAliasSignatures(message: unknown): string[] {
  */
 function extractUserMessageRecord(
   message: unknown,
-): (UserMessage & Record<string, unknown>) | (Record<string, unknown> & { role: "user" }) | undefined {
+): (Record<string, unknown> & { role?: "user" }) | undefined {
   if (!message || typeof message !== "object") {
     return undefined;
   }
@@ -748,9 +748,9 @@ function extractUserMessageRecord(
   const rec = message as Record<string, unknown>;
 
   if (rec.info && typeof rec.info === "object") {
-    const info = rec.info as SdkMessage & Record<string, unknown>;
+    const info = rec.info as Record<string, unknown>;
     if (info.role === "user") {
-      return info as UserMessage & Record<string, unknown>;
+      return info;
     }
     return undefined;
   }
@@ -1101,7 +1101,8 @@ function summarizePotentialAssistantDuplicates(messages: unknown[]): {
       continue;
     }
     totalAssistantMessages += 1;
-    const alias = getAssistantContentAliasSignature(message);
+    const aliasList = getAssistantContentAliasSignatures(message);
+    const alias = aliasList.length > 0 ? aliasList[0] : null;
     if (!alias) {
       continue;
     }
@@ -1384,7 +1385,7 @@ export class SessionService {
     const client = await this.serverManager.ensureRunning();
     log.featureStep(flow, 'server_ready');
 
-    const createOptions = title ? { body: { title } } : {};
+    const createOptions = title ? { title } : {};
     const response = await client.session.create(createOptions);
 
     if (!response.data) {
@@ -1619,7 +1620,7 @@ export class SessionService {
       log.featureStep(flow, 'fetching_session_from_server');
 
       const response = await client.session.get({
-        path: { id: sessionId },
+        sessionID: sessionId,
       });
 
       if (!response.data) {
@@ -1698,7 +1699,7 @@ export class SessionService {
     try {
       const client = await this.serverManager.ensureRunning();
       await client.session.delete({
-        path: { id: sessionId },
+        sessionID: sessionId,
       });
     } catch (error) {
       log.warn("Server delete failed, continuing with local cleanup", {
@@ -1771,8 +1772,8 @@ export class SessionService {
     try {
       const client = await this.serverManager.ensureRunning();
       const response = await client.session.update({
-        path: { id: sessionId },
-        body: { title: newTitle },
+        sessionID: sessionId,
+        title: newTitle,
       });
 
       if (!response.data) {
@@ -1875,9 +1876,7 @@ export class SessionService {
     try {
       const client = await this.serverManager.ensureRunning();
       const response = await client.session.messages({
-        path: {
-          id: sessionId,
-        },
+        sessionID: sessionId,
       });
 
       if (response.data && response.data.length > 0) {

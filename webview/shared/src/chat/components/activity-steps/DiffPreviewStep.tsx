@@ -207,12 +207,9 @@ function DiffPreviewModal({
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-sm font-semibold">{title || "Diff Preview"}</span>
-              <span className="rounded-full border border-oc-border-soft bg-oc-bg-soft px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] oc-text-secondary">
-                details
-              </span>
             </div>
             <div className="mt-1 text-xs oc-text-secondary">
-              File-level diff summary and excerpt
+              Detailed file changes and summary
             </div>
           </div>
           <button

@@ -142,7 +142,10 @@ function interactiveEventFromQuestionRecord(
   }
 
   const options = normalizeInteractiveChoices(record.options ?? record.choices ?? record.actions);
-  const allowCustomInput = record.allowCustomInput === true;
+  const allowCustomInput =
+    record.allowCustomInput === true ||
+    record.allow_custom_input === true ||
+    record.custom === true;
   if (options.length < 2 && !allowCustomInput) {
     return null;
   }
@@ -150,12 +153,12 @@ function interactiveEventFromQuestionRecord(
   return {
     type: "question",
     id: firstNonEmptyString(record.id) || fallbackId,
-    title: firstNonEmptyString(record.title) || undefined,
+    title: firstNonEmptyString(record.header, record.title) || undefined,
     requestID: requestMeta?.requestID,
     questionIndex: requestMeta?.questionIndex,
     question: prompt,
     options,
-    multiSelect: record.multiSelect === true,
+    multiSelect: record.multiSelect === true || record.multiple === true,
     allowCustomInput,
   };
 }

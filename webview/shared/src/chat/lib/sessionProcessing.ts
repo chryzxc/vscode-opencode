@@ -263,6 +263,13 @@ export function hasCompletedAssistantReplyForLatestTurn(
 export function hasActiveAssistantReplyInCentralizedTape(
   rawSdkEventPayloads?: unknown[],
 ): boolean {
+  // If the backend explicitly says the session is not busy (e.g. "waiting", "idle")
+  // then the assistant is done, even if we missed a step-finish or message finish event.
+  const latestStatusType = latestSessionStatusTypeFromCentralizedTape(rawSdkEventPayloads);
+  if (latestStatusType && !hasBusySessionStatusInCentralizedTape(rawSdkEventPayloads)) {
+    return false;
+  }
+
   return !!latestAssistantMessageIdFromCentralizedTape(rawSdkEventPayloads) &&
     !hasCompletedAssistantReplyInCentralizedTape(rawSdkEventPayloads);
 }

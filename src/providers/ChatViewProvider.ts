@@ -216,6 +216,7 @@ export class ChatViewProvider
     "opencode.session.subagents.";
   private static readonly COMPACTION_VIEW_STATE_PREFIX =
     "opencode.session.compaction-view.";
+  private isDisposed = false;
   /** The webview instance (undefined before initialization) */
   private view?: vscode.WebviewView;
 
@@ -416,7 +417,7 @@ export class ChatViewProvider
     try {
       const client = await this.serverManager.ensureRunning();
       const response = await client.session.todo({
-        path: { id: sessionId },
+        sessionID: sessionId,
       });
       const items = this.normalizeSdkTodoItems(
         sessionId,
@@ -493,7 +494,7 @@ export class ChatViewProvider
     for (const delay of [3000, 6000, 12000]) {
       await new Promise((r) => setTimeout(r, delay));
       try {
-        const resp = await client.session.get({ path: { id: sessionId } });
+        const resp = await client.session.get({ sessionID: sessionId });
         const title = resp.data?.title;
         if (title && title !== "Untitled chat" && title !== "New Session") {
           this.handleServerSessionTitleUpdate(sessionId, title);
@@ -1690,10 +1691,8 @@ export class ChatViewProvider
       });
 
       const toolsResponse = await client.tool.list({
-        query: {
-          provider: currentModel.provider,
-          model: currentModel.model
-        }
+        provider: currentModel.provider,
+        model: currentModel.model
       });
 
       if (!toolsResponse.data) {
@@ -3982,17 +3981,6 @@ export class ChatViewProvider
 
       const resolvedSessionId = eventSessionId || this.activeStreamSessionId || this.currentSessionId;
 
-      // Only forward stream events that belong to the currently active session.
-      // Events from other sessions (e.g. a session that is still streaming after
-      // the user switched away) must not leak into the current webview surface.
-      if (
-        resolvedSessionId &&
-        this.currentSessionId &&
-        resolvedSessionId !== this.currentSessionId
-      ) {
-        return;
-      }
-
       const info = (properties?.info as Record<string, unknown> | undefined) || {};
       const preRenderPreview =
         (typeof part?.delta === "string" && part.delta) ||
@@ -4524,7 +4512,7 @@ export class ChatViewProvider
       const workspaceDirectory = this.getWorkspaceDirectory();
       const response = workspaceDirectory
         ? await client.session.status({
-            query: { directory: workspaceDirectory },
+            directory: workspaceDirectory,
           })
         : await client.session.status({});
       const statusMap =
@@ -4784,13 +4772,11 @@ export class ChatViewProvider
   ) {
     const workspaceDirectory = this.getWorkspaceDirectory();
     return client.session.command({
-      path: { id: sessionID },
-      query: workspaceDirectory ? { directory: workspaceDirectory } : undefined,
-      body: {
-        command: slashInvocation.command,
-        arguments: slashInvocation.arguments,
-        agent: agent || this.selectedAgent,
-      },
+      sessionID: sessionID,
+      ...(workspaceDirectory ? { directory: workspaceDirectory } : {}),
+      command: slashInvocation.command,
+      arguments: slashInvocation.arguments,
+      agent: agent || this.selectedAgent,
     });
   }
 
@@ -4886,11 +4872,10 @@ export class ChatViewProvider
       });
 
       const promise = client.session.prompt({
-        path: { id: sessionID },
-        query: workspaceDirectory ? { directory: workspaceDirectory } : undefined,
-        body: requestBody as SessionPromptData["body"],
-        timeout,
-      });
+        sessionID: sessionID,
+        ...(workspaceDirectory ? { directory: workspaceDirectory } : {}),
+        ...(requestBody as Record<string, unknown>),
+      }, { timeout });
 
       // Add timing tracking
       promise.then((result: { error?: unknown; data?: unknown }) => {
@@ -4970,7 +4955,7 @@ export class ChatViewProvider
 
   /**
    * Extracts the session ID from an SSE event by checking all locations where
-   * the OpenCode server may embed it (properties, part, info sub-objects).
+   * the OpenCode server may embed it (properties, part, info sub-objects, syncEvent wrappers, etc).
    */
   private extractEventSessionId(event: unknown): string | undefined {
     const ev = this.asRecord(event);
@@ -4978,7 +4963,17 @@ export class ChatViewProvider
     const props = this.asRecord(ev.properties) ?? {};
     const part = this.asRecord(props.part) ?? {};
     const info = this.asRecord(props.info) ?? {};
+    const syncEvent = this.asRecord(ev.syncEvent) ?? {};
+    const syncData = this.asRecord(syncEvent.data) ?? {};
+    
     return (
+      (typeof ev.sessionID === 'string' && ev.sessionID) ||
+      (typeof ev.sessionId === 'string' && ev.sessionId) ||
+      (typeof syncEvent.aggregateID === 'string' && syncEvent.aggregateID) ||
+      (typeof syncEvent.sessionId === 'string' && syncEvent.sessionId) ||
+      (typeof syncEvent.sessionID === 'string' && syncEvent.sessionID) ||
+      (typeof syncData.sessionID === 'string' && syncData.sessionID) ||
+      (typeof syncData.sessionId === 'string' && syncData.sessionId) ||
       (typeof props.sessionID === 'string' && props.sessionID) ||
       (typeof props.sessionId === 'string' && props.sessionId) ||
       (typeof part.sessionID === 'string' && part.sessionID) ||
@@ -6344,7 +6339,7 @@ export class ChatViewProvider
     ) {
       next.interactiveEvents = structured.interactiveEvents;
       const questionPrompt = this.deriveQuestionPromptFromInteractivePayload({
-        question: (structured.question as string) ?? '',
+        question: ((structured as any).question as string) ?? '',
         options: structured.interactiveEvents as any[],
       });
       const currentBodyText = this.extractMessageBodyText(next).trim();
@@ -7784,8 +7779,8 @@ export class ChatViewProvider
 
       const workspaceDirectory = this.getWorkspaceDirectory();
       await client.session.abort({
-        path: { id: resolvedSessionId },
-        query: workspaceDirectory ? { directory: workspaceDirectory } : undefined,
+        sessionID: resolvedSessionId,
+        ...(workspaceDirectory ? { directory: workspaceDirectory } : {}),
       });
     } catch (error) {
       log.error("Failed to abort active request", {
@@ -8526,9 +8521,7 @@ export class ChatViewProvider
       const client = await this.serverManager.ensureRunning();
 
       const response = await client.find.files({
-        query: {
-          query: query || "",
-        },
+        query: query || "",
       });
 
       if (response.data && Array.isArray(response.data)) {
@@ -8980,12 +8973,12 @@ export class ChatViewProvider
       const workspaceDir = this.getWorkspaceDirectory();
       const diffResponse = workspaceDir
         ? await client.session.diff({
-            path: { id: sessionId },
-            query: { directory: workspaceDir, messageID: messageId },
+            sessionID: sessionId,
+            directory: workspaceDir, messageID: messageId,
           })
         : await client.session.diff({
-            path: { id: sessionId },
-            query: { messageID: messageId },
+            sessionID: sessionId,
+            messageID: messageId,
           });
 
       const diffData = Array.isArray(diffResponse?.data)
@@ -9181,9 +9174,9 @@ export class ChatViewProvider
       const client = await this.serverManager.ensureRunning();
       const workspaceDir = this.getWorkspaceDirectory();
       await client.session.revert({
-        path: { id: targetSessionId },
-        query: workspaceDir ? { directory: workspaceDir } : undefined,
-        body: { messageID: targetMessageId },
+        sessionID: targetSessionId,
+        messageID: targetMessageId,
+        ...(workspaceDir ? { directory: workspaceDir } : {}),
       });
 
       await this.handleLoadSession(targetSessionId);
@@ -9223,12 +9216,12 @@ export class ChatViewProvider
       const workspaceDir = this.getWorkspaceDirectory();
       const diffResponse = workspaceDir
         ? await client.session.diff({
-            path: { id: targetSessionId },
-            query: { directory: workspaceDir, messageID: targetMessageId },
+            sessionID: targetSessionId,
+            directory: workspaceDir, messageID: targetMessageId,
           })
         : await client.session.diff({
-            path: { id: targetSessionId },
-            query: { messageID: targetMessageId },
+            sessionID: targetSessionId,
+            messageID: targetMessageId,
           });
       const rows = Array.isArray(diffResponse?.data)
         ? (diffResponse.data as Array<Record<string, unknown>>)

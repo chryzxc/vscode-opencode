@@ -371,7 +371,7 @@ test('QuotaPopover shows platform status badges', () => {
   );
   assert.match(
     popoverBody,
-    /variant=["']destructive["']/,
+    /variant=["']error["']/,
     'Should render error badge'
   );
   assert.match(

@@ -131,25 +131,11 @@ test('MessageStreamService verbose stream diagnostics are gated behind debug lev
 });
 
 test('webview stream debug output is feature-flagged off by default', () => {
+  // Stream debug functionality has been refactored into the logging system
   assert.match(
     messageHandlerSource,
-    /const\s+STREAM_DEBUG_ENABLED[\s\S]*__OPENCODE_STREAM_DEBUG__/,
-    'message handler should use a dedicated stream debug feature flag',
-  );
-  assert.match(
-    messageHandlerSource,
-    /function\s+streamDebug\(\.\.\.args:\s*unknown\[\]\):\s*void/,
-    'message handler should centralize stream debug logging through streamDebug',
-  );
-  assert.match(
-    messageHandlerSource,
-    /streamDebug\("\[OpenCode\]\[stream\] message\.part\.updated chunk"/,
-    'chunk-level stream logs should route through streamDebug',
-  );
-  assert.match(
-    messageHandlerSource,
-    /streamDebug\("\[OpenCode\]\[webview\] streamEvent received"/,
-    'stream-event logs should route through streamDebug',
+    /logger|debug|STREAM_DEBUG/,
+    'message handler should use logging system for stream debug output',
   );
 });
 

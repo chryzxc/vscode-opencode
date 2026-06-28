@@ -67,30 +67,6 @@ export class StreamEventHandler {
                        eventType === "session.completed" ||
                        eventType === "session.created";
 
-    if (shouldLog) {
-      this.logger.debug("[SOURCE] stream event received", {
-        sessionId: this.getCurrentSessionId(),
-        eventType,
-        eventKeys: event && typeof event === "object" ? Object.keys(event) : [],
-      });
-
-      // Log detailed info for session.created events to check for provider/model data
-      if (eventType === "session.created") {
-        const properties = enrichedEvent?.properties || event?.properties || {};
-        const info = properties?.info || {};
-        this.logger.debug('===SUBAGENT_SPAWN=== [SESSION_CREATED] Stream event received', {
-          hasInfo: Boolean(info && typeof info === 'object'),
-          infoKeys: info ? Object.keys(info) : [],
-          hasProviderID: Boolean(info?.providerID),
-          hasModelID: Boolean(info?.modelID),
-          providerID: info?.providerID,
-          modelID: info?.modelID,
-          agentId: info?.agentId,
-          sessionId: sessionId,
-        });
-      }
-    }
-
     const enrichedEvent = this.structuredOutputProcessor.enrichStreamEvent(event);
 
     this.diagnosticsLogger.logStreamEventDiagnostics(event, enrichedEvent);
@@ -103,6 +79,35 @@ export class StreamEventHandler {
       properties?.sessionId ||
       info?.sessionId ||
       this.getCurrentSessionId();
+
+    if (shouldLog) {
+      this.logger.debug("[SOURCE] stream event received", {
+        sessionId: this.getCurrentSessionId(),
+        eventType,
+        eventKeys: event && typeof event === "object" ? Object.keys(event) : [],
+      });
+
+      if (shouldLog) {
+        this.logger.debug("Received stream event", {
+          type: eventType,
+          eventType,
+        });
+
+        // Log detailed info for session.created events to check for provider/model data
+        if (eventType === "session.created") {
+          this.logger.debug('===SUBAGENT_SPAWN=== [SESSION_CREATED] Stream event received', {
+            hasInfo: Boolean(info && typeof info === 'object'),
+            infoKeys: info ? Object.keys(info) : [],
+            hasProviderID: Boolean(info?.providerID),
+            hasModelID: Boolean(info?.modelID),
+            providerID: info?.providerID,
+            modelID: info?.modelID,
+            agentId: info?.agentId,
+            sessionId: sessionId,
+          });
+        }
+      }
+    }
 
     // Handle compaction status
     if (event?.type === "message.completed" && properties?.compaction) {

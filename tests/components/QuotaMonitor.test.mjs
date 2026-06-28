@@ -159,7 +159,7 @@ test('QuotaMonitor renders error badge for error status', () => {
   );
   assert.match(
     quotaPanelBody,
-    /variant=["']destructive["'][^>]*>\s*error\s*</,
+    /variant=["']error["'][^>]*>\s*error\s*</,
     'Should render error badge'
   );
 });

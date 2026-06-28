@@ -57,7 +57,7 @@ import * as vscode from "vscode";
 import * as cp from "child_process";
 import * as net from "net";
 import * as fs from "fs";
-import { createOpencodeClient, OpencodeClient } from "@opencode-ai/sdk";
+import { createOpencodeClient, OpencodeClient } from "@opencode-ai/sdk/v2";
 import { createLogger } from "../utils/Logger";
 import { LoggingCategories } from "../utils/LoggingSchema";
 import {
@@ -1356,12 +1356,10 @@ export class OpencodeServerManager {
         modelID: model.modelID,
       });
       const result = await this.client.session.summarize({
-        path: { id: sessionId },
-        body: {
-          providerID: model.providerID,
-          modelID: model.modelID,
-        },
-        query: workspaceDirectory ? { directory: workspaceDirectory } : undefined,
+        sessionID: sessionId,
+        providerID: model.providerID,
+        modelID: model.modelID,
+        ...(workspaceDirectory ? { directory: workspaceDirectory } : {}),
       });
       return result;
     } catch (error) {

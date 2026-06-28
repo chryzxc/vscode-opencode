@@ -3,6 +3,7 @@ import logger from './logger';
 import {
   getCentralizedAssistantContentFromRawSdkEventPayloads,
   normalizedCentralizedEventIdentity,
+  mergeRawSdkEventPayloads,
 } from "./messageHandler";
 import {
   getInteractiveEventsFromRawSdkEventPayloads,
@@ -1441,64 +1442,7 @@ export function messageRichnessScoreForCanonical(message: Message): number {
 }
 
 export function dedupeMirrorMessagesForCanonical(messages: Message[]): Message[] {
-  const rawSdkEventPayloadFingerprint = (value: unknown): string => {
-    const rec = asRecordLocal(value);
-    if (!rec) {
-      return `primitive:${String(value)}`;
-    }
-    const identity = normalizedCentralizedEventIdentity(rec);
-    if (identity) {
-      const payloadRecord = asRecordLocal(rec.payload);
-      const syncEvent = asRecordLocal(payloadRecord?.syncEvent);
-      const seq = asStringLocal(rec.seq, syncEvent?.seq, payloadRecord?.seq);
-      if (seq) {
-        return `identity:${identity}|seq:${seq}`;
-      }
-      return `identity:${identity}`;
-    }
-    const id = asStringLocal(rec.id);
-    if (id) {
-      return `id:${id}`;
-    }
-    const properties = asRecordLocal(rec.properties);
-    const type = asStringLocal(rec.type);
-    const messageId = asStringLocal(
-      rec.messageID,
-      rec.messageId,
-      properties?.messageID,
-      properties?.messageId,
-    );
-    const partId = asStringLocal(
-      rec.partID,
-      rec.partId,
-      properties?.partID,
-      properties?.partId,
-    );
-    const time = asStringLocal(rec.time, properties?.time);
-    return `${type}|${messageId}|${partId}|${time}|${String(value)}`;
-  };
 
-  const mergeRawSdkEventPayloads = (
-    preferred: unknown[] | undefined,
-    alternate: unknown[] | undefined,
-  ): unknown[] | undefined => {
-    const merged: unknown[] = [];
-    const seen = new Set<string>();
-    for (const source of [preferred, alternate]) {
-      if (!Array.isArray(source) || source.length === 0) {
-        continue;
-      }
-      for (const item of source) {
-        const key = rawSdkEventPayloadFingerprint(item);
-        if (seen.has(key)) {
-          continue;
-        }
-        seen.add(key);
-        merged.push(item);
-      }
-    }
-    return merged.length > 0 ? merged : undefined;
-  };
 
   const preserveRawDebugFields = (preferred: Message, alternate: Message): Message => {
     const preferredRecord = preferred as unknown as Record<string, unknown>;

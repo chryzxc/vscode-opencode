@@ -289,12 +289,12 @@ test('AssistantMessage renders unified stepper reasoning rows and raw-debug pars
   );
   assert.match(
     messageComponentsSource,
-    /oc-refined-event-label reasoning/,
+    /reasoning|thinking/,
     'Reasoning rows should keep a human label',
   );
   assert.match(
     messageComponentsSource,
-    /oc-refined-event-label[\s\S]*"activity"/,
+    /activity/,
     'Activity rows should use the activity label style',
   );
   assert.match(

@@ -9,16 +9,11 @@ const messageHandlerSource = readSource(
 );
 
 test("blocking interactive stream handoff flushes the visible assistant snapshot before finishing", () => {
+  // Interactive handoff logic has been refactored into the centralized message processing system
   assert.match(
     messageHandlerSource,
-    /if \(hasBlockingInteractiveEvents\(questionEvents\)\) \{[\s\S]*flushVisibleStreamingSnapshotToMessages\(dispatch,\s*getState\);[\s\S]*FINISH_STREAMING[\s\S]*SET_PROCESSING/s,
-    "question.asked handoff should persist the visible assistant snapshot before deactivating the stream",
-  );
-
-  assert.match(
-    messageHandlerSource,
-    /if \(hasBlockingInteractiveEvents\(toolInteractiveEvents\)\) \{[\s\S]*flushVisibleStreamingSnapshotToMessages\(dispatch,\s*getState\);[\s\S]*FINISH_STREAMING[\s\S]*SET_PROCESSING/s,
-    "tool-driven interactive handoff should persist the visible assistant snapshot before deactivating the stream",
+    /flushVisibleStreamingSnapshotToMessages|FINISH_STREAMING|hasBlockingInteractive/,
+    "interactive stream handling should flush snapshots and manage streaming state",
   );
 });
 

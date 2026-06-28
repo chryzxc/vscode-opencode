@@ -368,9 +368,8 @@ export class MessageStreamService {
       }
       const useScopedEventSubscription =
         !!workspaceDirectory && !this.preferUnscopedStreamSubscription;
-      const eventSubscribeOptions = useScopedEventSubscription
+      const eventSubscribeOpts = useScopedEventSubscription
         ? {
-          query: { directory: workspaceDirectory },
           onSseEvent: (sseEvent: unknown) => {
             const rec = this.asRecord(sseEvent);
             const data = rec?.data;
@@ -428,7 +427,10 @@ export class MessageStreamService {
       });
       let events;
       try {
-        events = await client.event.subscribe(eventSubscribeOptions);
+        events = await client.event.subscribe(
+          useScopedEventSubscription ? { directory: workspaceDirectory } : {},
+          eventSubscribeOpts
+        );
       } catch (subscribeError) {
         if (!workspaceDirectory) {
           throw subscribeError;
@@ -437,7 +439,7 @@ export class MessageStreamService {
           workspaceDirectory,
           error: subscribeError instanceof Error ? subscribeError.message : String(subscribeError),
         });
-        events = await client.event.subscribe({
+        events = await client.event.subscribe({}, {
           onSseEvent: (sseEvent: unknown) => {
             const rec = this.asRecord(sseEvent);
             const data = rec?.data;

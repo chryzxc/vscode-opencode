@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 
-import { Bot, Clock3, Copy, Sparkles, ArrowRight, X } from "lucide-react";
+import { Bot, Clock3, Copy, Sparkles, ArrowRight, X, ChevronDown } from "lucide-react";
 
 import { cn, formatDuration } from "@/utils";
 
@@ -45,11 +45,20 @@ function CallOmoAgentDetailModal({
   title,
   detail,
   onClose,
+  parsedMeta,
 }: {
   isOpen: boolean;
   title: string;
   detail: ActivityDetail | undefined;
   onClose: () => void;
+  parsedMeta: {
+    agent: string;
+    description: string;
+    prompt: string;
+    taskId: string;
+    sessionId: string;
+    status: string;
+  };
 }) {
   const [copied, setCopied] = useState(false);
 
@@ -96,24 +105,21 @@ function CallOmoAgentDetailModal({
         type="button"
         className="absolute inset-0 h-full w-full cursor-default"
         onClick={onClose}
-        aria-label="Close call_omo_agent details"
+        aria-label="Close subagent details"
       />
       <div
-        className="oc-modal-shell relative z-50 flex h-[min(92vh,900px)] min-h-0 w-full max-w-5xl flex-col overflow-hidden text-foreground"
+        className="oc-modal-shell relative z-50 flex max-h-[85vh] w-full max-w-4xl flex-col overflow-hidden text-foreground animate-in zoom-in-95 duration-200"
         role="dialog"
         aria-modal="true"
         aria-label={title}
       >
-        <div className="oc-modal-header flex shrink-0 items-start justify-between gap-3 bg-oc-panel-soft/70 p-3">
+        <div className="oc-modal-header flex shrink-0 items-start justify-between gap-3 bg-oc-panel-soft/70 p-4">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="text-sm font-semibold">{title}</span>
-              <span className="rounded-full border border-oc-border-soft bg-oc-bg-soft px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] oc-text-secondary">
-                details
-              </span>
+              <span className="text-base font-medium">{title}</span>
             </div>
             <div className="mt-1 text-xs oc-text-secondary">
-              Full call_omo_agent payload and metadata
+              Subagent invocation details and metadata
             </div>
           </div>
           <button
@@ -126,51 +132,43 @@ function CallOmoAgentDetailModal({
           </button>
         </div>
 
-        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-oc-border-soft bg-oc-bg/20 p-3">
-          <button
-            type="button"
-            onClick={handleCopy}
-            className="inline-flex items-center gap-2 rounded-md border border-oc-border bg-oc-bg-soft px-3 py-1.5 text-xs font-medium oc-text-secondary transition-colors hover:bg-oc-panel hover:text-foreground"
-          >
-            <Copy className="h-3.5 w-3.5" />
-            <span>{copied ? "Copied" : "Copy Payload"}</span>
-          </button>
-        </div>
-
-        <div className="min-h-0 flex-1 overflow-y-auto p-3">
-          <div className="grid gap-3 lg:grid-cols-[1.2fr_0.8fr]">
-            <section className="rounded-lg border border-oc-border-soft bg-oc-bg/20 p-3">
-              <div className="mb-2 text-[9px] font-semibold uppercase tracking-[0.18em] oc-text-secondary">
-                Summary
+        <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
+          <div className="flex flex-col gap-6 sm:gap-8">
+            <section>
+              <div className="mb-2 sm:mb-3 flex items-center gap-2">
+                <div className="h-4 w-1 rounded-full bg-oc-brand" />
+                <span className="text-[11px] font-bold uppercase tracking-[0.15em] oc-text-secondary">
+                  Instruction Prompt
+                </span>
               </div>
-              <div className="space-y-2 text-sm">
-                <div><span className="oc-text-secondary">Status:</span> {detail?.status ?? "unknown"}</div>
-                <div><span className="oc-text-secondary">Task ID:</span> {detail?.backgroundTaskId ?? detail?.id ?? "Unavailable"}</div>
-                <div><span className="oc-text-secondary">Session ID:</span> {detail?.childSessionId ?? detail?.parentSessionId ?? "Unavailable"}</div>
-                <div><span className="oc-text-secondary">Agent:</span> {detail?.agentRole ?? detail?.agentId ?? "Unavailable"}</div>
-                <div><span className="oc-text-secondary">Model:</span> {detail?.providerID && detail?.modelID ? `${detail.modelID}/${detail.providerID}` : detail?.modelID || detail?.providerID || "Unavailable"}</div>
+              <div className="rounded-xl border border-oc-border-soft bg-oc-bg-soft/50 p-4 sm:p-5 text-[13px] leading-relaxed text-oc-text shadow-sm transition-colors hover:bg-oc-bg-soft/80">
+                <MarkdownRenderer content={parsedMeta.prompt || "No prompt provided."} className="markdown-body" />
               </div>
             </section>
-            <section className="rounded-lg border border-oc-border-soft bg-oc-bg/20 p-3">
-              <div className="mb-2 text-[9px] font-semibold uppercase tracking-[0.18em] oc-text-secondary">
-                Raw Detail
+            
+            <section>
+              <div className="mb-2 sm:mb-3 flex items-center gap-2">
+                <div className="h-4 w-1 rounded-full bg-oc-brand/60" />
+                <span className="text-[11px] font-bold uppercase tracking-[0.15em] oc-text-secondary">
+                  Metadata
+                </span>
               </div>
-              <pre className="max-h-[220px] overflow-auto whitespace-pre-wrap break-words rounded-md border border-oc-border-soft bg-oc-panel/30 p-3 text-[11px] leading-relaxed text-oc-text-soft">
-                {detailText}
-              </pre>
+              <div className="grid grid-cols-1 gap-5 rounded-xl border border-oc-border-soft bg-oc-bg-soft/50 p-4 sm:p-5 text-[13px] shadow-sm transition-colors hover:bg-oc-bg-soft/80 sm:grid-cols-2 md:grid-cols-3">
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider oc-text-secondary">Status</span>
+                  <span className="inline-flex w-fit items-center rounded-md bg-oc-panel-soft px-2 py-1 text-xs font-medium text-oc-text capitalize border border-oc-border-soft shadow-sm">{parsedMeta.status || "Unknown"}</span>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider oc-text-secondary">Agent</span>
+                  <span className="font-medium text-oc-text capitalize">{parsedMeta.agent || "Default"}</span>
+                </div>
+                <div className="flex flex-col gap-1.5 sm:col-span-2 md:col-span-1">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider oc-text-secondary">Task ID</span>
+                  <span className="font-mono text-oc-text-soft text-[11px] break-all">{parsedMeta.taskId || "Unavailable"}</span>
+                </div>
+              </div>
             </section>
           </div>
-
-          {detail?.output ? (
-            <section className="mt-3 rounded-lg border border-oc-border-soft bg-oc-bg/20 p-3">
-              <div className="mb-2 text-[9px] font-semibold uppercase tracking-[0.18em] oc-text-secondary">
-                Latest Output
-              </div>
-              <div className="max-h-56 overflow-y-auto">
-                <MarkdownRenderer content={detail.output} className="markdown-body" />
-              </div>
-            </section>
-          ) : null}
         </div>
       </div>
     </div>,
@@ -221,96 +219,55 @@ export function CallOmoAgentStep({
 
   return (
     <>
-      <button
-        type="button"
-        className="group block w-full overflow-hidden text-left transition-colors"
-        onClick={() => setIsModalOpen(true)}
-      >
-        <div className="px-3 py-2 sm:px-3.5">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0 flex-1 space-y-1.5">
-              <div className="flex flex-wrap items-center gap-1.5">
-                <span className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-oc-border-soft bg-oc-bg-soft text-oc-text-secondary">
-                  <Sparkles className="h-3 w-3" />
-                </span>
-                <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-oc-text-secondary">
-                  call_omo_agent
-                </span>
-                <ActivityStepStatusChip status={isPending ? "pending" : isDone ? "done" : isError ? "error" : "running"} />
-                {runInBackground ? (
-                  <span className="rounded-full border border-oc-border-soft bg-oc-bg/30 px-2 py-0.5 text-[10px] oc-text-secondary">
-                    background
-                  </span>
-                ) : null}
-                {source === "raw_debug" ? (
-                  <span className="rounded-full border border-oc-border-soft bg-oc-bg/30 px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.12em] oc-text-secondary">
-                    raw
-                  </span>
-                ) : null}
-              </div>
-
-            </div>
-
-            <div className="mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-oc-border-soft bg-oc-bg-soft text-oc-text-secondary transition-colors group-hover:bg-oc-panel-soft">
-              <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
-            </div>
-          </div>
-
-          <div className="oc-activity-step-card mt-2 flex flex-col gap-2 p-3">
-            <div className="flex flex-wrap items-center gap-1.5 text-[9px] oc-text-secondary">
-              {durationLabel ? (
-                <span className="inline-flex items-center gap-1 rounded-full border border-oc-border-soft bg-oc-bg-soft px-2 py-0.5">
-                  <Clock3 className="h-3 w-3" />
-                  {durationLabel}
-                </span>
-              ) : null}
-              {resolvedBackgroundTaskId ? (
-                <span className="inline-flex items-center gap-1 rounded-full border border-oc-border-soft bg-oc-bg-soft px-2 py-0.5">
-                  <span className="uppercase tracking-[0.14em]">Task</span>
-                  <span className="font-mono text-oc-text-soft">{resolvedBackgroundTaskId}</span>
-                </span>
-              ) : null}
-              {sessionValue ? (
-                <span className="inline-flex items-center gap-1 rounded-full border border-oc-border-soft bg-oc-bg-soft px-2 py-0.5">
-                  <span className="uppercase tracking-[0.14em]">Session</span>
-                  <span className="font-mono text-oc-text-soft">{sessionValue}</span>
-                </span>
-              ) : null}
-              {runInBackground ? (
-                <span className="inline-flex items-center gap-1 rounded-full border border-oc-border-soft bg-oc-bg-soft px-2 py-0.5">
-                  <span className="uppercase tracking-[0.14em]">Mode</span>
-                  <span className="font-mono text-oc-text-soft">background</span>
-                </span>
-              ) : null}
-              {agent ? (
-                <span className="inline-flex items-center gap-1 rounded-full border border-oc-border-soft bg-oc-bg-soft px-2 py-0.5">
-                  <Bot className="h-3 w-3" />
-                  <span className="font-medium text-oc-text-soft">{agent}</span>
-                </span>
-              ) : null}
-            </div>
-
-            {summaryLine ? (
-              <div className="text-[10.5px] leading-relaxed text-oc-text-soft">
-                {summaryLine}
-              </div>
-            ) : null}
-
-            {output ? (
-              <div className="rounded-md border border-oc-border-soft bg-oc-panel-soft/40 px-2.5 py-2 text-[10px] leading-relaxed text-oc-text-soft">
-                <div className="line-clamp-3 whitespace-pre-wrap break-words">
-                  {output}
-                </div>
-              </div>
-            ) : null}
-          </div>
+      <div className="flex flex-col items-start gap-2 w-full min-w-0">
+        <div className="flex items-center gap-2 flex-wrap min-h-[20px]">
+          <span className="font-medium text-oc-text capitalize text-[13px]">
+            Invoke Subagent
+          </span>
+          {agent && (
+            <span className="text-oc-text-soft text-[13px] flex items-center gap-2">
+              <span>&middot;</span>
+              <span>{agent}</span>
+            </span>
+          )}
         </div>
-      </button>
+
+        <div className="flex flex-col gap-1.5 w-full">
+          <button
+            type="button"
+            onClick={() => setIsModalOpen(true)}
+            className="group relative w-full overflow-hidden rounded-lg border border-oc-border-soft bg-oc-bg-soft/60 text-left transition-colors hover:border-oc-border hover:bg-oc-panel-soft/60"
+            aria-label="View subagent details"
+          >
+            <div className="relative overflow-hidden p-2.5">
+              <div className="font-mono text-[11px] text-oc-text-soft whitespace-pre-wrap break-words flex items-start gap-2">
+                <span className="flex-1">{summaryLine}</span>
+              </div>
+              {(resolvedBackgroundTaskId || sessionValue) && (
+                <div className="mt-1.5 font-mono text-[10px] text-oc-text-soft/40">
+                  {resolvedBackgroundTaskId || sessionValue}
+                </div>
+              )}
+            </div>
+            <div className="oc-timeline-caret pointer-events-none absolute bottom-2 right-2 inline-flex h-6 w-6 items-center justify-center rounded-full transition-colors group-hover:bg-oc-panel-soft">
+              <ChevronDown className="h-3 w-3 oc-text-secondary transition-transform group-hover:translate-y-0.5" />
+            </div>
+          </button>
+        </div>
+      </div>
       <CallOmoAgentDetailModal
         isOpen={isModalOpen}
         title={modalTitle}
         detail={activityDetail}
         onClose={() => setIsModalOpen(false)}
+        parsedMeta={{
+          agent,
+          description,
+          prompt,
+          taskId: resolvedBackgroundTaskId || "Unavailable",
+          sessionId: sessionValue || "Unavailable",
+          status,
+        }}
       />
     </>
   );

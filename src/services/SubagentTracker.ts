@@ -93,11 +93,11 @@ export type SubagentUpdatePayload = {
 type FinalizeParentMessageOptions = {
   client: {
     session?: {
-      children?: (params: { path: { id: string } }) => Promise<{
+      children?: (params: { sessionID: string }) => Promise<{
         data?: unknown[];
         error?: unknown;
       }>;
-      messages?: (params: { path: { id: string } }) => Promise<{
+      messages?: (params: { sessionID: string }) => Promise<{
         data?: unknown[];
         error?: unknown;
       }>;
@@ -528,7 +528,7 @@ export class SubagentTracker {
     }
 
     try {
-      const response = await childrenFn({ path: { id: parentSessionId } });
+      const response = await childrenFn({ sessionID: parentSessionId });
       if (response.error) {
         for (const runId of runIds) {
           const detail = this.detailsById.get(runId);
@@ -1871,7 +1871,9 @@ export class SubagentTracker {
     }
 
     try {
-      const response = await messagesFn({ path: { id: childSessionId } });
+      const response = await messagesFn.call(client.session, {
+        sessionID: childSessionId,
+      });
       if (response.error || !Array.isArray(response.data)) {
         detail.hydrationUnavailable = true;
         return;

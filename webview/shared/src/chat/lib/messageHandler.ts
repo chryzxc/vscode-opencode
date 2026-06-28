@@ -3377,6 +3377,8 @@ function toInteractiveEvents(structured?: StructuredOutput): InteractiveEvent[] 
           multiSelect: event.multiSelect,
           allowCustomInput,
           contextMessage,
+          requestID: event.requestID,
+          questionIndex: event.questionIndex,
         } as InteractiveEvent;
       }
       if (event.type === 'message') {
@@ -5997,61 +5999,6 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
   const seenProgress = new Set<string>();
   const seenSteps = new Set<string>();
   const seenEdits = new Set<string>();
-  const rawSdkEventPayloadFingerprint = (value: unknown): string => {
-    const rec = asRecord(value);
-    if (!rec) {
-      return `primitive:${String(value)}`;
-    }
-    const identity = normalizedCentralizedEventIdentity(rec);
-    if (identity) {
-      const payloadRecord = asRecord(rec.payload);
-      const syncEvent = asRecord(payloadRecord?.syncEvent);
-      const seq = asString(rec.seq, syncEvent?.seq, payloadRecord?.seq);
-      if (seq) {
-        return `identity:${identity}|seq:${seq}`;
-      }
-      return `identity:${identity}`;
-    }
-    const id = asString(rec.id);
-    if (id) {
-      return `id:${id}`;
-    }
-    const properties = asRecord(rec.properties);
-    const type = asString(rec.type);
-    const messageId = asString(
-      rec.messageID,
-      rec.messageId,
-      properties?.messageID,
-      properties?.messageId,
-    );
-    const partId = asString(
-      rec.partID,
-      rec.partId,
-      properties?.partID,
-      properties?.partId,
-    );
-    const time = asString(rec.time, properties?.time);
-    return `${type}|${messageId}|${partId}|${time}|${String(value)}`;
-  };
-  const mergeRawSdkEventPayloads = (
-    target: unknown[] | undefined,
-    incoming: unknown[] | undefined,
-  ): unknown[] | undefined => {
-    const merged = Array.isArray(target) ? [...target] : [];
-    const seen = new Set<string>(merged.map(rawSdkEventPayloadFingerprint));
-    if (Array.isArray(incoming) && incoming.length > 0) {
-      for (const item of incoming) {
-        const key = rawSdkEventPayloadFingerprint(item);
-        if (seen.has(key)) {
-          continue;
-        }
-        seen.add(key);
-        merged.push(item);
-      }
-    }
-    return merged.length > 0 ? merged : undefined;
-  };
-
   let latestText = "";
   let latestTextScore = 0;
   let latestTextPart: MessagePart | undefined;
@@ -6350,6 +6297,77 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
   }
 
   return base;
+}
+
+export function rawSdkEventPayloadFingerprint(value: unknown): string {
+  const rec = asRecord(value);
+  if (!rec) {
+    return `primitive:${String(value)}`;
+  }
+  const payloadRecord = asRecord(rec.payload);
+  const eventToParse = payloadRecord ?? rec;
+  const identity = normalizedCentralizedEventIdentity(rec);
+  if (identity) {
+    const syncEvent = asRecord(payloadRecord?.syncEvent) ?? asRecord(rec.syncEvent);
+    const seq = asString(rec.seq, syncEvent?.seq, payloadRecord?.seq);
+    if (seq) {
+      return `identity:${identity}|seq:${seq}`;
+    }
+    return `identity:${identity}`;
+  }
+  const id = asString(eventToParse.id);
+  if (id) {
+    return `id:${id}`;
+  }
+  const properties = asRecord(eventToParse.properties);
+  const type = asString(eventToParse.type);
+  const part = asRecord(properties?.part);
+  const info = asRecord(properties?.info);
+  const messageId = asString(
+    eventToParse.messageID,
+    eventToParse.messageId,
+    properties?.messageID,
+    properties?.messageId,
+    part?.messageID,
+    part?.messageId,
+    info?.messageID,
+    info?.messageId,
+  );
+  const partId = asString(
+    eventToParse.partID,
+    eventToParse.partId,
+    properties?.partID,
+    properties?.partId,
+    part?.id,
+    part?.partID,
+    part?.partId,
+  );
+  const time = asString(eventToParse.time, properties?.time);
+  return `${type}|${messageId}|${partId}|${time}|${String(value)}`;
+}
+
+export function mergeRawSdkEventPayloads(
+  preferred: unknown[] | undefined,
+  alternate: unknown[] | undefined,
+): unknown[] | undefined {
+  const merged: unknown[] = [];
+  const seen = new Set<string>();
+  for (const source of [preferred, alternate]) {
+    if (!Array.isArray(source) || source.length === 0) {
+      continue;
+    }
+    for (let i = source.length - 1; i >= 0; i--) {
+      const item = source[i];
+      const key = rawSdkEventPayloadFingerprint(item);
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      merged.push(item);
+    }
+  }
+  merged.reverse();
+  return merged.length > 0 ? merged : undefined;
 }
 
 export function coalesceAdjacentAssistantHistoryMessages(messages: Message[]): Message[] {
@@ -7835,6 +7853,15 @@ function handleStreamEvent(
 
   switch (normalizedEventType) {
     case 'question.asked': {
+      const interactiveEvents = interactiveEventsFromQuestionAskedPayload(payload);
+      if (interactiveEvents.length > 0) {
+        dispatch({ type: "SET_INTERACTIVE_EVENTS", payload: interactiveEvents });
+        maybeInjectStreamingInteractiveContext(dispatch, getState, interactiveEvents);
+        if (hasBlockingInteractiveEvents(interactiveEvents)) {
+          dispatch({ type: "SET_PROCESSING", payload: false });
+          dispatch({ type: "FINISH_STREAMING" });
+        }
+      }
       break;
     }
     case 'message.part.updated':
@@ -10569,15 +10596,18 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             streamingMessageId,
             snapshotMessageId,
           );
-          dispatch({
-            type: "SET_ASSISTANT_TURN_PENDING",
-            payload: { pending: false, messageId: null },
-          });
-          dispatch({ type: "SET_PROCESSING", payload: false });
-          if (shouldClearStreamingAfterResponse) {
-            dispatch({ type: "SET_STREAMING", payload: null });
-          } else {
-            dispatch({ type: "FINISH_STREAMING" });
+          const isActiveSession = !responseSessionId || responseSessionId === getState().currentSessionId;
+          if (isActiveSession) {
+            dispatch({
+              type: "SET_ASSISTANT_TURN_PENDING",
+              payload: { pending: false, messageId: null },
+            });
+            dispatch({ type: "SET_PROCESSING", payload: false });
+            if (shouldClearStreamingAfterResponse) {
+              dispatch({ type: "SET_STREAMING", payload: null });
+            } else {
+              dispatch({ type: "FINISH_STREAMING" });
+            }
           }
           break;
         }

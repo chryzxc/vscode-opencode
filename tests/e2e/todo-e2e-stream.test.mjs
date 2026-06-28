@@ -107,8 +107,23 @@ test('messageHandler uses canonical normalization and ingestion for todo updates
   assert.match(messageHandlerSource, /function\s+ingestNormalizedTodo\(/, 'ingestNormalizedTodo should exist');
   assert.match(
     handlerBody,
-    /case\s+["']todoUpdate["']:\s*\{[\s\S]*const\s+normalized\s*=\s*normalizeTodoRecord\(item\);[\s\S]*ingestNormalizedTodo\(dispatch,\s*getState,\s*normalized\)/,
-    'todoUpdate event path should normalize and ingest through canonical pipeline',
+    /case\s+["']todoUpdate["']:\s*\{[\s\S]*const\s+normalized\s*=\s*normalizeTodoRecord\(item\)/,
+    'todoUpdate event path should normalize items through canonical pipeline',
+  );
+  assert.match(
+    handlerBody,
+    /case\s+["']todoUpdate["']:[\s\S]*if\s*\(action\s*===\s*["']add["']\)[\s\S]*type:\s*["']ADD_TODO_ITEM["']/,
+    'todoUpdate add action should dispatch ADD_TODO_ITEM',
+  );
+  assert.match(
+    handlerBody,
+    /case\s+["']todoUpdate["']:[\s\S]*else\s+if\s*\(action\s*===\s*["']update["']\)[\s\S]*type:\s*["']UPDATE_TODO_ITEM["']/,
+    'todoUpdate update action should dispatch UPDATE_TODO_ITEM',
+  );
+  assert.match(
+    handlerBody,
+    /case\s+["']todoUpdate["']:[\s\S]*ingestNormalizedTodo\(dispatch,\s*getState,\s*normalized\)/,
+    'todoUpdate should fall back to unified ingestion for unknown actions',
   );
   assert.match(
     messageHandlerSource,
@@ -117,7 +132,7 @@ test('messageHandler uses canonical normalization and ingestion for todo updates
   );
   assert.match(
     typesSource,
-    /status:\s*'pending'\s*\|\s*'in_progress'\s*\|\s*'completed'\s*\|\s*'cancelled'\s*\|\s*'failed';/,
+    /status.*['"]pending['"].*['"]in_progress['"].*['"]completed['"].*['"]cancelled['"].*['"]failed['"]/,
     'TodoItem type should include failed terminal status',
   );
 });

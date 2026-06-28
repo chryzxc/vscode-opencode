@@ -1889,13 +1889,15 @@ export function InputWrapper() {
   const [currentInteractiveIndex, setCurrentInteractiveIndex] = useState(0);
   const [isCustomMode, setIsCustomMode] = useState(false);
   const [customValue, setCustomValue] = useState("");
+  const [pendingAnswers, setPendingAnswers] = useState<
+    Record<string, { text: string | string[]; eventType: string }>
+  >({});
+  const [multiSelectValues, setMultiSelectValues] = useState<Set<string>>(new Set());
   const customInputRef = useRef<HTMLInputElement>(null);
   const [previewAttachmentSrc, setPreviewAttachmentSrc] = useState<
     string | null
   >(null);
-  const [pendingAnswers, setPendingAnswers] = useState<
-    Record<string, { text: string; eventType: string }>
-  >({});
+
   const [slashTrigger, setSlashTrigger] = useState<SlashTrigger | null>(null);
   const [mentionTrigger, setMentionTrigger] = useState<MentionTrigger | null>(null);
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
@@ -2087,16 +2089,14 @@ export function InputWrapper() {
   const normalizedContextText = normalizePopoverText(eventContextMessage);
   const hasDistinctTitle =
     !!eventTitleText &&
-    normalizedTitleText !== normalizedBodyText &&
-    !normalizedBodyText.includes(normalizedTitleText) &&
-    !normalizedTitleText.includes(normalizedBodyText);
+    normalizedTitleText !== normalizedBodyText;
   const hasDistinctContextMessage =
     !!eventContextMessage &&
     normalizedContextText !== normalizedBodyText &&
     normalizedContextText !== normalizedTitleText;
-  const showPromptInHeader = hasDistinctTitle;
+  const showPromptInHeader = !!eventTitleText;
   const showContextMessage = hasDistinctContextMessage;
-  const showPromptInBody = !hasDistinctTitle || hasDistinctContextMessage;
+  const showPromptInBody = !!eventBodyText && normalizedBodyText !== normalizedTitleText;
 
   const capitalizeFirst = (str: string) => {
     if (!str) return str;
@@ -2430,27 +2430,54 @@ export function InputWrapper() {
     }
   };
 
+  const initStatesForEvent = (eventIndex: number, currentAnswers: Record<string, { text: string | string[]; eventType: string }>) => {
+    const nextEvent = displayInteractiveEvents[eventIndex];
+    if (nextEvent && nextEvent.type === "question") {
+      const ans = currentAnswers[nextEvent.id];
+      if (ans) {
+        if (nextEvent.multiSelect) {
+          setMultiSelectValues(new Set(Array.isArray(ans.text) ? ans.text : [ans.text]));
+          setIsCustomMode(false);
+          setCustomValue("");
+        } else {
+          setMultiSelectValues(new Set());
+          const textAns = Array.isArray(ans.text) ? ans.text[0] : ans.text;
+          const isOption = nextEvent.options.some(o => (o.value || o.label) === textAns);
+          if (!isOption && nextEvent.allowCustomInput) {
+            setIsCustomMode(true);
+            setCustomValue(textAns);
+          } else {
+            setIsCustomMode(false);
+            setCustomValue("");
+          }
+        }
+      } else {
+        setMultiSelectValues(new Set());
+        setIsCustomMode(false);
+        setCustomValue("");
+      }
+    } else {
+      setMultiSelectValues(new Set());
+      setIsCustomMode(false);
+      setCustomValue("");
+    }
+  };
+
   const submitInteractiveResponse = (
-    text: string,
+    text: string | string[],
     eventId: string,
     eventType: string,
   ) => {
-    const trimmed = text.trim();
-    if (!trimmed) {
-      return;
-    }
-
     const nextAnswers = {
       ...pendingAnswers,
-      [eventId]: { text: trimmed, eventType },
+      [eventId]: { text, eventType },
     };
     setPendingAnswers(nextAnswers);
 
     // If there are more questions, go to the next one
     if (currentInteractiveIndex < displayInteractiveEvents.length - 1) {
       setCurrentInteractiveIndex((prev) => prev + 1);
-      setIsCustomMode(false);
-      setCustomValue("");
+      initStatesForEvent(currentInteractiveIndex + 1, nextAnswers);
     } else {
       // All questions are answered, submit batch
       submitBatchResponses(nextAnswers);
@@ -2458,7 +2485,7 @@ export function InputWrapper() {
   };
 
   const submitBatchResponses = (
-    answers: Record<string, { text: string; eventType: string }>,
+    answers: Record<string, { text: string | string[]; eventType: string }>,
   ) => {
     const batch = Object.entries(answers).map(([eventId, data]) => {
       const event = displayInteractiveEvents.find((e) => e.id === eventId);
@@ -2480,6 +2507,10 @@ export function InputWrapper() {
         questionIndex:
           event?.type === "question" ? event.questionIndex : undefined,
       };
+    }).sort((a, b) => {
+      const idxA = typeof a.questionIndex === "number" ? a.questionIndex : 0;
+      const idxB = typeof b.questionIndex === "number" ? b.questionIndex : 0;
+      return idxA - idxB;
     });
 
     const hasMultipleInteractivePrompts = batch.length > 1;
@@ -2488,7 +2519,7 @@ export function InputWrapper() {
     // context is only needed when a batched prompt carries multiple questions.
     const composedPrompt = batch
       .map((resp, index) => {
-        const answer = (resp.text || "").trim();
+        const answer = Array.isArray(resp.text) ? resp.text.join(", ") : (resp.text || "").trim();
         const question = (resp.questionText || "").trim();
         if (!answer) {
           return "";
@@ -2540,7 +2571,9 @@ export function InputWrapper() {
       dispatch({ type: "SET_PROCESSING", payload: false });
       dispatch({ type: "SET_STEERING", payload: false });
       dispatch({ type: "SET_STREAMING", payload: null });
-      const answers = batch.map((resp) => [resp.text]);
+      const answers = batch.map((resp) =>
+        Array.isArray(resp.text) ? resp.text : [resp.text],
+      );
       const requestID = batch.find((resp) => resp.requestID)?.requestID;
       logger.info("[QUESTION DEBUG] submitting SDK question reply", {
         requestID,
@@ -2616,9 +2649,9 @@ export function InputWrapper() {
                       type="button"
                       disabled={currentInteractiveIndex === 0}
                       onClick={() => {
-                        setCurrentInteractiveIndex((i) => i - 1);
-                        setIsCustomMode(false);
-                        setCustomValue("");
+                        const newIndex = currentInteractiveIndex - 1;
+                        setCurrentInteractiveIndex(newIndex);
+                        initStatesForEvent(newIndex, pendingAnswers);
                       }}
                       className="oc-quick-input-icon-btn disabled:opacity-30 transition-colors"
                       title="Previous"
@@ -2640,9 +2673,9 @@ export function InputWrapper() {
                         if (!currentInteractiveAnswered) {
                           return;
                         }
-                        setCurrentInteractiveIndex((i) => i + 1);
-                        setIsCustomMode(false);
-                        setCustomValue("");
+                        const newIndex = currentInteractiveIndex + 1;
+                        setCurrentInteractiveIndex(newIndex);
+                        initStatesForEvent(newIndex, pendingAnswers);
                       }}
                       className="oc-quick-input-icon-btn disabled:opacity-30 transition-colors"
                       title="Next"
@@ -2657,11 +2690,6 @@ export function InputWrapper() {
                       </div>
                     )}
                   </div>
-                  {showPromptInBody ? (
-                    <div className="text-[11px] leading-relaxed text-[var(--oc-text-soft)]">
-                      <MarkdownRenderer content={eventBodyText} />
-                    </div>
-                  ) : null}
                 </div>
                 <div className="flex items-center gap-1">
                   <button
@@ -2682,15 +2710,6 @@ export function InputWrapper() {
             </div>
 
             <div className="relative">
-              {Object.keys(pendingAnswers).length > 0 && (
-                <div className="mb-3 flex flex-wrap gap-1.5 p-2 bg-[var(--oc-panel)] rounded-md border border-dashed border-[var(--oc-border)]">
-                  {Object.entries(pendingAnswers).map(([eventId, data], idx) => (
-                    <span key={eventId} className="oc-quick-input-answer-chip rounded px-1.5 py-0.5 text-[10px]" title={data.text}>
-                      Q{idx + 1}: <span className="font-medium text-[var(--oc-text-soft)] truncate max-w-[120px] inline-block align-bottom">{data.text}</span>
-                    </span>
-                  ))}
-                </div>
-              )}
               {(showContextMessage || showPromptInBody) && (
                 <div className="mb-3 text-[12px] text-[var(--oc-text-soft)]">
                   {showContextMessage ? (
@@ -2758,31 +2777,78 @@ export function InputWrapper() {
               ) : (
                 <>
                   {event.type === "question" ? (
-                    <div className="flex flex-wrap gap-2">
-                      {event.options.map((option, index) => (
-                        <button
-                          key={`${event.id}-q-${option.id || option.value || index}`}
-                          type="button"
-                          className="oc-quick-input-option rounded-md border px-2.5 py-1.5 text-[11px] font-medium transition-all"
-                          title={option.description || option.label}
-                          onClick={() =>
-                            submitInteractiveResponse(
-                              option.value || option.label,
-                              event.id,
-                              event.type,
-                            )
+                    <div className="flex flex-col gap-2">
+                      <div className="flex flex-wrap gap-2">
+                        {event.options.map((option, index) => {
+                          const val = option.value || option.label;
+                          let isSelected = false;
+                          const ans = pendingAnswers[event.id];
+                          if (event.multiSelect) {
+                            isSelected = multiSelectValues.has(val);
+                          } else if (ans) {
+                            isSelected = ans.text === val || (Array.isArray(ans.text) && ans.text.includes(val));
                           }
-                        >
-                          {capitalizeFirst(option.label)}
-                        </button>
-                      ))}
-                      <button
-                        type="button"
-                        className="oc-quick-input-option-muted rounded-md border border-dashed bg-transparent px-2.5 py-1.5 text-[11px] font-medium transition-all"
-                        onClick={() => setIsCustomMode(true)}
-                      >
-                        Custom Answer...
-                      </button>
+                          return (
+                            <button
+                              key={`${event.id}-q-${option.id || val || index}`}
+                              type="button"
+                              className={`oc-quick-input-option rounded-md border px-2.5 py-1.5 text-[11px] font-medium transition-all ${
+                                isSelected ? "!bg-oc-accent !text-white !border-oc-accent shadow-[0_0_0_1px_var(--oc-accent)]" : ""
+                              }`}
+                              title={option.description || option.label}
+                              onClick={() => {
+                                const val = option.value || option.label;
+                                if (event.multiSelect) {
+                                  setMultiSelectValues((prev) => {
+                                    const next = new Set(prev);
+                                    if (next.has(val)) next.delete(val);
+                                    else next.add(val);
+                                    return next;
+                                  });
+                                } else {
+                                  submitInteractiveResponse(
+                                    val,
+                                    event.id,
+                                    event.type,
+                                  );
+                                }
+                              }}
+                            >
+                              {capitalizeFirst(option.label)}
+                            </button>
+                          );
+                        })}
+                        {event.allowCustomInput ? (
+                          <button
+                            type="button"
+                            className={`oc-quick-input-option-muted rounded-md border border-dashed px-2.5 py-1.5 text-[11px] font-medium transition-all ${
+                              isCustomMode && !event.multiSelect ? "!bg-oc-accent !text-white !border-oc-accent border-solid shadow-[0_0_0_1px_var(--oc-accent)]" : "bg-transparent"
+                            }`}
+                            onClick={() => setIsCustomMode(true)}
+                          >
+                            Custom Answer...
+                          </button>
+                        ) : null}
+                      </div>
+                      {event.multiSelect ? (
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            className="rounded-md bg-oc-accent px-3 py-1.5 text-xs font-semibold text-white hover:bg-oc-accent/90 transition-colors disabled:opacity-50"
+                            disabled={multiSelectValues.size === 0}
+                            onClick={() => {
+                              submitInteractiveResponse(
+                                Array.from(multiSelectValues),
+                                event.id,
+                                event.type,
+                              );
+                              setMultiSelectValues(new Set());
+                            }}
+                          >
+                            Submit Selection
+                          </button>
+                        </div>
+                      ) : null}
                     </div>
                   ) : null}
 
