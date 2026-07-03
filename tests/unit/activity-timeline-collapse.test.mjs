@@ -1,73 +1,66 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
+import test from "node:test";
+import assert from "node:assert/strict";
 
-import { readSource, joinFromRoot } from '../helpers/source-utils.mjs';
+import { joinFromRoot, readSource } from "../helpers/source-utils.mjs";
 
 const messageComponentsSource = readSource(
-  [joinFromRoot('webview', 'shared', 'src', 'chat', 'MessageComponents.tsx')],
-  'MessageComponents.tsx',
+  [joinFromRoot("webview", "shared", "src", "chat", "MessageComponents.tsx")],
+  "MessageComponents.tsx",
 );
 
-test.skip('activity timeline defaults to collapsed mode', () => {
-  // This feature is not yet implemented
+test("activity timeline tracks an explicit expanded-vs-collapsed assistant turn state", () => {
   assert.match(
     messageComponentsSource,
-    /showExpandedActivityTimeline:\s*false/,
-    'timeline should default to collapsed mode',
-  );
-});
-
-test.skip('activity timeline renders collapsed latest activity summary row', () => {
-  // This feature is not yet implemented
-  assert.match(
-    messageComponentsSource,
-    /!\s*viewState\.showExpandedActivityTimeline\s*&&\s*latestTimelineEvent/,
-    'collapsed mode should be gated by showExpandedActivityTimeline and latestTimelineEvent',
-  );
-  assert.match(
-    messageComponentsSource,
-    /collapsedTimelineTitle/,
-    'collapsed mode should display latest activity title',
-  );
-  assert.match(
-    messageComponentsSource,
-    /collapsedTimelineDescription/,
-    'collapsed mode should display latest activity description',
-  );
-});
-
-test.skip('activity timeline supports expand and collapse toggles', () => {
-  assert.match(
-    messageComponentsSource,
-    /showExpandedActivityTimeline:\s*true/,
-    'should set expanded timeline state to true when expanding',
+    /showExpandedActivityTimeline:\s*boolean/,
+    "assistant cards should track whether the completed turn is expanded",
   );
   assert.match(
     messageComponentsSource,
     /showExpandedActivityTimeline:\s*false/,
-    'should set expanded timeline state to false when collapsing',
-  );
-  assert.match(
-    messageComponentsSource,
-    />\s*Expand\s*</,
-    'should render an Expand control',
-  );
-  assert.match(
-    messageComponentsSource,
-    />\s*Collapse\s*</,
-    'should render a Collapse control',
+    "completed assistant turns should default to collapsed mode",
   );
 });
 
-test.skip('collapsed activity timeline reflects fallback in-progress placeholder', () => {
+test("activity timeline only collapses after the assistant turn is finished", () => {
   assert.match(
     messageComponentsSource,
-    /const collapsedDisplayTitle = showInProgressActivityPlaceholder\s*\?\s*"IN PROGRESS"/,
-    'collapsed timeline should show IN PROGRESS title when fallback placeholder is active',
+    /const canCollapseCompletedAssistantTurn =[\s\S]*!isLiveAssistantTurn[\s\S]*hasStickyTimelineActivity;/,
+    "collapse should only be enabled for non-live assistant turns that already have activity",
   );
   assert.match(
     messageComponentsSource,
-    /const collapsedDisplayDescription = showInProgressActivityPlaceholder\s*\?\s*"Working in the background\.\.\."/,
-    'collapsed timeline should show background-working description when fallback placeholder is active',
+    /const isAssistantTurnCollapsed =[\s\S]*!viewState\.showExpandedActivityTimeline;/,
+    "collapsed mode should be derived from the completed-turn gate plus local expansion state",
+  );
+});
+
+test("collapsed activity timeline renders the worked-for summary affordance", () => {
+  assert.match(
+    messageComponentsSource,
+    /const collapsedTimelineLabel =[\s\S]*`Worked for \$\{formatDuration\(duration \* 1000\)\}`/s,
+    "collapsed assistant turns should summarize the completed work duration",
+  );
+  assert.match(
+    messageComponentsSource,
+    /data-assistant-section="activity-collapsed"/,
+    "collapsed assistant turns should render a dedicated collapsed activity row",
+  );
+  assert.match(
+    messageComponentsSource,
+    /Expand activity timeline and assistant response/,
+    "collapsed summary row should expand both the timeline and the hidden final response",
+  );
+});
+
+test("collapsed mode hides the final response section until expanded", () => {
+  assert.match(
+    messageComponentsSource,
+    /!\s*isAssistantTurnCollapsed\s*&&\s*showResponseSection/,
+    "final assistant response should stay hidden while the completed turn is collapsed",
+  );
+  assert.match(
+    messageComponentsSource,
+    /Collapse activity timeline and hide final response/,
+    "expanded completed turns should offer a way to collapse back to the summary row",
   );
 });

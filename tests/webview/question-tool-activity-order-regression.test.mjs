@@ -216,7 +216,7 @@ test("centralized conversation ordering preserves multiple assistant phases for 
   );
   assert.match(
     body,
-    /assistantEntries\?\.forEach\(\(entry\) => \{\s*pushMessageEntry\(entry\);/s,
+    /assistantEntries\?\.forEach\(\(assistantEntry\) => \{[\s\S]*pushMessageEntry\(assistantEntry\);/s,
     "conversation ordering should emit every assistant phase attached to the user turn in raw order",
   );
 });

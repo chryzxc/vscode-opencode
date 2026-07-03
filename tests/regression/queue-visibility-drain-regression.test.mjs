@@ -196,7 +196,7 @@ test.describe("Composer deferred delivery", () => {
 
     assert.match(
       body,
-      /\.\.\.\(isAiResponding \? \{ delivery: "deferred" \} : \{\}\)/,
+      /\.\.\.\(hasLiveAssistantTurn \? \{ delivery: "deferred" \} : \{\}\)/,
       "when the assistant is responding, sendPrompt must ask OpenCode to defer delivery server-side",
     );
   });

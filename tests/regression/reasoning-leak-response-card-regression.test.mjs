@@ -136,11 +136,11 @@ test('showResponseBody gates the MarkdownRenderer on !isLiveStream', () => {
   );
 });
 
-test('effectiveResponseContent uses visibleResolvedContent as primary source, planLeadMessage as fallback', () => {
+test('effectiveResponseContent uses visibleResolvedContent as primary source, visiblePlanPrelude as fallback', () => {
   assert.match(
     messageSource,
-    /visibleResolvedContent[\s\S]*\?\s*visibleResolvedContent[\s\S]*:\s*planLeadMessage/,
-    'effectiveResponseContent must use visibleResolvedContent first, planLeadMessage only when empty',
+    /visibleResolvedContent[\s\S]*\?\s*visibleResolvedContent[\s\S]*:\s*visiblePlanPrelude/,
+    'effectiveResponseContent must use visibleResolvedContent first, visiblePlanPrelude only when empty',
   );
 });
 

@@ -185,11 +185,11 @@ test('chat provider extractMessageBodyText uses space separator between text par
   );
 });
 
-test('effectiveResponseContent uses visibleResolvedContent first, planLeadMessage as fallback only', () => {
+test('effectiveResponseContent uses visibleResolvedContent first, visiblePlanPrelude as fallback only', () => {
   assert.match(
     messageSource,
-    /effectiveResponseContent\s*=[\s\S]*visibleResolvedContent[\s\S]*\?\s*visibleResolvedContent[\s\S]*:\s*planLeadMessage/,
-    'effectiveResponseContent must use visibleResolvedContent when available, falling back to planLeadMessage only when empty',
+    /effectiveResponseContent\s*:[\s\S]*visibleResolvedContent[\s\S]*\?\s*visibleResolvedContent[\s\S]*:\s*visiblePlanPrelude/,
+    'effectiveResponseContent must use visibleResolvedContent when available, falling back to visiblePlanPrelude only when empty',
   );
 });
 

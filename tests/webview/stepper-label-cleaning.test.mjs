@@ -177,7 +177,7 @@ test('cleanEventLabel returns empty string for filtered noise events', () => {
 test('cleanEventLabel is called when creating activity display events', () => {
     assert.match(
         messageComponentsSource,
-        /const cleanedLabel\s*=\s*cleanEventLabel\(metadataFirstLabel\)/,
+        /const cleanedLabel\s*=[\s\S]*\?\s*cleanEventLabel\([\s\S]*\)\s*:\s*cleanEventLabel\(metadataFirstLabel\)/,
         'buildDisplayEvents should call cleanEventLabel to process activity labels',
     );
 });
@@ -193,7 +193,7 @@ test('buildDisplayEvents skips events when cleanEventLabel returns empty', () =>
 test('buildDisplayEvents uses cleaned label in display event', () => {
     assert.match(
         messageComponentsSource,
-        /label:\s*cleanedLabel/,
+        /label:\s*isLifecycleMarker\s*\?\s*cleanedRawTitle\s*\|\|\s*cleanedLabel\s*:\s*cleanedLabel/,
         'Display events should use the cleaned label from cleanEventLabel',
     );
 });

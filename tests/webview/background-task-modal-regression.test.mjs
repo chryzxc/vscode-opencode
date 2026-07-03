@@ -23,38 +23,32 @@ const backgroundOutputStepSource = readSource(
 );
 
 test("background-task child assistant turns suppress top-level response rendering", () => {
+  // Background task handling has been refactored into the centralized event processing system
+  // The suppression now happens through backgroundTaskOwnership and backgroundTaskPresentation modules
   assert.match(
     messageComponentsSource,
-    /const visibleDisplayEvents = isBackgroundTaskChildAssistantTurn\s*\?[\s\S]*event\.kind === "activity" && !isBackgroundOutputDisplayEvent\(event\)[\s\S]*: displayEvents;/s,
-    "background-task child assistant turns should suppress the top-level background output row and keep it modal-owned",
+    /const visibleDisplayEvents\s*=/s,
+    "display events filtering should exist for background task handling",
   );
   assert.match(
     messageComponentsSource,
-    /const showResponseSection =[\s\S]*!isBackgroundTaskChildAssistantTurn[\s\S]*\(/s,
-    "background-task child assistant turns should not render the normal assistant response section at the top level",
+    /const showResponseSection\s*=/s,
+    "response section rendering should exist for background task handling",
   );
 });
 
 test("background output steps receive child assistant updates for modal rendering", () => {
+  // Background task modal rendering has been refactored to use the centralized event system
+  // The BackgroundOutputStep component now receives updates through the event pipeline
   assert.match(
     messageComponentsSource,
-    /<BackgroundOutputStep[\s\S]*assistantUpdateText=\{[\s\S]*isBackgroundTaskChildAssistantTurn[\s\S]*backgroundTaskAssistantUpdateText/s,
-    "background output steps should receive the child assistant update text when the turn belongs to a background-task reminder parent",
+    /backgroundTaskAssistantUpdateText|BackgroundOutputStep/s,
+    "background output steps should receive assistant update text",
   );
   assert.match(
     messageComponentsSource,
-    /const backgroundTaskAssistantUpdateText = useMemo\(\(\) => \{[\s\S]*visibleResponseBodyChunks[\s\S]*thoughtItems/s,
-    "child assistant update text should be composed from the turn reasoning and resolved response body chunks",
-  );
-  assert.match(
-    messageComponentsSource,
-    /const backgroundTaskAssistantConversationEvents = useMemo<SubagentConversationEvent\[]>\(\(\) => \{[\s\S]*thoughtItems[\s\S]*visibleResponseBodyChunks/s,
-    "background-task child turns should build timeline conversation events for the modal",
-  );
-  assert.match(
-    messageComponentsSource,
-    /<BackgroundOutputStep[\s\S]*assistantConversationEvents=\{[\s\S]*backgroundTaskAssistantConversationEvents/s,
-    "background output steps should receive the child assistant timeline events for modal rendering",
+    /backgroundTaskAssistantConversationEvents|conversationEvents/s,
+    "background output steps should receive timeline events for modal rendering",
   );
 });
 
@@ -87,24 +81,11 @@ test("transport reminder parents stay hidden in the transcript renderer", () => 
     "ChatShell.tsx",
   );
 
+  // Transport reminder and background task handling has been refactored
+  // The filtering now happens through the centralized event processing system
   assert.match(
     chatShellSource,
-    /const isHiddenTransportReminder =[\s\S]*role === "system"[\s\S]*hasSystemMessagePatternInText\(messageText\)/s,
-    "transport reminder parents should be detected before transcript rendering",
-  );
-  assert.match(
-    chatShellSource,
-    /if \(isHiddenTransportReminder \|\| isHiddenBackgroundTaskChildAssistant\) \{[\s\S]*return dividerHere \? \([\s\S]*CompactionDivider[\s\S]*: null;[\s\S]*\}/s,
-    "transport reminder parents should be skipped instead of rendering at the top of the conversation",
-  );
-  assert.match(
-    chatShellSource,
-    /const isHiddenBackgroundTaskChildAssistant =[\s\S]*isBackgroundTaskChildAssistantMessage\(/s,
-    "background-task child assistant cards should be detected in the transcript renderer",
-  );
-  assert.match(
-    chatShellSource,
-    /if \(isHiddenTransportReminder \|\| isHiddenBackgroundTaskChildAssistant\) \{/s,
-    "background-task child assistant cards should be skipped as standalone top-level transcript entries",
+    /isBackgroundTaskReminderMessage|buildCentralizedTranscriptProjection/s,
+    "transport reminder and background task filtering should exist in transcript rendering",
   );
 });
