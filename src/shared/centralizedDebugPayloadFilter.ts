@@ -16,8 +16,6 @@ const CENTRALIZED_DEBUG_EXCLUDED_PATH_RULES = [
       "server.connected",
       "server.connected.1",
       "server.heartbeat",
-      "step-start",
-      "step-finish",
       "message.part.delta",
       "message.part.delta.1",
     ],
@@ -27,6 +25,7 @@ const CENTRALIZED_DEBUG_EXCLUDED_PATH_RULES = [
     values: [
       "server.connected",
       "server.connected.1",
+      "server.heartbeat",
       "message.part.delta",
       "message.part.delta.1",
     ],
@@ -36,35 +35,31 @@ const CENTRALIZED_DEBUG_EXCLUDED_PATH_RULES = [
     values: [
       "server.connected",
       "server.connected.1",
+      "server.heartbeat",
       "message.part.delta",
       "message.part.delta.1",
     ],
   },
-  {
-    path: "properties.info.format.type",
-    values: ["json_schema"],
-  },
-  {
-    path: "payload.properties.info.format.type",
-    values: ["json_schema"],
-  },
-  {
-    path: "syncEvent.data.info.format.type",
-    values: ["json_schema"],
-  },
-  {
-    path: "payload.syncEvent.data.info.format.type",
-    values: ["json_schema"],
-  },
 ] as const;
 
-const CENTRALIZED_SESSION_PERSISTED_EVENT_TYPES = new Set([
-  "message.updated",
-  "message.part.updated",
-  "session.diff",
-]);
+const CENTRALIZED_DEBUG_STRIP_FORMAT_PATHS = [
+  "info.format",
+  "properties.info.format",
+  "payload.info.format",
+  "payload.properties.info.format",
+  "syncEvent.data.info.format",
+  "payload.syncEvent.data.info.format",
+] as const;
 
 /*
+ * Persistence policy:
+ * The centralized tape is now the source of truth, so persistence must be
+ * permissive. We only drop explicit transport noise (heartbeats, connected
+ * frames, deltas) via shouldIncludeCentralizedDebugPayload(). Semantic stream
+ * events like question.asked, message.completed, session.completed, tool
+ * activity, and other non-delta frames must remain persisted even when they do
+ * not appear in a narrow allowlist.
+ *
  * Previously excluded rules. Kept here commented during the blacklist
  * reduction pass so we can restore them without re-deriving the paths:
  *
@@ -108,6 +103,56 @@ function candidatePayloads(event: Record<string, unknown>): unknown[] {
     payloads.push(wrappedPayload);
   }
   return payloads;
+}
+
+function shallowCloneRecord(
+  value: Record<string, unknown>,
+): Record<string, unknown> {
+  return Array.isArray(value) ? [...value] as unknown as Record<string, unknown> : { ...value };
+}
+
+function stripDotPathIfJsonSchema(
+  root: Record<string, unknown>,
+  path: string,
+): void {
+  const segments = path.split(".");
+  if (segments.length === 0) {
+    return;
+  }
+
+  let current: Record<string, unknown> = root;
+  const parents: Array<{ node: Record<string, unknown>; key: string }> = [];
+
+  for (let index = 0; index < segments.length; index += 1) {
+    const key = segments[index];
+    const next = current[key];
+    const nextRecord = asRecord(next);
+    if (!nextRecord) {
+      return;
+    }
+
+    parents.push({ node: current, key });
+    if (index === segments.length - 1) {
+      const formatType = asString(nextRecord.type).trim().toLowerCase();
+      if (formatType !== "json_schema") {
+        return;
+      }
+
+      for (let cloneIndex = 0; cloneIndex < parents.length; cloneIndex += 1) {
+        const { node, key: cloneKey } = parents[cloneIndex];
+        node[cloneKey] = shallowCloneRecord(node[cloneKey] as Record<string, unknown>);
+        if (cloneIndex + 1 < parents.length) {
+          parents[cloneIndex + 1].node = node[cloneKey] as Record<string, unknown>;
+        }
+      }
+
+      const lastParent = parents[parents.length - 1];
+      delete lastParent.node[lastParent.key];
+      return;
+    }
+
+    current = nextRecord;
+  }
 }
 
 function normalizedCentralizedEventType(event: Record<string, unknown>): string {
@@ -260,6 +305,19 @@ export function dedupeCentralizedDebugPayloads(payloads: unknown[]): unknown[] {
   return deduped;
 }
 
+export function sanitizeCentralizedDebugPayload(payload: unknown): unknown {
+  const event = asRecord(payload);
+  if (!event) {
+    return payload;
+  }
+
+  const cloned = shallowCloneRecord(event);
+  for (const path of CENTRALIZED_DEBUG_STRIP_FORMAT_PATHS) {
+    stripDotPathIfJsonSchema(cloned, path);
+  }
+  return cloned;
+}
+
 /**
  * Returns true when a raw payload should remain visible in the centralized
  * debug tape.
@@ -358,7 +416,8 @@ export function shouldPersistCentralizedSessionEventPayload(payload: unknown): b
   // to be persisted. Tool events like bash, webfetch, etc. often come from
   // "/global/event" source and should be included in centralized data.
 
-  return CENTRALIZED_SESSION_PERSISTED_EVENT_TYPES.has(
-    normalizedCentralizedEventType(event),
-  );
+  // Persist every non-noise centralized event. The centralized tape is the
+  // durable source of truth, so trimming to a small allowlist can silently
+  // drop important lifecycle frames that power hydration and timeline parity.
+  return normalizedCentralizedEventType(event).length > 0;
 }

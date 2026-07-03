@@ -157,8 +157,8 @@ export class MessageStreamService {
   /** Structured logger */
   private logger = createLogger(LoggingCategories.STREAM_HANDLER);
 
-  /** Prefer unscoped stream subscriptions after a transport failure. */
-  private preferUnscopedStreamSubscription = false;
+  /** Prefer unscoped stream subscriptions so session events are not lost when the OpenCode project root differs from the VS Code workspace. */
+  private preferUnscopedStreamSubscription = true;
 
   private recentEventSignatures: Map<string, { timestamp: number }> = new Map();
 
@@ -241,6 +241,23 @@ export class MessageStreamService {
         this.logger.error("Auto-reconnect failed", {}, err as Error);
       });
     }, 1000);
+  }
+
+  private handleSdkSseError(source: string, error: unknown): void {
+    const isTransportFailure = error && this.isLikelyStreamTransportFailure(error);
+    if (isTransportFailure) {
+      this.preferUnscopedStreamSubscription = true;
+    }
+
+    this.logger.warn(`${source} SSE callback error`, {
+      preferUnscopedStreamSubscription: this.preferUnscopedStreamSubscription,
+      willScheduleReconnect: Boolean(isTransportFailure),
+      error: error instanceof Error ? error.message : String(error),
+    });
+
+    if (isTransportFailure) {
+      this.scheduleStreamReconnect(source, error);
+    }
   }
 
   private extractEventTypeHints(rawEvent: unknown): string[] {
@@ -368,6 +385,9 @@ export class MessageStreamService {
       }
       const useScopedEventSubscription =
         !!workspaceDirectory && !this.preferUnscopedStreamSubscription;
+      const eventFilterDirectory = useScopedEventSubscription
+        ? workspaceDirectory
+        : undefined;
       const eventSubscribeOpts = useScopedEventSubscription
         ? {
           onSseEvent: (sseEvent: unknown) => {
@@ -391,8 +411,7 @@ export class MessageStreamService {
             }
           },
           onSseError: (error: unknown) => {
-            this.logger.error("/event SSE callback error", {}, error as Error);
-            this.scheduleStreamReconnect("/event", error);
+            this.handleSdkSseError("/event", error);
           },
         }
         : {
@@ -417,13 +436,14 @@ export class MessageStreamService {
             }
           },
           onSseError: (error: unknown) => {
-            this.logger.error("/event SSE callback error", {}, error as Error);
-            this.scheduleStreamReconnect("/event", error);
+            this.handleSdkSseError("/event", error);
           },
         };
       this.logger.info("Subscribing to /event", {
         directory: workspaceDirectory,
         scoped: useScopedEventSubscription,
+        eventFilterDirectory,
+        preferUnscopedStreamSubscription: this.preferUnscopedStreamSubscription,
       });
       let events;
       try {
@@ -459,8 +479,7 @@ export class MessageStreamService {
             }
           },
           onSseError: (error: unknown) => {
-            this.logger.error("/event SSE callback error", {}, error as Error);
-            this.scheduleStreamReconnect("/event", error);
+            this.handleSdkSseError("/event", error);
           },
         });
       }
@@ -480,7 +499,7 @@ export class MessageStreamService {
           events!.stream,
           "/event",
           abortSignal,
-          workspaceDirectory,
+          eventFilterDirectory,
           startTime,
         ),
       ];
@@ -509,8 +528,7 @@ export class MessageStreamService {
               }
             },
             onSseError: (error: unknown) => {
-              this.logger.error("/global/event SSE callback error", {}, error as Error);
-              this.scheduleStreamReconnect("/global/event", error);
+              this.handleSdkSseError("/global/event", error);
             },
           });
           streamTasks.push(
@@ -518,7 +536,7 @@ export class MessageStreamService {
               globalEvents.stream,
               "/global/event",
               abortSignal,
-              workspaceDirectory,
+              eventFilterDirectory,
               startTime,
             ),
           );
@@ -978,21 +996,51 @@ export class MessageStreamService {
   }
 
   private getEventSignature(event: StreamEvent): string {
-    const directory =
-      typeof (event as Record<string, unknown>).directory === "string"
-        ? ((event as Record<string, unknown>).directory as string)
-        : undefined;
+    const eventRecord = this.asRecord(event) ?? {};
+    const properties = this.asRecord(eventRecord.properties) ?? {};
+    const part = this.asRecord(properties.part);
+    const info = this.asRecord(properties.info);
+    const syncId =
+      typeof eventRecord.syncId === "string" ? eventRecord.syncId : undefined;
+    const eventId =
+      (typeof eventRecord.id === "string" && eventRecord.id) ||
+      (typeof properties.id === "string" && properties.id) ||
+      (typeof part?.id === "string" && part.id) ||
+      (typeof info?.id === "string" && info.id) ||
+      syncId ||
+      undefined;
 
-    return JSON.stringify({
-      type: event.type,
-      properties: event.properties,
-      directory,
-    });
+    if (eventId) {
+      const sessionId =
+        (typeof eventRecord.sessionId === "string" && eventRecord.sessionId) ||
+        (typeof eventRecord.sessionID === "string" && eventRecord.sessionID) ||
+        (typeof properties.sessionID === "string" && properties.sessionID) ||
+        (typeof properties.sessionId === "string" && properties.sessionId) ||
+        (typeof part?.sessionID === "string" && part.sessionID) ||
+        (typeof part?.sessionId === "string" && part.sessionId) ||
+        (typeof info?.sessionID === "string" && info.sessionID) ||
+        (typeof info?.sessionId === "string" && info.sessionId) ||
+        "";
+
+      return JSON.stringify({
+        type: event.type,
+        sessionId,
+        eventId,
+      });
+    }
+
+    // Without a stable id, the old full-payload signature is prone to dropping
+    // meaningful repeated events before they ever reach the centralized tape.
+    // Let downstream centralized dedupe handle those cases more safely.
+    return "";
   }
 
   private isDuplicateEvent(event: StreamEvent): boolean {
     const now = Date.now();
     const signature = this.getEventSignature(event);
+    if (!signature) {
+      return false;
+    }
     const duplicateWindowMs = 750;
 
     const previousSeen = this.recentEventSignatures.get(signature);

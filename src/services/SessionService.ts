@@ -57,6 +57,7 @@ import { LoggingCategories } from "../utils/LoggingSchema";
 import { restoreCheckpointIfPresent } from "./CheckpointRestore";
 import {
   getCentralizedDebugPayloadIdentity,
+  sanitizeCentralizedDebugPayload,
 } from "../shared/centralizedDebugPayloadFilter";
 
 const log = createLogger(LoggingCategories.SESSION_SERVICE);
@@ -1271,6 +1272,52 @@ export class SessionService {
     return !!event;
   }
 
+  private describeRawSdkEventPayloadForLog(event: unknown): Record<string, unknown> {
+    const rec =
+      event && typeof event === "object" && !Array.isArray(event)
+        ? (event as Record<string, unknown>)
+        : undefined;
+    const properties =
+      rec?.properties && typeof rec.properties === "object" && !Array.isArray(rec.properties)
+        ? (rec.properties as Record<string, unknown>)
+        : undefined;
+    const info =
+      properties?.info && typeof properties.info === "object" && !Array.isArray(properties.info)
+        ? (properties.info as Record<string, unknown>)
+        : undefined;
+    const part =
+      properties?.part && typeof properties.part === "object" && !Array.isArray(properties.part)
+        ? (properties.part as Record<string, unknown>)
+        : undefined;
+
+    return {
+      eventType: typeof rec?.type === "string" ? rec.type : undefined,
+      source: typeof rec?.source === "string" ? rec.source : undefined,
+      sessionId:
+        typeof rec?.sessionId === "string"
+          ? rec.sessionId
+          : typeof rec?.sessionID === "string"
+            ? rec.sessionID
+            : typeof properties?.sessionId === "string"
+              ? properties.sessionId
+              : typeof properties?.sessionID === "string"
+                ? properties.sessionID
+                : undefined,
+      messageId:
+        typeof info?.id === "string"
+          ? info.id
+          : typeof part?.messageId === "string"
+            ? part.messageId
+            : typeof part?.messageID === "string"
+              ? part.messageID
+              : undefined,
+      partType: typeof part?.type === "string" ? part.type : undefined,
+      hasProperties: !!properties,
+      hasInfo: !!info,
+      hasPart: !!part,
+    };
+  }
+
   private filterPersistedRawSdkEventPayloads(events: unknown[] | undefined): unknown[] {
     if (!Array.isArray(events) || events.length === 0) {
       return [];
@@ -2109,6 +2156,10 @@ export class SessionService {
   async loadSessionRawSdkEventPayloads(sessionId: string): Promise<unknown[]> {
     const cached = this.rawSdkEventPayloadCache.get(sessionId);
     if (Array.isArray(cached)) {
+      log.info("[CENTRALIZED-TAPE][SESSION] load_raw_sdk_events_cache_hit", {
+        sessionId,
+        count: cached.length,
+      });
       return [...cached];
     }
     const value = this.context.workspaceState.get<unknown[]>(
@@ -2116,6 +2167,11 @@ export class SessionService {
     );
     const raw = Array.isArray(value) ? value : [];
     this.rawSdkEventPayloadCache.set(sessionId, [...raw]);
+    log.info("[CENTRALIZED-TAPE][SESSION] load_raw_sdk_events_workspace_state", {
+      sessionId,
+      count: raw.length,
+      hadStoredArray: Array.isArray(value),
+    });
     return raw;
   }
 
@@ -2220,24 +2276,41 @@ export class SessionService {
   }
 
   async appendRawSdkEventPayload(sessionId: string, event: unknown): Promise<void> {
+    const eventSummary = this.describeRawSdkEventPayloadForLog(event);
     log.info("[CENTRALIZED-TAPE][SESSION] append_received", {
       sessionId,
-      eventType: typeof (event as Record<string, unknown>)?.type === "string"
-        ? (event as Record<string, unknown>).type
-        : undefined,
+      ...eventSummary,
     });
+
     if (!this.shouldPersistRawSdkEventPayload(event)) {
-      log.info("[CENTRALIZED-TAPE][SESSION] append_skipped_by_filter", {
+      log.warn("[CENTRALIZED-TAPE][SESSION] append_rejected_by_filter", {
         sessionId,
-        eventType: typeof (event as Record<string, unknown>)?.type === "string"
-          ? (event as Record<string, unknown>).type
-          : undefined,
+        ...eventSummary,
       });
       return;
     }
-    const events = await this.loadSessionRawSdkEventPayloads(sessionId);
-    const snapshot = this.cloneRawSdkEventPayload(event);
+    
+    let events = this.rawSdkEventPayloadCache.get(sessionId);
+    let loadedFromState = false;
+    if (!Array.isArray(events)) {
+      const value = this.context.workspaceState.get<unknown[]>(
+        `${SessionService.RAW_SDK_EVENT_PAYLOADS_PREFIX}${sessionId}`,
+      );
+      events = Array.isArray(value) ? [...value] : [];
+      this.rawSdkEventPayloadCache.set(sessionId, events);
+      loadedFromState = true;
+      log.info("[CENTRALIZED-TAPE][SESSION] append_loaded_existing_events", {
+        sessionId,
+        loadedFromState,
+        existingCount: events.length,
+        hadStoredArray: Array.isArray(value),
+      });
+    }
+
+    const sanitizedEvent = sanitizeCentralizedDebugPayload(event);
+    const snapshot = this.cloneRawSdkEventPayload(sanitizedEvent);
     const eventIdentity = getCentralizedDebugPayloadIdentity(event);
+    let appendAction: "appended" | "replaced" | "duplicate-skipped" = "appended";
     if (eventIdentity) {
       const existingIndex = events.findIndex((existing) => {
         return getCentralizedDebugPayloadIdentity(existing) === eventIdentity;
@@ -2249,24 +2322,34 @@ export class SessionService {
           rawSdkEventPersistenceRichness(existingEvent)
         ) {
           events[existingIndex] = snapshot;
-          this.rawSdkEventPayloadCache.set(sessionId, events);
+          appendAction = "replaced";
+        } else {
+          appendAction = "duplicate-skipped";
         }
-        return;
+      } else {
+        events.push(snapshot);
       }
+    } else {
+      events.push(snapshot);
     }
-    events.push(snapshot);
-    this.rawSdkEventPayloadCache.set(sessionId, events);
-    log.info("[CENTRALIZED-TAPE][SESSION] append_queued", {
+
+    log.info("[CENTRALIZED-TAPE][SESSION] append_result", {
       sessionId,
-      newTotal: events.length,
-      eventType: typeof (event as Record<string, unknown>)?.type === "string"
-        ? (event as Record<string, unknown>).type
-        : undefined,
+      action: appendAction,
+      currentEventsLength: events.length,
+      loadedFromState,
+      hasIdentity: !!eventIdentity,
+      eventIdentity: eventIdentity || undefined,
+      ...eventSummary,
     });
 
     const existingTimer = this.rawSdkEventPersistTimers.get(sessionId);
     if (existingTimer) {
       clearTimeout(existingTimer);
+      log.info("[CENTRALIZED-TAPE][SESSION] append_reset_flush_timer", {
+        sessionId,
+        currentEventsLength: events.length,
+      });
     }
 
     this.rawSdkEventPersistTimers.set(
@@ -2276,11 +2359,19 @@ export class SessionService {
         this.rawSdkEventPersistTimers.delete(sessionId);
       }, 250),
     );
+    log.info("[CENTRALIZED-TAPE][SESSION] append_scheduled_flush", {
+      sessionId,
+      delayMs: 250,
+      currentEventsLength: events.length,
+    });
   }
 
   async flushRawSdkEventPayloads(sessionId: string): Promise<void> {
     const events = this.rawSdkEventPayloadCache.get(sessionId);
     if (!Array.isArray(events)) {
+      log.warn("[CENTRALIZED-TAPE][SESSION] flush_skipped_no_cache", {
+        sessionId,
+      });
       return;
     }
     const existingTimer = this.rawSdkEventPersistTimers.get(sessionId);
@@ -2288,14 +2379,31 @@ export class SessionService {
       clearTimeout(existingTimer);
       this.rawSdkEventPersistTimers.delete(sessionId);
     }
-    log.info("[CENTRALIZED-TAPE][SESSION] flush_raw_sdk_events", {
+    const storageKey = `${SessionService.RAW_SDK_EVENT_PAYLOADS_PREFIX}${sessionId}`;
+    log.info("[CENTRALIZED-TAPE][SESSION] flush_start", {
       sessionId,
-      total: events.length,
+      storageKey,
+      flushedEventsLength: events.length
     });
-    await this.context.workspaceState.update(
-      `${SessionService.RAW_SDK_EVENT_PAYLOADS_PREFIX}${sessionId}`,
-      [...events],
-    );
+    try {
+      await this.context.workspaceState.update(storageKey, [...events]);
+      const stored = this.context.workspaceState.get<unknown[]>(storageKey);
+      log.info("[CENTRALIZED-TAPE][SESSION] flush_complete", {
+        sessionId,
+        storageKey,
+        flushedEventsLength: events.length,
+        storedEventsLength: Array.isArray(stored) ? stored.length : 0,
+        storedIsArray: Array.isArray(stored),
+      });
+    } catch (error) {
+      log.error("[CENTRALIZED-TAPE][SESSION] flush_failed", {
+        sessionId,
+        storageKey,
+        flushedEventsLength: events.length,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
   }
 
   async flushAllRawSdkEventPayloads(): Promise<void> {

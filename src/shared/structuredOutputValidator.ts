@@ -396,7 +396,7 @@ export function sanitizeStructuredOutput(
     delete sanitized.message;
   }
 
-  let responseType = responseTypeSource;
+  const responseType = responseTypeSource;
 
   // Normalize interactiveEvents array
   // Handle JSON-stringified interactiveEvents array
