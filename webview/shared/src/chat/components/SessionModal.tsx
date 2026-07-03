@@ -16,7 +16,7 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
     sessionsList,
     currentSessionId,
     processingSessionIds,
-    messagesBySessionId,
+    rawSdkEventPayloadsBySessionId,
   } = useAppState();
   const dispatch = useAppDispatch();
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
@@ -189,15 +189,15 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
     // Find the session to get its title
     const session = sessionsList.find(s => s.id === sessionId);
     const sessionTitle = session?.title || sessionId;
-    const hasCachedMessages =
-      (messagesBySessionId?.[sessionId]?.length ?? 0) > 0;
+    const hasCachedCentralizedData =
+      (rawSdkEventPayloadsBySessionId?.[sessionId]?.length ?? 0) > 0;
     // Switch local session context immediately so session-scoped UI (like
     // pending queue items above composer) does not bleed across sessions
     // while we wait for backend hydration.
     dispatch({ type: "SET_SESSION_ID", payload: sessionId });
 
     // Skip full loading state when we already have a local render cache.
-    if (!hasCachedMessages) {
+    if (!hasCachedCentralizedData) {
       dispatch({
         type: "START_SESSION_LOADING",
         payload: {

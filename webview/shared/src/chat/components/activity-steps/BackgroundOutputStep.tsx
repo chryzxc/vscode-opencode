@@ -4,11 +4,13 @@ import { createPortal } from "react-dom";
 import { ArrowRight, Bot, Clock3, Copy, Sparkles, X, Terminal, ChevronDown } from "lucide-react";
 
 import { cn, formatDuration } from "@/utils";
+import { Stepper, StepperItem } from "@/components/ui/stepper";
+import { StepIndicator } from "@/components/ui/StepIndicator";
 
 import { MarkdownRenderer } from "../../../components/MarkdownRenderer";
 import { ActivityStepStatusChip } from "./ActivityStepStatusChip";
 
-import type { ActivityDetail } from "../../lib/types";
+import type { ActivityDetail, SubagentConversationEvent } from "../../lib/types";
 
 type BackgroundOutputStepProps = {
   callID?: string;
@@ -18,6 +20,8 @@ type BackgroundOutputStepProps = {
   status: "pending" | "done" | "error";
   source?: "stream" | "final" | "raw_debug";
   activityDetail?: ActivityDetail;
+  assistantUpdateText?: string;
+  assistantConversationEvents?: SubagentConversationEvent[];
 };
 
 type ParsedBackgroundOutput = {
@@ -150,6 +154,8 @@ function BackgroundOutputModal({
   title,
   detail: rawDetail,
   parsedOutput,
+  assistantUpdateText,
+  assistantConversationEvents,
   onClose,
 }: {
   isOpen: boolean;
@@ -164,6 +170,8 @@ function BackgroundOutputModal({
     sessionId?: string;
     rawText?: string;
   };
+  assistantUpdateText?: string;
+  assistantConversationEvents?: SubagentConversationEvent[];
   onClose: () => void;
 }) {
   const [copied, setCopied] = useState(false);
@@ -187,6 +195,14 @@ function BackgroundOutputModal({
       return String(detail);
     }
   }, [detail]);
+  const renderedConversation = useMemo(() => {
+    const source = Array.isArray(assistantConversationEvents)
+      ? assistantConversationEvents
+      : [];
+    return [...source]
+      .filter((event) => stringValue(event.text).length > 0)
+      .sort((left, right) => left.createdAt - right.createdAt);
+  }, [assistantConversationEvents]);
 
   if (!isOpen) return null;
 
@@ -208,32 +224,91 @@ function BackgroundOutputModal({
         aria-label="Close background output details"
       />
       <div
-        className="oc-modal-shell relative z-50 flex max-h-[85vh] w-full max-w-4xl flex-col overflow-hidden text-foreground animate-in zoom-in-95 duration-200"
+        className="oc-modal-shell relative z-50 flex h-[min(92vh,860px)] min-h-0 w-full max-w-5xl flex-col overflow-hidden text-foreground animate-in zoom-in-95 duration-200"
         role="dialog"
         aria-modal="true"
         aria-label={title}
       >
-        <div className="oc-modal-header flex shrink-0 items-start justify-between gap-3 bg-oc-panel-soft/70 p-4">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-base font-medium">{title}</span>
+        <div className="oc-modal-header shrink-0 bg-oc-panel-soft/70 p-3 sm:p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-semibold sm:text-base">{title}</span>
+              </div>
+              <div className="mt-1 text-xs oc-text-secondary">
+                Background task details and output
+              </div>
             </div>
-            <div className="mt-1 text-xs oc-text-secondary">
-              Background task details and output
-            </div>
+            <button
+              type="button"
+              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-oc-border bg-oc-bg-soft oc-text-secondary transition-colors hover:bg-oc-panel hover:text-foreground"
+              onClick={onClose}
+              aria-label="Close"
+            >
+              <X className="h-5 w-5" />
+            </button>
           </div>
-          <button
-            type="button"
-            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-oc-border bg-oc-bg-soft oc-text-secondary transition-colors hover:bg-oc-panel hover:text-foreground"
-            onClick={onClose}
-            aria-label="Close"
-          >
-            <X className="h-4 w-4" />
-          </button>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
+        <div className="oc-modal-content min-h-0 flex-1 overflow-y-auto p-3 sm:p-4 lg:p-5">
           <div className="flex flex-col gap-6 sm:gap-8">
+            {(renderedConversation.length > 0 || stringValue(assistantUpdateText)) ? (
+              <section>
+                <div className="sticky top-0 z-[1] mb-3 flex items-center justify-between border-b border-oc-border-soft bg-oc-panel/95 pb-2 backdrop-blur-sm">
+                  <span className="text-[11px] font-medium uppercase tracking-wider text-oc-text-soft">
+                    Assistant Update
+                  </span>
+                  <span className="rounded-md border border-oc-border-soft px-2 py-0.5 text-[10px] font-medium text-oc-text-soft">
+                    {renderedConversation.length > 0 ? `${renderedConversation.length} events` : "Summary"}
+                  </span>
+                </div>
+
+                {renderedConversation.length > 0 ? (
+                  <Stepper
+                    className="oc-refined-stepper oc-activity-timeline-compact pl-2"
+                    autoScrollToBottom={false}
+                  >
+                    {renderedConversation.map((event, index) => {
+                      const label =
+                        event.kind === "reasoning"
+                          ? "Reasoning"
+                          : event.kind === "step"
+                            ? "Step"
+                            : "Message";
+                      return (
+                        <StepperItem
+                          key={event.id}
+                          isLast={index === renderedConversation.length - 1}
+                          indicator={<StepIndicator status="done" />}
+                          className="oc-refined-stepper-item group"
+                        >
+                          <div className="flex min-w-0 flex-col items-start gap-2 w-full">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="oc-refined-event-label">{label}</span>
+                              <span className="text-[10px] font-medium text-oc-text-soft">
+                                {new Date(event.createdAt).toLocaleTimeString([], {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                  second: "2-digit",
+                                })}
+                              </span>
+                            </div>
+                            <div className="oc-refined-event-content w-full">
+                              <MarkdownRenderer content={event.text} className="markdown-body" />
+                            </div>
+                          </div>
+                        </StepperItem>
+                      );
+                    })}
+                  </Stepper>
+                ) : (
+                  <div className="rounded-xl border border-oc-border-soft bg-oc-bg-soft/50 p-4 sm:p-5 text-[13px] leading-relaxed text-oc-text shadow-sm transition-colors hover:bg-oc-bg-soft/80">
+                    <MarkdownRenderer content={assistantUpdateText} className="markdown-body" />
+                  </div>
+                )}
+              </section>
+            ) : null}
+
             <section>
               <div className="mb-2 sm:mb-3 flex items-center gap-2">
                 <div className="h-4 w-1 rounded-full bg-oc-brand" />
@@ -288,6 +363,8 @@ export function BackgroundOutputStep({
   status,
   source,
   activityDetail,
+  assistantUpdateText,
+  assistantConversationEvents,
 }: BackgroundOutputStepProps) {
   const input = activityDetail?.input ?? {};
   
@@ -343,37 +420,37 @@ export function BackgroundOutputStep({
 
   return (
     <>
-      <div className="flex flex-col items-start gap-2 w-full min-w-0">
-        <div className="flex items-center gap-2 flex-wrap min-h-[20px]">
-          <span className="font-medium text-oc-text capitalize text-[13px]">
+      <div className="oc-activity-step-surface flex flex-col items-start gap-1.5 w-full min-w-0">
+        <div className="flex items-center gap-1.5 flex-wrap min-h-[18px]">
+          <span className="oc-activity-step-title font-medium text-oc-text capitalize text-[12px]">
             Background Task Note
           </span>
           {description && description.toLowerCase() !== "background_output" && (
-            <span className="text-oc-text-soft text-[13px] flex items-center gap-2">
+            <span className="oc-activity-step-meta text-oc-text-soft text-[11px] flex items-center gap-1.5">
               <span>&middot;</span>
               <span>{description}</span>
             </span>
           )}
         </div>
 
-        <div className="flex flex-col gap-1.5 w-full">
+        <div className="flex flex-col gap-1 w-full">
           <button
             type="button"
             onClick={() => setIsModalOpen(true)}
             className="group relative w-full overflow-hidden rounded-lg border border-oc-border-soft bg-oc-bg-soft/60 text-left transition-colors hover:border-oc-border hover:bg-oc-panel-soft/60"
             aria-label="View background output details"
           >
-            <div className="relative overflow-hidden p-2.5">
-              <div className="font-mono text-[11px] text-oc-text-soft whitespace-pre-wrap break-words flex items-start gap-2">
+            <div className="relative overflow-hidden p-2">
+              <div className="oc-activity-step-summary font-mono text-[10px] text-oc-text-soft whitespace-pre-wrap break-words flex items-start gap-1.5">
                 <span className="flex-1">{previewOutput || "Background output received"}</span>
               </div>
               {compactTaskId && (
-                <div className="mt-1.5 font-mono text-[10px] text-oc-text-soft/40">
+                <div className="oc-activity-step-meta mt-1 font-mono text-[9px] text-oc-text-soft/40">
                   {compactTaskId}
                 </div>
               )}
             </div>
-            <div className="oc-timeline-caret pointer-events-none absolute bottom-2 right-2 inline-flex h-6 w-6 items-center justify-center rounded-full transition-colors group-hover:bg-oc-panel-soft">
+            <div className="oc-timeline-caret pointer-events-none absolute bottom-1.5 right-1.5 inline-flex h-5 w-5 items-center justify-center rounded-full transition-colors group-hover:bg-oc-panel-soft">
               <ChevronDown className="h-3 w-3 oc-text-secondary transition-transform group-hover:translate-y-0.5" />
             </div>
           </button>
@@ -386,6 +463,8 @@ export function BackgroundOutputStep({
         title="Background Output"
         detail={activityDetail}
         parsedOutput={parsedOutput}
+        assistantUpdateText={assistantUpdateText}
+        assistantConversationEvents={assistantConversationEvents}
         onClose={() => setIsModalOpen(false)}
       />
     </>

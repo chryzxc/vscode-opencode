@@ -7,6 +7,10 @@ import { cn, formatDuration } from "@/utils";
 
 import { MarkdownRenderer } from "../../../components/MarkdownRenderer";
 import { ActivityStepStatusChip } from "./ActivityStepStatusChip";
+import { StepIndicator } from "@/components/ui/StepIndicator";
+import { Stepper, StepperItem } from "@/components/ui/stepper";
+import { shallowEqual, useAppState } from "../../lib/store";
+import { buildBackgroundTaskPresentation } from "../../lib/backgroundTaskPresentation";
 
 import type { ActivityDetail } from "../../lib/types";
 
@@ -46,6 +50,9 @@ function CallOmoAgentDetailModal({
   detail,
   onClose,
   parsedMeta,
+  assistantUpdateText,
+  assistantConversationEvents,
+  backgroundOutput,
 }: {
   isOpen: boolean;
   title: string;
@@ -59,6 +66,14 @@ function CallOmoAgentDetailModal({
     sessionId: string;
     status: string;
   };
+  assistantUpdateText?: string;
+  assistantConversationEvents?: Array<{
+    id: string;
+    text: string;
+    kind: string;
+    createdAt: number;
+  }>;
+  backgroundOutput?: string;
 }) {
   const [copied, setCopied] = useState(false);
 
@@ -134,6 +149,72 @@ function CallOmoAgentDetailModal({
 
         <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
           <div className="flex flex-col gap-6 sm:gap-8">
+            {(Array.isArray(assistantConversationEvents) && assistantConversationEvents.length > 0) || assistantUpdateText ? (
+              <section>
+                <div className="mb-2 sm:mb-3 flex items-center gap-2">
+                  <div className="h-4 w-1 rounded-full bg-oc-brand" />
+                  <span className="text-[11px] font-bold uppercase tracking-[0.15em] oc-text-secondary">
+                    Assistant Update
+                  </span>
+                </div>
+                {Array.isArray(assistantConversationEvents) && assistantConversationEvents.length > 0 ? (
+                  <Stepper
+                    className="oc-refined-stepper oc-activity-timeline-compact pl-2"
+                    autoScrollToBottom={false}
+                  >
+                    {assistantConversationEvents.map((event, index) => (
+                      <StepperItem
+                        key={event.id}
+                        isLast={index === assistantConversationEvents.length - 1}
+                        indicator={<StepIndicator status="done" />}
+                        className="oc-refined-stepper-item group"
+                      >
+                        <div className="flex min-w-0 flex-col items-start gap-2 w-full">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="oc-refined-event-label">
+                              {event.kind === "reasoning"
+                                ? "Reasoning"
+                                : event.kind === "step"
+                                  ? "Step"
+                                  : "Message"}
+                            </span>
+                            <span className="text-[10px] font-medium text-oc-text-soft">
+                              {new Date(event.createdAt).toLocaleTimeString([], {
+                                hour: "2-digit",
+                                minute: "2-digit",
+                                second: "2-digit",
+                              })}
+                            </span>
+                          </div>
+                          <div className="oc-refined-event-content w-full">
+                            <MarkdownRenderer content={event.text} className="markdown-body" />
+                          </div>
+                        </div>
+                      </StepperItem>
+                    ))}
+                  </Stepper>
+                ) : (
+                  <div className="rounded-xl border border-oc-border-soft bg-oc-bg-soft/50 p-4 sm:p-5 text-[13px] leading-relaxed text-oc-text shadow-sm transition-colors hover:bg-oc-bg-soft/80">
+                    <MarkdownRenderer content={assistantUpdateText} className="markdown-body" />
+                  </div>
+                )}
+              </section>
+            ) : null}
+
+            {backgroundOutput ? (
+              <section>
+                <div className="mb-2 sm:mb-3 flex items-center gap-2">
+                  <div className="h-4 w-1 rounded-full bg-oc-brand/80" />
+                  <span className="text-[11px] font-bold uppercase tracking-[0.15em] oc-text-secondary">
+                    Background Output
+                  </span>
+                </div>
+                <div className="rounded-xl border border-oc-border-soft bg-oc-bg-soft/50 p-4 sm:p-5 text-[13px] leading-relaxed text-oc-text shadow-sm transition-colors hover:bg-oc-bg-soft/80">
+                  <MarkdownRenderer content={backgroundOutput} className="markdown-body" />
+                </div>
+              </section>
+            ) : null}
+
             <section>
               <div className="mb-2 sm:mb-3 flex items-center gap-2">
                 <div className="h-4 w-1 rounded-full bg-oc-brand" />
@@ -185,6 +266,12 @@ export function CallOmoAgentStep({
   source,
   activityDetail,
 }: CallOmoAgentStepProps) {
+  const { messages } = useAppState(
+    (state) => ({
+      messages: state.messages,
+    }),
+    shallowEqual,
+  );
   const input = activityDetail?.input ?? {};
   const description =
     stringValue(input.description) ||
@@ -210,6 +297,14 @@ export function CallOmoAgentStep({
   const isDone = status === "done";
   const resolvedBackgroundTaskId =
     stringValue(activityDetail?.backgroundTaskId) || taskId;
+  const backgroundTaskPresentation = useMemo(
+    () =>
+      buildBackgroundTaskPresentation({
+        taskId: resolvedBackgroundTaskId,
+        messages,
+      }),
+    [messages, resolvedBackgroundTaskId],
+  );
   const [isModalOpen, setIsModalOpen] = useState(false);
   const modalTitle = "call_omo_agent";
   const summaryLine =
@@ -219,37 +314,37 @@ export function CallOmoAgentStep({
 
   return (
     <>
-      <div className="flex flex-col items-start gap-2 w-full min-w-0">
-        <div className="flex items-center gap-2 flex-wrap min-h-[20px]">
-          <span className="font-medium text-oc-text capitalize text-[13px]">
+      <div className="oc-activity-step-surface flex flex-col items-start gap-1.5 w-full min-w-0">
+        <div className="flex items-center gap-1.5 flex-wrap min-h-[18px]">
+          <span className="oc-activity-step-title font-medium text-oc-text capitalize text-[12px]">
             Invoke Subagent
           </span>
           {agent && (
-            <span className="text-oc-text-soft text-[13px] flex items-center gap-2">
+            <span className="oc-activity-step-meta text-oc-text-soft text-[11px] flex items-center gap-1.5">
               <span>&middot;</span>
               <span>{agent}</span>
             </span>
           )}
         </div>
 
-        <div className="flex flex-col gap-1.5 w-full">
+        <div className="flex flex-col gap-1 w-full">
           <button
             type="button"
             onClick={() => setIsModalOpen(true)}
             className="group relative w-full overflow-hidden rounded-lg border border-oc-border-soft bg-oc-bg-soft/60 text-left transition-colors hover:border-oc-border hover:bg-oc-panel-soft/60"
             aria-label="View subagent details"
           >
-            <div className="relative overflow-hidden p-2.5">
-              <div className="font-mono text-[11px] text-oc-text-soft whitespace-pre-wrap break-words flex items-start gap-2">
+            <div className="relative overflow-hidden p-2">
+              <div className="oc-activity-step-summary font-mono text-[10px] text-oc-text-soft whitespace-pre-wrap break-words flex items-start gap-1.5">
                 <span className="flex-1">{summaryLine}</span>
               </div>
               {(resolvedBackgroundTaskId || sessionValue) && (
-                <div className="mt-1.5 font-mono text-[10px] text-oc-text-soft/40">
+                <div className="oc-activity-step-meta mt-1 font-mono text-[9px] text-oc-text-soft/40">
                   {resolvedBackgroundTaskId || sessionValue}
                 </div>
               )}
             </div>
-            <div className="oc-timeline-caret pointer-events-none absolute bottom-2 right-2 inline-flex h-6 w-6 items-center justify-center rounded-full transition-colors group-hover:bg-oc-panel-soft">
+            <div className="oc-timeline-caret pointer-events-none absolute bottom-1.5 right-1.5 inline-flex h-5 w-5 items-center justify-center rounded-full transition-colors group-hover:bg-oc-panel-soft">
               <ChevronDown className="h-3 w-3 oc-text-secondary transition-transform group-hover:translate-y-0.5" />
             </div>
           </button>
@@ -268,6 +363,9 @@ export function CallOmoAgentStep({
           sessionId: sessionValue || "Unavailable",
           status,
         }}
+        assistantUpdateText={backgroundTaskPresentation.assistantUpdateText}
+        assistantConversationEvents={backgroundTaskPresentation.assistantConversationEvents}
+        backgroundOutput={backgroundTaskPresentation.activityDetail?.output}
       />
     </>
   );

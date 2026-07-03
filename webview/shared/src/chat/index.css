@@ -1251,6 +1251,154 @@ body {
 }
 
 /* ── Avatar ──────────────────────────────────────────────────────────────── */
+.oc-system-message {
+  --oc-system-accent: var(--oc-accent);
+  position: relative;
+  overflow: hidden;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--oc-border) 92%, transparent);
+  background: color-mix(in srgb, var(--oc-panel) 88%, transparent);
+  transition:
+    border-color 0.18s ease,
+    background 0.18s ease;
+}
+
+.oc-system-message::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 2px;
+  background: color-mix(in srgb, var(--oc-system-accent) 48%, transparent);
+  opacity: 1;
+}
+
+.oc-system-message:hover {
+  border-color: color-mix(in srgb, var(--oc-system-accent) 16%, var(--oc-border));
+  background: color-mix(in srgb, var(--oc-panel-soft) 86%, transparent);
+}
+
+.oc-system-message__toggle {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 10px 14px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.oc-system-message__toggle:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--oc-system-accent) 65%, var(--ring));
+  outline-offset: -1px;
+}
+
+.oc-system-message__header {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 3px;
+}
+
+.oc-system-message__meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--oc-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.oc-system-message__title-block {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.oc-system-message__title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.oc-system-message__title {
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
+}
+
+.oc-system-message__title {
+  min-width: 0;
+  color: var(--oc-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.oc-system-message__preview {
+  margin: 0;
+  color: var(--oc-text-secondary);
+  font-size: 12px;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.oc-system-message__chevron {
+  flex-shrink: 0;
+  margin-top: 2px;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--oc-text-secondary);
+}
+
+.oc-system-message__body {
+  margin: 0;
+  padding: 0 14px 12px;
+}
+
+.oc-system-message__content {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--oc-text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+  font-weight: 400;
+}
+
+@media (max-width: 640px) {
+  .oc-system-message__toggle {
+    padding: 10px 14px 8px;
+    gap: 8px;
+  }
+
+  .oc-system-message__body {
+    padding: 0 14px 12px;
+  }
+}
+
 .oc-avatar {
   width: 24px;
   height: 24px;
@@ -2779,6 +2927,9 @@ body {
   position: relative;
 }
 
+
+
+
 /* Enhanced stepper item - subtle, no hover effects */
 .oc-refined-stepper-item {
   position: relative;
@@ -3189,6 +3340,34 @@ body {
 .oc-refined-file-link-with-tooltip {
   position: relative;
   isolation: isolate;
+}
+
+.oc-refined-file-link-inline {
+  flex: 0 1 auto;
+  max-width: min(72%, 560px);
+  min-width: 0;
+  justify-content: flex-start;
+}
+
+.oc-refined-file-link-plain {
+  gap: 5px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--oc-text-soft);
+}
+
+.oc-refined-file-link-plain:hover {
+  background: transparent;
+  border-color: transparent;
+  color: var(--vscode-editor-foreground, var(--oc-text));
+}
+
+.oc-refined-file-link-plain svg {
+  opacity: 0.8;
 }
 
 .oc-refined-file-link-tooltip {
@@ -3739,11 +3918,11 @@ body {
 }
 
 .oc-diff-preview-step {
-  padding: 8px 10px 10px;
+  padding: 6px 8px 8px;
 }
 
 .oc-diff-preview-step__excerpt {
-  margin-top: 8px;
+  margin-top: 6px;
 }
 
 /* Shared compact timeline caret used by collapsed previews.
@@ -3776,6 +3955,107 @@ body {
 
 .oc-timeline-surface :is(.border-t.border-oc-border, .border-t.border-oc-border-soft) {
   border-top-color: var(--oc-surface-divider) !important;
+}
+
+/*
+ * Compact activity timeline scope.
+ * Apply this to activity stepper containers so titles, helper text, and the
+ * markdown renderer all inherit the same smaller scale.
+ */
+.oc-activity-timeline-compact {
+  --oc-activity-step-font-size: 11px;
+  --oc-activity-step-line-height: 1.34;
+  --oc-activity-step-title-size: 12px;
+  --oc-activity-step-meta-size: 10px;
+  --oc-activity-step-gap: 0.25rem;
+}
+
+.oc-activity-timeline-compact .oc-refined-stepper-item > :first-child {
+  margin-right: 0.375rem;
+}
+
+.oc-activity-timeline-compact .oc-refined-stepper-item > :last-child {
+  padding-bottom: 0.125rem;
+}
+
+.oc-activity-timeline-compact .oc-activity-step-surface {
+  font-size: var(--oc-activity-step-font-size);
+  line-height: var(--oc-activity-step-line-height);
+}
+
+.oc-activity-timeline-compact
+  .oc-activity-step-surface
+  :is(.oc-activity-step-title, .oc-activity-step-section-label) {
+  font-size: var(--oc-activity-step-title-size) !important;
+  line-height: 1.15;
+}
+
+.oc-activity-timeline-compact
+  .oc-activity-step-surface
+  :is(.oc-activity-step-meta, .oc-activity-step-summary, .oc-activity-step-detail, .oc-activity-step-label) {
+  font-size: var(--oc-activity-step-meta-size) !important;
+  line-height: 1.3;
+}
+
+.oc-activity-timeline-compact .oc-activity-step-surface .markdown-body {
+  font-size: inherit !important;
+  line-height: inherit !important;
+}
+
+.oc-activity-timeline-compact .oc-activity-step-surface .oc-refined-event-content {
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.oc-activity-timeline-compact .oc-activity-step-surface .oc-refined-event-content .markdown-body {
+  font-size: inherit !important;
+  line-height: inherit !important;
+}
+
+.oc-activity-timeline-compact .oc-refined-event-label {
+  padding: 2px 6px;
+  min-width: 56px;
+  font-size: 10px;
+  line-height: 1.15;
+}
+
+.oc-activity-timeline-compact .oc-refined-meta-badge {
+  padding: 2px 6px;
+  font-size: 10px;
+}
+
+.oc-activity-timeline-compact .oc-refined-event-content {
+  margin-top: 4px;
+  padding: 6px 8px;
+  font-size: 11px;
+  line-height: 1.34;
+}
+
+.oc-activity-timeline-compact .oc-refined-event-content .markdown-body {
+  font-size: inherit !important;
+  line-height: inherit !important;
+}
+
+.oc-activity-timeline-compact .oc-reasoning-row {
+  gap: 0.3rem;
+  min-height: 18px;
+  font-size: 11px;
+}
+
+.oc-activity-timeline-compact .oc-reasoning-row-label {
+  font-size: 11px;
+}
+
+.oc-activity-timeline-compact .oc-reasoning-body {
+  margin-top: 4px;
+  padding: 6px 8px;
+  font-size: 11px;
+  line-height: 1.38;
+}
+
+.oc-activity-timeline-compact .oc-reasoning-body .markdown-body {
+  font-size: inherit !important;
+  line-height: inherit !important;
 }
 
 .oc-search-block--timeline-compact .oc-search-block-code {

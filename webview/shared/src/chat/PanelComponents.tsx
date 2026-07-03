@@ -47,7 +47,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-import { useAppDispatch, useAppState } from "./lib/store";
+import { shallowEqual, useAppDispatch, useAppState } from "./lib/store";
 import { getInteractiveEventsFromRawSdkEventPayloads } from "./lib/rawResponse";
 import { normalizeCentralizedEventPayloads } from "./lib/messageHandler";
 import vscode from "./lib/vscode";
@@ -64,8 +64,8 @@ import type {
   Model,
 } from "./lib/types";
 import {
-  isAssistantRespondingInCurrentSession,
   isProcessingInCurrentSession,
+  shouldDeferComposerSendInCurrentSession,
 } from "./lib/sessionProcessing";
 
 import { FileIcon } from "./MessageComponents";
@@ -308,7 +308,18 @@ export function StickyHeader() {
     processingSessionIds,
     sessionsList,
     contextUsagePct,
-  } = useAppState();
+  } = useAppState(
+    (state) => ({
+      currentSessionId: state.currentSessionId,
+      isSessionModalOpen: state.isSessionModalOpen,
+      isExtendedPanelOpen: state.isExtendedPanelOpen,
+      isProcessing: state.isProcessing,
+      processingSessionIds: state.processingSessionIds,
+      sessionsList: state.sessionsList,
+      contextUsagePct: state.contextUsagePct,
+    }),
+    shallowEqual,
+  );
   const dispatch = useAppDispatch();
 
   const currentSession = currentSessionId
@@ -379,7 +390,10 @@ export function StickyHeader() {
 export function HistorySidebar() {
   const {
     isSidebarOpen,
-  } = useAppState();
+  } = useAppState(
+    (state) => ({ isSidebarOpen: state.isSidebarOpen }),
+    shallowEqual,
+  );
   const dispatch = useAppDispatch();
 
   useEffect(() => {
@@ -580,7 +594,30 @@ export function ActiveTaskPanel() {
     compactionDividerIndex,
     sdkVersion,
     serverVersion,
-  } = useAppState();
+  } = useAppState(
+    (state) => ({
+      sessionStats: state.sessionStats,
+      streaming: state.streaming,
+      todoItems: state.todoItems,
+      messages: state.messages,
+      currentSessionId: state.currentSessionId,
+      sessionsList: state.sessionsList,
+      availableModels: state.availableModels,
+      selectedModel: state.selectedModel,
+      isProcessing: state.isProcessing,
+      processingSessionIds: state.processingSessionIds,
+      executingQueueSessionIds: state.executingQueueSessionIds,
+      isCompacting: state.isCompacting,
+      lastCompactedAt: state.lastCompactedAt,
+      compactionError: state.compactionError,
+      compactionNotice: state.compactionNotice,
+      compactionBaselineStats: state.compactionBaselineStats,
+      compactionDividerIndex: state.compactionDividerIndex,
+      sdkVersion: state.sdkVersion,
+      serverVersion: state.serverVersion,
+    }),
+    shallowEqual,
+  );
 
   const isProcessing = isProcessingInCurrentSession(
     isProcessingGlobal,
@@ -1123,7 +1160,15 @@ export function MobileRightSummary() {
     currentSessionId,
     processingSessionIds,
     isExtendedPanelOpen,
-  } = useAppState();
+  } = useAppState(
+    (state) => ({
+      isProcessing: state.isProcessing,
+      currentSessionId: state.currentSessionId,
+      processingSessionIds: state.processingSessionIds,
+      isExtendedPanelOpen: state.isExtendedPanelOpen,
+    }),
+    shallowEqual,
+  );
   const dispatch = useAppDispatch();
   const [activeTab, setActiveTab] = useState<"task" | "quota" | "integrations" | "tools">(
     "task",
@@ -1257,7 +1302,17 @@ export function ModelDropdown() {
     modelDropdownOpen,
     quotaData,
     configuredProviders,
-  } = useAppState();
+  } = useAppState(
+    (state) => ({
+      availableModels: state.availableModels,
+      selectedModel: state.selectedModel,
+      modelSearchQuery: state.modelSearchQuery,
+      modelDropdownOpen: state.modelDropdownOpen,
+      quotaData: state.quotaData,
+      configuredProviders: state.configuredProviders,
+    }),
+    shallowEqual,
+  );
   const dispatch = useAppDispatch();
   const containerRef = useRef<HTMLDivElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -1577,7 +1632,15 @@ export function AgentDropdown() {
     selectedAgent,
     agentSearchQuery,
     agentDropdownOpen,
-  } = useAppState();
+  } = useAppState(
+    (state) => ({
+      availableAgents: state.availableAgents,
+      selectedAgent: state.selectedAgent,
+      agentSearchQuery: state.agentSearchQuery,
+      agentDropdownOpen: state.agentDropdownOpen,
+    }),
+    shallowEqual,
+  );
   const dispatch = useAppDispatch();
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -1699,7 +1762,16 @@ export function QueueContainer() {
     isProcessing: globalIsProcessing,
     isSteering,
     currentSessionId,
-  } = useAppState();
+  } = useAppState(
+    (state) => ({
+      promptQueue: state.promptQueue,
+      processingSessionIds: state.processingSessionIds,
+      isProcessing: state.isProcessing,
+      isSteering: state.isSteering,
+      currentSessionId: state.currentSessionId,
+    }),
+    shallowEqual,
+  );
   const dispatch = useAppDispatch();
 
   const isProcessing = isProcessingInCurrentSession(
@@ -1827,7 +1899,40 @@ export function InputWrapper() {
     dismissedInteractiveEventKeys,
     contextUsagePct,
     assistantTurnPending,
-  } = useAppState();
+  } = useAppState(
+    (state) => ({
+      inputValue: state.inputValue,
+      isProcessing: state.isProcessing,
+      isExecutingQueue: state.isExecutingQueue,
+      isSteering: state.isSteering,
+      streaming: state.streaming,
+      currentSessionId: state.currentSessionId,
+      processingSessionIds: state.processingSessionIds,
+      executingQueueSessionIds: state.executingQueueSessionIds,
+      messages: state.messages,
+      rawSdkEventPayloadsBySessionId: state.rawSdkEventPayloadsBySessionId,
+      promptQueue: state.promptQueue,
+      selectedFiles: state.selectedFiles,
+      selectedContexts: state.selectedContexts,
+      fileMentionPaths: state.fileMentionPaths,
+      selectedAgent: state.selectedAgent,
+      showFileSuggestions: state.showFileSuggestions,
+      fileSuggestions: state.fileSuggestions,
+      selectedSuggestionIndex: state.selectedSuggestionIndex,
+      mentionSuggestions: state.mentionSuggestions,
+      showMentionSuggestions: state.showMentionSuggestions,
+      selectedMentionIndex: state.selectedMentionIndex,
+      availableCommands: state.availableCommands,
+      availableSkills: state.availableSkills,
+      commandsLoaded: state.commandsLoaded,
+      attachments: state.attachments,
+      interactiveEvents: state.interactiveEvents,
+      dismissedInteractiveEventKeys: state.dismissedInteractiveEventKeys,
+      contextUsagePct: state.contextUsagePct,
+      assistantTurnPending: state.assistantTurnPending,
+    }),
+    shallowEqual,
+  );
   const dispatch = useAppDispatch();
   const isProcessing = isProcessingInCurrentSession(
     globalIsProcessing,
@@ -1839,23 +1944,11 @@ export function InputWrapper() {
     currentSessionId,
     executingQueueSessionIds,
   );
-  const hasConversationContext = Boolean(
-    messages.length > 0 ||
-      Boolean(streaming?.isActive),
-  );
-
-  // The composer stop/send toggle must follow the same in-flight session state
-  // that drives the transcript loading bubble. If the session is still
-  // processing, the request should remain abortable even before streaming or
-  // assistant-turn markers become visible in the composer state.
-  const isAiResponding = isAssistantRespondingInCurrentSession(
-    isProcessing,
+  const hasLiveAssistantTurn = shouldDeferComposerSendInCurrentSession(
     currentSessionId,
     processingSessionIds,
     Boolean(streaming?.isActive),
     assistantTurnPending,
-    hasConversationContext,
-    rawSdkEventPayloadsBySessionId?.[currentSessionId ?? ""],
   );
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -2103,6 +2196,11 @@ export function InputWrapper() {
     return str.charAt(0).toUpperCase() + str.slice(1);
   };
 
+  const renderInteractiveOptionLabel = (label: string, recommended?: boolean) => {
+    const displayLabel = capitalizeFirst(label);
+    return recommended ? `Recommended: ${displayLabel}` : displayLabel;
+  };
+
   const applyCommandSuggestion = (command: SlashCommand) => {
     if (!slashTrigger) return;
     const normalizedName = command.name.replace(/^\//, "");
@@ -2252,46 +2350,12 @@ export function InputWrapper() {
     const text = inputValue.trim();
     if (!text) return;
 
-    // Parse @filenames from the input text using shared regex
-    const fileMentions = text.match(FILE_MENTION_REGEX) || [];
-    const extractedFiles = fileMentions.map(mention => {
-      const filename = mention.slice(1); // Remove @ prefix
-      // Use the full path from the mapping if available, otherwise fall back to filename
-      const fullPath = fileMentionPaths[filename] || filename;
-      return {
-        type: "file" as const,
-        filename: fullPath, // Use full path for the SDK
-        source: { path: fullPath }
-      };
-    });
-
     // Capture values before clearing state
     const currentFiles = selectedFiles.length > 0 ? [...selectedFiles] : undefined;
     const currentContexts = selectedContexts.length > 0 ? [...selectedContexts] : undefined;
     const currentAttachments = attachments || [];
     const currentAgent = selectedAgent || null;
     const sessionId = currentSessionId;
-
-    // Build message parts including file contexts from @mentions
-    const messageParts: Array<{ type: string; text?: string; filename?: string; source?: { path: string } }> = [
-      { type: "text", text },
-    ];
-
-    // Add files from @mentions in the text
-    extractedFiles.forEach(fileRef => {
-      messageParts.push(fileRef);
-    });
-
-    // Also add any files from selectedContexts (for backwards compatibility)
-    currentContexts?.forEach((context) => {
-      if (!context.file.startsWith("resource:")) {
-        messageParts.push({
-          type: "file",
-          filename: context.file,
-          source: { path: context.file },
-        });
-      }
-    });
 
     // Clear UI state immediately for better UX
     dispatch({ type: "SET_INPUT_VALUE", payload: "" });
@@ -2305,34 +2369,6 @@ export function InputWrapper() {
       typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
         ? crypto.randomUUID()
         : `req-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-
-    if (isProcessing) {
-      const optimisticId = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      vscode.postMessage({
-        type: "addToQueue",
-        clientRequestId,
-        ...(sessionId ? { sessionId } : {}),
-        text,
-        files: currentFiles,
-        contexts: currentContexts,
-        agent: currentAgent,
-        images: currentAttachments,
-      });
-      dispatch({
-        type: "ADD_TO_LOCAL_QUEUE",
-        payload: {
-          id: optimisticId,
-          sessionId: sessionId || "",
-          createdAt: Date.now(),
-          text,
-          files: currentFiles,
-          contexts: currentContexts,
-          agent: currentAgent || undefined,
-          parts: messageParts,
-        },
-      });
-      return;
-    }
 
     const hasPendingQuestion =
       interactiveEvents.length > 0 &&
@@ -2352,6 +2388,7 @@ export function InputWrapper() {
       contexts: currentContexts,
       agent: currentAgent,
       images: currentAttachments,
+      ...(hasLiveAssistantTurn ? { delivery: "deferred" } : {}),
       ...(hasPendingQuestion ? { interactiveSubmit: true } : {}),
     });
 
@@ -2371,7 +2408,7 @@ export function InputWrapper() {
 
   const steerPrompt = () => {
     const text = inputValue.trim();
-    if (!text || !isAiResponding || isSteering) return;
+    if (!text || !hasLiveAssistantTurn || isSteering) return;
 
     dispatch({ type: "SET_STEERING", payload: true });
     vscode.postMessage({
@@ -2814,7 +2851,7 @@ export function InputWrapper() {
                                 }
                               }}
                             >
-                              {capitalizeFirst(option.label)}
+                              {renderInteractiveOptionLabel(option.label, option.recommended)}
                             </button>
                           );
                         })}
@@ -3286,7 +3323,7 @@ export function InputWrapper() {
 
             {/* Right: action buttons */}
             <div className="oc-toolbar-right">
-              {isAiResponding ? (
+              {hasLiveAssistantTurn ? (
                 <Button
                   variant="send"
                   size="icon"
@@ -3299,17 +3336,17 @@ export function InputWrapper() {
                   <Square className="h-3 w-3" />
                 </Button>
               ) : null}
-              {!isAiResponding || inputValue.trim().length > 0 ? (
+              {!hasLiveAssistantTurn || inputValue.trim().length > 0 ? (
                 <Button
                   variant="send"
                   size="icon"
                   className="oc-toolbar-action-icon"
                   onClick={sendPrompt}
                   disabled={isSteering}
-                  aria-label={isAiResponding ? "Send steering message" : "Send"}
-                  title={isAiResponding ? "Send steering message" : "Send"}
+                  aria-label={hasLiveAssistantTurn ? "Send steering message" : "Send"}
+                  title={hasLiveAssistantTurn ? "Send steering message" : "Send"}
                 >
-                  {!isAiResponding ? (
+                  {!hasLiveAssistantTurn ? (
                     <Send className="h-3 w-3" />
                   ) : inputValue.trim().length > 0 ? (
                     <AlertCircle className="h-3 w-3" />
@@ -3336,7 +3373,14 @@ export function InputWrapper() {
 }
 
 export function ThinkingLevelControl() {
-  const { thinkingLevel, thinkingDropdownOpen, modelCapability } = useAppState();
+  const { thinkingLevel, thinkingDropdownOpen, modelCapability } = useAppState(
+    (state) => ({
+      thinkingLevel: state.thinkingLevel,
+      thinkingDropdownOpen: state.thinkingDropdownOpen,
+      modelCapability: state.modelCapability,
+    }),
+    shallowEqual,
+  );
   const dispatch = useAppDispatch();
   const containerRef = useRef<HTMLDivElement>(null);
   const variantDescriptions: Record<string, string> = {
@@ -3471,7 +3515,13 @@ export function ThinkingLevelControl() {
 }
 
 export function QuotaMonitor() {
-  const { quotaData, quotaIsRefreshing } = useAppState();
+  const { quotaData, quotaIsRefreshing } = useAppState(
+    (state) => ({
+      quotaData: state.quotaData,
+      quotaIsRefreshing: state.quotaIsRefreshing,
+    }),
+    shallowEqual,
+  );
   const dispatch = useAppDispatch();
 
   const [open, setOpen] = useState(true);
@@ -3867,7 +3917,10 @@ export function McpPanel() {
   const [expandedServers, setExpandedServers] = useState<Set<string>>(
     new Set(),
   );
-  const { mcpServers } = useAppState();
+  const { mcpServers } = useAppState(
+    (state) => ({ mcpServers: state.mcpServers }),
+    shallowEqual,
+  );
   const dispatch = useAppDispatch();
 
   function toggleServer(name: string) {
@@ -4057,7 +4110,10 @@ export function McpPanel() {
 // LspPanel - displays Language Server Protocol status with live data from OpenCode SDK
 export function LspPanel() {
   const [open, setOpen] = useState(true);
-  const { lspServers } = useAppState();
+  const { lspServers } = useAppState(
+    (state) => ({ lspServers: state.lspServers }),
+    shallowEqual,
+  );
 
   const activeCount = lspServers.filter((s) => s.status === "connected").length;
   const hasServers = lspServers.length > 0;
@@ -4158,7 +4214,13 @@ export function SkillsPanel() {
   const [open, setOpen] = useState(true);
   const [expandedSkills, setExpandedSkills] = useState<Set<string>>(new Set());
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const { availableSkills, serverStatus } = useAppState();
+  const { availableSkills, serverStatus } = useAppState(
+    (state) => ({
+      availableSkills: state.availableSkills,
+      serverStatus: state.serverStatus,
+    }),
+    shallowEqual,
+  );
   const dispatch = useAppDispatch();
 
   const hasSkills = availableSkills.length > 0;
@@ -4319,7 +4381,10 @@ export function AgentsPanel() {
   const [open, setOpen] = useState(true);
   const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set());
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const { availableAgents } = useAppState();
+  const { availableAgents } = useAppState(
+    (state) => ({ availableAgents: state.availableAgents }),
+    shallowEqual,
+  );
   const dispatch = useAppDispatch();
 
   const hasAgents = availableAgents.length > 0;
@@ -5006,7 +5071,14 @@ export function SettingsModal({
 }
 
 export function SettingsPanel() {
-  const { opencodeConfig, opencodeConfigSaveStatus, availableModels } = useAppState();
+  const { opencodeConfig, opencodeConfigSaveStatus, availableModels } = useAppState(
+    (state) => ({
+      opencodeConfig: state.opencodeConfig,
+      opencodeConfigSaveStatus: state.opencodeConfigSaveStatus,
+      availableModels: state.availableModels,
+    }),
+    shallowEqual,
+  );
   const [modalOpen, setModalOpen] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
 

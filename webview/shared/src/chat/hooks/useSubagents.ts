@@ -6,8 +6,7 @@
  * of data access and formatting.
  */
 
-import { useContext } from 'react';
-import { AppStateContext } from '../lib/store';
+import { useAppState, shallowEqual } from '../lib/store';
 import type { SubagentSummary, SubagentDetail } from '../lib/subagents/types';
 import {
   getSubagentDisplayDurationMs,
@@ -20,24 +19,26 @@ import {
   getSubagentStatusColor
 } from '../lib/subagents/uiFormatter';
 
+const EMPTY_SUBAGENT_SUMMARIES: SubagentSummary[] = [];
+
 /**
  * Hook to access subagent summaries for a specific parent message
  */
 export function useSubagentSummaries(parentMessageId: string | undefined) {
-  const state = useContext(AppStateContext);
-
-  if (!parentMessageId || !state) return [];
-  return state.subagentsByParentMessageId[parentMessageId] || [];
+  return useAppState((state) =>
+    parentMessageId
+      ? state.subagentsByParentMessageId[parentMessageId] || EMPTY_SUBAGENT_SUMMARIES
+      : EMPTY_SUBAGENT_SUMMARIES,
+  );
 }
 
 /**
  * Hook to access subagent details by ID
  */
 export function useSubagentDetail(subagentId: string | undefined) {
-  const state = useContext(AppStateContext);
-
-  if (!subagentId || !state) return undefined;
-  return state.subagentDetailsById[subagentId] || undefined;
+  return useAppState((state) =>
+    subagentId ? state.subagentDetailsById[subagentId] || undefined : undefined,
+  );
 }
 
 /**
@@ -45,8 +46,7 @@ export function useSubagentDetail(subagentId: string | undefined) {
  */
 export function useSubagentsForParentMessage(parentMessageId: string | undefined) {
   const summaries = useSubagentSummaries(parentMessageId);
-  const state = useContext(AppStateContext);
-  const detailsById = state?.subagentDetailsById || {};
+  const detailsById = useAppState((state) => state.subagentDetailsById);
 
   return summaries.map(summary => {
     const detail = detailsById[summary.id];
@@ -110,14 +110,15 @@ export function useFormattedSubagentDetail(subagentId: string | undefined) {
  * Hook to access subagent panel state
  */
 export function useSubagentPanel() {
-  const state = useContext(AppStateContext);
-
-  return {
-    isOpen: state?.subagentsPanelOpen || false,
-    selectedSubagentId: state?.selectedSubagentId || null,
-    subagentsByParentMessageId: state?.subagentsByParentMessageId || {},
-    subagentDetailsById: state?.subagentDetailsById || {},
-  };
+  return useAppState(
+    (state) => ({
+      isOpen: state.subagentsPanelOpen,
+      selectedSubagentId: state.selectedSubagentId,
+      subagentsByParentMessageId: state.subagentsByParentMessageId,
+      subagentDetailsById: state.subagentDetailsById,
+    }),
+    shallowEqual,
+  );
 }
 
 /**

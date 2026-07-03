@@ -307,7 +307,7 @@ export function SubagentDetailModal({
 
 					{renderedConversation.length > 0 || shouldShowLoadingTimelineStep ? (
 						<Stepper
-							className="oc-refined-stepper max-h-[600px] overflow-y-auto pl-2"
+							className="oc-refined-stepper oc-activity-timeline-compact max-h-[600px] overflow-y-auto pl-2"
 							autoScrollToBottom={false}
 						>
 							{shouldShowLoadingTimelineStep && (
@@ -375,4 +375,3 @@ export function SubagentDetailModal({
 
 	return createPortal(modalContent, document.body);
 }
-

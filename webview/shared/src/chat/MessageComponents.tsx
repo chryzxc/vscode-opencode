@@ -31,6 +31,10 @@ import {
   Undo2,
   CheckSquare,
   Circle,
+  ArrowUp,
+  ArrowDown,
+  Brain,
+  Database,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -63,6 +67,10 @@ import {
   extractEventMessageId,
 } from "./lib/messageHandler";
 import {
+  backgroundTaskIdFromReminderText,
+} from "./lib/backgroundTaskOwnership";
+import { buildBackgroundTaskPresentation } from "./lib/backgroundTaskPresentation";
+import {
   hasActiveAssistantReplyInCentralizedTape,
 } from "./lib/sessionProcessing";
 import { hasSystemMessagePatternInText } from "./lib/store";
@@ -83,12 +91,13 @@ import type {
   StreamingState,
   StreamingStep,
   StructuredFileChange,
+  SubagentConversationEvent,
   SubagentDetail,
   SubagentSummary,
   TodoItem,
 } from "./lib/types";
 import type { DisplayError } from "../../../../src/providers/chat/types";
-import { useAppDispatch, useAppState } from "./lib/store";
+import { shallowEqual, useAppDispatch, useAppState } from "./lib/store";
 import { jumpToMessage } from "./lib/messageJump";
 import vscode from "./lib/vscode";
 import {
@@ -202,6 +211,15 @@ function isUrl(path: string): boolean {
   }
   const trimmed = path.trim().toLowerCase();
   return trimmed.startsWith("http://") || trimmed.startsWith("https://");
+}
+
+function firstNonEmptyNumber(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+  }
+  return undefined;
 }
 
 function isCallStyleActivityLabel(label: string): boolean {
@@ -980,6 +998,117 @@ function looksLikeInternalPlanningText(value: string): boolean {
   );
 }
 
+function getImplementationPlanPrelude(
+  plan?: Pick<NonNullable<Message["plan"]>, "summary" | "intro"> | null,
+): string {
+  if (!plan) {
+    return "";
+  }
+  return firstNonEmptyString(plan.summary, plan.intro) ?? "";
+}
+
+function shouldDisplayImplementationPlanCard(params: {
+  responseType?: string;
+  plan?: NonNullable<Message["plan"]>;
+  message?: Message;
+  messageId?: string;
+  messages?: Message[];
+}): boolean {
+  const { responseType, plan, message, messageId, messages } = params;
+  if (responseType !== "implementation_plan" || !plan) {
+    return false;
+  }
+
+  if (!plan.file) {
+    return true;
+  }
+
+  const ownIndex = (messages || []).findIndex(
+    (candidate) =>
+      candidate === message ||
+      (!!messageId && (candidate.info?.id === messageId || candidate.id === messageId)),
+  );
+  if (ownIndex < 0) {
+    return true;
+  }
+
+  const matchingPlanIndexes = (messages || [])
+    .map((candidate, index) => {
+      const candidateStructured = structuredOutputFromRawSdkEventPayloads(candidate.rawSdkEventPayloads);
+      const candidatePlanFile = candidateStructured?.plan?.file || "";
+      return areLikelySamePlanFilePath(candidatePlanFile, plan.file) ? index : -1;
+    })
+    .filter((index) => index >= 0);
+
+  if (matchingPlanIndexes.length === 0) {
+    return true;
+  }
+
+  return ownIndex === Math.max(...matchingPlanIndexes);
+}
+
+function getRenderablePlanResponseChunks(params: {
+  visibleResponseBodyChunks: string[];
+  planPrelude: string;
+  shouldShowPlanCard: boolean;
+  cardMessage?: Message;
+}): {
+  visibleResolvedContent: string;
+  visiblePlanPrelude: string;
+  effectiveResponseContent: string;
+  hasVisibleResponseBody: boolean;
+  hasPreludeResponseBody: boolean;
+  hasPrimaryResponseBody: boolean;
+  hasResponseContent: boolean;
+  showResponseBody: boolean;
+  responseChunksToRender: string[];
+} {
+  const {
+    visibleResponseBodyChunks,
+    planPrelude,
+    shouldShowPlanCard,
+    cardMessage,
+  } = params;
+  const joinedResponseBody = visibleResponseBodyChunks.join("\n\n");
+  const resolvedContentMatchesError = messageDisplaysSameErrorText(
+    cardMessage,
+    joinedResponseBody,
+  );
+  const visibleResolvedContent = resolvedContentMatchesError ? "" : joinedResponseBody;
+  const suppressAssistantChunksForPlanCard = shouldShowPlanCard;
+  const trimmedPlanPrelude = planPrelude.trim();
+  const visiblePlanPrelude = suppressAssistantChunksForPlanCard
+    ? trimmedPlanPrelude
+    : visibleResolvedContent.trim().length === 0
+      ? trimmedPlanPrelude
+      : "";
+  const hasVisibleResponseBody =
+    !suppressAssistantChunksForPlanCard &&
+    visibleResponseBodyChunks.some((chunk) => chunk.trim().length > 0);
+  const hasPreludeResponseBody = visiblePlanPrelude.length > 0;
+  const responseChunksToRender = hasVisibleResponseBody
+    ? visibleResponseBodyChunks
+    : visiblePlanPrelude
+      ? [visiblePlanPrelude]
+      : [];
+
+  return {
+    visibleResolvedContent,
+    visiblePlanPrelude,
+    effectiveResponseContent:
+      !suppressAssistantChunksForPlanCard && visibleResolvedContent.trim().length > 0
+        ? visibleResolvedContent
+        : visiblePlanPrelude,
+    hasVisibleResponseBody,
+    hasPreludeResponseBody,
+    hasPrimaryResponseBody:
+      hasVisibleResponseBody || hasPreludeResponseBody || shouldShowPlanCard,
+    hasResponseContent: hasVisibleResponseBody || hasPreludeResponseBody,
+    showResponseBody: hasVisibleResponseBody || hasPreludeResponseBody,
+    responseChunksToRender,
+  };
+}
+
 function getFileIconKeys(filePath?: string): string[] {
   if (!filePath) {
     return [];
@@ -1024,7 +1153,10 @@ export function FileIcon({
   const [showSvgFallback, setShowSvgFallback] = useState(false);
   const iconRef = useRef<HTMLSpanElement | null>(null);
   const iconKeys = useMemo(() => getFileIconKeys(filePath), [filePath]);
-  const { themeCssVersion } = useAppState();
+  const { themeCssVersion } = useAppState(
+    (state) => ({ themeCssVersion: state.themeCssVersion }),
+    shallowEqual,
+  );
 
   useEffect(() => {
     setUseGenericFileIcon(!filePath);
@@ -1305,6 +1437,35 @@ function collectMessageIdentityCandidates(message?: Message): Set<string> {
   return candidates;
 }
 
+function buildAssistantScopeMessageIds(options: {
+  message?: Message;
+  assistantMessageId?: string | null;
+  streamingMessageId?: string | null;
+  assistantTurnMessageId?: string | null;
+  assistantTurnRootMessageId?: string | null;
+  assistantTurnAnchorMessageId?: string | null;
+}): Set<string> {
+  const messageCandidates = collectMessageIdentityCandidates(options.message);
+  if (messageCandidates.size > 0) {
+    return messageCandidates;
+  }
+
+  const ids = new Set<string>();
+  for (const candidate of [
+    options.assistantMessageId,
+    options.streamingMessageId,
+    options.assistantTurnMessageId,
+    options.assistantTurnRootMessageId,
+    options.assistantTurnAnchorMessageId,
+  ]) {
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      ids.add(candidate.trim());
+    }
+  }
+
+  return ids;
+}
+
 function collectCentralizedTurnMessageIdCandidates(
   rawSdkEventPayloads: unknown[] | undefined,
 ): Set<string> {
@@ -1351,12 +1512,106 @@ function collectCentralizedTurnMessageIdCandidates(
   return candidates;
 }
 
+function eventBelongsToAssistantScope(
+  event: unknown,
+  assistantScopeMessageIds: Set<string>,
+): boolean {
+  if (assistantScopeMessageIds.size === 0) {
+    return false;
+  }
+  const eventMessageId = extractEventMessageId(event);
+  return !!eventMessageId && assistantScopeMessageIds.has(eventMessageId);
+}
+
+function isAssistantScopedNoIdPayloadCandidate(event: unknown): boolean {
+  if (extractEventMessageId(event)) {
+    return false;
+  }
+
+  const record = asRecord(event);
+  if (!record) {
+    return false;
+  }
+
+  const properties = asRecord(record.properties);
+  const info = getCentralizedEventInfo(record);
+  const part = getCentralizedEventPart(record);
+  const eventType = firstNonEmptyString(record.type, record.event, record.kind)?.toLowerCase() ?? "";
+  const role = firstNonEmptyString(info?.role, record.role, properties?.role)?.toLowerCase() ?? "";
+  const toolName = firstNonEmptyString(part?.tool, part?.name)?.toLowerCase() ?? "";
+
+  const hasStructuredPayload =
+    !!asRecord(record.structured) ||
+    !!asRecord(record.structuredOutput) ||
+    !!asRecord((record as Record<string, unknown>).structured_output) ||
+    !!asRecord(properties?.structured) ||
+    !!asRecord(properties?.structuredOutput) ||
+    !!asRecord((properties as Record<string, unknown> | null)?.structured_output) ||
+    !!asRecord(info?.structured) ||
+    !!asRecord(info?.structuredOutput) ||
+    !!asRecord((info as Record<string, unknown> | null)?.structured_output) ||
+    toolName === "structuredoutput" ||
+    toolName === "structured_output";
+
+  const hasAssistantText =
+    firstNonEmptyString(
+      info?.text,
+      info?.content,
+      info?.message,
+      record.text,
+      record.content,
+      record.message,
+      properties?.text,
+      properties?.content,
+      properties?.message,
+      part?.text,
+      part?.content,
+      part?.message,
+    ) !== undefined;
+
+  const isAssistantLikeTerminalEvent =
+    eventType === "message.completed" ||
+    eventType === "session.completed" ||
+    eventType === "message.updated";
+
+  return (role === "assistant" || isAssistantLikeTerminalEvent) && (
+    hasStructuredPayload ||
+    hasAssistantText
+  );
+}
+
 function normalizeComparableText(value: unknown): string {
   return normalizeErrorLikeValue(value)
     .replace(/\r\n/g, "\n")
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
+}
+
+function normalizeComparableActivityText(value: unknown): string {
+  return normalizeComparableText(value)
+    .replace(/\.{2,}/g, " ")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isActivityTextRedundantWithTitle(
+  title: unknown,
+  content: unknown,
+): boolean {
+  const normalizedTitle = normalizeComparableActivityText(title);
+  const normalizedContent = normalizeComparableActivityText(content);
+  if (!normalizedTitle || !normalizedContent) {
+    return false;
+  }
+  if (normalizedTitle === normalizedContent) {
+    return true;
+  }
+
+  const compactTitle = normalizedTitle.replace(/\s+/g, "");
+  const compactContent = normalizedContent.replace(/\s+/g, "");
+  return compactTitle.length > 0 && compactTitle === compactContent;
 }
 
 function messageDisplaysSameErrorText(
@@ -1467,6 +1722,42 @@ function hasQuestionLikeInteractiveContent(message?: Message): boolean {
   });
 }
 
+function collectQuestionPreludeFingerprints(
+  groups: Array<
+    | { type: "question-output"; key: string; text: string }
+    | { type: "activity"; events: Array<{ summary?: string; activityDetail?: ActivityDetail }> }
+    | { type: "commentary"; event: { summary?: string } }
+  >,
+): Set<string> {
+  const fingerprints = new Set<string>();
+  const add = (value: unknown) => {
+    const normalized = normalizeComparableText(value);
+    if (normalized) {
+      fingerprints.add(normalized);
+    }
+  };
+
+  for (const group of groups) {
+    if (group.type === "question-output") {
+      add(group.text);
+      continue;
+    }
+
+    if (group.type !== "activity") {
+      continue;
+    }
+
+    for (const event of group.events) {
+      add(event.summary);
+      add(event.activityDetail?.summary);
+      add(event.activityDetail?.output);
+      add(event.activityDetail?.title);
+    }
+  }
+
+  return fingerprints;
+}
+
 function summaryText(message?: Message): string {
   // Check both nested info and top-level properties (for persisted messages)
   const summary =
@@ -1480,6 +1771,69 @@ function summaryText(message?: Message): string {
     return `${title}\n\n${body}`;
   }
   return title || body;
+}
+
+function ImplementationPlanCard({
+  plan,
+  isRevisedPlan,
+  planStatus,
+}: {
+  plan: NonNullable<Message["plan"]>;
+  isRevisedPlan: boolean;
+  planStatus?: string;
+}) {
+  return (
+    <div className="plan-card flex items-start justify-between gap-3">
+      <div className="plan-card-content flex flex-1 flex-col gap-2 min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="plan-card-title text-oc-xs font-semibold tracking-normal">
+            {plan.title || "Implementation Plan"}
+          </div>
+          {isRevisedPlan && (
+            <span className="plan-status-badge plan-status-badge-blue rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
+              Revised
+            </span>
+          )}
+          {planStatus === "Executing" && (
+            <span className="plan-status-badge plan-status-badge-green rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
+              Approved
+            </span>
+          )}
+          {planStatus === "Revision Requested" && (
+            <span className="plan-status-badge plan-status-badge-yellow rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
+              Revision Requested
+            </span>
+          )}
+          {planStatus === "Draft" && (
+            <span className="plan-status-badge plan-status-badge-neutral rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
+              Draft
+            </span>
+          )}
+        </div>
+        {plan.file ? (
+          <div className="plan-card-file mt-1 flex items-center gap-1.5 text-[11px] font-medium">
+            <FileIcon filePath={plan.file} />
+            <span className="truncate" title={plan.file}>
+              {toWorkspaceRelativePath(plan.file)}
+            </span>
+          </div>
+        ) : (
+          <div className="mt-1 flex items-center gap-1.5 text-[11px] font-medium text-oc-text-soft italic">
+            (no file)
+          </div>
+        )}
+      </div>
+      <button
+        type="button"
+        title="Core Feature: View Implementation Plan"
+        onClick={() => vscode.postMessage({ type: "viewPlan", plan })}
+        className="oc-plan-btn plan-card-action shrink-0 self-start"
+      >
+        <FileTextIcon className="h-3 w-3" />
+        View Plan
+      </button>
+    </div>
+  );
 }
 
 function modelLabel(message?: Message): string {
@@ -1510,91 +1864,6 @@ function modelLabel(message?: Message): string {
     | undefined;
   if (model && provider) return `${provider}/${model}`;
   return model ?? provider ?? "assistant";
-}
-
-type RawDebugParseStatus = "parsed" | "empty" | "unparseable" | "truncated";
-
-type ParsedRawDebugForUi = {
-  status: RawDebugParseStatus;
-  parts: Array<Record<string, unknown>>;
-};
-
-type ParsedRawResponseRecordForUi = {
-  status: RawDebugParseStatus;
-  record: Record<string, unknown> | null;
-};
-
-function parseRawResponseRecordForUi(raw: Message["rawResponse"]): ParsedRawResponseRecordForUi {
-  if (typeof raw === "object" && raw !== null) {
-    return { status: "parsed", record: asRecord(raw) };
-  }
-  if (typeof raw !== "string") {
-    return { status: "empty", record: null };
-  }
-  const text = raw.trim();
-  if (!text) {
-    return { status: "empty", record: null };
-  }
-  const truncMatch = text.match(/\.\.\.<truncated\s+\d+\s+chars>\s*$/i);
-  const candidate = truncMatch ? text.slice(0, truncMatch.index).trim() : text;
-  try {
-    return {
-      status: truncMatch ? "truncated" : "parsed",
-      record: asRecord(JSON.parse(candidate)),
-    };
-  } catch {
-    return { status: truncMatch ? "truncated" : "unparseable", record: null };
-  }
-}
-
-function parseRawResponseDebugForUi(raw: Message["rawResponse"]): ParsedRawDebugForUi {
-  const parsed = parseRawResponseRecordForUi(raw);
-  if (!parsed.record) {
-    return { status: parsed.status, parts: [] };
-  }
-  const parts = Array.isArray(parsed.record.parts)
-    ? parsed.record.parts
-      .map((part) => asRecord(part))
-      .filter((part): part is Record<string, unknown> => !!part)
-    : [];
-  return { status: parsed.status, parts };
-}
-
-function rawResponseInfoRecordForUi(
-  raw: Message["rawResponse"],
-): Record<string, unknown> | null {
-  const normalized = parseRawResponseRecordForUi(raw).record;
-  if (!normalized) {
-    return null;
-  }
-
-  const nestedPaths = [
-    ["info"],
-    ["payload", "syncEvent", "data", "info"],
-    ["payload", "data", "info"],
-    ["data", "info"],
-  ];
-
-  for (const path of nestedPaths) {
-    let current: unknown = normalized;
-    let valid = true;
-    for (const segment of path) {
-      const record = asRecord(current);
-      if (!record) {
-        valid = false;
-        break;
-      }
-      current = record[segment];
-    }
-    if (valid) {
-      const infoRecord = asRecord(current);
-      if (infoRecord) {
-        return infoRecord;
-      }
-    }
-  }
-
-  return null;
 }
 
 // LEGACY BRIDGE: temporary helper kept only while we are migrating the
@@ -2231,6 +2500,39 @@ function CollapsedSearchBlockPreview({
   );
 }
 
+function DetailedSearchActivityPreview({
+  event,
+  isGlobSearch,
+}: {
+  event: DisplayEvent;
+  isGlobSearch: boolean;
+}) {
+  return (
+    <div className={cn("flex flex-col gap-1.5", isGlobSearch && "max-h-64 overflow-y-auto")}>
+      <CollapsedSearchBlockPreview
+        title={event.label}
+        pattern={
+          isGlobSearch
+            ? buildSearchPattern(
+                event.activityDetail?.input?.pattern as string,
+                event.description,
+              )
+            : buildSearchPattern(
+                event.activityDetail?.query || event.summary,
+                event.description,
+              )
+        }
+        patternInHeader={isGlobSearch}
+        path={isGlobSearch ? undefined : event.filePath}
+        include={event.activityDetail?.input?.include as string || event.activityDetail?.input?.Include as string}
+        outputMode={event.activityDetail?.input?.output_mode as string || event.activityDetail?.input?.outputMode as string}
+        headLimit={event.activityDetail?.input?.head_limit as number || event.activityDetail?.input?.headLimit as number}
+        output={event.activityDetail?.output}
+      />
+    </div>
+  );
+}
+
 type ThoughtItem = {
   key: string;
   text: string;
@@ -2264,6 +2566,47 @@ type ProgressItem = {
   /** Arrival-order sequence number from StreamingStep.streamSeq or MessageStep.streamSeq */
   streamSeq?: number;
 };
+
+function questionPromptSummaryFromEventProperties(
+  eventProperties: Record<string, unknown> | null,
+): string | undefined {
+  const questions = Array.isArray(eventProperties?.questions)
+    ? eventProperties.questions
+    : [];
+  const firstQuestion = asRecord(questions[0]);
+  const questionText = firstNonEmptyString(
+    asString(firstQuestion?.question),
+    asString(firstQuestion?.header),
+    asString(firstQuestion?.title),
+  );
+  if (questionText) {
+    return questionText;
+  }
+  if (questions.length > 0) {
+    return `${questions.length} question${questions.length === 1 ? "" : "s"}`;
+  }
+  return undefined;
+}
+
+function isQuestionToolName(tool?: string): boolean {
+  const normalized = (tool || "").trim().toLowerCase();
+  return (
+    normalized === "question" ||
+    normalized.includes("request_user_input") ||
+    normalized.includes("request-user-input")
+  );
+}
+
+function isQuestionLikeActivityTool(
+  tool?: string,
+  partType?: string,
+): boolean {
+  return (
+    isQuestionToolName(tool) ||
+    (partType || "").trim().toLowerCase() === "question.asked" ||
+    (partType || "").trim().toLowerCase() === "question.replied"
+  );
+}
 
 type CommentaryItem = {
   id?: string;
@@ -2459,6 +2802,8 @@ function thoughtItemsFromRawEventPayloads(
     upsertThoughtItem({
       key,
       text: cleaned,
+      streamSeq: index,
+      source: "final",
       status,
       startedAt: partTimeStart,
       endedAt: partTimeEnd,
@@ -2697,27 +3042,9 @@ function mergeProgressItemsForTimeline(
 function progressItemsFromRawEventPayloads(
   rawSdkEventPayloads?: unknown[],
 ): ProgressItem[] {
-  console.log('[DEBUG] progressItemsFromRawEventPayloads called', {
-    isArray: Array.isArray(rawSdkEventPayloads),
-    length: rawSdkEventPayloads?.length,
-  });
-
   if (!Array.isArray(rawSdkEventPayloads) || rawSdkEventPayloads.length === 0) {
-    console.log('[DEBUG] No rawSdkEventPayloads to process');
     return [];
   }
-
-  console.log('[DEBUG] Processing rawSdkEventPayloads', {
-    count: rawSdkEventPayloads.length,
-    sample: rawSdkEventPayloads.slice(0, 2).map((e: unknown) => {
-      const rec = e as Record<string, unknown>;
-      return {
-        type: rec.type,
-        hasPayload: !!rec.payload,
-        hasSyncEvent: !!rec.syncEvent,
-      };
-    }),
-  });
 
   const rawSteps: Array<MessageStep | StreamingStep> = [];
   const diagnostics = {
@@ -2748,6 +3075,77 @@ function progressItemsFromRawEventPayloads(
     }
     pushedSamples.push(summarizeCentralizedEventForTimelineDiagnostics(event, index));
   };
+  const buildSyntheticFileActivityStep = (
+    event: Record<string, unknown>,
+    eventType: string,
+    eventProperties: Record<string, unknown> | null,
+    messageID: string | undefined,
+    index: number,
+  ): MessageStep | StreamingStep | undefined => {
+    const file = firstNonEmptyString(
+      asString(eventProperties?.file),
+      asString(event.file),
+    );
+    const watcherEvent = firstNonEmptyString(
+      asString(eventProperties?.event),
+      asString(event.event),
+    )?.toLowerCase();
+    const id = firstNonEmptyString(
+      asString(event.id),
+      asString(event.eventId),
+    );
+    const sessionID = firstNonEmptyString(
+      asString(event.sessionID),
+      asString(event.sessionId),
+    );
+
+    let title = "";
+    if (eventType === "file.edited") {
+      title = "edit";
+    } else if (eventType === "file.watcher.updated") {
+      title = watcherEvent || "file watcher updated";
+    }
+
+    if (!file && !watcherEvent && !id) {
+      return undefined;
+    }
+
+    return {
+      id: id || `${eventType}-${index}`,
+      sessionID,
+      title,
+      type: "tool",
+      status: "done",
+      source: "raw_debug",
+      partType: eventType,
+      internal: false,
+      filePath: file || undefined,
+      messageID: messageID || undefined,
+      streamSeq: index,
+      activityDetail: {
+        summary: file || watcherEvent || title,
+        input: eventProperties
+          ? {
+              file: eventProperties.file,
+              event: eventProperties.event,
+            }
+          : file
+            ? { file }
+            : undefined,
+        output: undefined,
+        file: file || undefined,
+        metadata: watcherEvent
+          ? {
+              event: watcherEvent,
+              sourceEventType: eventType,
+            }
+          : {
+              sourceEventType: eventType,
+            },
+        sessionID,
+      },
+    };
+  };
 
   for (let index = 0; index < rawSdkEventPayloads.length; index += 1) {
     const event = asRecord(rawSdkEventPayloads[index]);
@@ -2770,62 +3168,80 @@ function progressItemsFromRawEventPayloads(
     // surface them in the activity timeline when they represent meaningful
     // work that happened during the assistant turn, instead of dropping them
     // on the floor simply because they do not have a `part` envelope.
-    if (eventType === "file.watcher.updated") {
-      const file = firstNonEmptyString(
-        asString(eventProperties?.file),
-        asString(event.file),
+    if (eventType === "file.edited" || eventType === "file.watcher.updated") {
+      const syntheticFileActivity = buildSyntheticFileActivityStep(
+        event,
+        eventType,
+        eventProperties,
+        messageID,
+        index,
       );
-      const watcherEvent = firstNonEmptyString(
-        asString(eventProperties?.event),
-        asString(event.event),
+      if (!syntheticFileActivity) {
+        continue;
+      }
+
+      rawSteps.push(syntheticFileActivity);
+      diagnostics.fileWatcher += 1;
+      diagnostics.pushed += 1;
+      rememberPushed(event, index);
+      continue;
+    }
+
+    if (eventType === "question.asked") {
+      const toolRecord = asRecord(eventProperties?.tool);
+      const summary = questionPromptSummaryFromEventProperties(eventProperties);
+      const callID = firstNonEmptyString(
+        asString(toolRecord?.callID),
+        asString(toolRecord?.callId),
       );
-      const title = firstNonEmptyString(watcherEvent, "file watcher updated");
-      const summary = firstNonEmptyString(
-        watcherEvent,
-        file,
-        title,
+      const requestID = firstNonEmptyString(
+        asString(eventProperties?.id),
+        asString(eventProperties?.requestID),
+        asString(eventProperties?.requestId),
       );
-      const id = firstNonEmptyString(
-        asString(event.id),
-        asString(event.eventId),
+      const sessionID = firstNonEmptyString(
+        asString(eventProperties?.sessionID),
+        asString(eventProperties?.sessionId),
+        asString(event.sessionID),
+        asString(event.sessionId),
       );
-      if (!file && !watcherEvent && !id) {
+      const eventMessageID = firstNonEmptyString(
+        asString(toolRecord?.messageID),
+        asString(toolRecord?.messageId),
+        messageID,
+      );
+      if (!callID && !requestID && !eventMessageID && !summary) {
+        diagnostics.noRenderableProgress += 1;
+        rememberSkipped("question_asked_no_renderable_progress", event, index);
         continue;
       }
 
       rawSteps.push({
-        id: id || `${eventType}-${index}`,
-        sessionID: firstNonEmptyString(
-          asString(event.sessionID),
-          asString(event.sessionId),
-        ),
-        title,
+        id: requestID || firstNonEmptyString(asString(event.id), asString(event.eventId)),
+        callID: callID || undefined,
+        messageID: eventMessageID || undefined,
+        sessionID,
+        title: "Requested clarification",
         type: "tool",
         status: "done",
         source: "raw_debug",
         partType: eventType,
         internal: false,
-        filePath: file || undefined,
-        messageID: messageID || undefined,
         streamSeq: index,
         activityDetail: {
           kind: "other",
-          summary: summary || title,
-          tool: "file_watcher",
-          input: eventProperties
-            ? {
-                file: eventProperties.file,
-                event: eventProperties.event,
-              }
-            : undefined,
+          summary: summary || "Requested clarification",
+          tool: "question",
+          input: eventProperties ?? undefined,
           output: undefined,
-          sessionID: firstNonEmptyString(
-            asString(event.sessionID),
-            asString(event.sessionId),
-          ),
+          metadata: {
+            questionCount: Array.isArray(eventProperties?.questions)
+              ? eventProperties.questions.length
+              : 0,
+          },
+          sessionID,
         },
       });
-      diagnostics.fileWatcher += 1;
       diagnostics.pushed += 1;
       rememberPushed(event, index);
       continue;
@@ -2840,12 +3256,6 @@ function progressItemsFromRawEventPayloads(
 
     const part = getCentralizedEventPart(event);
     if (!part) {
-      console.log('[PROGRESS_ITEMS] No part found for event', {
-        index,
-        eventType: event.type,
-        hasPayload: !!event.payload,
-        hasSyncEvent: !!event.syncEvent,
-      });
       diagnostics.noPart += 1;
       rememberSkipped("no_part", event, index);
       continue;
@@ -2865,16 +3275,6 @@ function progressItemsFromRawEventPayloads(
       asString(part.partType),
       asString(structured?.kind),
     );
-
-    console.log('[PROGRESS_ITEMS] Processing part', {
-      index,
-      tool,
-      partType,
-      partTool: part.tool,
-      partName: part.name,
-      partType_raw: part.type,
-      stateStatus: state?.status,
-    });
 
     // Reasoning belongs in the dedicated thinking lane, not the activity step
     // lane. If we let it through here, the same assistant text can render once
@@ -2941,11 +3341,6 @@ function progressItemsFromRawEventPayloads(
 
     if (partType === "text") {
       diagnostics.textSkipped += 1;
-      console.log('[PROGRESS_ITEMS] Skipped text part', {
-        index,
-        partType,
-        messageId: partMessageID,
-      });
       rememberSkipped("text_response_lane", event, index);
       continue;
     }
@@ -2963,7 +3358,11 @@ function progressItemsFromRawEventPayloads(
       }
     }
 
+    const isQuestionTool = isQuestionToolName(tool);
     const title =
+      (isQuestionTool && status === "done"
+        ? "Captured user response"
+        : undefined) ||
       firstNonEmptyString(
         asString(part.title),
         tool,
@@ -2982,31 +3381,9 @@ function progressItemsFromRawEventPayloads(
       !!partType;
     if (!hasRenderableProgress) {
       diagnostics.noRenderableProgress += 1;
-      console.log('[PROGRESS_ITEMS] Skipped - no renderable progress', {
-        index,
-        title,
-        tool,
-        partType,
-        hasCallID: !!callID,
-        hasId: !!id,
-        hasFilePath: !!filePath,
-        hasOutput: !!output,
-        hasPreview: !!preview,
-      });
       rememberSkipped("no_renderable_progress", event, index);
       continue;
     }
-
-    console.log('[PROGRESS_ITEMS] Adding progress item', {
-      index,
-      title,
-      tool,
-      partType,
-      messageId: partMessageID,
-      callID,
-      status,
-      filePath,
-    });
 
     rawSteps.push({
       id,
@@ -3025,7 +3402,7 @@ function progressItemsFromRawEventPayloads(
       endedAt: endedAt ? Number(endedAt) : undefined,
       streamSeq: index,
       activityDetail: {
-        kind: tool === "read" ? "read" : tool === "question" ? "other" : tool || "tool_call",
+        kind: tool === "read" ? "read" : isQuestionTool ? "other" : tool || "tool_call",
         summary: filePath || preview || output || title,
         tool,
         command: firstNonEmptyString(
@@ -3045,18 +3422,6 @@ function progressItemsFromRawEventPayloads(
     diagnostics.pushed += 1;
     rememberPushed(event, index);
   }
-
-  console.log('[PROGRESS_ITEMS] Summary', {
-    total: diagnostics.total,
-    pushed: diagnostics.pushed,
-    noRecord: diagnostics.noRecord,
-    fileWatcher: diagnostics.fileWatcher,
-    structuredThinkingSkipped: diagnostics.structuredThinkingSkipped,
-    noPart: diagnostics.noPart,
-    reasoningSkipped: diagnostics.reasoningSkipped,
-    textSkipped: diagnostics.textSkipped,
-    noRenderableProgress: diagnostics.noRenderableProgress,
-  });
 
   const rawStepFilterPreview = rawSteps.slice(0, 12).map((step, index) => {
     const stepRec = step as StreamingStep;
@@ -3627,6 +3992,180 @@ function commentaryItemsFromRawEventPayloads(
     const right = typeof b.streamSeq === "number" ? b.streamSeq : 0;
     return left - right;
   });
+}
+
+function completedQuestionOutputChunksFromRawEventPayloads(
+  rawSdkEventPayloads: unknown[],
+  messageScopeIds?: Set<string>,
+): Array<{ text: string; streamSeq: number }> {
+  if (!Array.isArray(rawSdkEventPayloads) || rawSdkEventPayloads.length === 0) {
+    return [];
+  }
+
+  const chunks: Array<{ text: string; streamSeq: number }> = [];
+  const seen = new Set<string>();
+  const isMessageInScope = (messageId?: string | null): boolean => {
+    if (!messageScopeIds || messageScopeIds.size === 0) {
+      return true;
+    }
+    if (!messageId) {
+      return true;
+    }
+    return messageScopeIds.has(messageId);
+  };
+
+  for (let index = 0; index < rawSdkEventPayloads.length; index += 1) {
+    const event = asRecord(rawSdkEventPayloads[index]);
+    if (!event) {
+      continue;
+    }
+
+    const part = getCentralizedEventPart(event);
+    if (!part) {
+      continue;
+    }
+
+    const toolName = firstNonEmptyString(
+      asString(part.tool),
+      asString(part.name),
+    )?.toLowerCase();
+    if (
+      toolName !== "question" &&
+      !toolName?.includes("request_user_input") &&
+      !toolName?.includes("request-user-input")
+    ) {
+      continue;
+    }
+
+    const messageID = firstNonEmptyString(
+      asString(part.messageID),
+      asString(part.messageId),
+      asString(event.messageID),
+      asString(event.messageId),
+    );
+    if (!isMessageInScope(messageID)) {
+      continue;
+    }
+
+    const state = asRecord(part.state);
+    const status = firstNonEmptyString(
+      asString(state?.status),
+      asString(part.status),
+    )?.toLowerCase();
+    if (status !== "completed") {
+      continue;
+    }
+
+    const output = firstNonEmptyString(
+      asString(state?.output),
+      asString(part.output),
+    )?.trim();
+    if (!output) {
+      continue;
+    }
+
+    const callID = firstNonEmptyString(asString(part.callID), asString(part.callId));
+    const dedupeKey = [messageID || "", callID || "", normalizeComparableText(output)].join("|");
+    if (seen.has(dedupeKey)) {
+      continue;
+    }
+    seen.add(dedupeKey);
+    chunks.push({ text: output, streamSeq: index });
+  }
+
+  return chunks;
+}
+
+function orderedAssistantResponseChunksFromCentralizedData(
+  rawSdkEventPayloads: unknown[],
+  messageScopeIds?: Set<string>,
+): string[] {
+  if (!Array.isArray(rawSdkEventPayloads) || rawSdkEventPayloads.length === 0) {
+    return [];
+  }
+
+  const orderedMessageIds: string[] = [];
+  const seenMessageIds = new Set<string>();
+  for (const event of rawSdkEventPayloads) {
+    const messageID = extractEventMessageId(event);
+    if (!messageID) {
+      continue;
+    }
+    if (messageScopeIds && messageScopeIds.size > 0 && !messageScopeIds.has(messageID)) {
+      continue;
+    }
+    if (seenMessageIds.has(messageID)) {
+      continue;
+    }
+    seenMessageIds.add(messageID);
+    orderedMessageIds.push(messageID);
+  }
+
+  const orderedChunks: Array<{ text: string; streamSeq: number }> = [];
+  const seenChunkKeys = new Set<string>();
+  const questionChunks = completedQuestionOutputChunksFromRawEventPayloads(
+    rawSdkEventPayloads,
+    messageScopeIds,
+  );
+  for (const chunk of questionChunks) {
+    const key = `question:${normalizeComparableText(chunk.text)}`;
+    if (seenChunkKeys.has(key)) {
+      continue;
+    }
+    seenChunkKeys.add(key);
+    orderedChunks.push(chunk);
+  }
+
+  for (const messageID of orderedMessageIds) {
+    const scopedPayloads = rawSdkEventPayloads.filter(
+      (event) => extractEventMessageId(event) === messageID,
+    );
+    const bodyChunks = getCentralizedAssistantContentChunksFromRawSdkEventPayloads(
+      scopedPayloads,
+    );
+    if (bodyChunks.length === 0) {
+      continue;
+    }
+
+    let firstBodySeq = Number.MAX_SAFE_INTEGER;
+    for (let index = 0; index < rawSdkEventPayloads.length; index += 1) {
+      const event = rawSdkEventPayloads[index];
+      if (extractEventMessageId(event) !== messageID) {
+        continue;
+      }
+      if (isAiResponseEvent(event)) {
+        firstBodySeq = Math.min(firstBodySeq, index);
+      }
+      const part = getCentralizedEventPart(event);
+      const toolName = firstNonEmptyString(
+        asString(part?.tool),
+        asString(part?.name),
+      )?.toLowerCase();
+      if (toolName === "structuredoutput" || toolName === "structured_output") {
+        firstBodySeq = Math.min(firstBodySeq, index);
+      }
+    }
+
+    for (const chunk of bodyChunks) {
+      const normalized = normalizeComparableText(chunk);
+      if (!normalized) {
+        continue;
+      }
+      const key = `body:${messageID}:${normalized}`;
+      if (seenChunkKeys.has(key)) {
+        continue;
+      }
+      seenChunkKeys.add(key);
+      orderedChunks.push({
+        text: chunk,
+        streamSeq: firstBodySeq === Number.MAX_SAFE_INTEGER ? orderedChunks.length : firstBodySeq,
+      });
+    }
+  }
+
+  return orderedChunks
+    .sort((a, b) => a.streamSeq - b.streamSeq)
+    .map((chunk) => chunk.text);
 }
 
 function formatTodoStatus(status: TodoItem["status"]): string {
@@ -4229,6 +4768,7 @@ type DisplayEvent = {
   viewDiffFile?: string;
   isImportant?: boolean;
   updateCount: number;
+  streamSeq?: number;
 };
 
 const ACTIVITY_TIMELINE_DIAGNOSTIC_LOG = "[ACTIVITY-TIMELINE-DIAG]";
@@ -4495,6 +5035,38 @@ function displayEventFingerprint(event: DisplayEvent): string {
   ].join("|");
 }
 
+function diffStatsEqual(
+  left?: { added: number; deleted: number },
+  right?: { added: number; deleted: number },
+): boolean {
+  if (!left && !right) {
+    return true;
+  }
+  if (!left || !right) {
+    return false;
+  }
+  return left.added === right.added && left.deleted === right.deleted;
+}
+
+function displayEventNeedsReplacement(
+  existing: DisplayEvent,
+  incoming: DisplayEvent,
+): boolean {
+  return (
+    existing.status !== incoming.status ||
+    existing.summary !== incoming.summary ||
+    existing.description !== incoming.description ||
+    existing.detail !== incoming.detail ||
+    existing.filePath !== incoming.filePath ||
+    existing.startedAt !== incoming.startedAt ||
+    existing.endedAt !== incoming.endedAt ||
+    existing.viewDiffFile !== incoming.viewDiffFile ||
+    existing.isImportant !== incoming.isImportant ||
+    !diffStatsEqual(existing.diffStats, incoming.diffStats) ||
+    existing.activityDetail !== incoming.activityDetail
+  );
+}
+
 function mergeStickyDisplayEventsForTurn(
   previousEvents: DisplayEvent[],
   nextEvents: DisplayEvent[],
@@ -4545,10 +5117,12 @@ function mergeStickyDisplayEventsForTurn(
       const existingFingerprint = displayEventFingerprint(existing);
       const existingPriority = displayEventSourcePriority(existing.source);
       const incomingPriority = displayEventSourcePriority(event.source);
+      const needsReplacement = displayEventNeedsReplacement(existing, event);
 
       if (
         existingFingerprint !== fingerprint ||
-        incomingPriority > existingPriority
+        incomingPriority > existingPriority ||
+        needsReplacement
       ) {
         merged[matchingIndex] = {
           ...existing,
@@ -5152,6 +5726,7 @@ function buildDisplayEvents(
   commentaryItems: CommentaryItem[],
   fileChanges: StructuredFileChange[] | undefined,
   messageScopeIds?: Set<string>,
+  currentMessageId?: string | null,
 ): DisplayEvent[] {
   const stripTrailingEllipsis = (value?: string) =>
     (value || "").replace(/\s*(?:\.{3}|…)\s*$/u, "").trim();
@@ -5243,12 +5818,24 @@ function buildDisplayEvents(
     | { seq: number; kind: "commentary"; item: CommentaryItem };
 
   const entries: RawRenderEntry[] = [];
+  const isSiblingScopedMessageId = (messageId?: string | null): boolean => {
+    if (!currentMessageId || !messageId) {
+      return false;
+    }
+    if (messageId === currentMessageId) {
+      return false;
+    }
+    return !messageScopeIds || messageScopeIds.size === 0 || messageScopeIds.has(messageId);
+  };
 
   for (const item of thoughtItems) {
     entries.push({
       kind: "reasoning",
       item,
-      seq: seqFromThoughtKey(item.key),
+      seq:
+        typeof item.streamSeq === "number"
+          ? item.streamSeq
+          : seqFromThoughtKey(item.key),
     });
   }
 
@@ -5258,7 +5845,7 @@ function buildDisplayEvents(
       item,
       seq:
         item.streamSeq != null
-          ? item.streamSeq + 1
+          ? item.streamSeq
           : Number.MAX_SAFE_INTEGER,
     });
   }
@@ -5273,16 +5860,60 @@ function buildDisplayEvents(
       item,
       seq:
         item.streamSeq != null
-          ? item.streamSeq + 1
+          ? item.streamSeq
           : Number.MAX_SAFE_INTEGER,
     });
   }
 
-  entries.sort((a, b) => a.seq - b.seq);
+  const lastFinishedActivitySeq = entries.reduce((best, entry) => {
+    if (entry.kind !== "activity") {
+      return best;
+    }
+    const status = (entry.item.status || "").toLowerCase();
+    const isFinished =
+      status === "done" ||
+      status === "completed" ||
+      status === "complete" ||
+      status === "error" ||
+      status === "failed";
+    if (!isFinished) {
+      return best;
+    }
+    return Math.max(best, entry.seq);
+  }, Number.NEGATIVE_INFINITY);
+  const lastKnownEntrySeq = entries.reduce(
+    (best, entry) => Math.max(best, entry.seq),
+    Number.NEGATIVE_INFINITY,
+  );
+  const appendBaseSeq =
+    lastFinishedActivitySeq !== Number.NEGATIVE_INFINITY
+      ? lastFinishedActivitySeq
+      : lastKnownEntrySeq !== Number.NEGATIVE_INFINITY
+        ? lastKnownEntrySeq
+        : 0;
+
+  let appendedSiblingOffset = 0;
+  const normalizedEntries = entries.map((entry) => {
+    const messageId =
+      entry.kind === "activity"
+        ? entry.item.messageID
+        : entry.item.messageID;
+    if (!isSiblingScopedMessageId(messageId)) {
+      return entry;
+    }
+
+    appendedSiblingOffset += 1;
+    return {
+      ...entry,
+      seq: appendBaseSeq + appendedSiblingOffset,
+    };
+  });
+
+  normalizedEntries.sort((a, b) => a.seq - b.seq);
 
   const rawEvents: DisplayEvent[] = [];
 
-  for (const entry of entries) {
+  for (const entry of normalizedEntries) {
     if (entry.kind === "reasoning") {
       const item = entry.item;
       const text = (item.text || "").trim();
@@ -5305,6 +5936,7 @@ function buildDisplayEvents(
         endedAt: item.endedAt,
         isImportant: false,
         updateCount: 1,
+        streamSeq: entry.seq,
       });
       continue;
     }
@@ -5326,6 +5958,7 @@ function buildDisplayEvents(
         partID: item.partID,
         isImportant: false,
         updateCount: 1,
+        streamSeq: entry.seq,
       });
       continue;
     }
@@ -5341,7 +5974,13 @@ function buildDisplayEvents(
     const source = event.source;
     const partType = event.partType;
     const internal = Boolean(event.internal);
+    const activityFiles = Array.isArray(activityDetail?.files)
+      ? activityDetail.files.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      : [];
     let filePath = event.filePath || activityDetail?.file;
+    if (!filePath && activityFiles.length > 0) {
+      filePath = activityFiles[0];
+    }
     if (!filePath) {
       filePath =
         extractFilePathFromText(event.meta) ||
@@ -5461,7 +6100,13 @@ function buildDisplayEvents(
       }
     }
 
-    const cleanedLabel = cleanEventLabel(metadataFirstLabel);
+    const questionLikeActivity = isQuestionLikeActivityTool(
+      activityDetail?.tool,
+      partType,
+    );
+    const cleanedLabel = questionLikeActivity && cleanedRawTitle
+      ? cleanEventLabel(cleanedRawTitle)
+      : cleanEventLabel(metadataFirstLabel);
     const normalizedSummary = (summary || cleanedRawTitle || "")
       .trim()
       .toLowerCase();
@@ -5481,23 +6126,30 @@ function buildDisplayEvents(
       continue;
     }
 
-    // step-start / step-finish are internal lifecycle signals with no
-    // user-facing meaning — always suppress them to keep the timeline clean.
-    if (normalizedLabel === "step-start" || normalizedLabel === "step-finish") {
-      continue;
-    }
-
+    // step-start / step-finish are internal lifecycle signals. Preserve them
+    // in the timeline but mark them so the renderer can display them as compact
+    // lifecycle markers (Claude Code / Codex style) rather than full cards.
+    const isLifecycleMarker =
+      normalizedLabel === "step-start" ||
+      normalizedLabel === "step-finish" ||
+      normalizedLabel === "start" && normalizedSummary === "start" ||
+      normalizedLabel === "finish" && normalizedSummary === "finish" ||
+      (normalizedLabel === "step" && (normalizedSummary === "start" || normalizedSummary === "finish")) ||
+      cleanedRawTitle.toLowerCase() === "step-start" ||
+      cleanedRawTitle.toLowerCase() === "step-finish";
     rawEvents.push({
       key: event.key,
       kind: "activity",
-      label: cleanedLabel,
+      label: isLifecycleMarker ? cleanedRawTitle || cleanedLabel : cleanedLabel,
       summary: summary || cleanedRawTitle || "Activity update",
       description,
       detail: detail || undefined,
       status: event.status,
       source,
       partType,
-      internal,
+      // NOTE: lifecycle markers (step-start / step-finish) are flagged as internal
+      // so the renderer can display them as compact chips instead of full cards.
+      internal: internal || isLifecycleMarker,
       filePath,
       callID: event.callID,
       messageID: event.messageID,
@@ -5514,6 +6166,7 @@ function buildDisplayEvents(
           cleanedLabel === "error",
       ),
       updateCount: 1,
+      streamSeq: entry.seq,
     });
   }
 
@@ -5584,53 +6237,178 @@ export const SystemMessage = memo(function SystemMessage({
   content: string;
   accentColor?: string;
 }) {
-  const [isExpanded, setIsExpanded] = useState(false);
-  const shouldCollapse = content.split("\n").length > 8 || content.length > 300;
+  const [isExpanded, setIsExpanded] = useState(true);
+  const { title, displayContent, collapsedPreview } = useMemo(() => {
+    const trimmedContent = content.trim();
+    const lines = trimmedContent.split("\n");
+    const firstLine = lines[0]?.trim() ?? "";
+
+    let nextTitle = "SYSTEM MESSAGE";
+    let nextDisplayContent = trimmedContent;
+
+    if (firstLine.startsWith("[") && firstLine.includes("]")) {
+      const closingIdx = firstLine.indexOf("]");
+      const rawTitle = firstLine.slice(0, closingIdx + 1).trim();
+      const remainderOnFirstLine = firstLine.slice(closingIdx + 1).trim();
+      const remainingLines = lines.slice(1).join("\n").trim();
+
+      nextTitle = rawTitle.toUpperCase();
+      nextDisplayContent = [remainderOnFirstLine, remainingLines]
+        .filter(Boolean)
+        .join("\n")
+        .trim();
+    }
+
+    if (!nextDisplayContent) {
+      nextDisplayContent = nextTitle;
+      nextTitle = "SYSTEM MESSAGE";
+    }
+
+    const nextCollapsedPreview = nextDisplayContent
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 140);
+
+    return {
+      title: nextTitle,
+      displayContent: nextDisplayContent,
+      collapsedPreview: nextCollapsedPreview,
+    };
+  }, [content]);
+  const systemMessageStyle = useMemo(
+    () =>
+      ({
+        "--oc-system-accent": accentColor,
+      }) as CSSProperties,
+    [accentColor],
+  );
+
+  return (
+    <div className="oc-message-enter mb-4">
+      <section className="oc-system-message" style={systemMessageStyle}>
+        <button
+          type="button"
+          onClick={() => setIsExpanded(!isExpanded)}
+          className="oc-system-message__toggle"
+          aria-label={isExpanded ? "Collapse system prompt" : "Expand system prompt"}
+          aria-expanded={isExpanded}
+        >
+          <div className="oc-system-message__header">
+            <div className="oc-system-message__title-block">
+              <div className="oc-system-message__title-row">
+                <span className="oc-system-message__meta" aria-hidden="true">
+                  <Info className="h-3.5 w-3.5" />
+                  <span>System</span>
+                </span>
+                <span className="oc-system-message__title">{title}</span>
+              </div>
+              {!isExpanded && collapsedPreview ? (
+                <p className="oc-system-message__preview">{collapsedPreview}</p>
+              ) : null}
+            </div>
+          </div>
+          <div className="oc-system-message__chevron" aria-hidden="true">
+            <ChevronDown
+              className={cn(
+                "h-4 w-4 transition-transform duration-300",
+                isExpanded ? "rotate-180" : "",
+              )}
+            />
+          </div>
+        </button>
+
+        <div
+          className={cn(
+            "grid transition-[grid-template-rows] duration-300 ease-in-out",
+            isExpanded ? "grid-rows-[1fr]" : "grid-rows-[0fr]",
+          )}
+        >
+          <div className="overflow-hidden">
+            <div className="oc-system-message__body">
+              <div className="oc-system-message__content">
+                {displayContent}
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+});
+
+export const BackgroundTaskReminderMessage = memo(function BackgroundTaskReminderMessage({
+  message,
+  messages,
+}: {
+  message?: Message;
+  messages?: Message[];
+}) {
+  const reminderText = (message?.content ?? message?.text ?? "").trim();
+  const backgroundTaskId = useMemo(
+    () => backgroundTaskIdFromReminderText(reminderText),
+    [reminderText],
+  );
+  const presentation = useMemo(
+    () =>
+      buildBackgroundTaskPresentation({
+        taskId: backgroundTaskId,
+        message,
+        messages,
+      }),
+    [backgroundTaskId, message, messages],
+  );
+  const assistantConversationEvents = presentation.assistantConversationEvents;
+  const assistantUpdateText = presentation.assistantUpdateText;
+  const reminderActivityDetail = presentation.activityDetail;
+  const reminderMessageId =
+    firstNonEmptyString(message?.info?.id, message?.id, message?.messageId) ?? null;
+
+  useEffect(() => {
+    logger.info("[TRACE][BG_TASK_REMINDER][CARD]", {
+      reminderMessageId,
+      backgroundTaskId: presentation.backgroundTaskId,
+      assistantConversationEventCount: assistantConversationEvents.length,
+      assistantUpdateTextLength: assistantUpdateText.length,
+      hasReminderActivityDetail: !!reminderActivityDetail,
+      reminderActivityTool: reminderActivityDetail?.tool ?? null,
+      reminderActivityBackgroundTaskId: reminderActivityDetail?.backgroundTaskId ?? null,
+      reminderTextPreview: reminderText.slice(0, 200),
+    });
+    if (process.env.NODE_ENV === "development") {
+      console.info("[TRACE][BG_TASK_REMINDER][CARD]", {
+        reminderMessageId,
+        backgroundTaskId: presentation.backgroundTaskId,
+        assistantConversationEventCount: assistantConversationEvents.length,
+        assistantUpdateTextLength: assistantUpdateText.length,
+        hasReminderActivityDetail: !!reminderActivityDetail,
+        reminderActivityTool: reminderActivityDetail?.tool ?? null,
+        reminderActivityBackgroundTaskId: reminderActivityDetail?.backgroundTaskId ?? null,
+        reminderTextPreview: reminderText.slice(0, 200),
+      });
+    }
+  }, [
+    assistantConversationEvents.length,
+    assistantUpdateText.length,
+    presentation.backgroundTaskId,
+    reminderActivityDetail,
+    reminderMessageId,
+    reminderText,
+  ]);
 
   return (
     <div className="oc-message-enter mb-4 px-4">
-      <div className="opacity-90 transition-opacity hover:opacity-100">
-        <button
-          type="button"
-          onClick={() => {
-            if (shouldCollapse) setIsExpanded(!isExpanded);
-          }}
-          className={cn(
-            "group relative block w-full max-w-full overflow-hidden rounded-lg border border-oc-border-soft text-left transition-colors hover:border-oc-border hover:bg-oc-panel-soft/60",
-            shouldCollapse ? "cursor-pointer" : "cursor-default"
-          )}
-          style={{
-            borderLeftWidth: "3px",
-            borderLeftColor: accentColor,
-            backgroundColor: `color-mix(in srgb, ${accentColor} 4%, var(--oc-bg-soft))`,
-          }}
-          aria-label={shouldCollapse ? (isExpanded ? "Collapse system prompt" : "Expand system prompt") : undefined}
-        >
-          <div
-            className={cn(
-              "relative overflow-hidden transition-all",
-              (shouldCollapse && !isExpanded) ? "max-h-[140px]" : "max-h-none"
-            )}
-          >
-            <pre className="oc-code whitespace-pre-wrap break-words p-3 pr-8 pb-3 text-[11px] leading-relaxed text-oc-text-soft font-medium">
-              {content}
-            </pre>
-            {shouldCollapse && !isExpanded && (
-              <div
-                className="pointer-events-none absolute inset-x-0 bottom-0 h-16"
-                style={{
-                  background: `linear-gradient(to top, color-mix(in srgb, ${accentColor} 4%, var(--oc-bg-soft)) 10%, transparent 100%)`
-                }}
-              />
-            )}
-          </div>
-          {shouldCollapse && (
-            <div className="oc-timeline-caret pointer-events-none absolute bottom-2 right-2 inline-flex h-6 w-6 items-center justify-center rounded-full">
-              <ChevronDown className={cn("h-3 w-3 oc-text-secondary transition-transform", isExpanded ? "rotate-180" : "")} />
-            </div>
-          )}
-        </button>
-      </div>
+      <BackgroundOutputStep
+        sessionID={firstNonEmptyString(
+          message?.info?.sessionID,
+          message?.info?.sessionId,
+          message?.sessionID,
+        )}
+        status="done"
+        source="final"
+        activityDetail={reminderActivityDetail}
+        assistantUpdateText={assistantUpdateText || undefined}
+        assistantConversationEvents={assistantConversationEvents}
+      />
     </div>
   );
 });
@@ -5757,6 +6535,11 @@ export const UserMessage = memo(function UserMessage({ message }: { message?: Me
               )}
             </div>
             <div className="mt-1 flex items-center justify-end gap-1.5">
+              {message.pendingDeferredPrompt ? (
+                <span className="oc-text-secondary text-[10px] font-medium opacity-75">
+                  {message.pendingDeferredPromptLabel ?? "Sent - waiting"}
+                </span>
+              ) : null}
               {(() => {
                 const ts = formatMessageTime(getMessageTimestamp(message));
                 return ts ? (
@@ -5822,109 +6605,396 @@ function getAgentName(
   return "assistant";
 }
 
-/**
- * Type-safe helper to get token usage info from message.
- * Returns undefined for streaming state since tokens aren't available until completion.
- */
-function getTokenInfo(message: Message | undefined):
-  | {
-    input?: number;
-    output?: number;
-    reasoning?: number;
-    cache?: { read?: number; write?: number };
+type CentralizedTokenInfo = {
+  input?: number;
+  output?: number;
+  reasoning?: number;
+  cache?: { read?: number; write?: number };
+};
+
+type CentralizedMetricsSnapshot = {
+  tokens?: CentralizedTokenInfo;
+  duration?: number;
+  matchingPayloads: unknown[];
+  sourcePayload?: unknown;
+  sourcePayloadIndex?: number;
+  sourceEventType?: string;
+};
+
+type LegacyMetricsDiagnostics = {
+  tokenSource:
+    | "message.info.tokens"
+    | "message.rawResponse.info.tokens"
+    | "message.tokens"
+    | "none";
+  durationSource:
+    | "streaming.usage.duration"
+    | "message.info.duration"
+    | "message.rawResponse.info.time"
+    | "message.duration"
+    | "message.timing.duration"
+    | "none";
+  tokens?: CentralizedTokenInfo;
+  duration?: number;
+  rawResponseInfo?: Record<string, unknown> | null;
+  rawResponseParsed?: Record<string, unknown> | null;
+};
+
+function asNonNegativeInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.floor(value)
+    : undefined;
+}
+
+function asNonNegativeNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : undefined;
+}
+
+function parseRawResponseRecordForDiagnostics(
+  raw: Message["rawResponse"],
+): Record<string, unknown> | null {
+  if (typeof raw === "object" && raw !== null) {
+    return asRecord(raw);
   }
-  | undefined {
-  if (!message) {
+  if (typeof raw !== "string") {
+    return null;
+  }
+  const text = raw.trim();
+  if (!text) {
+    return null;
+  }
+  const truncMatch = text.match(/\.\.\.<truncated\s+\d+\s+chars>\s*$/i);
+  const candidate = truncMatch ? text.slice(0, truncMatch.index).trim() : text;
+  try {
+    return asRecord(JSON.parse(candidate));
+  } catch {
+    return null;
+  }
+}
+
+function getRawResponseInfoRecordForDiagnostics(
+  raw: Message["rawResponse"],
+): Record<string, unknown> | null {
+  const normalized = parseRawResponseRecordForDiagnostics(raw);
+  if (!normalized) {
+    return null;
+  }
+
+  const nestedPaths = [
+    ["info"],
+    ["payload", "syncEvent", "data", "info"],
+    ["payload", "data", "info"],
+    ["data", "info"],
+  ];
+
+  for (const path of nestedPaths) {
+    let current: unknown = normalized;
+    let valid = true;
+    for (const segment of path) {
+      const record = asRecord(current);
+      if (!record) {
+        valid = false;
+        break;
+      }
+      current = record[segment];
+    }
+    if (valid) {
+      const infoRecord = asRecord(current);
+      if (infoRecord) {
+        return infoRecord;
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractCentralizedTokens(infoRecord: Record<string, unknown> | null): CentralizedTokenInfo | undefined {
+  const rawTokens = asRecord(infoRecord?.tokens);
+  if (!rawTokens) {
     return undefined;
   }
 
-  if (message.info?.tokens) {
-    return message.info.tokens;
+  const input = asNonNegativeInteger(rawTokens.input);
+  const output = asNonNegativeInteger(rawTokens.output);
+  const reasoning = asNonNegativeInteger(rawTokens.reasoning);
+  const rawCache = asRecord(rawTokens.cache);
+  const cacheRead = asNonNegativeInteger(rawCache?.read);
+  const cacheWrite = asNonNegativeInteger(rawCache?.write);
+
+  if (
+    input === undefined &&
+    output === undefined &&
+    reasoning === undefined &&
+    cacheRead === undefined &&
+    cacheWrite === undefined
+  ) {
+    return undefined;
   }
 
-  const rawInfoRec = rawResponseInfoRecordForUi(message.rawResponse);
-  const rawTokens = asRecord(rawInfoRec?.tokens);
-  if (rawTokens) {
-    const rawCache = asRecord(rawTokens.cache);
-    return {
-      input: typeof rawTokens.input === "number" ? rawTokens.input : undefined,
-      output: typeof rawTokens.output === "number" ? rawTokens.output : undefined,
-      reasoning:
-        typeof rawTokens.reasoning === "number" ? rawTokens.reasoning : undefined,
-      cache: rawCache
+  return {
+    input,
+    output,
+    reasoning,
+    cache:
+      cacheRead !== undefined || cacheWrite !== undefined
         ? {
-            read: typeof rawCache.read === "number" ? rawCache.read : undefined,
-            write: typeof rawCache.write === "number" ? rawCache.write : undefined,
+            read: cacheRead,
+            write: cacheWrite,
           }
         : undefined,
-    };
+  };
+}
+
+function extractCentralizedDurationSeconds(infoRecord: Record<string, unknown> | null): number | undefined {
+  const infoDuration = asNonNegativeNumber(infoRecord?.duration);
+  if (infoDuration !== undefined) {
+    return infoDuration;
   }
 
-  if ("tokens" in message) {
-    const tokens = (message as Record<string, unknown>).tokens;
-    if (tokens && typeof tokens === "object") {
-      return tokens as {
-        input?: number;
-        output?: number;
-        reasoning?: number;
-        cache?: { read?: number; write?: number };
-      };
-    }
+  const rawTime = asRecord(infoRecord?.time);
+  const created = asNonNegativeNumber(rawTime?.created);
+  const completed = asNonNegativeNumber(rawTime?.completed);
+  if (
+    created !== undefined &&
+    completed !== undefined &&
+    completed >= created
+  ) {
+    return (completed - created) / 1000;
   }
 
   return undefined;
 }
 
-/**
- * Type-safe helper to get duration from message or streaming state.
- */
-function getDuration(
-  message: Message | undefined,
-  streaming: StreamingState | undefined,
-): number | undefined {
-  if (
-    streaming?.usage?.duration !== undefined &&
-    typeof streaming.usage.duration === "number"
-  ) {
-    return streaming.usage.duration;
+function eventMatchesAssistantScope(
+  payload: unknown,
+  assistantScopeMessageIds?: Set<string>,
+): boolean {
+  const info = getCentralizedEventInfo(payload);
+  const role = asString(info?.role).trim().toLowerCase();
+  if (role && role !== "assistant") {
+    return false;
   }
 
-  if (!message) {
+  if (!assistantScopeMessageIds || assistantScopeMessageIds.size === 0) {
+    return role === "assistant";
+  }
+
+  const messageId =
+    extractEventMessageId(payload) ||
+    firstNonEmptyString(info?.id, info?.messageID, info?.messageId) ||
+    null;
+  return !!messageId && assistantScopeMessageIds.has(messageId);
+}
+
+function getCentralizedMetricsSnapshot(
+  rawSdkEventPayloads?: unknown[],
+  assistantScopeMessageIds?: Set<string>,
+): CentralizedMetricsSnapshot | undefined {
+  if (!Array.isArray(rawSdkEventPayloads) || rawSdkEventPayloads.length === 0) {
     return undefined;
   }
 
-  if (
-    message.info?.duration !== undefined &&
-    typeof message.info.duration === "number"
-  ) {
-    return message.info.duration;
+  const matchingPayloads = rawSdkEventPayloads.filter((payload) =>
+    eventMatchesAssistantScope(payload, assistantScopeMessageIds),
+  );
+
+  if (matchingPayloads.length === 0) {
+    return undefined;
   }
 
-  const rawInfoRec = rawResponseInfoRecordForUi(message.rawResponse);
-  const rawTimeRec = asRecord(rawInfoRec?.time);
-  if (
+  for (let index = matchingPayloads.length - 1; index >= 0; index -= 1) {
+    const payload = matchingPayloads[index];
+    const info = getCentralizedEventInfo(payload);
+    const tokens = extractCentralizedTokens(info);
+    const duration = extractCentralizedDurationSeconds(info);
+
+    if (!tokens && duration === undefined) {
+      continue;
+    }
+
+    return {
+      tokens,
+      duration,
+      matchingPayloads,
+      sourcePayload: payload,
+      sourcePayloadIndex: index,
+      sourceEventType: asString(asRecord(payload)?.type).trim() || undefined,
+    };
+  }
+
+  return {
+    matchingPayloads,
+  };
+}
+
+/**
+ * Type-safe helper to get token usage info from centralized assistant events only.
+ */
+function getTokenInfo(
+  rawSdkEventPayloads?: unknown[],
+  assistantScopeMessageIds?: Set<string>,
+): CentralizedTokenInfo | undefined {
+  return getCentralizedMetricsSnapshot(
+    rawSdkEventPayloads,
+    assistantScopeMessageIds,
+  )?.tokens;
+}
+
+/**
+ * Type-safe helper to get duration from centralized assistant events only.
+ */
+function getDuration(
+  rawSdkEventPayloads?: unknown[],
+  assistantScopeMessageIds?: Set<string>,
+): number | undefined {
+  return getCentralizedMetricsSnapshot(
+    rawSdkEventPayloads,
+    assistantScopeMessageIds,
+  )?.duration;
+}
+
+function getLegacyMetricsDiagnostics(
+  message: Message | undefined,
+  streaming: StreamingState | undefined,
+): LegacyMetricsDiagnostics {
+  const rawResponseParsed = message
+    ? parseRawResponseRecordForDiagnostics(message.rawResponse)
+    : null;
+  const rawResponseInfo = message
+    ? getRawResponseInfoRecordForDiagnostics(message.rawResponse)
+    : null;
+
+  if (message?.info?.tokens) {
+    return {
+      tokenSource: "message.info.tokens",
+      durationSource:
+        streaming?.usage?.duration !== undefined &&
+        typeof streaming.usage.duration === "number"
+          ? "streaming.usage.duration"
+          : message.info?.duration !== undefined &&
+              typeof message.info.duration === "number"
+            ? "message.info.duration"
+            : "none",
+      tokens: message.info.tokens,
+      duration:
+        streaming?.usage?.duration !== undefined &&
+        typeof streaming.usage.duration === "number"
+          ? streaming.usage.duration
+          : typeof message.info.duration === "number"
+            ? message.info.duration
+            : undefined,
+      rawResponseInfo,
+      rawResponseParsed,
+    };
+  }
+
+  const rawTokens = asRecord(rawResponseInfo?.tokens);
+  const rawTimeRec = asRecord(rawResponseInfo?.time);
+  const rawDuration =
     typeof rawTimeRec?.created === "number" &&
     typeof rawTimeRec?.completed === "number" &&
     rawTimeRec.completed >= rawTimeRec.created
-  ) {
-    return (rawTimeRec.completed - rawTimeRec.created) / 1000;
+      ? (rawTimeRec.completed - rawTimeRec.created) / 1000
+      : undefined;
+
+  if (rawTokens) {
+    const rawCache = asRecord(rawTokens.cache);
+    return {
+      tokenSource: "message.rawResponse.info.tokens",
+      durationSource:
+        streaming?.usage?.duration !== undefined &&
+        typeof streaming.usage.duration === "number"
+          ? "streaming.usage.duration"
+          : rawDuration !== undefined
+            ? "message.rawResponse.info.time"
+            : "none",
+      tokens: {
+        input: typeof rawTokens.input === "number" ? rawTokens.input : undefined,
+        output: typeof rawTokens.output === "number" ? rawTokens.output : undefined,
+        reasoning:
+          typeof rawTokens.reasoning === "number" ? rawTokens.reasoning : undefined,
+        cache: rawCache
+          ? {
+              read: typeof rawCache.read === "number" ? rawCache.read : undefined,
+              write: typeof rawCache.write === "number" ? rawCache.write : undefined,
+            }
+          : undefined,
+      },
+      duration:
+        streaming?.usage?.duration !== undefined &&
+        typeof streaming.usage.duration === "number"
+          ? streaming.usage.duration
+          : rawDuration,
+      rawResponseInfo,
+      rawResponseParsed,
+    };
   }
 
-  if ("duration" in message) {
-    const duration = (message as Record<string, unknown>).duration;
-    if (typeof duration === "number") {
-      return duration;
+  if (message && "tokens" in message) {
+    const tokens = (message as Record<string, unknown>).tokens;
+    if (tokens && typeof tokens === "object") {
+      return {
+        tokenSource: "message.tokens",
+        durationSource:
+          streaming?.usage?.duration !== undefined &&
+          typeof streaming.usage.duration === "number"
+            ? "streaming.usage.duration"
+            : typeof message.duration === "number"
+              ? "message.duration"
+              : typeof message.timing?.duration === "number"
+                ? "message.timing.duration"
+                : "none",
+        tokens: tokens as CentralizedTokenInfo,
+        duration:
+          streaming?.usage?.duration !== undefined &&
+          typeof streaming.usage.duration === "number"
+            ? streaming.usage.duration
+            : typeof message.duration === "number"
+              ? message.duration
+              : typeof message.timing?.duration === "number"
+                ? message.timing.duration
+                : undefined,
+        rawResponseInfo,
+        rawResponseParsed,
+      };
     }
   }
 
-  if (message.timing && "duration" in message.timing) {
-    const timingDuration = message.timing.duration;
-    if (typeof timingDuration === "number") {
-      return timingDuration;
-    }
-  }
-
-  return undefined;
+  return {
+    tokenSource: "none",
+    durationSource:
+      streaming?.usage?.duration !== undefined &&
+      typeof streaming.usage.duration === "number"
+        ? "streaming.usage.duration"
+        : message?.info?.duration !== undefined &&
+            typeof message.info.duration === "number"
+          ? "message.info.duration"
+          : rawDuration !== undefined
+            ? "message.rawResponse.info.time"
+            : typeof message?.duration === "number"
+              ? "message.duration"
+              : typeof message?.timing?.duration === "number"
+                ? "message.timing.duration"
+                : "none",
+    duration:
+      streaming?.usage?.duration !== undefined &&
+      typeof streaming.usage.duration === "number"
+        ? streaming.usage.duration
+        : typeof message?.info?.duration === "number"
+          ? message.info.duration
+          : rawDuration !== undefined
+            ? rawDuration
+            : typeof message?.duration === "number"
+              ? message.duration
+              : typeof message?.timing?.duration === "number"
+                ? message.timing.duration
+                : undefined,
+    rawResponseInfo,
+    rawResponseParsed,
+  };
 }
 
 function getThinkingVariant(
@@ -6006,6 +7076,13 @@ type AssistantTurnMetadata = {
   modelID?: string;
   providerID?: string;
   variant?: string;
+};
+
+type AssistantHeaderSegment = {
+  key: string;
+  text: string;
+  className: string;
+  style?: CSSProperties;
 };
 
 function getAssistantTurnMetadataFromCentralizedEvents(
@@ -6157,7 +7234,16 @@ function ResponseMessageInner({
     availableModels,
     streamingBySessionId,
     rawSdkEventPayloadsBySessionId,
-  } = useAppState();
+  } = useAppState(
+    (state) => ({
+      assistantTurnPending: state.assistantTurnPending,
+      assistantTurnMessageId: state.assistantTurnMessageId,
+      availableModels: state.availableModels,
+      streamingBySessionId: state.streamingBySessionId,
+      rawSdkEventPayloadsBySessionId: state.rawSdkEventPayloadsBySessionId,
+    }),
+    shallowEqual,
+  );
 
   // NEW: Use custom hooks for subagent data access
   const messageId = message?.id || message?.info?.id;
@@ -6244,51 +7330,37 @@ function ResponseMessageInner({
     latestSyncWrappedAssistantMessageId,
   ) || null;
   const assistantScopeMessageIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const candidate of [
+    return buildAssistantScopeMessageIds({
+      message,
       assistantMessageId,
-      activityTimelineStreaming?.messageId,
+      streamingMessageId: activityTimelineStreaming?.messageId ?? null,
       assistantTurnMessageId,
       assistantTurnRootMessageId,
       assistantTurnAnchorMessageId,
-    ]) {
-      if (typeof candidate === "string" && candidate.trim().length > 0) {
-        ids.add(candidate.trim());
-      }
-    }
-
-    for (const candidate of collectMessageIdentityCandidates(message)) {
-      ids.add(candidate);
-    }
-
-    return ids;
+    });
   }, [
+    message,
     assistantMessageId,
     activityTimelineStreaming?.messageId,
     assistantTurnMessageId,
     assistantTurnRootMessageId,
     assistantTurnAnchorMessageId,
-    message,
   ]);
   const messageAttachedRawSdkEventPayloads = useMemo(
     () => (Array.isArray(message?.rawSdkEventPayloads) ? message.rawSdkEventPayloads : []),
     [message?.rawSdkEventPayloads],
   );
   const centralizedRawSdkEventPayloads = useMemo(() => {
-    // Filter centralized events to only show those belonging to the current message
-    // This ensures activity timeline is rendered in the correct message card
-
-    console.log('[ACTIVITY_TIMELINE] Filtering events for current message', {
-      sessionScopedCount: sessionScopedRawSdkEventPayloads.length,
-      messageAttachedCount: messageAttachedRawSdkEventPayloads.length,
-      currentMessageId: assistantMessageId,
-      messagesCount: messages?.length,
-      hasMessage: !!message,
-    });
-
     // Handle case where message is undefined
     if (!message) {
-      console.log('[ACTIVITY_TIMELINE] No message available, using session-scoped payloads');
+      if (assistantScopeMessageIds.size > 0) {
+        const scopedLivePayloads = sessionScopedRawSdkEventPayloads.filter((event) =>
+          eventBelongsToAssistantScope(event, assistantScopeMessageIds),
+        );
+        if (scopedLivePayloads.length > 0) {
+          return scopedLivePayloads;
+        }
+      }
       return sessionScopedRawSdkEventPayloads;
     }
 
@@ -6299,42 +7371,75 @@ function ResponseMessageInner({
         messageCandidateIds.add(candidate.trim());
       }
     }
+    for (const candidate of assistantScopeMessageIds) {
+      if (candidate.trim().length > 0) {
+        messageCandidateIds.add(candidate.trim());
+      }
+    }
+
+    const attachedPayloadsWithoutIds = messageAttachedRawSdkEventPayloads.filter((event) =>
+      !extractEventMessageId(event),
+    );
+    const sessionScopedNoIdPayloads = sessionScopedRawSdkEventPayloads.filter((event) =>
+      isAssistantScopedNoIdPayloadCandidate(event),
+    );
 
     // Filter session-scoped events to only those belonging to this message
     const messageSpecificEvents: unknown[] = [];
 
     for (const event of sessionScopedRawSdkEventPayloads) {
-      const eventMessageId = extractEventMessageId(event);
-
       // Check if this event belongs to the current message
-      if (eventMessageId && messageCandidateIds.has(eventMessageId)) {
+      if (eventBelongsToAssistantScope(event, messageCandidateIds)) {
         messageSpecificEvents.push(event);
       }
     }
 
-    console.log('[ACTIVITY_TIMELINE] Filtered events for current message', {
-      messageCandidateIds: Array.from(messageCandidateIds),
-      filteredCount: messageSpecificEvents.length,
-    });
-
     // If we found message-specific events, use those
     if (messageSpecificEvents.length > 0) {
-      return messageSpecificEvents;
+      return [
+        ...messageSpecificEvents,
+        ...sessionScopedNoIdPayloads,
+        ...attachedPayloadsWithoutIds,
+      ];
     }
 
-    // Fallback: Use message-attached payloads if available
+    // Fallback: message-attached payloads are usually already scoped to this
+    // card. When they include ids, still filter them through the same normal /
+    // syncEvent-aware path so stale duplicated data cannot leak across turns.
     if (messageAttachedRawSdkEventPayloads.length > 0) {
-      console.log('[ACTIVITY_TIMELINE] Using message-attached payloads as fallback');
-      return messageAttachedRawSdkEventPayloads;
+      const attachedPayloadsWithIds = messageAttachedRawSdkEventPayloads.filter((event) =>
+        !!extractEventMessageId(event),
+      );
+      const scopedAttachedPayloads = messageAttachedRawSdkEventPayloads.filter((event) =>
+        eventBelongsToAssistantScope(event, messageCandidateIds),
+      );
+      if (scopedAttachedPayloads.length > 0) {
+        // Message-attached payloads are already card-scoped by persistence.
+        // Preserve entries that lack an explicit message id so top-level
+        // assistant activity does not disappear during rehydration just because
+        // the payload shape is missing messageID/messageId.
+        return [
+          ...scopedAttachedPayloads,
+          ...sessionScopedNoIdPayloads,
+          ...attachedPayloadsWithoutIds,
+        ];
+      }
+      if (attachedPayloadsWithIds.length === 0) {
+        return [...messageAttachedRawSdkEventPayloads, ...sessionScopedNoIdPayloads];
+      }
     }
 
-    // Final fallback: Collect from all messages (for backwards compatibility)
-    if (!Array.isArray(messages) || messages.length === 0) {
-      console.log('[ACTIVITY_TIMELINE] No messages available');
+    if (messageCandidateIds.size === 0) {
       return [];
     }
 
-    console.log('[ACTIVITY_TIMELINE] Collecting from all messages as final fallback');
+    // Final fallback: older hydrated messages may only carry raw SDK payloads
+    // on sibling message objects. Search them, but never take "all messages";
+    // only events whose normal or syncEvent payload ids match this assistant
+    // scope are allowed into this card.
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return [];
+    }
 
     const collectedEvents: unknown[] = [];
     const seenEventSignatures = new Set<string>();
@@ -6345,6 +7450,9 @@ function ResponseMessageInner({
         : [];
 
       for (const event of msgEvents) {
+        if (!eventBelongsToAssistantScope(event, messageCandidateIds)) {
+          continue;
+        }
         const signature = centralizedDebugPayloadFingerprint(event);
         if (signature && !seenEventSignatures.has(signature)) {
           seenEventSignatures.add(signature);
@@ -6353,11 +7461,6 @@ function ResponseMessageInner({
       }
     }
 
-    console.log('[ACTIVITY_TIMELINE] Collected events from all messages', {
-      totalCount: collectedEvents.length,
-      uniqueSignatures: seenEventSignatures.size,
-    });
-
     return collectedEvents;
   }, [
     sessionScopedRawSdkEventPayloads,
@@ -6365,6 +7468,7 @@ function ResponseMessageInner({
     messages,
     message,
     assistantMessageId,
+    assistantScopeMessageIds,
   ]);
   const activityTimelineTurnMessageId = firstNonEmptyString(
     assistantMessageId,
@@ -6380,18 +7484,15 @@ function ResponseMessageInner({
     stickyCentralizedRawSdkEventPayloadsRef.current.messageId !==
     activityTimelineTurnMessageId
   ) {
-    // Preserve the rendered timeline for a turn even if a later rerender
-    // temporarily produces an empty hydrated payload set. This matches the
-    // streaming content latch below and prevents activity rows from vanishing
-    // after they have already been painted once.
-    //
-    // IMPORTANT: We preserve the existing payloads instead of clearing them
-    // to respect the rule that already-rendered components should not be removed.
-    // Only update the messageId tracking without resetting payloads to empty.
-    const existingPayloads = stickyCentralizedRawSdkEventPayloadsRef.current.payloads;
+    // Preserve rendered centralized activity only within the same assistant
+    // turn. The source tape arrives in both normal event form and syncEvent
+    // wrapper form, so the scoped payload selection above may briefly be empty
+    // during hydration. Reusing the same-turn payloads prevents flicker, but
+    // carrying them into a different `activityTimelineTurnMessageId` leaks the
+    // previous turn's reasoning/response into the next assistant card.
     stickyCentralizedRawSdkEventPayloadsRef.current = {
       messageId: activityTimelineTurnMessageId,
-      payloads: existingPayloads, // Preserve existing rendered components
+      payloads: [],
     };
   }
   if (centralizedRawSdkEventPayloads.length > 0) {
@@ -6405,7 +7506,7 @@ function ResponseMessageInner({
       ? centralizedRawSdkEventPayloads
       : stickyCentralizedRawSdkEventPayloadsRef.current.messageId === activityTimelineTurnMessageId
         ? stickyCentralizedRawSdkEventPayloadsRef.current.payloads
-        : centralizedRawSdkEventPayloads;
+        : [];
   const scopedActivityTimelineStreaming = useMemo(() => {
     if (!activityTimelineStreaming) {
       return undefined;
@@ -6551,26 +7652,11 @@ function ResponseMessageInner({
         commentaryItems,
         fileChanges,
         assistantScopeMessageIds,
+        messageId,
       );
-      // Debug: Log all display events with read/edit labels
-      const readEditEvents = events.filter(e => e.label.toLowerCase() === 'read' || e.label.toLowerCase() === 'edit');
-      if (readEditEvents.length > 0) {
-        console.log('[DEBUG] DisplayEvents with read/edit labels:', {
-          count: readEditEvents.length,
-          events: readEditEvents.map(e => ({
-            label: e.label,
-            summary: e.summary,
-            hasActivityDetail: !!e.activityDetail,
-            hasOutput: !!e.activityDetail?.output,
-            outputLength: e.activityDetail?.output?.length || 0,
-            hasDiffExcerpt: !!e.activityDetail?.diffExcerpt,
-            diffLines: e.activityDetail?.diffExcerpt?.lines?.length || 0,
-          }))
-        });
-      }
       return events;
     },
-    [thoughtItems, mergedProgressItems, commentaryItems, fileChanges, assistantScopeMessageIds],
+    [thoughtItems, mergedProgressItems, commentaryItems, fileChanges, assistantScopeMessageIds, messageId],
   );
   // Centralized debug is the long-term source of truth for this assistant turn.
   // Keep it raw and complete so future UI rendering can consume the same data
@@ -6739,39 +7825,17 @@ function ResponseMessageInner({
     });
   }, [fileChanges, plan?.file, messageId, messages, message]);
 
-  const shouldShowPlanCard = useMemo(() => {
-    if (responseType !== "implementation_plan" || !plan) {
-      return false;
-    }
-
-    if (!plan?.file) {
-      return true;
-    }
-
-    const ownIndex = (messages || []).findIndex(
-      (candidate) =>
-        candidate === message ||
-        (!!messageId && (candidate.info?.id === messageId || candidate.id === messageId)),
-    );
-    if (ownIndex < 0) {
-      return true;
-    }
-
-    const matchingPlanIndexes = (messages || [])
-      .map((candidate, index) => {
-        const candidateStructured = structuredOutputFromRawSdkEventPayloads(candidate.rawSdkEventPayloads);
-        const candidatePlanFile = candidateStructured?.plan?.file || "";
-        return areLikelySamePlanFilePath(candidatePlanFile, plan.file) ? index : -1;
-      })
-      .filter((index) => index >= 0);
-
-    if (matchingPlanIndexes.length === 0) {
-      return true;
-    }
-
-    const lastMatchingPlanIndex = Math.max(...matchingPlanIndexes);
-    return ownIndex === lastMatchingPlanIndex;
-  }, [responseType, plan, messageId, messages, message]);
+  const shouldShowPlanCard = useMemo(
+    () =>
+      shouldDisplayImplementationPlanCard({
+        responseType,
+        plan,
+        message,
+        messageId,
+        messages,
+      }),
+    [message, messageId, messages, plan, responseType],
+  );
 
   const latestAssistantMessageId = useMemo(() => {
     if (!Array.isArray(messages)) return undefined;
@@ -6836,10 +7900,44 @@ function ResponseMessageInner({
           activityTimelineTurnMessageId
         ? stickyTimelineDisplayEventsRef.current.events
         : visibleDisplayEvents;
+  const responseBodyRawSdkEventPayloads = useMemo(
+    () =>
+      normalizedCentralizedRawSdkEventPayloads.filter(
+        (payload) => !isDeltaCentralizedEventPayload(payload),
+      ),
+    [normalizedCentralizedRawSdkEventPayloads],
+  );
 
   const timelineDisplayEventGroups = useMemo(() => {
-    const groups: Array<{ type: "activity", events: DisplayEvent[] } | { type: "commentary", event: DisplayEvent }> = [];
+    const groups: Array<
+      | { type: "activity"; events: DisplayEvent[] }
+      | { type: "commentary"; event: DisplayEvent }
+      | { type: "question-output"; text: string; key: string }
+    > = [];
+    const orderedEntries: Array<
+      | { type: "event"; seq: number; event: DisplayEvent }
+      | { type: "question-output"; seq: number; text: string; key: string }
+    > = [];
     let currentActivity: DisplayEvent[] = [];
+    const questionActivityFingerprints = new Set(
+      timelineDisplayEvents
+        .filter((event) =>
+          event.kind === "activity" &&
+          isQuestionLikeActivityTool(event.activityDetail?.tool, event.partType),
+        )
+        .flatMap((event) =>
+          [
+            event.summary,
+            event.description,
+            event.detail,
+            event.activityDetail?.summary,
+            event.activityDetail?.output,
+            event.activityDetail?.title,
+          ]
+            .map((value) => normalizeComparableText(value))
+            .filter((value) => value.length > 0),
+        ),
+    );
 
     for (const event of timelineDisplayEvents) {
       // Assistant response text already renders in the dedicated response card
@@ -6849,6 +7947,50 @@ function ResponseMessageInner({
       if (event.kind === "commentary" && event.label === "Assistant Response") {
         continue;
       }
+      orderedEntries.push({
+        type: "event",
+        seq:
+          typeof event.streamSeq === "number"
+            ? event.streamSeq
+            : Number.MAX_SAFE_INTEGER,
+        event,
+      });
+    }
+    completedQuestionOutputChunksFromRawEventPayloads(
+      responseBodyRawSdkEventPayloads,
+      assistantScopeMessageIds,
+    ).forEach((chunk, index) => {
+      if (questionActivityFingerprints.has(normalizeComparableText(chunk.text))) {
+        return;
+      }
+      orderedEntries.push({
+        type: "question-output",
+        seq: chunk.streamSeq,
+        text: chunk.text,
+        key: `${messageId || "assistant"}-question-output-${index}`,
+      });
+    });
+
+    orderedEntries.sort((left, right) => {
+      if (left.seq !== right.seq) {
+        return left.seq - right.seq;
+      }
+      if (left.type === right.type) {
+        return 0;
+      }
+      return left.type === "event" ? -1 : 1;
+    });
+
+    for (const entry of orderedEntries) {
+      if (entry.type === "question-output") {
+        if (currentActivity.length > 0) {
+          groups.push({ type: "activity", events: currentActivity });
+          currentActivity = [];
+        }
+        groups.push({ type: "question-output", text: entry.text, key: entry.key });
+        continue;
+      }
+      const event = entry.event;
       if (event.kind === "commentary") {
         if (currentActivity.length > 0) {
           groups.push({ type: "activity", events: currentActivity });
@@ -6863,7 +8005,36 @@ function ResponseMessageInner({
       groups.push({ type: "activity", events: currentActivity });
     }
     return groups;
-  }, [timelineDisplayEvents]);
+  }, [assistantScopeMessageIds, messageId, responseBodyRawSdkEventPayloads, timelineDisplayEvents]);
+  const questionPreludeGroups = useMemo(
+    () =>
+      timelineDisplayEventGroups.filter((group) => {
+        if (group.type === "question-output") {
+          return true;
+        }
+        if (group.type !== "activity") {
+          return false;
+        }
+        return (
+          group.events.length > 0 &&
+          group.events.every((event) => {
+            const label = (event.label ?? "").trim().toLowerCase();
+            const tool = (event.activityDetail?.tool ?? "").trim().toLowerCase();
+            return label === "question" || tool === "question";
+          })
+        );
+      }),
+    [timelineDisplayEventGroups],
+  );
+  const nonQuestionTimelineDisplayEventGroups = useMemo(
+    () =>
+      timelineDisplayEventGroups.filter((group) => !questionPreludeGroups.includes(group)),
+    [questionPreludeGroups, timelineDisplayEventGroups],
+  );
+  const questionPreludeFingerprints = useMemo(
+    () => collectQuestionPreludeFingerprints(questionPreludeGroups),
+    [questionPreludeGroups],
+  );
 
   const activityStatusCounts = useMemo(
     () =>
@@ -7038,11 +8209,6 @@ function ResponseMessageInner({
 // NEW: Use custom hooks for simplified subagent data access
 	// The custom hooks handle all the filtering, formatting, and data processing
 	const subagents = useMemo(() => {
-		console.log('🟢 [MODULAR_HOOKS] Using custom hooks for subagent data', {
-			messageId,
-			formattedSubagentsCount: formattedSubagents.length,
-		});
-
 		// Filter for active session and current message only
 		const activeSessionId = currentSessionId;
 		const filtered = formattedSubagents.filter((subagent) => {
@@ -7059,13 +8225,6 @@ function ResponseMessageInner({
 			       subagent.summary.id === messageId ||
 			       messageId.includes(subagent.summary.parentMessageId);
 		});
-
-		if (getGlobalShowBrowserConsole()) {
-			console.log('===SUBAGENT_SPAWN=== [MODULAR] Custom hooks results', {
-				filteredCount: filtered.length,
-				filteredIds: filtered.map(s => s.summary.id),
-			});
-		}
 
 		return filtered;
 	}, [messageId, currentSessionId, formattedSubagents]);
@@ -7219,14 +8378,66 @@ function ResponseMessageInner({
       messageModelSupportsThinking(message, streaming, availableModels),
     [thinkingVariant, message, streaming, availableModels],
   );
-  const tokens = getTokenInfo(message);
+  const headerSegments = useMemo(() => {
+    const segments: AssistantHeaderSegment[] = [];
+
+    if (agentName && agentName !== "assistant") {
+      segments.push({
+        key: "agent",
+        text: agentName,
+        className: "oc-msg-agent-name min-w-0 truncate text-oc-xs opacity-60",
+        style: agentColor
+          ? {
+              color: `color-mix(in srgb, var(--oc-text) 88%, ${agentColor})`,
+            }
+          : undefined,
+      });
+    }
+
+    if (modelName && modelName !== "assistant") {
+      segments.push({
+        key: "model",
+        text: modelName,
+        className: "oc-msg-model-label font-semibold text-oc-sm truncate min-w-0",
+      });
+    }
+
+    if (showMessageThinking) {
+      segments.push({
+        key: "thinking",
+        text: `Think ${formatThinkingVariantLabel(thinkingVariant || "")}`,
+        className: "oc-msg-thinking-label text-oc-xs truncate min-w-0 opacity-60",
+      });
+    }
+
+    return segments;
+  }, [agentColor, agentName, modelName, showMessageThinking, thinkingVariant]);
+  const centralizedMetrics = useMemo(
+    () =>
+      getCentralizedMetricsSnapshot(
+        normalizedCentralizedRawSdkEventPayloads,
+        assistantScopeMessageIds,
+      ),
+    [assistantScopeMessageIds, normalizedCentralizedRawSdkEventPayloads],
+  );
+  const legacyMetricsDiagnostics = useMemo(
+    () => getLegacyMetricsDiagnostics(message, streaming),
+    [message, streaming],
+  );
+  const tokens = getTokenInfo(
+    normalizedCentralizedRawSdkEventPayloads,
+    assistantScopeMessageIds,
+  );
   const inputTok = tokens?.input ?? 0;
   const outputTok = tokens?.output ?? 0;
   const reasoningTok = tokens?.reasoning ?? 0;
   const cache = tokens?.cache;
   const cacheRead = cache?.read ?? 0;
   const cacheWrite = cache?.write ?? 0;
-  const duration = getDuration(message, streaming);
+  const duration = getDuration(
+    normalizedCentralizedRawSdkEventPayloads,
+    assistantScopeMessageIds,
+  );
   const hasMetrics =
     inputTok > 0 ||
     outputTok > 0 ||
@@ -7292,6 +8503,62 @@ function ResponseMessageInner({
   const hasActiveTimelineWork = timelineDisplayEvents.some(
     (event) => event.status === "pending",
   );
+  useEffect(() => {
+    logger.info("[CENTRALIZED_METRICS_CARD] response-card-data", {
+      messageId,
+      assistantMessageId,
+      assistantScopeMessageIds: Array.from(assistantScopeMessageIds),
+      extractedMetrics: {
+        tokens: centralizedMetrics?.tokens ?? null,
+        duration: centralizedMetrics?.duration ?? null,
+        sourceEventType: centralizedMetrics?.sourceEventType ?? null,
+        sourcePayloadIndex: centralizedMetrics?.sourcePayloadIndex ?? null,
+      },
+      sourcePayload: centralizedMetrics?.sourcePayload ?? null,
+      matchingPayloadCount: centralizedMetrics?.matchingPayloads.length ?? 0,
+      matchingPayloads: centralizedMetrics?.matchingPayloads ?? [],
+    });
+  }, [
+    assistantMessageId,
+    assistantScopeMessageIds,
+    centralizedMetrics,
+    messageId,
+  ]);
+  useEffect(() => {
+    logger.info("[LEGACY_METRICS_CARD] pre-centralized-data-sources", {
+      messageId,
+      assistantMessageId,
+      legacyTokenSource: legacyMetricsDiagnostics.tokenSource,
+      legacyDurationSource: legacyMetricsDiagnostics.durationSource,
+      legacyExtractedMetrics: {
+        tokens: legacyMetricsDiagnostics.tokens ?? null,
+        duration: legacyMetricsDiagnostics.duration ?? null,
+      },
+      messageInfoTokens: message?.info?.tokens ?? null,
+      messageInfoDuration:
+        typeof message?.info?.duration === "number" ? message.info.duration : null,
+      messageTopLevelTokens:
+        message && "tokens" in message
+          ? (message as Record<string, unknown>).tokens ?? null
+          : null,
+      messageTopLevelDuration:
+        typeof message?.duration === "number" ? message.duration : null,
+      messageTimingDuration:
+        typeof message?.timing?.duration === "number"
+          ? message.timing.duration
+          : null,
+      streamingUsage: streaming?.usage ?? null,
+      rawResponseInfo: legacyMetricsDiagnostics.rawResponseInfo ?? null,
+      rawResponseParsed: legacyMetricsDiagnostics.rawResponseParsed ?? null,
+      rawResponse: message?.rawResponse ?? null,
+    });
+  }, [
+    assistantMessageId,
+    legacyMetricsDiagnostics,
+    message,
+    messageId,
+    streaming,
+  ]);
   const { rawResponseText } = useMemo(() => {
     const maxRawDebugChars = 30000;
     const withCap = (value: string): string =>
@@ -7316,74 +8583,74 @@ function ResponseMessageInner({
     rawResponseText.trim().length > 0
       ? rawResponseText
       : "(rawResponse is missing on this message)";
-  const planLeadMessage = useMemo(() => {
-    if (!plan) return "";
-    const candidate = (
-      firstNonEmptyString(
-        typeof structured?.text === "string"
-          ? structured.text
-          : typeof structured?.message === "string"
-            ? structured.message
-            : undefined,
-        plan.intro,
-        plan.summary,
-      ) ?? ""
-    ).trim();
-    if (candidate && !looksLikeInternalPlanningText(candidate)) {
-      return candidate;
-    }
-    return "I created an implementation plan. Here are the key steps and the plan file.";
-  }, [structured?.text, structured?.message, plan]);
-  const structuredResponseMessage =
-    typeof structured?.text === "string"
-      ? structured.text.trim()
-      : typeof structured?.message === "string"
-        ? structured.message.trim()
-        : "";
-  const responseBodyRawSdkEventPayloads = useMemo(
-    () =>
-      normalizedCentralizedRawSdkEventPayloads.filter(
-        (payload) => !isDeltaCentralizedEventPayload(payload),
-      ),
-    [normalizedCentralizedRawSdkEventPayloads],
-  );
   const responseBodyChunks = useMemo(() => {
-    // The response body must render the final assistant answer exactly once.
-    // Centralized fixtures can surface the same answer through both the
-    // structured message field and raw text chunks, so the extractor and the
-    // body renderer intentionally stay narrow here.
-    if (structuredResponseMessage.length > 0) {
-      return [structuredResponseMessage];
+    const orderedChunks = orderedAssistantResponseChunksFromCentralizedData(
+      responseBodyRawSdkEventPayloads,
+      assistantScopeMessageIds,
+    );
+    if (orderedChunks.length > 0) {
+      return orderedChunks;
     }
     return getCentralizedAssistantContentChunksFromRawSdkEventPayloads(
       responseBodyRawSdkEventPayloads,
     );
-  }, [structuredResponseMessage, responseBodyRawSdkEventPayloads]);
+  }, [
+    assistantScopeMessageIds,
+    responseBodyRawSdkEventPayloads,
+  ]);
+  const visibleResponseBodyChunks = useMemo(() => {
+    const renderedQuestionOutputs = new Set(
+      completedQuestionOutputChunksFromRawEventPayloads(
+        responseBodyRawSdkEventPayloads,
+        assistantScopeMessageIds,
+      ).map((chunk) => normalizeComparableText(chunk.text)),
+    );
+    const duplicateFingerprints = new Set([
+      ...renderedQuestionOutputs,
+      ...questionPreludeFingerprints,
+    ]);
+    if (duplicateFingerprints.size === 0) {
+      return responseBodyChunks;
+    }
+    const filteredChunks = responseBodyChunks.filter(
+      (chunk) => !duplicateFingerprints.has(normalizeComparableText(chunk)),
+    );
+    return filteredChunks.length > 0 ? filteredChunks : responseBodyChunks;
+  }, [
+    assistantScopeMessageIds,
+    questionPreludeFingerprints,
+    responseBodyChunks,
+    responseBodyRawSdkEventPayloads,
+  ]);
   const hasThinkingEvents = useMemo(
     () => displayEvents.some((event) => event.kind === "reasoning"),
     [displayEvents],
   );
-  const resolvedContentMatchesError = messageDisplaysSameErrorText(
-    cardMessage,
-    responseBodyChunks.join("\n\n"),
+  const planPrelude = useMemo(
+    () => (shouldShowPlanCard ? getImplementationPlanPrelude(plan) : ""),
+    [plan, shouldShowPlanCard],
   );
-  const visibleResolvedContent = resolvedContentMatchesError
-    ? ""
-    : responseBodyChunks.join("\n\n");
-  // For plan messages the display text comes from structured output fields
-  // (plan.intro / plan.summary), not from concatenated raw response parts.
-  // The extension-side applyStructuredOutputToMessage now populates
-  // message.content from the structured fallback, so resolvedContent already
-  // holds the correct structured text. planLeadMessage remains as a fallback.
-  const effectiveResponseContent =
-    visibleResolvedContent.trim().length > 0
-      ? visibleResolvedContent
-      : planLeadMessage;
-  const hasVisibleResponseBody = responseBodyChunks.some(
-    (chunk) => chunk.trim().length > 0,
+  const {
+    visibleResolvedContent,
+    visiblePlanPrelude,
+    effectiveResponseContent,
+    hasVisibleResponseBody,
+    hasPreludeResponseBody,
+    hasPrimaryResponseBody,
+    hasResponseContent,
+    showResponseBody,
+    responseChunksToRender,
+  } = useMemo(
+    () =>
+      getRenderablePlanResponseChunks({
+        visibleResponseBodyChunks,
+        planPrelude,
+        shouldShowPlanCard,
+        cardMessage,
+      }),
+    [cardMessage, planPrelude, shouldShowPlanCard, visibleResponseBodyChunks],
   );
-  const hasPrimaryResponseBody = hasVisibleResponseBody || shouldShowPlanCard;
-  const hasResponseContent = hasVisibleResponseBody;
+  const showAssistantResponseHeader = hasPrimaryResponseBody;
   const isAborted = cardMessage?.aborted === true;
   const structuredRetryError =
     !!cardMessage?.error &&
@@ -7412,7 +8679,6 @@ function ResponseMessageInner({
   // Centralized data is the source of truth for what belongs in the final
   // assistant response. If the response text is present, render it directly
   // instead of hiding it behind a live-stream flag.
-  const showResponseBody = !isLiveStreamingCard && hasVisibleResponseBody;
   // Use the sticky timeline snapshot, not the ephemeral live array, so rows
   // already painted in the UI remain visible through hydration rerenders.
   const hasStickyTimelineActivity = timelineDisplayEvents.length > 0;
@@ -7422,85 +8688,11 @@ function ResponseMessageInner({
     hasActiveReasoningPart ||
     hasPendingReasoningDisplayEvent;
   const showResponseSection =
-    !isLiveStreamingCard &&
     !isAborted &&
     (shouldShowPlanCard ||
       hasVisibleResponseBody ||
       hasStickyTimelineActivity ||
       (isLiveStream && hasLiveTimelineActivity));
-  useEffect(() => {
-    if (
-      !streaming?.isActive &&
-      displayEvents.length === 0 &&
-      !config.debug.showCentralizedDebug &&
-      !config.debug.showPreRenderDebug
-    ) {
-      return;
-    }
-
-    logger.info("[TRACE][RENDER][ASSISTANT_MESSAGE]", {
-      messageId: messageId || null,
-      streamingMessageId: streaming?.messageId ?? null,
-      streamingActive: !!streaming?.isActive,
-      hasStreamingActivity,
-      displayEventsCount: displayEvents.length,
-      timelineDisplayEventsCount: timelineDisplayEvents.length,
-      hasActiveTimelineWork,
-      hasActiveReasoningPart,
-      hasPendingReasoningDisplayEvent,
-      showResponseSection,
-      showResponseBody,
-      hasVisibleResponseBody,
-      hasPrimaryResponseBody,
-      hasAssistantFinishSignal,
-      messageInteractiveEvents: Array.isArray(cardMessage?.interactiveEvents)
-        ? cardMessage.interactiveEvents.length
-        : 0,
-      streamingInteractiveEvents: Array.isArray(streaming?.interactiveEvents)
-        ? streaming.interactiveEvents.length
-        : 0,
-    });
-    console.info("[TRACE][RENDER][ASSISTANT_MESSAGE]", {
-      messageId: messageId || null,
-      streamingMessageId: streaming?.messageId ?? null,
-      streamingActive: !!streaming?.isActive,
-      hasStreamingActivity,
-      displayEventsCount: displayEvents.length,
-      timelineDisplayEventsCount: timelineDisplayEvents.length,
-      hasActiveTimelineWork,
-      hasActiveReasoningPart,
-      hasPendingReasoningDisplayEvent,
-      showResponseSection,
-      showResponseBody,
-      hasVisibleResponseBody,
-      hasPrimaryResponseBody,
-      hasAssistantFinishSignal,
-      messageInteractiveEvents: Array.isArray(cardMessage?.interactiveEvents)
-        ? cardMessage.interactiveEvents.length
-        : 0,
-      streamingInteractiveEvents: Array.isArray(streaming?.interactiveEvents)
-        ? streaming.interactiveEvents.length
-        : 0,
-    });
-  }, [
-    messageId,
-    cardMessage?.interactiveEvents,
-    streaming,
-    displayEvents.length,
-    timelineDisplayEvents.length,
-    hasActiveTimelineWork,
-    hasActiveReasoningPart,
-    hasPendingReasoningDisplayEvent,
-    showResponseSection,
-    showResponseBody,
-    hasVisibleResponseBody,
-    hasPrimaryResponseBody,
-    hasAssistantFinishSignal,
-    hasStreamingActivity,
-    config.debug.showCentralizedDebug,
-    config.debug.showPreRenderDebug,
-  ]);
-
   const preRenderDebug = useMemo(() => {
     if (!config.debug.showPreRenderDebug) return null;
     const streamingContent = streaming?.content || '';
@@ -7558,6 +8750,7 @@ function ResponseMessageInner({
         showResponseSection: String(showResponseSection),
         hasVisibleResponseBody: String(hasVisibleResponseBody),
         hasPrimaryResponseBody: String(hasPrimaryResponseBody),
+        showAssistantResponseHeader: String(showAssistantResponseHeader),
         showResponseBody: String(showResponseBody),
         isAborted: String(isAborted),
       },
@@ -7567,18 +8760,15 @@ function ResponseMessageInner({
     effectiveResponseContent, hasAssistantFinishSignal, hasTerminalStepSignal,
     hasActiveTimelineWork, hasActiveReasoningPart, hasPendingReasoningDisplayEvent,
     showResponseSection, hasVisibleResponseBody,
+    showAssistantResponseHeader,
     hasPrimaryResponseBody, isAborted, displayEvents, thoughtItems,
     config.debug.showPreRenderDebug,
   ]);
 
-  useEffect(() => {
-    if (preRenderDebug) {
-      logger.info('[PRE-RENDER-DEBUG]', preRenderDebug);
-    }
-  }, [preRenderDebug]);
   const responseSectionClass = hasResponseContent
     ? "rounded-md border border-oc-border-soft bg-background p-2.5 shadow-sm"
     : "p-0 border-0 bg-transparent shadow-none";
+  const hasCopyableResponseContent = (resolvedContent?.trim()?.length ?? 0) > 0;
   const handleCopy = async () => {
     const textToCopy = resolvedContent?.trim() ?? "";
     if (!textToCopy) return;
@@ -7634,13 +8824,6 @@ function ResponseMessageInner({
         return patched;
       });
       dispatch({ type: "SET_MESSAGES", payload: nextMessages });
-      if (currentSessionId && persistedPatchedMessage) {
-        vscode.postMessage({
-          type: "persistAssistantMessage",
-          sessionId: currentSessionId,
-          message: persistedPatchedMessage,
-        });
-      }
     }
     vscode.postMessage({
       type: "retryLastMessage",
@@ -7740,104 +8923,147 @@ function ResponseMessageInner({
           </div>
         )}
 
-        <div className="oc-msg-header mb-2 flex flex-wrap items-start justify-between gap-1.5">
-          <div className="oc-msg-header-main flex min-w-0 flex-1 items-center gap-1.5">
-            <div className="oc-msg-header-left flex items-center gap-1.5 min-w-0">
-              <div className="oc-msg-header-text flex min-w-0 items-center gap-1.5 flex-wrap">
-                      {modelName && modelName !== "assistant" && (
-                        <span className="oc-msg-model-label font-semibold text-oc-sm truncate min-w-0">
-                          {modelName}
+        <div className="space-y-2">
+          {showAssistantResponseHeader && (
+            <div
+              data-assistant-section="header"
+              className="oc-msg-header mb-2 flex flex-wrap items-start justify-between gap-1.5"
+            >
+              <div className="oc-msg-header-main flex min-w-0 flex-1 items-center gap-1.5">
+                <div className="oc-msg-header-left flex items-center gap-1.5 min-w-0">
+                  <div className="oc-msg-header-text flex min-w-0 items-center gap-1.5 flex-wrap">
+                    {headerSegments.map((segment, index) => (
+                      <div key={segment.key} className="flex min-w-0 items-center gap-1">
+                        {index > 0 && (
+                          <span className="text-oc-xs font-medium shrink-0 opacity-60">&middot;</span>
+                        )}
+                        <span className={segment.className} style={segment.style}>
+                          {segment.text}
                         </span>
-                      )}
-                      {showMessageThinking && (
-                        <div className="flex items-center gap-1 opacity-60">
-                          {modelName && modelName !== "assistant" && (
-                            <span className="text-oc-xs font-medium shrink-0">•</span>
-                          )}
-                          <span className="oc-msg-thinking-label text-oc-xs truncate min-w-0">
-                            Think {formatThinkingVariantLabel(thinkingVariant || "")}
-                          </span>
-                        </div>
-                      )}
-                      {agentName && agentName !== "assistant" && (
-                        <div className="flex min-w-0 items-center gap-1 opacity-60">
-                          {((modelName && modelName !== "assistant") || showMessageThinking) && (
-                            <span className="text-oc-xs font-medium shrink-0">•</span>
-                          )}
-                          <span
-                            className="oc-msg-agent-name min-w-0 truncate text-oc-xs"
-                            style={
-                              agentColor
-                                ? {
-                                  color: `color-mix(in srgb, var(--oc-text) 88%, ${agentColor})`,
-                                }
-                                : undefined
-                            }
-                          >
-                            {agentName}
-                          </span>
-                        </div>
-                      )}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
+              <div className="oc-msg-header-actions flex min-w-0 flex-wrap items-center gap-1.5">
+                {hasMetrics && (
+                  <div className="oc-metrics-rail flex flex-wrap items-center gap-2.5 px-1 py-0.5 text-[11px] text-oc-text-secondary/60 hover:text-oc-text-secondary transition-colors" role="list" aria-label="Response metrics">
+                    {inputTok > 0 && (
+                      <div className="flex items-center gap-1" title={`Prompt: ${inputTok.toLocaleString()} tokens`}>
+                        <ArrowUp className="h-3 w-3 opacity-70" />
+                        <span className="tabular-nums">{inputTok.toLocaleString()}</span>
+                      </div>
+                    )}
+                    {outputTok > 0 && (
+                      <div className="flex items-center gap-1" title={`Response: ${outputTok.toLocaleString()} tokens`}>
+                        <ArrowDown className="h-3 w-3 opacity-70" />
+                        <span className="tabular-nums">{outputTok.toLocaleString()}</span>
+                      </div>
+                    )}
+                    {reasoningTok > 0 && (
+                      <div className="flex items-center gap-1" title={`Reasoning: ${reasoningTok.toLocaleString()} tokens`}>
+                        <Brain className="h-3 w-3 opacity-70" />
+                        <span className="tabular-nums">{reasoningTok.toLocaleString()}</span>
+                      </div>
+                    )}
+                    {cacheRead > 0 && (
+                      <div className="flex items-center gap-1" title={`Cache Read: ${cacheRead.toLocaleString()} tokens`}>
+                        <Database className="h-3 w-3 opacity-70" />
+                        <span className="tabular-nums">{cacheRead.toLocaleString()}</span>
+                      </div>
+                    )}
+                    {cacheWrite > 0 && (
+                      <div className="flex items-center gap-1" title={`Cache Write: ${cacheWrite.toLocaleString()} tokens`}>
+                        <Database className="h-3 w-3 opacity-40" />
+                        <span className="tabular-nums">{cacheWrite.toLocaleString()}</span>
+                      </div>
+                    )}
+                    {typeof duration === "number" && (
+                      <div className="flex items-center gap-1" title={`Duration: ${duration.toFixed(1)} seconds`}>
+                        <Clock className="h-3 w-3 opacity-70" />
+                        <span className="tabular-nums">{duration.toFixed(1)}s</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {plainTextFallback && (
+                  <span
+                    className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-oc-border-soft oc-text-secondary"
+                    title={plainTextFallbackTooltip}
+                  >
+                    <AlertCircle className="h-3.5 w-3.5 text-oc-yellow" />
+                  </span>
+                )}
+              </div>
             </div>
-            <div className="oc-msg-header-actions flex min-w-0 flex-wrap items-center gap-1.5">
-              {hasMetrics && (
-                <div className="oc-metrics-rail flex flex-wrap items-center gap-1.5" role="list" aria-label="Response metrics">
-                  {tokenMetricChips.map((chip) => (
-                    <div
-                      key={chip.key}
-                      role="listitem"
-                      className={cn(
-                        "oc-token-chip group/token relative inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 transition-all duration-200",
-                        chip.emphasis === "primary"
-                          ? "border-oc-border-soft bg-oc-panel"
-                          : chip.emphasis === "subtle"
-                            ? "border-oc-border-soft bg-oc-panel-soft oc-token-chip-secondary"
-                            : "border-oc-border-soft bg-oc-panel-soft oc-token-chip-secondary",
-                      )}
-                      title={`${chip.label}: ${chip.value.toLocaleString()} tokens`}
-                    >
-                      <div className={cn("h-1.5 w-1.5 rounded-full", chip.dotClassName)} />
-                      <span className="oc-token-chip-label text-[10px] uppercase tracking-[0.11em] oc-text-secondary">
-                        {chip.label}
-                      </span>
-                      <span className="oc-token-chip-value font-medium font-semibold text-oc-text tabular-nums">
-                        {chip.value.toLocaleString()}
-                      </span>
-                    </div>
-                  ))}
+          )}
 
-                  {typeof duration === "number" && (
-                    <div
-                      role="listitem"
-                      className="oc-token-chip oc-token-chip-duration inline-flex items-center gap-1.5 rounded-full border border-oc-border-soft bg-oc-panel-soft px-2.5 py-1 transition-all duration-200"
-                      title={`Duration: ${duration.toFixed(1)} seconds`}
-                    >
-                      <Clock className="h-3 w-3 oc-text-secondary opacity-80" />
-                      <span className="oc-token-chip-value font-medium font-semibold oc-text-secondary tabular-nums">
-                        {duration.toFixed(1)}s
-                      </span>
-                    </div>
-                  )}
-                </div>
-              )}
-              {plainTextFallback && (
-                <span
-                  className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-oc-border-soft oc-text-secondary"
-                  title={plainTextFallbackTooltip}
-                >
-                  <AlertCircle className="h-3.5 w-3.5 text-oc-yellow" />
-                </span>
-              )}
-            </div>
-          </div>
+          {questionPreludeGroups.length > 0 && (
+            <section data-assistant-section="question-prelude" className="space-y-2">
+              {questionPreludeGroups.map((group, groupIdx) => {
+                if (group.type === "question-output") {
+                  return (
+                    <ResponseMessageBody
+                      key={`question-prelude-output-${group.key}`}
+                      content={[group.text]}
+                      className="oc-response-body-block"
+                      variant="bare"
+                    />
+                  );
+                }
 
-        <div className="space-y-2">
+                if (group.events.length === 0) return null;
+
+                return (
+                  <Stepper
+                    key={`question-prelude-stepper-${groupIdx}`}
+                    className="oc-refined-stepper"
+                  >
+                    {group.events.map((event, index) => {
+                      const isLast = index === group.events.length - 1;
+                      return (
+                        <StepperItem
+                          key={`question-prelude-${event.key}`}
+                          isLast={isLast}
+                          indicator={<StepIndicator status={event.status} />}
+                          className={cn(
+                            "oc-refined-stepper-item group",
+                            event.status === "running" ? "is-streaming" : "",
+                          )}
+                        >
+                          <div className="flex items-start justify-between gap-2 w-full">
+                            <ExpandableStep className="flex-1">
+                              <div className="flex flex-col items-start gap-2 w-full min-w-0">
+                                <div className="flex items-center gap-2 flex-wrap min-h-[20px]">
+                                  <span className="font-medium text-oc-text capitalize text-[13px]">
+                                    {event.label}
+                                  </span>
+                                </div>
+                                <div className="flex flex-col gap-1 w-full">
+                                  <div className="oc-refined-event-summary">
+                                    <CollapsedMarkdownPreview
+                                      title={event.label}
+                                      content={event.summary || ""}
+                                    />
+                                  </div>
+                                </div>
+                              </div>
+                            </ExpandableStep>
+                          </div>
+                        </StepperItem>
+                      );
+                    })}
+                  </Stepper>
+                );
+              })}
+            </section>
+          )}
+
           {(hasStickyTimelineActivity ||
-            showThinkingPlaceholder) && (
+            showThinkingPlaceholder ||
+            nonQuestionTimelineDisplayEventGroups.length > 0) && (
               <section data-assistant-section="activity" className="space-y-2">
-                {timelineDisplayEventGroups.map((group, groupIdx) => {
+                {nonQuestionTimelineDisplayEventGroups.map((group, groupIdx) => {
                   if (group.type === "commentary") {
                     return (
                       <div key={`commentary-${groupIdx}`} className="px-1 mb-2 mt-1">
@@ -7848,18 +9074,29 @@ function ResponseMessageInner({
                       </div>
                     );
                   }
+
+                  if (group.type === "question-output") {
+                    return (
+                      <ResponseMessageBody
+                        key={group.key}
+                        content={[group.text]}
+                        className="oc-response-body-block"
+                        variant="bare"
+                      />
+                    );
+                  }
                   
                   if (group.events.length === 0) return null;
 
                   return (
                     <Stepper
                       key={`stepper-${groupIdx}`}
-                      className="oc-refined-stepper"
-                      ref={groupIdx === timelineDisplayEventGroups.length - 1 ? progressTimelineRef : undefined}
-                      autoScrollToBottom={isStreamingActive && groupIdx === timelineDisplayEventGroups.length - 1}
+                      className="oc-refined-stepper oc-activity-timeline-compact"
+                      ref={groupIdx === nonQuestionTimelineDisplayEventGroups.length - 1 ? progressTimelineRef : undefined}
+                      autoScrollToBottom={isStreamingActive && groupIdx === nonQuestionTimelineDisplayEventGroups.length - 1}
                     >
                        {group.events.map((event, index) => {
-                        const isLast = groupIdx === timelineDisplayEventGroups.length - 1 && index === group.events.length - 1;
+                        const isLast = groupIdx === nonQuestionTimelineDisplayEventGroups.length - 1 && index === group.events.length - 1;
                         const indicatorNode = (
                           <StepIndicator
                             status={event.status}
@@ -7868,6 +9105,68 @@ function ResponseMessageInner({
                         const shouldShowDetail = viewState.showActivityDetails;
                         const labelText = (event.label ?? "").toString();
                         const labelLower = labelText.trim().toLowerCase();
+                        const compressTopic = labelLower === "compress"
+                          ? firstNonEmptyString(
+                              (event.activityDetail?.input as Record<string, unknown> | undefined)?.topic,
+                              (event.activityDetail?.metadata as Record<string, unknown> | undefined)?.topic,
+                            )
+                          : undefined;
+                        const shouldHideSummary =
+                          labelLower === "compress" ||
+                          isActivityTextRedundantWithTitle(event.label, event.summary);
+                        const visibleSummary = shouldHideSummary
+                          ? (isActivityTextRedundantWithTitle(event.label, event.filePath)
+                            ? ""
+                            : event.filePath || "")
+                          : event.summary || event.filePath || "";
+                        const shouldHideDescription =
+                          !!event.description &&
+                          (isActivityTextRedundantWithTitle(event.label, event.description) ||
+                            isActivityTextRedundantWithTitle(visibleSummary, event.description));
+                        const shouldHideDetail =
+                          !!event.detail &&
+                          (isActivityTextRedundantWithTitle(event.label, event.detail) ||
+                            isActivityTextRedundantWithTitle(visibleSummary, event.detail) ||
+                            isActivityTextRedundantWithTitle(event.description, event.detail));
+
+                        // Lifecycle markers (step-start / step-finish) are rendered as compact
+                        // Claude Code / Codex-style chips — a subtle pill with a small icon and
+                        // muted text — instead of full expandable stepper cards.
+                        const isLifecycleMarkerEvent =
+                          event.internal === true && (
+                            labelLower === "step-start" ||
+                            labelLower === "step-finish" ||
+                            (labelLower === "step" && (
+                              (event.summary || "").trim().toLowerCase() === "start" ||
+                              (event.summary || "").trim().toLowerCase() === "finish"
+                            )) ||
+                            (labelLower === "start" && (event.summary || "").trim().toLowerCase() === "start") ||
+                            (labelLower === "finish" && (event.summary || "").trim().toLowerCase() === "finish")
+                          );
+                        if (isLifecycleMarkerEvent) {
+                          const isStart = labelLower === "step-start" || labelLower === "start" ||
+                            (event.summary || "").trim().toLowerCase() === "start";
+                          return (
+                            <StepperItem
+                              key={event.key}
+                              isLast={isLast}
+                              indicator={indicatorNode}
+                              className={cn(
+                                "oc-refined-stepper-item group",
+                                event.status === "running" ? "is-streaming" : "",
+                              )}
+                            >
+                              <div className="w-full">
+                                <div className="oc-reasoning-row cursor-default">
+                                  <span className="oc-reasoning-row-label">
+                                    {isStart ? "Starting step" : "Step complete"}
+                                  </span>
+                                </div>
+                              </div>
+                            </StepperItem>
+                          );
+                        }
+
                         const isGlobSearch = labelLower === "glob";
                         const showDiffPreviewLocal =
                           (labelLower === "edit" ||
@@ -7967,87 +9266,56 @@ function ResponseMessageInner({
                                   </div>
                                 );
                               } else {
-                                  return (
+                                const activityTool = (event.activityDetail?.tool ?? "").trim().toLowerCase();
+                                return (
                                   <div className="flex items-start justify-between gap-2 w-full">
                                     <ExpandableStep className="flex-1">
-                                {labelLower === "call_omo_agent" || labelLower === "omo_agent" ? (
-                                  <CallOmoAgentStep
-                                    callID={event.callID}
-                                    sessionID={event.sessionID}
-                                    startedAt={event.startedAt}
-                                    endedAt={event.endedAt}
-                                    status={event.status}
-                                    source={event.source}
-                                    activityDetail={event.activityDetail}
-                                  />
-                                ) : labelLower === "background_output" ? (
-                                  <BackgroundOutputStep
-                                    callID={event.callID}
-                                    sessionID={event.sessionID}
-                                    startedAt={event.startedAt}
-                                    endedAt={event.endedAt}
-                                    status={event.status}
-                                    source={event.source}
-                                    activityDetail={event.activityDetail}
-                                  />
-                                ) : (
-                                  <div className="flex flex-col items-start gap-2 w-full min-w-0">
-                                    <div className="flex items-center gap-2 flex-wrap min-h-[20px]">
-                                      <span className="font-medium text-oc-text capitalize text-[13px]">
-                                        {event.label}
-                                      </span>
-                                      {(() => {
-                                        const desc = (event.activityDetail?.metadata?.description as string) || (event.activityDetail?.input?.description as string);
-                                        return desc ? (
-                                          <span className="text-oc-text-soft text-xs flex items-center gap-2">
-                                            <span>&middot;</span>
-                                            <span>{desc}</span>
-                                          </span>
-                                        ) : null;
-                                      })()}
-                                      {/* Event source and internal badges intentionally hidden */}
-                                    </div>
+                                      {labelLower === "call_omo_agent" || labelLower === "omo_agent" ? (
+                                        <CallOmoAgentStep
+                                          callID={event.callID}
+                                          sessionID={event.sessionID}
+                                          startedAt={event.startedAt}
+                                          endedAt={event.endedAt}
+                                          status={event.status}
+                                          source={event.source}
+                                          activityDetail={event.activityDetail}
+                                        />
+                                      ) : labelLower === "background_output" ? (
+                                        <BackgroundOutputStep
+                                          callID={event.callID}
+                                          sessionID={event.sessionID}
+                                          startedAt={event.startedAt}
+                                          endedAt={event.endedAt}
+                                          status={event.status}
+                                          source={event.source}
+                                          activityDetail={event.activityDetail}
+                                        />
+                                      ) : (
+                                        <div className="flex flex-col items-start gap-2 w-full min-w-0">
+                                          <div className="flex items-center gap-2 flex-wrap w-full min-h-[20px]">
+                                            <span className="font-medium text-oc-text capitalize text-[13px]">
+                                              {event.label}
+                                            </span>
+                                            {compressTopic ? (
+                                              <span className="text-oc-text-soft text-xs truncate max-w-[min(42ch,60vw)]">
+                                                {compressTopic}
+                                              </span>
+                                            ) : null}
+                                            {(() => {
+                                              const desc = (event.activityDetail?.metadata?.description as string) || (event.activityDetail?.input?.description as string);
+                                              return desc ? (
+                                                <span className="text-oc-text-soft text-xs flex items-center gap-2">
+                                                  <span>&middot;</span>
+                                                  <span>{desc}</span>
+                                                </span>
+                                              ) : null;
+                                            })()}
+                                            {/* Event source and internal badges intentionally hidden */}
 
-                                    <div className="flex flex-col gap-1 w-full">
-                                        {/* For read and todowrite events, skip the generic summary block here — they have their own custom UI below.
-                                            For all other events, render the file link or summary as usual. */}
-                                        {labelLower !== "read" && labelLower !== "todowrite" && (
-                                          event.filePath && !isUrl(event.filePath) && !isCallStyleActivityLabel(event.label) ? (
-                                            SEARCH_LABELS.has(event.label) ? (
-                                              <div className={cn(
-                                                "flex flex-col gap-1.5",
-                                                isGlobSearch && "max-h-64 overflow-y-auto",
-                                              )}>
-                                                {isGlobSearch && event.filePath && (
-                                                  <div className="flex items-center gap-1.5 text-xs font-medium text-oc-text-soft">
-                                                    <FileIcon filePath={event.filePath} />
-                                                    <span className="break-words whitespace-pre-wrap">
-                                                      {event.filePath}
-                                                    </span>
-                                                  </div>
-                                                )}
-                                                  <CollapsedSearchBlockPreview
-                                                    title={event.label}
-                                                    pattern={
-                                                      isGlobSearch
-                                                        ? (event.activityDetail?.input?.pattern as string)
-                                                        : buildSearchPattern(
-                                                            event.activityDetail?.query || event.summary,
-                                                            event.description,
-                                                          )
-                                                    }
-                                                    patternInHeader={false}
-                                                    path={isGlobSearch ? undefined : event.filePath}
-                                                    include={event.activityDetail?.input?.include as string || event.activityDetail?.input?.Include as string}
-                                                  outputMode={event.activityDetail?.input?.output_mode as string || event.activityDetail?.input?.outputMode as string}
-                                                  headLimit={event.activityDetail?.input?.head_limit as number || event.activityDetail?.input?.headLimit as number}
-                                                  output={event.activityDetail?.output}
-                                                />
-                                              </div>
-                                            ) : (
+                                            {(labelLower === "read" || isGlobSearch) && event.filePath && !isUrl(event.filePath) && (
                                               <button
                                                 type="button"
-                                                className="oc-refined-file-link oc-refined-file-link-with-tooltip"
+                                                className="oc-refined-file-link oc-refined-file-link-with-tooltip oc-refined-file-link-inline oc-refined-file-link-plain"
                                                 onClick={() =>
                                                   vscode.postMessage({
                                                     type: "openFile",
@@ -8056,167 +9324,140 @@ function ResponseMessageInner({
                                                 }
                                               >
                                                 <FileIcon filePath={event.filePath} />
-                                                <span className="break-words whitespace-pre-wrap">
-                                                  {event.summary || event.filePath}
+                                                <span className="truncate">
+                                                  {event.filePath}
                                                 </span>
                                                 <span className="oc-refined-file-link-tooltip" role="tooltip">
                                                   {event.filePath}
                                                 </span>
                                               </button>
-                                            )
-                                          ) : (
-                                            <div className="oc-refined-event-summary">
-                                              {event.label === "bash" ? (
-                                                <TerminalBlockWithOutput
-                                                  event={event}
-                                                  messageContent={content}
-                                                />
-                                              ) : SEARCH_LABELS.has(event.label) ? (
-                                                <div className="flex flex-col gap-1.5">
-                                                  {isGlobSearch && event.filePath && (
-                                                    <div className="flex items-center gap-1.5 text-xs font-medium text-oc-text-soft">
-                                                      <FileIcon filePath={event.filePath} />
-                                                      <span className="break-words whitespace-pre-wrap">
-                                                        {event.filePath}
-                                                      </span>
-                                                    </div>
-                                                  )}
-                                                  {isGlobSearch ? (
-                                                    <CollapsedSearchBlockPreview
-                                                      title={event.label}
-                                                      pattern={buildSearchPattern(
-                                                        event.activityDetail?.input?.pattern as string,
-                                                        event.description,
-                                                      )}
-                                                      patternInHeader={true}
-                                                      path={undefined}
-                                                      include={event.activityDetail?.input?.include as string || event.activityDetail?.input?.Include as string}
-                                                      outputMode={event.activityDetail?.input?.output_mode as string || event.activityDetail?.input?.outputMode as string}
-                                                      headLimit={event.activityDetail?.input?.head_limit as number || event.activityDetail?.input?.headLimit as number}
-                                                      output={event.activityDetail?.output}
-                                                    />
-                                                  ) : (
-                                                    <CollapsedSearchBlockPreview
-                                                      title={event.label}
-                                                      pattern={buildSearchPattern(
-                                                        event.activityDetail?.query || event.summary,
-                                                        event.description,
-                                                      )}
-                                                      path={event.filePath}
-                                                      include={event.activityDetail?.input?.include as string || event.activityDetail?.input?.Include as string}
-                                                      outputMode={event.activityDetail?.input?.output_mode as string || event.activityDetail?.input?.outputMode as string}
-                                                      headLimit={event.activityDetail?.input?.head_limit as number || event.activityDetail?.input?.headLimit as number}
-                                                      output={event.activityDetail?.output}
-                                                    />
-                                                  )}
-                                                </div>
-                                              ) : event.filePath && isUrl(event.filePath) ? (
-                                                <a
-                                                  href={event.filePath}
-                                                  target="_blank"
-                                                  rel="noopener noreferrer"
-                                                  className="oc-refined-url-link flex items-center gap-1.5 hover:underline"
-                                                >
-                                                  <ArrowUpRight className="h-3.5 w-3.5 shrink-0 opacity-70" />
-                                                  <span className="break-words whitespace-pre-wrap">
-                                                    {event.summary || event.filePath}
-                                                  </span>
-                                                </a>
-                                              ) : (
-                                                <CollapsedMarkdownPreview
-                                                  title={event.label}
-                                                  content={event.summary || event.filePath || ""}
-                                                />
-                                              )}
-                                            </div>
-                                          )
-                                        )}
-
-                                        {!SEARCH_LABELS.has(labelText) && labelLower !== "bash" && labelLower !== "todowrite" && labelLower !== "read" && event.description && (
-                                          <div className="mt-1">
-                                            <CollapsedMarkdownPreview
-                                              title={`${event.label} description`}
-                                              content={event.description}
-                                            />
-                                          </div>
-                                        )}
-
-                                        {(() => {
-                                          const isRead = labelLower === "read";
-                                          const preview = event.activityDetail?.metadata?.preview as string | undefined;
-                                          return isRead && !!preview;
-                                        })() && (() => {
-                                          const preview = event.activityDetail?.metadata?.preview as string;
-                                          const previewTitle = event.activityDetail?.title || event.summary || event.filePath || "File Preview";
-                                          return (
-                                            <div className="oc-read-preview oc-activity-step-card mt-2 min-w-0 overflow-hidden p-3">
-                                              <div className="mb-2 flex items-center gap-2 text-xs text-oc-text-soft">
-                                                <span className="flex items-center gap-1.5 font-medium">
-                                                  <FileIcon filePath={event.filePath} />
-                                                  <span className="break-words whitespace-pre-wrap">
-                                                    {previewTitle}
-                                                  </span>
-                                                </span>
-                                              </div>
-                                              <CollapsedMarkdownPreview
-                                                title={previewTitle}
-                                                content={preview}
-                                                variant="bare"
-                                              />
-                                            </div>
-                                          );
-                                        })()}
-
-                                        {(() => {
-                                          const isTodoWrite = labelLower === "todowrite";
-                                          if (!isTodoWrite) return null;
-                                          return <TodoWriteStep event={event} />;
-                                        })()}
-
-                                        {showDiffPreviewLocal && (
-                                          <DiffPreviewStep
-                                            title={event.activityDetail?.title || event.summary || "Diff Preview"}
-                                            filePath={event.viewDiffFile || event.filePath || event.activityDetail?.file}
-                                            diffStats={event.diffStats}
-                                            excerpt={event.activityDetail?.diffExcerpt}
-                                            source={event.source}
-                                            status={event.status}
-                                            activityDetail={event.activityDetail}
-                                          />
-                                        )}
-
-                                        {shouldShowDetail && event.detail && (
-                                          <div className="mt-1">
-                                            <CollapsedMarkdownPreview
-                                              title={`${event.label} details`}
-                                              content={event.detail}
-                                            />
-                                          </div>
-                                        )}
-
-                                        {shouldShowDetail && event.activityDetail && (
-                                          <div className="oc-refined-activity-details flex flex-col gap-2">
-                                            <div className="flex flex-wrap items-center gap-2">
-                                              {event.activityDetail.tool && (
-                                                <span className="oc-refined-detail-badge">
-                                                  tool {event.activityDetail.tool}
-                                                </span>
-                                              )}
-                                              {event.activityDetail.query && (
-                                                <span className="oc-refined-detail-badge">
-                                                  query {event.activityDetail.query}
-                                                </span>
-                                              )}
-                                            </div>
-
-                                            {labelLower !== "bash" && event.activityDetail.command && (
-                                              <TerminalBlock command={event.activityDetail.command} />
                                             )}
                                           </div>
-                                        )}
-                                    </div>
-                                  </div>
-                                )}
+
+                                          <div className="flex flex-col gap-1 w-full">
+                                              {/* For read and todowrite events, skip the generic summary block here — they have their own custom UI below.
+                                                  For all other events, render the file link or summary as usual. */}
+                                              {labelLower !== "read" && labelLower !== "todowrite" && visibleSummary && (
+                                                event.filePath && !isUrl(event.filePath) && !isCallStyleActivityLabel(event.label) ? (
+                                                SEARCH_LABELS.has(event.label) ? (
+                                                  <DetailedSearchActivityPreview
+                                                    event={event}
+                                                    isGlobSearch={isGlobSearch}
+                                                  />
+                                                ) : (
+                                                  <button
+                                                    type="button"
+                                                    className="oc-refined-file-link oc-refined-file-link-with-tooltip w-full min-w-0"
+                                                      onClick={() =>
+                                                        vscode.postMessage({
+                                                          type: "openFile",
+                                                          file: event.filePath!,
+                                                        })
+                                                      }
+                                                    >
+                                                      <FileIcon filePath={event.filePath} />
+                                                      <span className="break-words whitespace-pre-wrap">
+                                                        {visibleSummary}
+                                                      </span>
+                                                      <span className="oc-refined-file-link-tooltip" role="tooltip">
+                                                        {event.filePath}
+                                                      </span>
+                                                    </button>
+                                                  )
+                                                ) : (
+                                                  <div className="oc-refined-event-summary">
+                                                    {event.label === "bash" ? (
+                                                      <TerminalBlockWithOutput
+                                                        event={event}
+                                                        messageContent={content}
+                                                      />
+                                                  ) : SEARCH_LABELS.has(event.label) ? (
+                                                    <DetailedSearchActivityPreview
+                                                      event={event}
+                                                      isGlobSearch={isGlobSearch}
+                                                    />
+                                                    ) : event.filePath && isUrl(event.filePath) ? (
+                                                      <a
+                                                        href={event.filePath}
+                                                        target="_blank"
+                                                        rel="noopener noreferrer"
+                                                        className="oc-refined-url-link flex items-center gap-1.5 hover:underline"
+                                                      >
+                                                        <ArrowUpRight className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                                                        <span className="break-words whitespace-pre-wrap">
+                                                          {visibleSummary}
+                                                        </span>
+                                                      </a>
+                                                    ) : (
+                                                      <CollapsedMarkdownPreview
+                                                        title={event.label}
+                                                        content={visibleSummary}
+                                                      />
+                                                    )}
+                                                  </div>
+                                                )
+                                              )}
+
+                                              {!SEARCH_LABELS.has(labelText) && labelLower !== "bash" && labelLower !== "todowrite" && labelLower !== "read" && event.description && !shouldHideDescription && (
+                                                <div className="mt-1">
+                                                  <CollapsedMarkdownPreview
+                                                    title={`${event.label} description`}
+                                                    content={event.description}
+                                                  />
+                                                </div>
+                                              )}
+
+                                              {(() => {
+                                                const isTodoWrite = labelLower === "todowrite";
+                                                if (!isTodoWrite) return null;
+                                                return <TodoWriteStep event={event} />;
+                                              })()}
+
+                                              {showDiffPreviewLocal && (
+                                                <DiffPreviewStep
+                                                  title={event.activityDetail?.title || event.summary || "Diff Preview"}
+                                                  filePath={event.viewDiffFile || event.filePath || event.activityDetail?.file}
+                                                  diffStats={event.diffStats}
+                                                  excerpt={event.activityDetail?.diffExcerpt}
+                                                  source={event.source}
+                                                  status={event.status}
+                                                  activityDetail={event.activityDetail}
+                                                />
+                                              )}
+
+                                              {shouldShowDetail && event.detail && !shouldHideDetail && (
+                                                <div className="mt-1">
+                                                  <CollapsedMarkdownPreview
+                                                    title={`${event.label} details`}
+                                                    content={event.detail}
+                                                  />
+                                                </div>
+                                              )}
+
+                                              {shouldShowDetail && event.activityDetail && (
+                                                <div className="oc-refined-activity-details flex flex-col gap-2">
+                                                  <div className="flex flex-wrap items-center gap-2">
+                                                    {event.activityDetail.tool && (
+                                                      <span className="oc-refined-detail-badge">
+                                                        tool {event.activityDetail.tool}
+                                                      </span>
+                                                    )}
+                                                    {event.activityDetail.query && (
+                                                      <span className="oc-refined-detail-badge">
+                                                        query {event.activityDetail.query}
+                                                      </span>
+                                                    )}
+                                                  </div>
+
+                                                  {labelLower !== "bash" && event.activityDetail.command && (
+                                                    <TerminalBlock command={event.activityDetail.command} />
+                                                  )}
+                                                </div>
+                                              )}
+                                          </div>
+                                      </div>
+                                    )}
+                                  </ExpandableStep>
 
                                 {!showDiffPreviewLocal &&
                                   event.diffStats &&
@@ -8254,8 +9495,7 @@ function ResponseMessageInner({
                                       View diff
                                     </button>
                                 )}
-                              </ExpandableStep>
-                            </div>
+                              </div>
                                 );
                               }
                             })()}
@@ -8284,6 +9524,19 @@ function ResponseMessageInner({
               data-assistant-section="response"
               className={responseSectionClass}
             >
+              {showResponseBody && (
+                <div className="mt-1.5 space-y-1.5">
+                  {responseChunksToRender.map((chunk, index) => (
+                    <ResponseMessageBody
+                      key={`${messageId || "assistant"}-response-${index}`}
+                      content={[chunk]}
+                      className="oc-response-body-block"
+                      variant="bare"
+                    />
+                  ))}
+                </div>
+              )}
+
               {shouldShowPlanCard && plan && (
                 <div
                   className={
@@ -8292,67 +9545,11 @@ function ResponseMessageInner({
                       : undefined
                   }
                 >
-                  <div className="plan-card flex items-center justify-between gap-2">
-                    <div className="plan-card-content flex flex-col gap-0.5 min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <div className="plan-card-title text-oc-xs font-semibold tracking-normal">
-                          {plan.title || "Implementation Plan"}
-                        </div>
-                        {isRevisedPlan && (
-                          <span className="plan-status-badge plan-status-badge-blue rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
-                            Revised
-                          </span>
-                        )}
-                        {planStatus === "Executing" && (
-                          <span className="plan-status-badge plan-status-badge-green rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
-                            Approved
-                          </span>
-                        )}
-                        {planStatus === "Revision Requested" && (
-                          <span className="plan-status-badge plan-status-badge-yellow rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
-                            Revision Requested
-                          </span>
-                        )}
-                        {planStatus === "Draft" && (
-                          <span className="plan-status-badge plan-status-badge-neutral rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
-                            Draft
-                          </span>
-                        )}
-                      </div>
-                      {plan.file ? (
-                        <div className="plan-card-file mt-1 flex items-center gap-1.5 text-[11px] font-medium">
-                          <FileIcon filePath={plan.file} />
-                          <span className="truncate" title={plan.file}>{toWorkspaceRelativePath(plan.file)}</span>
-                        </div>
-                      ) : (
-                        <div className="mt-1 flex items-center gap-1.5 text-[11px] font-medium text-oc-text-soft italic">
-                          (no file)
-                        </div>
-                      )}
-                    </div>
-                    <button
-                      type="button"
-                      title="Core Feature: View Implementation Plan"
-                      onClick={() => vscode.postMessage({ type: "viewPlan", plan })}
-                      className="oc-plan-btn shrink-0"
-                    >
-                      <FileTextIcon className="h-3 w-3" />
-                      View Plan
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {showResponseBody && !shouldShowPlanCard && (
-                <div className="mt-1.5 space-y-1.5">
-                  {responseBodyChunks.map((chunk, index) => (
-                    <ResponseMessageBody
-                      key={`${messageId || "assistant"}-response-${index}`}
-                      content={[chunk]}
-                      className="oc-response-body-block"
-                      variant="bare"
-                    />
-                  ))}
+                  <ImplementationPlanCard
+                    plan={plan}
+                    isRevisedPlan={isRevisedPlan}
+                    planStatus={planStatus}
+                  />
                 </div>
               )}
 
@@ -8434,7 +9631,7 @@ function ResponseMessageInner({
 
         </div>
 
-{!isStreamingActive && showResponseSection && (
+{!isStreamingActive && showResponseSection && hasCopyableResponseContent && (
           <div className="mt-1 flex items-center justify-start gap-1.5">
             <button
               type="button"
@@ -8451,8 +9648,14 @@ function ResponseMessageInner({
             {(() => {
               const ts = formatMessageTime(getMessageTimestamp(cardMessage));
               return ts ? (
-                <span className="oc-text-secondary text-[10px] tabular-nums opacity-70">
-                  {ts}
+                <span className="oc-text-secondary text-[10px] tabular-nums opacity-70 flex items-center gap-1">
+                  <span>{ts}</span>
+                  {typeof duration === "number" && (
+                    <>
+                      <span className="opacity-40">·</span>
+                      <span>{duration.toFixed(1)}s</span>
+                    </>
+                  )}
                 </span>
               ) : null;
             })()}
@@ -9195,13 +10398,13 @@ export const EmptyState = memo(function EmptyState({
   serverError,
   receivedInitState,
   currentSessionId,
-  messagesBySessionId,
+  rawSdkEventPayloadsBySessionId,
 }: {
   serverStatus: AppState["serverStatus"];
   serverError?: string;
   receivedInitState: AppState["receivedInitState"];
   currentSessionId: AppState["currentSessionId"];
-  messagesBySessionId: AppState["messagesBySessionId"];
+  rawSdkEventPayloadsBySessionId: AppState["rawSdkEventPayloadsBySessionId"];
 }) {
   const iconUri =
     typeof document !== "undefined"
@@ -9210,7 +10413,7 @@ export const EmptyState = memo(function EmptyState({
 
   const hasCachedCurrentSessionMessages = Boolean(
     currentSessionId &&
-    (messagesBySessionId?.[currentSessionId]?.length ?? 0) > 0,
+    (rawSdkEventPayloadsBySessionId?.[currentSessionId]?.length ?? 0) > 0,
   );
 
   const isConnecting = false;
@@ -9313,12 +10516,21 @@ export const CentralizedDebugPanel = memo(function CentralizedDebugPanel() {
   const {
     currentSessionId,
     errorMessages,
-    messagesBySessionId,
     rawSdkEventPayloadsBySessionId,
     receivedInitState,
     serverStatus,
     showLogger,
-  } = useAppState();
+  } = useAppState(
+    (state) => ({
+      currentSessionId: state.currentSessionId,
+      errorMessages: state.errorMessages,
+      rawSdkEventPayloadsBySessionId: state.rawSdkEventPayloadsBySessionId,
+      receivedInitState: state.receivedInitState,
+      serverStatus: state.serverStatus,
+      showLogger: state.showLogger,
+    }),
+    shallowEqual,
+  );
 
   const centralizedSessionId = currentSessionId;
   const rawSdkEventPayloads = centralizedSessionId && Array.isArray(rawSdkEventPayloadsBySessionId?.[centralizedSessionId]) 
