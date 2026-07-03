@@ -227,6 +227,51 @@ describe('assistant turn pending lifecycle', () => {
     assert.strictEqual(nextState.assistantTurnMessageId, null);
   });
 
+  it('clears previous inactive streaming content when a fresh pending turn has no id yet', () => {
+    const seededState = {
+      ...initialState,
+      currentSessionId: 'ses-1',
+      assistantTurnPending: false,
+      assistantTurnMessageId: 'msg-old-assistant',
+      streaming: {
+        messageId: 'msg-old-assistant',
+        content: 'previous assistant response',
+        reasoning: '',
+        reasoningEvents: [],
+        steps: [],
+        progressEvents: [],
+        edits: [],
+        isActive: false,
+        hasRenderableContent: true,
+      } as unknown as NonNullable<typeof initialState.streaming>,
+      streamingBySessionId: {
+        'ses-1': {
+          messageId: 'msg-old-assistant',
+          content: 'previous assistant response',
+          reasoning: '',
+          reasoningEvents: [],
+          steps: [],
+          progressEvents: [],
+          edits: [],
+          isActive: false,
+          hasRenderableContent: true,
+        } as NonNullable<typeof initialState.streaming>,
+      },
+    };
+
+    const nextState = appReducer(seededState, {
+      type: 'SET_ASSISTANT_TURN_PENDING',
+      payload: {
+        pending: true,
+      },
+    });
+
+    assert.strictEqual(nextState.assistantTurnPending, true);
+    assert.strictEqual(nextState.assistantTurnMessageId, null);
+    assert.strictEqual(nextState.streaming, null);
+    assert.strictEqual(nextState.streamingBySessionId?.['ses-1'], undefined);
+  });
+
   it('does not keep assistant turn pending when switching to a fresh idle session', () => {
     const seededState = {
       ...initialState,
@@ -1335,6 +1380,25 @@ describe('mergeActivityArraysLocal', () => {
       // Step 3 should be merged with both details
       assert.strictEqual(result![2].id, '3');
       assert.strictEqual(result![2].detail, 'new detail', 'should preserve incoming details for same ID');
+    });
+
+    it('should ignore sparse-array holes and undefined entries without crashing', () => {
+      const existing = new Array(2) as Array<{ id: string; createdAt: number } | undefined>;
+      existing[1] = { id: 'step-2', createdAt: 2000 };
+
+      const incoming = [
+        undefined,
+        { id: 'step-1', createdAt: 1000 },
+      ] as Array<{ id: string; createdAt: number } | undefined>;
+
+      const result = mergeActivityArraysLocal(existing, incoming);
+
+      assert.ok(result, 'should still return defined merged activity items');
+      assert.deepStrictEqual(
+        result?.map((entry) => entry.id),
+        ['step-1', 'step-2'],
+        'undefined activity entries should be skipped while valid items remain chronologically ordered',
+      );
     });
   });
 });

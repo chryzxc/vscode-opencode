@@ -71,6 +71,14 @@ function firstRecordAtPaths(
   return null;
 }
 
+function structuredMessageText(record: Record<string, unknown> | null): string {
+  return firstNonEmptyString(
+    record?.text,
+    record?.message,
+    record?.content,
+  ) || "";
+}
+
 function normalizeInteractiveChoices(raw: unknown): InteractiveChoice[] {
   if (!Array.isArray(raw)) {
     return [];
@@ -94,6 +102,7 @@ function normalizeInteractiveChoices(raw: unknown): InteractiveChoice[] {
         label,
         value: firstNonEmptyString(rec.value) || undefined,
         description: firstNonEmptyString(rec.description, rec.detail) || undefined,
+        recommended: rec.recommended === true,
       };
     })
     .filter((item): item is InteractiveChoice => !!item);
@@ -362,7 +371,7 @@ function finalStructuredOutputToolInputFromRawSdkEventPayloads(
  * Extract the final assistant-facing response from the raw SDK payload.
  *
  * Priority:
- * 1. `rawResponse.info.structured.message` or the equivalent nested sync payload
+ * 1. `rawResponse.info.structured.text/message/content` or the equivalent nested sync payload
  * 2. Nothing else
  */
 export function getFinalAssistantResponseText(
@@ -383,11 +392,18 @@ export function getFinalAssistantResponseText(
     ["payload", "data", "info"],
     ["data", "info"],
   ]);
-  const structured = asRecord(rawInfoRec?.structured);
-  const structuredMessage = firstNonEmptyString(
-    typeof structured?.message === "string" ? structured.message : undefined,
-    typeof structured?.content === "string" ? structured.content : undefined,
-  );
+  const structured =
+    firstRecordAtPaths(rawInfoRec, [
+      ["structured"],
+      ["structuredOutput"],
+      ["structured_output"],
+    ]) ||
+    firstRecordAtPaths(normalized, [
+      ["structured"],
+      ["structuredOutput"],
+      ["structured_output"],
+    ]);
+  const structuredMessage = structuredMessageText(structured);
   if (structuredMessage) {
     return structuredMessage;
   }
@@ -409,6 +425,42 @@ export function getFinalAssistantResponseTextFromRawSdkEventPayloads(
     const payload = asRecord(payloadValue);
     if (!payload) {
       continue;
+    }
+
+    const info = firstRecordAtPaths(payload, [
+      ["properties", "info"],
+      ["info"],
+      ["payload", "properties", "info"],
+      ["payload", "info"],
+      ["syncEvent", "data", "info"],
+      ["payload", "syncEvent", "data", "info"],
+    ]);
+    const structuredFromInfo =
+      firstRecordAtPaths(info, [
+        ["structured"],
+        ["structuredOutput"],
+        ["structured_output"],
+      ]) ||
+      firstRecordAtPaths(payload, [
+        ["structured"],
+        ["structuredOutput"],
+        ["structured_output"],
+        ["properties", "structured"],
+        ["properties", "structuredOutput"],
+        ["properties", "structured_output"],
+      ]);
+    const structuredResponseType = firstNonEmptyString(
+      structuredFromInfo?.responseType,
+      structuredFromInfo?.type,
+    )?.toLowerCase();
+    const structuredText = structuredMessageText(structuredFromInfo);
+    if (
+      structuredResponseType === "message" &&
+      structuredText &&
+      !sawAssistantTextEvent &&
+      !latestText
+    ) {
+      latestText = structuredText;
     }
 
     const eventType = firstNonEmptyString(payload.type, payload.event, payload.kind)?.toLowerCase();
@@ -544,10 +596,80 @@ export function getInteractiveEventsFromRawSdkEventPayloads(
     return [];
   }
 
+  const answeredQuestionRequestIds = new Set<string>();
+  const answeredQuestionCallIds = new Set<string>();
+  const answeredQuestionMessageIds = new Set<string>();
+
+  for (const payloadValue of rawSdkEventPayloads) {
+    const payload = asRecord(payloadValue);
+    if (!payload) {
+      continue;
+    }
+
+    const eventType = firstNonEmptyString(payload.type, payload.event, payload.kind)?.toLowerCase();
+    const properties = asRecord(payload.properties);
+    if (eventType === "question.replied") {
+      const requestID = firstNonEmptyString(
+        properties?.requestID,
+        properties?.requestId,
+        payload.requestID,
+        payload.requestId,
+      );
+      if (requestID) {
+        answeredQuestionRequestIds.add(requestID);
+      }
+    }
+
+    const rec = rawSdkEventPartRecord(payloadValue);
+    const partRec = rec?.part;
+    if (!partRec) {
+      continue;
+    }
+
+    const toolName = firstNonEmptyString(partRec.tool, partRec.name)?.toLowerCase();
+    if (
+      toolName !== "question" &&
+      !toolName?.includes("request_user_input") &&
+      !toolName?.includes("request-user-input")
+    ) {
+      continue;
+    }
+
+    const state = asRecord(partRec.state);
+    const metadata = asRecord(state?.metadata);
+    const answers = Array.isArray(metadata?.answers) ? metadata.answers : [];
+    const status = firstNonEmptyString(state?.status, partRec.status)?.toLowerCase();
+    const callID = firstNonEmptyString(partRec.callID, partRec.callId);
+    const messageID = firstNonEmptyString(partRec.messageID, partRec.messageId);
+    const output = firstNonEmptyString(state?.output, partRec.output);
+    const isAnswered =
+      status === "completed" &&
+      (answers.length > 0 ||
+        !!output?.trim() ||
+        metadata?.truncated === false);
+    if (!isAnswered) {
+      continue;
+    }
+
+    if (callID) {
+      answeredQuestionCallIds.add(callID);
+    }
+    if (messageID) {
+      answeredQuestionMessageIds.add(messageID);
+    }
+  }
+
   const collected: InteractiveEvent[] = [];
   const seen = new Set<string>();
   const collect = (events: InteractiveEvent[]) => {
     for (const event of events) {
+      if (
+        event.type === "question" &&
+        event.requestID &&
+        answeredQuestionRequestIds.has(event.requestID)
+      ) {
+        continue;
+      }
       const requestAwareKey =
         event.type === "question"
           ? [
@@ -573,7 +695,11 @@ export function getInteractiveEventsFromRawSdkEventPayloads(
     const payload = asRecord(rawSdkEventPayloads[index]);
     const eventType = firstNonEmptyString(payload?.type, payload?.event, payload?.kind)?.toLowerCase();
     if (eventType === "question.asked") {
-      collect(interactiveEventsFromQuestionAskedEvent(payload));
+      const events = interactiveEventsFromQuestionAskedEvent(payload);
+      const unansweredEvents = events.filter(
+        (event) => !event.requestID || !answeredQuestionRequestIds.has(event.requestID),
+      );
+      collect(unansweredEvents);
     }
 
     const rec = rawSdkEventPartRecord(rawSdkEventPayloads[index]);
@@ -589,6 +715,18 @@ export function getInteractiveEventsFromRawSdkEventPayloads(
       toolName?.includes("request_user_input") ||
       toolName?.includes("request-user-input")
     ) {
+      const callID = firstNonEmptyString(partRec.callID, partRec.callId);
+      const messageID = firstNonEmptyString(partRec.messageID, partRec.messageId);
+      const answeredQuestionTool =
+        (toolName === "question" ||
+          toolName?.includes("request_user_input") ||
+          toolName?.includes("request-user-input")) &&
+        ((callID && answeredQuestionCallIds.has(callID)) ||
+          (messageID && answeredQuestionMessageIds.has(messageID)));
+      if (answeredQuestionTool) {
+        continue;
+      }
+
       const state = asRecord(partRec.state);
       const input = asRecord(state?.input) || asRecord(partRec.input) || asRecord(partRec.arguments);
       if (input) {

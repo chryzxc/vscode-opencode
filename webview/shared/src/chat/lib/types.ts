@@ -184,6 +184,18 @@ export interface QueueItem {
   agent?: string;
 }
 
+export interface PendingDeferredPrompt {
+  id: string;
+  sessionId: string;
+  createdAt: number;
+  text: string;
+  files?: string[];
+  contexts?: ContextItem[];
+  images?: unknown[];
+  agent?: string;
+  clientRequestId?: string;
+}
+
 export interface StreamingStep {
   id?: string;
   callID?: string;
@@ -500,6 +512,7 @@ export interface ActivityDetail {
   summary?: string;
   command?: string;
   input?: Record<string, unknown>;
+  files?: string[];
   output?: string;
   backgroundTaskId?: string;
   backgroundOutput?: string;
@@ -518,6 +531,7 @@ export interface InteractiveChoice {
   label: string;
   value?: string;
   description?: string;
+  recommended?: boolean;
 }
 
 export type InteractiveUiCategory = "quick_input" | "passive";
@@ -684,6 +698,10 @@ export interface Message {
   aborted?: boolean;
   /** Marks a user echo as an interactive popover answer submission. */
   interactiveSubmit?: boolean;
+  /** Local-only marker for a user prompt accepted by OpenCode deferred delivery. */
+  pendingDeferredPrompt?: boolean;
+  /** Local-only status label shown while the centralized tape has not echoed this prompt yet. */
+  pendingDeferredPromptLabel?: string;
   /** Optional structured error information for display in the UI */
   displayError?: DisplayError;
 }
@@ -771,6 +789,7 @@ export interface AppState {
   rawSdkEventPayloadsBySessionId?: Record<string, unknown[]>;
   promptQueue: QueueItem[];
   queueBySessionId: Record<string, QueueItem[]>;
+  pendingDeferredPromptsBySessionId?: Record<string, PendingDeferredPrompt[]>;
   isExecutingQueue: boolean; // Legacy global flag, to be removed or used carefully
   executingQueueSessionIds: Set<string>;
   isQueueOpen: boolean;

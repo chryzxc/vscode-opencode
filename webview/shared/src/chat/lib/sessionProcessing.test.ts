@@ -200,6 +200,113 @@ describe('isAssistantRespondingInCurrentSession', () => {
     assert.strictEqual(result, false);
   });
 
+  it('lets completed centralized assistant data override stale processing flags', () => {
+    const result = isAssistantRespondingInCurrentSession(
+      true,
+      'ses_1',
+      ['ses_1'],
+      true,
+      true,
+      true,
+      [
+        {
+          id: 'evt_user',
+          type: 'message.part.updated',
+          properties: {
+            part: {
+              type: 'text',
+              messageID: 'msg_user',
+              text: 'hey there',
+            },
+          },
+        },
+        {
+          id: 'evt_assistant_start',
+          type: 'message.updated',
+          properties: {
+            info: {
+              id: 'msg_assistant',
+              role: 'assistant',
+              parentID: 'msg_user',
+            },
+          },
+        },
+        {
+          id: 'evt_answer',
+          type: 'message.part.updated',
+          properties: {
+            part: {
+              type: 'text',
+              messageID: 'msg_assistant',
+              text: 'Hey! How can I help you today?',
+            },
+          },
+        },
+        {
+          id: 'evt_step_finish',
+          type: 'message.part.updated',
+          properties: {
+            part: {
+              type: 'step-finish',
+              messageID: 'msg_assistant',
+            },
+          },
+        },
+        {
+          id: 'evt_assistant_done',
+          type: 'message.updated',
+          properties: {
+            info: {
+              id: 'msg_assistant',
+              role: 'assistant',
+              parentID: 'msg_user',
+              finish: 'tool-calls',
+            },
+          },
+        },
+      ],
+    );
+
+    assert.strictEqual(result, false);
+  });
+
+  it('keeps responding true when a newer user message arrives after a completed assistant', () => {
+    const result = isAssistantRespondingInCurrentSession(
+      true,
+      'ses_1',
+      ['ses_1'],
+      false,
+      false,
+      true,
+      [
+        {
+          id: 'evt_assistant_done',
+          type: 'message.updated',
+          properties: {
+            info: {
+              id: 'msg_assistant',
+              role: 'assistant',
+              finish: 'tool-calls',
+            },
+          },
+        },
+        {
+          id: 'evt_user_next',
+          type: 'message.part.updated',
+          properties: {
+            part: {
+              type: 'text',
+              messageID: 'msg_user_next',
+              text: 'next question',
+            },
+          },
+        },
+      ],
+    );
+
+    assert.strictEqual(result, true);
+  });
+
   it('does not treat stale rehydrated raw events as an active assistant response on startup', () => {
     const staleTimestamp = Date.now() - 120_000;
     const result = isAssistantRespondingInCurrentSession(

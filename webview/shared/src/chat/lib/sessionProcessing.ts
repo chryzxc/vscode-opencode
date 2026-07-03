@@ -21,6 +21,11 @@ function firstNonEmptyString(...values: unknown[]): string | undefined {
   return undefined;
 }
 
+function eventTypeMatches(value: unknown, expected: string): boolean {
+  const eventType = asString(value).trim();
+  return eventType === expected || eventType.startsWith(`${expected}.`);
+}
+
 export function latestSessionStatusTypeFromCentralizedTape(
   rawSdkEventPayloads?: unknown[],
 ): string | null {
@@ -30,7 +35,7 @@ export function latestSessionStatusTypeFromCentralizedTape(
 
   for (let index = rawSdkEventPayloads.length - 1; index >= 0; index -= 1) {
     const event = asRecord(rawSdkEventPayloads[index]);
-    if (!event || asString(event.type).trim() !== "session.status") {
+    if (!event || !eventTypeMatches(event.type, "session.status")) {
       continue;
     }
 
@@ -128,6 +133,56 @@ function latestRoleBoundaryIndexes(messages: unknown[] | undefined): {
   return { lastUserIndex, lastAssistantIndex };
 }
 
+function latestCentralizedRoleBoundaryIndexes(rawSdkEventPayloads?: unknown[]): {
+  lastUserIndex: number;
+  lastAssistantIndex: number;
+} {
+  if (!Array.isArray(rawSdkEventPayloads) || rawSdkEventPayloads.length === 0) {
+    return { lastUserIndex: -1, lastAssistantIndex: -1 };
+  }
+
+  let lastUserIndex = -1;
+  let lastAssistantIndex = -1;
+  const assistantMessageIds = new Set<string>();
+
+  for (let index = 0; index < rawSdkEventPayloads.length; index += 1) {
+    const event = asRecord(rawSdkEventPayloads[index]);
+    if (!event) {
+      continue;
+    }
+
+    const properties = asRecord(event.properties);
+    const info = asRecord(properties?.info) ?? asRecord(event.info);
+    const part = asRecord(properties?.part) ?? asRecord(event.part);
+    const eventType = asString(event.type).trim();
+    const infoRole = asString(info?.role).trim().toLowerCase();
+    const infoMessageId = firstNonEmptyString(info?.id, info?.messageID, info?.messageId);
+    const partMessageId = firstNonEmptyString(part?.messageID, part?.messageId);
+    const partType = asString(part?.type).trim().toLowerCase();
+
+    if (eventTypeMatches(eventType, "message.updated") && infoRole === "assistant" && infoMessageId) {
+      assistantMessageIds.add(infoMessageId);
+      lastAssistantIndex = index;
+      continue;
+    }
+
+    if (eventTypeMatches(eventType, "message.updated") && infoRole === "user") {
+      lastUserIndex = index;
+      continue;
+    }
+
+    if (eventTypeMatches(eventType, "message.part.updated") && partType === "text" && partMessageId) {
+      if (assistantMessageIds.has(partMessageId)) {
+        lastAssistantIndex = index;
+      } else {
+        lastUserIndex = index;
+      }
+    }
+  }
+
+  return { lastUserIndex, lastAssistantIndex };
+}
+
 /**
  * Returns true only when the current visible transcript still belongs to an
  * in-flight assistant turn.
@@ -168,7 +223,7 @@ export function latestAssistantMessageIdFromCentralizedTape(
     const part = asRecord(properties?.part) ?? asRecord(event.part);
 
     if (
-      asString(event.type).trim() === "message.updated" &&
+      eventTypeMatches(event.type, "message.updated") &&
       asString(info?.role).trim().toLowerCase() === "assistant"
     ) {
       const assistantId = firstNonEmptyString(info?.id, info?.messageID, info?.messageId);
@@ -208,7 +263,7 @@ export function hasCompletedAssistantReplyInCentralizedTape(
     const part = asRecord(properties?.part) ?? asRecord(event.part);
 
     if (
-      asString(event.type).trim() === "message.updated" &&
+      eventTypeMatches(event.type, "message.updated") &&
       firstNonEmptyString(info?.id, info?.messageID, info?.messageId) ===
         latestAssistantMessageId
     ) {
@@ -219,7 +274,7 @@ export function hasCompletedAssistantReplyInCentralizedTape(
     }
 
     if (
-      asString(event.type).trim() === "message.part.updated" &&
+      eventTypeMatches(event.type, "message.part.updated") &&
       asString(part?.type).trim().toLowerCase() === "step-finish" &&
       firstNonEmptyString(part?.messageID, part?.messageId) ===
         latestAssistantMessageId
@@ -303,13 +358,24 @@ export function isAssistantRespondingInCurrentSession(
   );
   const hasActiveCentralizedReply =
     hasActiveAssistantReplyInCentralizedTape(rawSdkEventPayloads);
+  const hasCompletedCentralizedReply =
+    hasCompletedAssistantReplyInCentralizedTape(rawSdkEventPayloads);
+  const centralizedBoundaries =
+    latestCentralizedRoleBoundaryIndexes(rawSdkEventPayloads);
+  const centralizedCompletedAssistantIsLatestTurn =
+    hasCompletedCentralizedReply &&
+    centralizedBoundaries.lastAssistantIndex >= centralizedBoundaries.lastUserIndex;
   const hasBusyCentralizedSession =
     hasBusySessionStatusInCentralizedTape(rawSdkEventPayloads) &&
-    !hasCompletedAssistantReplyInCentralizedTape(rawSdkEventPayloads);
+    !hasCompletedCentralizedReply;
   const hasLiveTurnSignal =
     isProcessingInSession || isStreamingActive || assistantTurnPending;
   const canUseCentralizedFallback =
     hasLiveTurnSignal || hasRecentCentralizedActivity(rawSdkEventPayloads);
+
+  if (centralizedCompletedAssistantIsLatestTurn) {
+    return false;
+  }
 
   // A blank/new session can briefly inherit processing-like state from
   // bootstrap or stale persisted tape. Require either visible turn context or
@@ -326,5 +392,25 @@ export function isAssistantRespondingInCurrentSession(
     assistantTurnPending ||
     (canUseCentralizedFallback &&
       (hasActiveCentralizedReply || hasBusyCentralizedSession))
+  );
+}
+
+export function shouldDeferComposerSendInCurrentSession(
+  currentSessionId: string | null,
+  processingSessionIds: string[],
+  isStreamingActive: boolean,
+  assistantTurnPending: boolean,
+): boolean {
+  if (isStreamingActive || assistantTurnPending) {
+    return true;
+  }
+
+  if (!currentSessionId) {
+    return false;
+  }
+
+  return (
+    Array.isArray(processingSessionIds) &&
+    processingSessionIds.includes(currentSessionId)
   );
 }

@@ -1,4 +1,12 @@
-import React, { createContext, useContext, useMemo, useReducer } from 'react';
+import React, {
+  createContext,
+  useContext,
+  useLayoutEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useSyncExternalStore,
+} from 'react';
 import logger from './logger';
 import {
   getCentralizedAssistantContentFromRawSdkEventPayloads,
@@ -10,6 +18,7 @@ import {
 } from "./rawResponse";
 import {
   dedupeCentralizedDebugPayloads,
+  sanitizeCentralizedDebugPayload,
   shouldIncludeCentralizedDebugPayload,
 } from "./generated/centralizedDebugPayloadFilter";
 
@@ -27,6 +36,7 @@ import type {
   FileResult,
   Message,
   Model,
+  PendingDeferredPrompt,
   QueueItem,
   QuotaData,
   Session,
@@ -61,6 +71,7 @@ export const initialState: AppState = {
   rawSdkEventPayloadsBySessionId: {},
   promptQueue: [],
   queueBySessionId: {},
+  pendingDeferredPromptsBySessionId: {},
   isExecutingQueue: false,
   executingQueueSessionIds: new Set<string>(),
   isQueueOpen: false,
@@ -237,6 +248,7 @@ export type AppAction =
     type: "SET_QUEUE";
     payload: { sessionId: string | null; queue: QueueItem[] };
   }
+  | { type: "ADD_PENDING_DEFERRED_PROMPT"; payload: PendingDeferredPrompt }
   | { type: "SET_EXECUTING_QUEUE"; payload: { sessionId: string; executing: boolean } }
   | { type: "SET_QUEUE_OPEN"; payload: boolean }
   | { type: "ADD_TO_LOCAL_QUEUE"; payload: QueueItem }
@@ -588,11 +600,31 @@ export function mergeActivityArraysLocal<T>(
   const merged: T[] = [];
   const indexByKey = new Map<string, number>();
 
+  const appendDefinedEntries = (
+    target: Array<{ item: T; source: "existing" | "incoming"; originalIndex: number }>,
+    items: T[],
+    source: "existing" | "incoming",
+  ): void => {
+    items.forEach((item, idx) => {
+      if (typeof item === "undefined") {
+        return;
+      }
+      target.push({ item, source, originalIndex: idx });
+    });
+  };
+
   // Combine all items with their source and original index for stable sorting
-  const allItems = [
-    ...existingItems.map((item, idx) => ({ item, source: 'existing' as const, originalIndex: idx })),
-    ...incomingItems.map((item, idx) => ({ item, source: 'incoming' as const, originalIndex: idx }))
-  ];
+  const allItems: Array<{
+    item: T;
+    source: "existing" | "incoming";
+    originalIndex: number;
+  }> = [];
+  appendDefinedEntries(allItems, existingItems, "existing");
+  appendDefinedEntries(allItems, incomingItems, "incoming");
+
+  if (allItems.length === 0) {
+    return undefined;
+  }
 
   // Sort by timestamp to preserve temporal order
   allItems.sort((a, b) => {
@@ -616,7 +648,11 @@ export function mergeActivityArraysLocal<T>(
     return a.originalIndex - b.originalIndex;
   });
 
-  allItems.forEach(({ item }) => {
+  allItems.forEach((entry) => {
+    if (!entry) {
+      return;
+    }
+    const { item } = entry;
     const key = activityArrayItemKeyLocal(item, 0);
     const existingIndex = indexByKey.get(key);
     if (typeof existingIndex !== "number") {
@@ -830,7 +866,7 @@ function getStructuredRecordLocal(message: Message): Record<string, unknown> | n
   );
 }
 
-function normalizeChoiceOptionsLocal(value: unknown): Array<{ id?: string; label: string; value?: string; description?: string }> {
+function normalizeChoiceOptionsLocal(value: unknown): Array<{ id?: string; label: string; value?: string; description?: string; recommended?: boolean }> {
   if (!Array.isArray(value)) {
     return [];
   }
@@ -853,9 +889,10 @@ function normalizeChoiceOptionsLocal(value: unknown): Array<{ id?: string; label
         label,
         value: asStringLocal(rec.value) || undefined,
         description: asStringLocal(rec.description) || undefined,
+        recommended: rec.recommended === true,
       };
     })
-    .filter((entry): entry is { id?: string; label: string; value?: string; description?: string } => !!entry);
+    .filter((entry): entry is { id?: string; label: string; value?: string; description?: string; recommended?: boolean } => !!entry);
 }
 
 function interactiveEventFromQuestionRecordLocal(
@@ -2440,67 +2477,44 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       const statsForNew = newId
         ? (state.sessionsStatsById?.[newId] ?? zeroStats)
         : zeroStats;
+      const queueBySessionId = state.queueBySessionId ?? {};
+      const processingSessionIds = Array.isArray(state.processingSessionIds)
+        ? state.processingSessionIds
+        : [];
       const queueForNew = newId
-        ? getQueueForSession(state.queueBySessionId[newId], newId)
+        ? getQueueForSession(queueBySessionId[newId], newId)
         : [];
 
       // Check if the new session is currently processing to preserve loading state
-      const isNewSessionProcessing = newId && state.processingSessionIds.includes(newId);
+      const isNewSessionProcessing = Boolean(newId && processingSessionIds.includes(newId));
       const streamingBySessionId = cacheStreamingForSession(
         state.streamingBySessionId,
         state.currentSessionId,
         state.streaming,
       );
-      const messagesBySessionId =
-        state.currentSessionId &&
-        hasVisibleStreamingSnapshotLocal(state.streaming)
-          ? {
-            ...(state.messagesBySessionId ?? {}),
-            [state.currentSessionId]: canonicalizeMessagesForRender(
-              mergeStreamingSnapshotIntoMessagesLocal(
-                state.messages ?? [],
-                state.streaming,
-              ),
-              { preserveEvtAssistantMessages: true },
-            ),
-          }
-          : state.messagesBySessionId;
       const cachedStreamingForNew = newId
         ? streamingBySessionId[newId] ?? null
         : null;
-      const cachedMessagesForNew = newId ? messagesBySessionId?.[newId] ?? [] : [];
-      const cachedLatestAssistantMessageForNew = getLatestAssistantMessageLocal(
-        cachedMessagesForNew,
-      );
-      const hasTerminalAssistantMessageForNew = isTerminalAssistantMessageLocal(
-        cachedLatestAssistantMessageForNew,
-      );
       const restoredStreamingForNew =
         newId &&
         cachedStreamingForNew &&
-        !hasTerminalAssistantMessageForNew &&
         (isNewSessionProcessing ||
           hasVisibleStreamingSnapshotLocal(cachedStreamingForNew))
           ? cachedStreamingForNew
           : null;
       const restoredAssistantTurnPending = Boolean(
-        !hasTerminalAssistantMessageForNew &&
-          (isNewSessionProcessing || restoredStreamingForNew?.isActive),
+        isNewSessionProcessing || restoredStreamingForNew?.isActive,
       );
       const restoredAssistantTurnMessageId =
         restoredStreamingForNew?.messageId ?? null;
-      const messagesForNew = cachedMessagesForNew;
 
       return {
         ...state,
         currentSessionId: action.payload,
-        // Immediately switch the visible transcript to the target session's
-        // cached timeline. Without this, the previous session's messages can
-        // remain on screen until a later hydration event lands.
-        messages: messagesForNew,
+        messages: [],
         sessionStats: statsForNew,
         promptQueue: queueForNew,
-        interactiveEvents: pendingInteractiveEventsFromMessagesLocal(messagesForNew),
+        interactiveEvents: [],
         isExecutingQueue: false,
         isQueueOpen: false,
         // Reset all transient per-session processing/streaming UI so states from
@@ -2513,7 +2527,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         // processing; otherwise keep the old session's progress hidden.
         streaming: restoredStreamingForNew,
         streamingBySessionId: pruneSessionCache(streamingBySessionId, action.payload),
-        messagesBySessionId: pruneSessionCache(messagesBySessionId, action.payload),
         isCompacting: false,
         compactionError: undefined,
         compactionNotice: undefined,
@@ -2578,6 +2591,19 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         preserveEvtAssistantMessages:
           !!state.streaming?.isActive || state.assistantTurnPending,
       });
+      const attachedRawSdkEventPayloads = canonicalMessages.reduce<unknown[]>(
+        (collected, message) => {
+          const payloads = Array.isArray(
+            (message as unknown as Record<string, unknown>).rawSdkEventPayloads,
+          )
+            ? ((message as unknown as Record<string, unknown>).rawSdkEventPayloads as unknown[])
+            : [];
+          return payloads.length > 0
+            ? mergeRawSdkEventPayloads(collected, payloads)
+            : collected;
+        },
+        [],
+      );
       const resolvedDividerIndex = resolveCompactionDividerIndex(canonicalMessages, {
         compactionDividerIndex: state.compactionDividerIndex,
         compactionDividerBeforeMessageId: state.compactionDividerBeforeMessageId,
@@ -2616,17 +2642,28 @@ export function appReducer(state: AppState, action: AppAction): AppState {
             state.dismissedInteractiveEventKeys,
           )
           : derivedInteractiveEvents;
+      const nextRawSdkEventPayloadsBySessionId =
+        state.currentSessionId && attachedRawSdkEventPayloads.length > 0
+          ? pruneSessionCache({
+            ...(state.rawSdkEventPayloadsBySessionId ?? {}),
+            [state.currentSessionId]: dedupeCentralizedDebugPayloads(
+              shouldIncludeCentralizedDebugPayload
+                ? mergeRawSdkEventPayloads(
+                  state.rawSdkEventPayloadsBySessionId?.[state.currentSessionId] ?? [],
+                  attachedRawSdkEventPayloads,
+                ).filter(shouldIncludeCentralizedDebugPayload)
+                : mergeRawSdkEventPayloads(
+                  state.rawSdkEventPayloadsBySessionId?.[state.currentSessionId] ?? [],
+                  attachedRawSdkEventPayloads,
+                ),
+            ),
+          }, state.currentSessionId)
+          : state.rawSdkEventPayloadsBySessionId;
       return {
         ...state,
         messages: canonicalMessages,
         interactiveEvents: nextInteractiveEvents,
-        messagesBySessionId:
-          state.currentSessionId
-            ? {
-              ...(state.messagesBySessionId ?? {}),
-              [state.currentSessionId]: canonicalMessages,
-            }
-            : state.messagesBySessionId,
+        rawSdkEventPayloadsBySessionId: nextRawSdkEventPayloadsBySessionId,
         compactionDividerIndex: resolvedDividerIndex,
         compactionDividerBeforeMessageId:
           resolvedAnchors.compactionDividerBeforeMessageId,
@@ -2648,8 +2685,16 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case "SET_RAW_SDK_EVENT_PAYLOADS": {
       const rawEvents = Array.isArray(action.payload.events) ? action.payload.events : [];
       const events = dedupeCentralizedDebugPayloads(
-        rawEvents.filter(shouldIncludeCentralizedDebugPayload)
+        rawEvents
+          .filter(shouldIncludeCentralizedDebugPayload)
+          .map((event) => sanitizeCentralizedDebugPayload(event))
       );
+      logger.info("[CENTRALIZED-TAPE][WEBVIEW_STORE] set_raw_sdk_event_payloads", {
+        sessionId: action.payload.sessionId,
+        incomingCount: rawEvents.length,
+        storedCount: events.length,
+        currentSessionId: state.currentSessionId,
+      });
       return {
         ...state,
         rawSdkEventPayloadsBySessionId: pruneSessionCache({
@@ -2661,100 +2706,46 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case "APPEND_RAW_SDK_EVENT_PAYLOAD": {
       const sessionId = action.payload.sessionId ?? state.currentSessionId ?? "";
       if (!sessionId) {
+        logger.warn("[CENTRALIZED-TAPE][WEBVIEW_STORE] append_raw_sdk_event_payload_skipped", {
+          reason: "missing-session",
+          currentSessionId: state.currentSessionId,
+        });
         return state;
       }
       if (!shouldIncludeCentralizedDebugPayload(action.payload.event)) {
+        const event = asRecordLocal(action.payload.event);
+        logger.warn("[CENTRALIZED-TAPE][WEBVIEW_STORE] append_raw_sdk_event_payload_skipped", {
+          reason: "filtered",
+          sessionId,
+          eventType: asStringLocal(event?.type),
+          currentSessionId: state.currentSessionId,
+        });
         return state;
       }
       const existing = state.rawSdkEventPayloadsBySessionId?.[sessionId] ?? [];
-      const next = dedupeCentralizedDebugPayloads([...existing, action.payload.event]);
+      const sanitizedEvent = sanitizeCentralizedDebugPayload(action.payload.event);
+      const next = dedupeCentralizedDebugPayloads([...existing, sanitizedEvent]);
+      const event = asRecordLocal(sanitizedEvent);
+      const properties = asRecordLocal(event?.properties);
+      const info = asRecordLocal(properties?.info);
+      const part = asRecordLocal(properties?.part);
+      logger.info("[CENTRALIZED-TAPE][WEBVIEW_STORE] append_raw_sdk_event_payload", {
+        sessionId,
+        eventType: asStringLocal(event?.type),
+        source: asStringLocal(event?.source),
+        messageId: asStringLocal(info?.id, part?.messageId, part?.messageID),
+        partType: asStringLocal(part?.type),
+        previousCount: existing.length,
+        nextCount: next.length,
+        deduped: next.length === existing.length,
+        currentSessionId: state.currentSessionId,
+      });
       return {
         ...state,
         rawSdkEventPayloadsBySessionId: pruneSessionCache({
           ...(state.rawSdkEventPayloadsBySessionId ?? {}),
           [sessionId]: next,
         }, sessionId),
-      };
-    }
-    case "CACHE_SESSION_MESSAGES":
-      return {
-        ...state,
-        messagesBySessionId: pruneSessionCache({
-          ...(state.messagesBySessionId ?? {}),
-          [action.payload.sessionId]: canonicalizeMessagesForRender(
-            action.payload.messages,
-          ),
-        }, action.payload.sessionId),
-      };
-    case "HYDRATE_SESSION_FROM_CACHE": {
-      const cachedMessages =
-        state.messagesBySessionId?.[action.payload.sessionId] ?? [];
-      if (cachedMessages.length === 0) {
-        return state;
-      }
-      const isNewSessionProcessing = state.processingSessionIds.includes(
-        action.payload.sessionId,
-      );
-      const streamingBySessionId = cacheStreamingForSession(
-        state.streamingBySessionId,
-        state.currentSessionId,
-        state.streaming,
-      );
-      const cachedStreamingForNew =
-        streamingBySessionId[action.payload.sessionId] ?? null;
-      const cachedLatestAssistantMessage = getLatestAssistantMessageLocal(
-        cachedMessages,
-      );
-      const hasTerminalAssistantMessage = isTerminalAssistantMessageLocal(
-        cachedLatestAssistantMessage,
-      );
-      const restoredStreamingForNew =
-        cachedStreamingForNew &&
-        !hasTerminalAssistantMessage &&
-        (isNewSessionProcessing ||
-          hasVisibleStreamingSnapshotLocal(cachedStreamingForNew))
-        ? cachedStreamingForNew
-        : null;
-      const resolvedDividerIndex = resolveCompactionDividerIndex(cachedMessages, {
-        compactionDividerIndex: state.compactionDividerIndex,
-        compactionDividerBeforeMessageId: state.compactionDividerBeforeMessageId,
-        compactionDividerAfterMessageId: state.compactionDividerAfterMessageId,
-        lastCompactedAt: state.lastCompactedAt,
-      });
-      const resolvedAnchors =
-        typeof resolvedDividerIndex === "number"
-          ? resolveCompactionDividerAnchors(cachedMessages, resolvedDividerIndex)
-          : {
-            compactionDividerBeforeMessageId:
-              state.compactionDividerBeforeMessageId,
-            compactionDividerAfterMessageId: state.compactionDividerAfterMessageId,
-          };
-      return {
-        ...state,
-        currentSessionId: action.payload.sessionId,
-        messages: cachedMessages,
-        interactiveEvents: filterDismissedInteractiveEventsLocal(
-          pendingInteractiveEventsFromMessagesLocal(cachedMessages),
-          state.dismissedInteractiveEventKeys,
-        ),
-        isProcessing:
-          !hasTerminalAssistantMessage && isNewSessionProcessing,
-        isSteering: false,
-        assistantTurnPending: Boolean(
-          !hasTerminalAssistantMessage &&
-            (isNewSessionProcessing || restoredStreamingForNew?.isActive),
-        ),
-        assistantTurnMessageId: restoredStreamingForNew?.messageId ?? null,
-        streaming: restoredStreamingForNew,
-        streamingBySessionId,
-        isLoadingSession: false,
-        loadingSessionId: null,
-        loadingSessionTitle: null,
-        compactionDividerIndex: resolvedDividerIndex,
-        compactionDividerBeforeMessageId:
-          resolvedAnchors.compactionDividerBeforeMessageId,
-        compactionDividerAfterMessageId:
-          resolvedAnchors.compactionDividerAfterMessageId,
       };
     }
     case "CLEAR_MESSAGES":
@@ -2795,8 +2786,9 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         };
       }
       // When processing starts without any existing stream snapshot, create an
-      // empty streaming state so the StreamingCard is visible immediately
-      // instead of showing the "Thinking..." bubble.
+      // empty streaming state for incoming events to fill. The renderer waits
+      // for real content or activity before showing the live card, which keeps
+      // the previous assistant response from flashing during turn startup.
       if (action.payload && !state.streaming) {
         try {
           // Initialize streaming state WITHOUT model/provider assumptions.
@@ -2861,13 +2853,13 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         : null;
       const isNewAssistantTurn =
         action.payload.pending &&
-        !!nextAssistantTurnMessageId &&
-        nextAssistantTurnMessageId !== state.assistantTurnMessageId;
+        (nextAssistantTurnMessageId === null ||
+          nextAssistantTurnMessageId !== state.assistantTurnMessageId);
       const shouldClearStaleStreamingSnapshot =
         isNewAssistantTurn &&
         !!state.streaming &&
         state.streaming.isActive === false &&
-        !!state.streaming.messageId &&
+        (!!state.streaming.messageId || state.streaming.content.trim().length > 0) &&
         state.streaming.messageId !== nextAssistantTurnMessageId;
       if (shouldClearStaleStreamingSnapshot) {
         return {
@@ -2972,12 +2964,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           state.currentSessionId,
           streaming,
         ),
-        messagesBySessionId: cacheVisibleStreamingMessageForSession(
-          state.messagesBySessionId,
-          state.currentSessionId,
-          streaming,
-          state.messages,
-        ),
       };
     }
     case "SET_SESSION_STREAMING": {
@@ -3010,23 +2996,12 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         return {
           ...state,
           streamingBySessionId,
-          messagesBySessionId: cacheVisibleStreamingMessageForSession(
-            state.messagesBySessionId,
-            action.payload.sessionId,
-            streaming,
-          ),
         };
       }
       return {
         ...state,
         streaming,
         streamingBySessionId,
-        messagesBySessionId: cacheVisibleStreamingMessageForSession(
-          state.messagesBySessionId,
-          action.payload.sessionId,
-          streaming,
-          state.messages,
-        ),
       };
     }
     case "APPEND_SDK_EVENT_PAYLOAD": {
@@ -3038,8 +3013,25 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       }
       const existing = state.streaming.rawSdkEventPayloads ?? [];
       const next = dedupeCentralizedDebugPayloads([...existing, action.payload]);
+      const nextRawSdkEventPayloadsBySessionId =
+        state.currentSessionId
+          ? pruneSessionCache({
+            ...(state.rawSdkEventPayloadsBySessionId ?? {}),
+            [state.currentSessionId]: dedupeCentralizedDebugPayloads([
+              ...(state.rawSdkEventPayloadsBySessionId?.[state.currentSessionId] ?? []),
+              action.payload,
+            ]),
+          }, state.currentSessionId)
+          : state.rawSdkEventPayloadsBySessionId;
+      // NOTE: Cap the per-turn streaming snapshot at 200 entries to bound memory,
+      // but always continue updating the session-scoped cache. The session cache
+      // is the long-term centralized tape; dropping events from it causes the
+      // activity timeline and subagent rehydration to go blank after the cap.
       if (next.length >= 200) {
-        return state;
+        return {
+          ...state,
+          rawSdkEventPayloadsBySessionId: nextRawSdkEventPayloadsBySessionId,
+        };
       }
       return {
         ...state,
@@ -3047,6 +3039,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           ...state.streaming,
           rawSdkEventPayloads: next,
         },
+        rawSdkEventPayloadsBySessionId: nextRawSdkEventPayloadsBySessionId,
       };
     }
     case "UPDATE_STREAMING_CONTENT": {
@@ -3333,12 +3326,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           state.currentSessionId,
           streaming,
         ),
-        messagesBySessionId: cacheVisibleStreamingMessageForSession(
-          state.messagesBySessionId,
-          state.currentSessionId,
-          streaming,
-          state.messages,
-        ),
       };
     }
     case "SET_INPUT_VALUE":
@@ -3393,6 +3380,32 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           state.currentSessionId === targetSessionId
             ? sessionQueue
             : state.promptQueue,
+      };
+    }
+    case "ADD_PENDING_DEFERRED_PROMPT": {
+      const item = action.payload;
+      if (!item.sessionId || !item.id || !item.text.trim()) {
+        return state;
+      }
+      const nextBySession = { ...(state.pendingDeferredPromptsBySessionId ?? {}) };
+      const existing = nextBySession[item.sessionId] ?? [];
+      const alreadyExists = existing.some(
+        (prompt) =>
+          prompt.id === item.id ||
+          (prompt.clientRequestId &&
+            item.clientRequestId &&
+            prompt.clientRequestId === item.clientRequestId),
+      );
+      if (alreadyExists) {
+        return state;
+      }
+      nextBySession[item.sessionId] = [...existing, item];
+      return {
+        ...state,
+        pendingDeferredPromptsBySessionId: pruneSessionCache(
+          nextBySession,
+          state.currentSessionId,
+        ),
       };
     }
     case "SET_EXECUTING_QUEUE": {
@@ -3765,12 +3778,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           state.currentSessionId,
           streaming,
         ),
-        messagesBySessionId: cacheVisibleStreamingMessageForSession(
-          state.messagesBySessionId,
-          state.currentSessionId,
-          streaming,
-          state.messages,
-        ),
       };
     }
     case "DISMISS_INTERACTIVE_EVENT": {
@@ -3799,12 +3806,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           state.streamingBySessionId,
           state.currentSessionId,
           streaming,
-        ),
-        messagesBySessionId: cacheVisibleStreamingMessageForSession(
-          state.messagesBySessionId,
-          state.currentSessionId,
-          streaming,
-          state.messages,
         ),
       };
     }
@@ -3880,25 +3881,123 @@ export function appReducer(state: AppState, action: AppAction): AppState {
 
 export const AppStateContext = createContext<AppState | undefined>(undefined);
 export const AppDispatchContext = createContext<React.Dispatch<AppAction> | undefined>(undefined);
+type AppStore = {
+  getState: () => AppState;
+  subscribe: (listener: () => void) => () => void;
+};
+export const AppStoreContext = createContext<AppStore | undefined>(undefined);
+
+type EqualityFn<T> = (left: T, right: T) => boolean;
+
+export function shallowEqual<T>(left: T, right: T): boolean {
+  if (Object.is(left, right)) {
+    return true;
+  }
+  if (
+    !left ||
+    !right ||
+    typeof left !== "object" ||
+    typeof right !== "object" ||
+    Array.isArray(left) ||
+    Array.isArray(right)
+  ) {
+    return false;
+  }
+
+  const leftKeys = Object.keys(left as Record<string, unknown>);
+  const rightKeys = Object.keys(right as Record<string, unknown>);
+  if (leftKeys.length !== rightKeys.length) {
+    return false;
+  }
+
+  for (const key of leftKeys) {
+    if (
+      !Object.prototype.hasOwnProperty.call(right, key) ||
+      !Object.is(
+        (left as Record<string, unknown>)[key],
+        (right as Record<string, unknown>)[key],
+      )
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(appReducer, initialState);
+  const stateRef = useRef(state);
+  const listenersRef = useRef(new Set<() => void>());
+  stateRef.current = state;
 
-  const stateValue = useMemo(() => state, [state]);
+  useLayoutEffect(() => {
+    listenersRef.current.forEach((listener) => listener());
+  }, [state]);
+
+  const store = useMemo<AppStore>(
+    () => ({
+      getState: () => stateRef.current,
+      subscribe: (listener) => {
+        listenersRef.current.add(listener);
+        return () => {
+          listenersRef.current.delete(listener);
+        };
+      },
+    }),
+    [],
+  );
 
   return React.createElement(
-    AppStateContext.Provider,
-    { value: stateValue },
-    React.createElement(AppDispatchContext.Provider, { value: dispatch }, children)
+    AppStoreContext.Provider,
+    { value: store },
+    React.createElement(
+      AppStateContext.Provider,
+      { value: state },
+      React.createElement(AppDispatchContext.Provider, { value: dispatch }, children),
+    ),
   );
 }
 
-export function useAppState() {
-  const context = useContext(AppStateContext);
-  if (!context) {
-    throw new Error('useAppState must be used within AppProvider');
+export function useAppState(): AppState;
+export function useAppState<T>(
+  selector: (state: AppState) => T,
+  isEqual?: EqualityFn<T>,
+): T;
+export function useAppState<T>(
+  selector?: (state: AppState) => T,
+  isEqual: EqualityFn<T> = Object.is,
+): AppState | T {
+  const store = useContext(AppStoreContext);
+  const stateContext = useContext(AppStateContext);
+  const selectionRef = useRef<AppState | T | undefined>(undefined);
+  const hasSelectionRef = useRef(false);
+  const selectorRef = useRef(selector);
+  selectorRef.current = selector;
+
+  if (!store || !stateContext) {
+    throw new Error("useAppState must be used within AppProvider");
   }
-  return context;
+
+  const getSnapshot = () => {
+    const nextSelection = selectorRef.current
+      ? selectorRef.current(store.getState())
+      : store.getState();
+    if (
+      hasSelectionRef.current &&
+      selectionRef.current !== undefined &&
+      isEqual(
+        selectionRef.current as T,
+        nextSelection as T,
+      )
+    ) {
+      return selectionRef.current;
+    }
+    selectionRef.current = nextSelection;
+    hasSelectionRef.current = true;
+    return nextSelection;
+  };
+
+  return useSyncExternalStore(store.subscribe, getSnapshot, getSnapshot);
 }
 
 export function useAppDispatch() {

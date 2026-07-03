@@ -1,7 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import type { Message } from './types';
+import type { AppState, Message } from './types';
 import {
+  createMessageHandler,
   normalizeMessage,
   dedupeSystemMessages,
   shouldPreferCachedSwitchMessages,
@@ -12,6 +13,11 @@ import {
   isAiResponseEvent,
   structuredOutputFromRawSdkEventPayloads,
 } from './messageHandler';
+import {
+  getFinalAssistantResponseText,
+  getFinalAssistantResponseTextFromRawSdkEventPayloads,
+} from './rawResponse';
+import { appReducer, initialState } from './store';
 
 describe('normalizeMessage - responseType handling', () => {
   it('should handle message with responseType field without throwing', () => {
@@ -48,6 +54,56 @@ describe('normalizeMessage - responseType handling', () => {
   });
 });
 
+describe('createMessageHandler - chatHistory hydration guards', () => {
+  it('should tolerate missing availableModels while recalculating context usage from chatHistory', () => {
+    let state = {
+      ...initialState,
+      availableModels: undefined,
+    } as unknown as AppState;
+    const actions: Array<{ type: string; payload?: unknown }> = [];
+
+    const dispatch = (action: { type: string; payload?: unknown }) => {
+      actions.push(action);
+      state = appReducer(state, action as never);
+    };
+
+    const handler = createMessageHandler(
+      dispatch as never,
+      () => state,
+    );
+
+    handler({
+      data: {
+        type: 'chatHistory',
+        sessionId: 'ses-context-hydration',
+        messages: [
+          {
+            id: 'msg-assistant-1',
+            role: 'assistant',
+            content: 'Hydrated assistant reply',
+            tokens: {
+              input: 1024,
+            },
+          },
+        ],
+      },
+    } as MessageEvent);
+
+    assert.ok(
+      actions.some((action) => action.type === 'SET_MESSAGES'),
+      'chatHistory should still hydrate messages',
+    );
+    assert.ok(
+      actions.some((action) => action.type === 'SET_CONTEXT_USAGE_PCT'),
+      'chatHistory should still recalculate context usage without throwing',
+    );
+    assert.ok(
+      actions.some((action) => action.type === 'CLEAR_SUBAGENTS_FOR_SESSION'),
+      'chatHistory should continue through the rest of hydration',
+    );
+  });
+});
+
 describe('coalesceAdjacentAssistantHistoryMessages - rawSdkEventPayloads ordering', () => {
   it('preserves raw event order when assistant bursts are coalesced', () => {
     const result = coalesceAdjacentAssistantHistoryMessages([
@@ -76,6 +132,29 @@ describe('coalesceAdjacentAssistantHistoryMessages - rawSdkEventPayloads orderin
       ),
       ['evt-1', 'evt-2'],
     );
+  });
+
+  it('does not coalesce assistant turns that belong to different user parents', () => {
+    const result = coalesceAdjacentAssistantHistoryMessages([
+      {
+        role: 'assistant',
+        id: 'assistant-1',
+        info: { id: 'assistant-1', role: 'assistant', parentID: 'user-1' } as Message['info'],
+        parts: [{ type: 'reasoning', reasoning: 'Reasoning for the first user.' }],
+        content: 'First assistant response',
+      } as Message,
+      {
+        role: 'assistant',
+        id: 'assistant-2',
+        info: { id: 'assistant-2', role: 'assistant', parentID: 'user-2' } as Message['info'],
+        parts: [{ type: 'reasoning', reasoning: 'Reasoning for the second user.' }],
+        content: 'Second assistant response',
+      } as Message,
+    ]);
+
+    assert.strictEqual(result.length, 2);
+    assert.strictEqual(result[0]?.content, 'First assistant response');
+    assert.strictEqual(result[1]?.content, 'Second assistant response');
   });
 
 });
@@ -331,6 +410,77 @@ describe('normalizeMessage - structuredOutput handling', () => {
       result?.content,
       'Hey there from rehydrated structured output.',
       'assistant content should be rebuilt from the persisted structured output payload',
+    );
+  });
+
+  it('should rehydrate structured text from centralized properties.info payloads', () => {
+    const rawSdkEventPayloads = [
+      {
+        payload: {
+          type: 'message.updated',
+          properties: {
+            sessionID: 'ses-test',
+            info: {
+              id: 'msg-final-info-structured-text',
+              role: 'assistant',
+              structured: {
+                type: 'message',
+                text: '# Dayo (tuklasia) - Codebase Summary',
+              },
+            },
+          },
+        },
+      },
+    ];
+
+    const structuredOutput = structuredOutputFromRawSdkEventPayloads(rawSdkEventPayloads);
+    assert.ok(structuredOutput, 'structured output should be recovered from payload.properties.info.structured');
+    assert.strictEqual(structuredOutput?.responseType, 'message');
+    assert.strictEqual(structuredOutput?.text, '# Dayo (tuklasia) - Codebase Summary');
+
+    const result = normalizeMessage(
+      {
+        id: 'msg-final-info-structured-text',
+        role: 'assistant',
+        rawSdkEventPayloads,
+      } as Message,
+      null,
+    );
+
+    assert.ok(result, 'normalizeMessage should still produce an assistant message');
+    assert.strictEqual(
+      result?.content,
+      '# Dayo (tuklasia) - Codebase Summary',
+      'assistant content should be rebuilt from info.structured.text when centralized data lacks a plain message field',
+    );
+    assert.deepStrictEqual(
+      getCentralizedAssistantContentChunksFromRawSdkEventPayloads(rawSdkEventPayloads),
+      ['# Dayo (tuklasia) - Codebase Summary'],
+      'assistant content chunks should fall back to info.structured.text for the latest assistant turn',
+    );
+    assert.strictEqual(
+      getFinalAssistantResponseTextFromRawSdkEventPayloads(rawSdkEventPayloads),
+      '# Dayo (tuklasia) - Codebase Summary',
+      'raw centralized payload helpers should surface info.structured.text as the final assistant body',
+    );
+  });
+
+  it('should read structured text from rawResponse info payloads', () => {
+    const rawResponse = {
+      info: {
+        id: 'msg-raw-structured-text',
+        role: 'assistant',
+        structured: {
+          type: 'message',
+          text: 'Centralized structured text fallback',
+        },
+      },
+    };
+
+    assert.strictEqual(
+      getFinalAssistantResponseText(rawResponse),
+      'Centralized structured text fallback',
+      'rawResponse fallback should read info.structured.text in addition to message/content',
     );
   });
 
@@ -745,6 +895,52 @@ describe('normalizeMessage - structuredOutput handling', () => {
     );
   });
 
+  it('should prefer the completed structured output message over an overlapping raw text echo for the same assistant turn', () => {
+    const rawSdkEventPayloads = [
+      {
+        id: 'evt-overlap-text',
+        type: 'message.part.updated',
+        properties: {
+          sessionID: 'ses-test',
+          part: {
+            id: 'prt-overlap-text',
+            messageID: 'msg-overlap-turn',
+            sessionID: 'ses-test',
+            type: 'text',
+            text: 'Hey! What can I help you with?',
+          },
+        },
+      },
+      {
+        id: 'evt-overlap-structured',
+        type: 'message.part.updated',
+        properties: {
+          sessionID: 'ses-test',
+          part: {
+            id: 'prt-overlap-structured',
+            messageID: 'msg-overlap-turn',
+            sessionID: 'ses-test',
+            type: 'tool',
+            tool: 'StructuredOutput',
+            state: {
+              status: 'completed',
+              input: {
+                responseType: 'message',
+                message: 'Hey! What can I help you with today?',
+              },
+            },
+          },
+        },
+      },
+    ];
+
+    assert.deepStrictEqual(
+      getCentralizedAssistantContentChunksFromRawSdkEventPayloads(rawSdkEventPayloads),
+      ['Hey! What can I help you with today?'],
+      'the final structured response should suppress the overlapping raw text echo',
+    );
+  });
+
   it('should prefer the canonical structured payload over conflicting structuredOutput reasoning payload', () => {
     const inputMessage = {
       id: 'msg-canonical-structured',
@@ -1092,6 +1288,65 @@ describe('normalizeMessage - structuredOutput handling', () => {
       result?.content,
       'What kind of project is climateRX-2?',
       'question turns should prefer the structured prompt even when the draft content is long',
+    );
+  });
+
+  it('preserves recommended question options from centralized question-tool payloads', () => {
+    const inputMessage: Message = {
+      id: 'msg-question-recommended-option',
+      role: 'assistant',
+      rawSdkEventPayloads: [
+        {
+          type: 'message.part.updated',
+          properties: {
+            sessionID: 'ses-question-recommended',
+            part: {
+              type: 'tool',
+              tool: 'question',
+              callID: 'call-question-recommended',
+              state: {
+                status: 'completed',
+                input: {
+                  questions: [
+                    {
+                      header: 'Todo feature scope',
+                      question: 'What kind of todo feature do you want?',
+                      options: [
+                        {
+                          label: 'Trip prep checklist',
+                          description: 'Per-trip task lists attached to a trip/plan.',
+                          recommended: true,
+                        },
+                        {
+                          label: 'General task list',
+                          description: 'Standalone personal travel todos.',
+                        },
+                      ],
+                    },
+                  ],
+                },
+              },
+            },
+          },
+          source: '/event',
+          sessionId: 'ses-question-recommended',
+        },
+      ],
+    };
+
+    const result = normalizeMessage(inputMessage, null);
+
+    assert.ok(result, 'normalizeMessage should return a message');
+    assert.equal(result?.interactiveEvents?.[0]?.type, 'question');
+    assert.equal(
+      result?.interactiveEvents?.[0]?.options?.[0]?.recommended,
+      true,
+      'recommended options should survive centralized question normalization',
+    );
+    assert.equal(
+      result?.interactiveEvents?.[0]?.options?.[1]?.recommended,
+      undefined,
+      'non-recommended options should remain unflagged',
     );
   });
 
