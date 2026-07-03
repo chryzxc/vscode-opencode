@@ -411,7 +411,7 @@ test('subagent updates bind active streaming card to parent message id', () => {
   );
 });
 
-test('subagent map synchronization persists updated assistant message snapshots', () => {
+test('subagent map synchronization updates local assistant snapshots without legacy persistence', () => {
   const syncBody = extractFunctionBody(
     messageHandlerSource,
     'function syncSubagentMapsIntoMessages(',
@@ -421,10 +421,10 @@ test('subagent map synchronization persists updated assistant message snapshots'
     /dispatch\(\{\s*type: "SET_MESSAGES",\s*payload: nextMessages\s*\}\)/,
     'subagent sync helper should update assistant messages with hydrated subagent payloads',
   );
-  assert.match(
+  assert.doesNotMatch(
     syncBody,
-    /vscode\.postMessage\(\{\s*type: "persistAssistantMessage",\s*sessionId,\s*message,\s*\}\)/s,
-    'subagent sync helper should persist updated assistant message snapshots to extension storage',
+    /persistAssistantMessage/,
+    'subagent sync helper should not persist assistant snapshots through the removed legacy path',
   );
 });
 

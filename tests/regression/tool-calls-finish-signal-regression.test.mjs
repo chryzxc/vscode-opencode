@@ -74,6 +74,19 @@ test('message.updated finish resolver inspects terminal status candidates', () =
   );
 });
 
+test('tool-calls is not treated as a terminal finish signal in message.updated', () => {
+  const isFinishSignalBody = extractFunctionBody(
+    messageHandlerSource,
+    'function isFinishSignal(value: unknown)',
+  );
+
+  assert.doesNotMatch(
+    isFinishSignalBody,
+    /normalized === "tool-calls"/,
+    'tool-calls should not close the assistant turn before the real final response arrives',
+  );
+});
+
 test('message.updated dispatches FINISH_STREAMING when finish is true', () => {
   const section = getMsgUpdatedSection();
 
@@ -249,6 +262,19 @@ test('isAssistantMessageFinalized includes "tool-calls" for presentation', () =>
     messageHandlerSource,
     /isAssistantMessageFinalized|tool-calls|finalized|completed/,
     'message handler should handle message finalization with tool-calls support',
+  );
+});
+
+test('host processing-session cleanup does not treat tool-calls as a terminal message.updated finish', () => {
+  const providerSource = readSource(
+    [joinFromRoot('src', 'providers', 'ChatViewProvider.ts')],
+    'ChatViewProvider.ts',
+  );
+
+  assert.doesNotMatch(
+    providerSource,
+    /"tool-calls"/,
+    'host stream processing cleanup should not clear processing state on tool-calls alone',
   );
 });
 

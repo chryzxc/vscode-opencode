@@ -105,6 +105,39 @@ test('ChatViewProvider exposes explicit dispose to release stream, quota, and th
     /this\.fileThemeProcessor\.unsubscribe\(this\)/,
     'ChatViewProvider.dispose should unsubscribe from FileThemeProcessor observer callbacks',
   );
+  assert.match(
+    disposeBody,
+    /this\.activeViewCleanup\?\.\(\)/,
+    'ChatViewProvider.dispose should tear down any active view-scoped listeners before disposing long-lived services',
+  );
+});
+
+test('ChatViewProvider re-resolve path tears down prior view-scoped subscriptions before reattaching', () => {
+  const resolveBody = extractFunctionBody(
+    chatViewProviderSource,
+    'resolveWebviewView(',
+  );
+
+  assert.match(
+    chatViewProviderSource,
+    /private\s+activeViewCleanup\?:\s*\(\)\s*=>\s*void;/,
+    'ChatViewProvider should track a reusable cleanup hook for view-scoped listeners',
+  );
+  assert.match(
+    resolveBody,
+    /this\.activeViewCleanup\?\.\(\)/,
+    'resolveWebviewView should tear down the previous view before attaching a new one',
+  );
+  assert.match(
+    resolveBody,
+    /this\.activeViewCleanup\s*=\s*cleanupCurrentViewResources;/,
+    'resolveWebviewView should register cleanup for the current view lifecycle',
+  );
+  assert.doesNotMatch(
+    resolveBody,
+    /this\.quotaService\.dispose\(\)/,
+    'closing one webview instance should not dispose the shared quota service for the provider',
+  );
 });
 
 test('MessageStreamService verbose stream diagnostics are gated behind debug level', () => {
@@ -127,6 +160,16 @@ test('MessageStreamService verbose stream diagnostics are gated behind debug lev
     messageStreamServiceSource,
     /if\s*\(this\.shouldVerboseStreamDebug\(\)\)\s*\{[\s\S]*Stream Event:/,
     'notifyCallbacks diagnostic payload logging should be wrapped by debug gating',
+  );
+  assert.match(
+    messageStreamServiceSource,
+    /private\s+handleSdkSseError\(source: string, error: unknown\): void/,
+    'MessageStreamService should centralize SDK SSE callback error handling',
+  );
+  assert.doesNotMatch(
+    messageStreamServiceSource,
+    /onSseError:\s*\(error: unknown\)\s*=>\s*\{[\s\S]*scheduleStreamReconnect\(/,
+    'SDK onSseError callbacks should not immediately restart the entire stream service',
   );
 });
 

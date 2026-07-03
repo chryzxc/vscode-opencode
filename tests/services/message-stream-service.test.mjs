@@ -50,6 +50,16 @@ test('MessageStreamService handles abort and auto-reconnect on errors', () => {
     /abort|error|reconnect|catch|setTimeout/,
     'MessageStreamService should handle errors and reconnection',
   );
+  assert.match(
+    messageStreamSource,
+    /private\s+handleSdkSseError\(source: string, error: unknown\): void/,
+    'MessageStreamService should centralize SDK SSE callback error handling',
+  );
+  assert.match(
+    messageStreamSource,
+    /if \(isTransportFailure\) \{\s*this\.scheduleStreamReconnect\(source, error\);\s*\}/,
+    'MessageStreamService should reconnect the real event stream after transport failures',
+  );
 });
 
 test('MessageStreamService cleans up resources properly on dispose', () => {
@@ -101,12 +111,35 @@ test('MessageStreamService unwraps SDK sync event wrappers into canonical stream
   );
 });
 
-test('MessageStreamService filters global events to active workspace and dedupes mirrored events', () => {
-  // Event filtering and deduplication has been refactored into the centralized streaming system
+test('MessageStreamService retains event filtering helpers and dedupes mirrored events', () => {
+  // Event filtering remains available for explicitly scoped subscriptions, while default centralized streaming is unscoped.
   assert.match(
     messageStreamSource,
     /workspace|directory|duplicate|signature|filter/,
     'MessageStreamService should handle event filtering and deduplication',
+  );
+});
+
+test('MessageStreamService does not scope centralized event subscriptions to the VS Code workspace by default', () => {
+  assert.match(
+    messageStreamSource,
+    /private preferUnscopedStreamSubscription = true;/,
+    'event streaming should default to unscoped subscriptions because OpenCode session roots may differ from the extension workspace',
+  );
+  assert.match(
+    messageStreamSource,
+    /const eventFilterDirectory = useScopedEventSubscription\s*\?\s*workspaceDirectory\s*:\s*undefined;/,
+    'event consumption should not workspace-filter unscoped stream subscriptions',
+  );
+  assert.match(
+    messageStreamSource,
+    /consumeEventStream\(\s*events!\.stream,\s*"\/event",\s*abortSignal,\s*eventFilterDirectory,/s,
+    'the /event stream should use the scoped filter only when the subscription is scoped',
+  );
+  assert.match(
+    messageStreamSource,
+    /consumeEventStream\(\s*globalEvents\.stream,\s*"\/global\/event",\s*abortSignal,\s*eventFilterDirectory,/s,
+    'the /global/event stream should use the scoped filter only when the subscription is scoped',
   );
 });
 

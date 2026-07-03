@@ -13,7 +13,8 @@ test('schedulePromptDispatch exists with prompt mode parameter', () => {
 test('schedulePromptDispatch trims input text and computes effective mode', () => {
   const body = extractFunctionBody(source, '  private async schedulePromptDispatch(');
   assert.match(body, /const text = typeof payload\.text === "string" \? payload\.text\.trim\(\) : "";/, 'schedulePromptDispatch should trim incoming text');
-  assert.match(body, /const effectiveMode =\s*[\s\S]*mode === "send-now"[\s\S]*payload\.forceSendNow[\s\S]*this\.getEffectiveProcessingSessionIds\(\)\.includes\(sessionId\)[\s\S]*\? "steer"[\s\S]*: mode;/, 'schedulePromptDispatch should switch send-now into steer when processing and forceSendNow is false');
+  assert.match(body, /const effectiveMode = mode;/, 'schedulePromptDispatch should keep dispatch mode explicit');
+  assert.doesNotMatch(body, /mode === "send-now"[\s\S]*\? "steer"[\s\S]*: mode;/, 'schedulePromptDispatch should not auto-convert normal sends into steer from processing flags');
 });
 
 test('handleSendMessage is async and marks the session as processing', () => {
@@ -33,8 +34,14 @@ test('processing session payloads include active subagent parents', () => {
 test('handleSendMessage appends the user message before the prompt call', () => {
   const body = extractFunctionBody(source, '  private async handleSendMessage(');
   assert.match(body, /await this\.sessionService\.appendMessage\(session\.id, userMessage\);/, 'handleSendMessage should persist the user message');
+  assert.match(body, /await this\.sessionService\.appendRawMessage\(session\.id, userMessage\);/, 'handleSendMessage should also persist the user message into centralized raw messages');
   assert.match(body, /role: "user" as const,/, 'user message should be stored with role user');
   assert.match(body, /type:\s*"text",[\s\S]*text:\s*text,/, 'user message should preserve the original user text part');
+});
+
+test('question replies and slash system reminders also persist centralized raw messages', () => {
+  assert.match(source, /await this\.sessionService\.appendRawMessage\(replySessionId, answerMessage\);/, 'questionReply should persist the optimistic answer in raw centralized messages');
+  assert.match(source, /await this\.sessionService\.appendRawMessage\(session\.id, systemMessage\);/, 'slash skill system reminders should persist into raw centralized messages');
 });
 
 test('persisted user message includes file parts from contexts for rehydration survival', () => {
@@ -78,6 +85,14 @@ test('handleSendMessage persists the assistant response and posts messageRespons
   const body = extractFunctionBody(source, '  private async handleSendMessage(');
   assert.match(body, /await this\.sessionService\.appendMessage\(session\.id, \{[\s\S]*role: "assistant"/, 'handleSendMessage should append the assistant response after the prompt returns');
   assert.match(body, /this\.view\?\.webview\.postMessage\(\{\s*type: "messageResponse",/, 'handleSendMessage should post a messageResponse to the webview');
+});
+
+test('handleSendMessage does not synthesize centralized assistant events from the prompt response', () => {
+  assert.doesNotMatch(
+    source,
+    /buildPromptResponseCentralizedEvents|persistPromptResponseCentralizedEvents|source:\s*["']sdk-prompt-response["']|source:\s*["']prompt-response-fallback["']|type:\s*["']synthetic_message_events["']/,
+    'assistant centralized events must come from the real stream, not prompt-response or synthetic fallback bridges',
+  );
 });
 
 test('handleSendMessage drains the queue after the response is processed', () => {
@@ -126,4 +141,20 @@ test('file contexts include content with start and end positions', () => {
   assert.match(body, /value:\s*textContent/, 'file contexts should include text content value');
   assert.match(body, /start:\s*0/, 'file contexts should start from position 0');
   assert.match(body, /end:\s*textContent\.length/, 'file contexts should end at content length');
+});
+
+test('provider uses a centralized-first history loader for chat hydration paths', () => {
+  assert.match(source, /private async loadCentralizedRenderableHistory\(sessionId: string\): Promise</, 'provider should define a centralized-first history loader');
+  assert.match(source, /const rawSessionPayloads = await this\.sessionService\.loadCentralizedSessionData\(\s*sessionId,\s*\)/, 'centralized-first loader should read centralized session data directly');
+  assert.doesNotMatch(source, /const \[fallbackMessages, rawSessionPayloads\]/, 'centralized-first loader should not fall back to legacy session messages');
+  assert.match(source, /const sessionHistory = await this\.loadCentralizedRenderableHistory\(\s*sessionId,\s*\)/, 'session loading should use the centralized-first history loader');
+  assert.match(source, /const sessionHistory = await this\.loadCentralizedRenderableHistory\(\s*currentSession\.id,\s*\)/, 'webview ready hydration should use the centralized-first history loader');
+  assert.match(source, /const sessionHistory = await this\.loadCentralizedRenderableHistory\(\s*retrySessionId,\s*\)/, 'retry hydration should use the centralized-first history loader');
+});
+
+test('stream callback persists normalized centralized events instead of raw SDK wrappers', () => {
+  const body = extractFunctionBody(source, '    this.unsubscribe = this.streamService.subscribe(async (event, rawEvent) => {');
+  assert.match(body, /const centralizedEventPayload = \{\s*\.\.\.enrichedEvent,\s*sessionId: resolvedSessionId,\s*\};/s, 'stream persistence should use the normalized event payload with the resolved session id');
+  assert.match(body, /appendRawSdkEventPayload\(\s*resolvedSessionId,\s*centralizedEventPayload,\s*\)/s, 'stream persistence should store the normalized centralized event payload');
+  assert.doesNotMatch(body, /appendRawSdkEventPayload\(\s*resolvedSessionId,\s*rawEvent/s, 'stream persistence should not store raw SDK wrapper frames as the centralized tape item');
 });

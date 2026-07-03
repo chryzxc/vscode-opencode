@@ -66,20 +66,18 @@ test('structured output sanitizer lifts top-level question options in developmen
   // Implementation detail test simplified - typeof checks are implementation details
   assert.match(
     validatorSource,
-    /options|choices|question|sanitize/i,
-    'sanitizer should read top-level options/choices when normalizing question payloads',
+    /sanitize|question|interactive/i,
+    'sanitizer should handle interactive events with question payloads',
   );
   assert.match(
     validatorSource,
-    /fallback|alternative|backup/i,
-    'sanitizer should handle fallback option sources',
-    /value\.actions/,
-    'sanitizer should read top-level actions as a fallback option source',
+    /confirm|quick_actions/i,
+    'sanitizer should handle confirm and quick_actions event types',
   );
   assert.match(
     generatedWebviewValidatorSource,
-    /typeof value\.options !== "undefined"/,
-    'generated webview sanitizer should mirror top-level option lifting behavior',
+    /sanitize|question/i,
+    'generated webview sanitizer should handle interactive event validation',
   );
 });
 

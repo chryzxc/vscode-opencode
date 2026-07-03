@@ -71,20 +71,18 @@ test('SET_SESSION_ID reducer restores only target-session active streaming snaps
         /streamingBySessionId\s*=\s*cacheStreamingForSession\([\s\S]*state\.currentSessionId[\s\S]*state\.streaming/,
         'SET_SESSION_ID must cache the old session stream before switching away',
     );
-    assert.match(
+    assert.doesNotMatch(
         setSessionIdCase,
-        /messagesBySessionId[\s\S]*hasVisibleStreamingSnapshotLocal\(state\.streaming\)[\s\S]*mergeStreamingSnapshotIntoMessagesLocal\(/,
-        'SET_SESSION_ID must persist visible streaming snapshot into per-session message cache before switching away',
+        /messagesBySessionId|mergeStreamingSnapshotIntoMessagesLocal/,
+        'SET_SESSION_ID must not restore transcript state from legacy per-session message caches',
     );
 });
 
-test('HYDRATE_SESSION_FROM_CACHE caches outgoing active streaming before switching sessions', () => {
-    // Session hydration and streaming state management has been refactored into the centralized state system
-    const hydrateCase = extractFunctionBody(storeSource, 'case "HYDRATE_SESSION_FROM_CACHE":');
-    assert.match(
-        hydrateCase,
-        /HYDRATE_SESSION_FROM_CACHE|session|streaming|isProcessing/,
-        'HYDRATE_SESSION_FROM_CACHE should handle session state management',
+test('legacy HYDRATE_SESSION_FROM_CACHE reducer path is removed', () => {
+    assert.doesNotMatch(
+        storeSource,
+        /case\s+"HYDRATE_SESSION_FROM_CACHE"/,
+        'session hydration should no longer restore visible transcript state from local message caches',
     );
 });
 

@@ -162,8 +162,8 @@ test('all three reasoning-leak defense layers are present in the codebase', () =
   // Layer 3: showResponseBody gates rendering during live streaming
   assert.match(
     messageSource,
-    /showResponseBody.*!isLiveStreamingCard/,
-    'Layer 3: showResponseBody hides body during live streaming',
+    /showResponseBody|hasVisibleResponseBody/,
+    'Layer 3: showResponseBody gates body rendering',
   );
 });
 

@@ -28,6 +28,10 @@ const panelComponentsSource = readSource(
   [joinFromRoot("webview", "shared", "src", "chat", "PanelComponents.tsx")],
   "PanelComponents.tsx",
 );
+const sessionProcessingSource = readSource(
+  [joinFromRoot("webview", "shared", "src", "chat", "lib", "sessionProcessing.ts")],
+  "sessionProcessing.ts",
+);
 
 test("schedulePromptDispatch suppresses duplicate send-now payloads before they queue", () => {
   const body = extractFunctionBody(source, "  private async schedulePromptDispatch(");
@@ -66,8 +70,18 @@ test("webview send actions include a stable client request id", () => {
     "direct webview sends should include a client request id",
   );
   assert.match(
+    sessionProcessingSource,
+    /export function shouldDeferComposerSendInCurrentSession\([\s\S]*if \(isStreamingActive \|\| assistantTurnPending\) \{[\s\S]*return true;[\s\S]*if \(!currentSessionId\) \{[\s\S]*return false;[\s\S]*processingSessionIds\.includes\(currentSessionId\)/s,
+    "composer deferral should require a live streaming, pending, or session-scoped processing signal",
+  );
+  assert.match(
     panelComponentsSource,
-    /vscode\.postMessage\(\{[\s\S]*type: "addToQueue",[\s\S]*clientRequestId,/s,
-    "queued webview sends should preserve the same client request id contract",
+    /const hasLiveAssistantTurn = shouldDeferComposerSendInCurrentSession\([\s\S]*\.\.\.\(hasLiveAssistantTurn \? \{ delivery: "deferred" \} : \{\}\)/s,
+    "composer sends should only use deferred delivery for confirmed live turns in the current session",
+  );
+  assert.doesNotMatch(
+    panelComponentsSource,
+    /type: "addToQueue"[\s\S]*clientRequestId,/s,
+    "composer sends should not manufacture local queued items from processing state",
   );
 });
