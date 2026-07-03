@@ -227,7 +227,10 @@ export class ChatViewProvider
   private unsubscribe?: () => void;
   /** Disposable for the webview message listener. */
   private webviewMessageListener?: vscode.Disposable;
-  private quotaServiceListener?: vscode.Disposable;
+  private readonly handleQuotaUpdate = (data: unknown) => {
+    this.view?.webview.postMessage({ type: "quotaData", data });
+  };
+  private activeViewCleanup?: () => void;
 
   /** Service for monitoring AI platform quota usage */
   private quotaService: QuotaService;
@@ -608,9 +611,7 @@ export class ChatViewProvider
     // Use injected service or create local instance as fallback
     this.modelCapabilitiesService = modelCapabilitiesService ?? new ModelCapabilitiesService();
     this.geminiTokenTracker = GeminiTokenUsageTracker.getInstance();
-    this.quotaServiceListener = this.quotaService.on("quotaUpdate", (data) => {
-      this.view?.webview.postMessage({ type: "quotaData", data });
-    });
+    this.quotaService.on("quotaUpdate", this.handleQuotaUpdate);
 
     // Initialize file theme processor
     this.fileThemeProcessor = new FileThemeProcessor(context);
@@ -829,6 +830,7 @@ export class ChatViewProvider
       interactiveSubmit?: boolean;
       avoidAbortIfProcessing?: boolean;
       forceSendNow?: boolean;
+      delivery?: "immediate" | "deferred";
     },
   ): Promise<void> {
     const text = typeof payload.text === "string" ? payload.text.trim() : "";
@@ -898,6 +900,7 @@ export class ChatViewProvider
           : [],
         agent: payload.agent ?? null,
         interactiveSubmit: payload.interactiveSubmit === true,
+        delivery: payload.delivery ?? null,
       });
       const now = Date.now();
       if (
@@ -923,18 +926,22 @@ export class ChatViewProvider
       this.rememberClientRequest(sessionId, clientRequestId);
     }
 
-    const effectiveMode =
-      mode === "send-now" &&
-      !payload.forceSendNow &&
-      this.getEffectiveProcessingSessionIds().includes(sessionId)
-        ? "steer"
-        : mode;
+    const isMainTurnProcessing = this.isSessionMainTurnProcessing(sessionId);
+    // Keep mode ownership explicit. The webview marks active-assistant composer
+    // sends with payload.delivery="deferred" so OpenCode's agent loop can enqueue
+    // them server-side. Do not auto-convert a normal send-now request into steer
+    // or the extension QueueManager from processing flags; those flags can include
+    // stale or child/subagent work after the top-level assistant block is already
+    // complete, which makes the next user message appear in the wrong queue path.
+    const effectiveMode = mode;
 
     this.logger.debug('[MessageFlow] Mode resolution', {
       requestedMode: mode,
       effectiveMode,
       sessionId,
-      isProcessing: this.getEffectiveProcessingSessionIds().includes(sessionId),
+      isProcessing: isMainTurnProcessing,
+      effectiveProcessing: this.getEffectiveProcessingSessionIds().includes(sessionId),
+      delivery: payload.delivery,
       forceSendNow: payload.forceSendNow
     });
 
@@ -946,7 +953,7 @@ export class ChatViewProvider
       mode === "send-now" &&
       payload.forceSendNow &&
       !payload.avoidAbortIfProcessing &&
-      this.getEffectiveProcessingSessionIds().includes(sessionId)
+      isMainTurnProcessing
     ) {
       this.logger.debug('[MessageFlow] Aborting active request before new message', {
         sessionId,
@@ -961,6 +968,32 @@ export class ChatViewProvider
 
     // For normal sends, bypass queue persistence entirely so the queue panel
     // does not show transient "queued" items when there is no active backlog.
+    if (
+      effectiveMode === "send-now" &&
+      payload.delivery === "deferred"
+    ) {
+      const acceptedPrompt = await this.sendDeferredPromptToAgentLoop(sessionId, {
+        text,
+        files: payload.files,
+        contexts: payload.contexts,
+        images: payload.images,
+        agent: payload.agent,
+        clientRequestId: clientRequestId || undefined,
+      });
+      this.view?.webview.postMessage({
+        type: "deferredPromptAccepted",
+        sessionId,
+        clientRequestId: clientRequestId || undefined,
+        text,
+        files: payload.files,
+        contexts: payload.contexts,
+        images: payload.images,
+        agent: payload.agent,
+        message: acceptedPrompt,
+      });
+      return;
+    }
+
     if (effectiveMode === "send-now") {
       this.logger.debug('[MessageFlow] Queue bypass - sending directly', {
         sessionId,
@@ -1066,8 +1099,8 @@ export class ChatViewProvider
     sessionId: string,
     id: string,
     index?: number,
-  ): Promise<void> {
-    await this.queueManager.handleDispatchQueuedItem(
+  ): Promise<unknown> {
+    return await this.queueManager.handleDispatchQueuedItem(
       dispatchMode,
       sessionId,
       id,
@@ -1426,20 +1459,10 @@ export class ChatViewProvider
       // ============================================================================
 
       // Step 1: Load and process messages for the new session
-      const rawMessages = await this.sessionService.getMessages(sessionId);
-      const rawSessionPayloads = await this.sessionService.loadCentralizedSessionData(
+      const sessionHistory = await this.loadCentralizedRenderableHistory(
         sessionId,
       );
-
-      this.logger.debug('[handleLoadSession] Fetched raw messages', {
-        sessionId,
-        rawCount: rawMessages?.length || 0,
-        isRawMessagesArray: Array.isArray(rawMessages)
-      });
-
-      const messages = Array.isArray(rawMessages)
-        ? await this.processHistoryMessages(rawMessages, sessionId)
-        : [];
+      const messages = sessionHistory.messages;
 
       this.logger.debug('[handleLoadSession] Processed messages', {
         sessionId,
@@ -1472,8 +1495,8 @@ export class ChatViewProvider
         type: "chatHistory",
         sessionId: sessionId,
         messages: messages,
-        rawMessages: rawSessionPayloads.rawMessages,
-        rawSdkEventPayloads: rawSessionPayloads.rawSdkEventPayloads,
+        rawMessages: sessionHistory.rawMessages,
+        rawSdkEventPayloads: sessionHistory.rawSdkEventPayloads,
         processingSessionIds: this.getEffectiveProcessingSessionIds(),
       });
       await this.compactionManager.sendCompactionViewStateForMessages(
@@ -2235,6 +2258,19 @@ export class ChatViewProvider
     return !!sessionId && this.getEffectiveProcessingSessionIds().includes(sessionId);
   }
 
+  private isSessionMainTurnProcessing(sessionId: string | undefined): boolean {
+    if (!sessionId) {
+      return false;
+    }
+    // This intentionally excludes getEffectiveProcessingSessionIds(), because that
+    // helper folds in active subagent/child work for UI badges. Composer dispatch
+    // decisions must only care about the main assistant turn for this exact
+    // session. Otherwise a completed top-level response can look "busy" because a
+    // child activity is still present, and a normal user send gets routed into the
+    // visible QueueManager/steer path even though the Stop button is gone.
+    return this.processingSessionIds.has(sessionId);
+  }
+
   private sendProcessingSessionsUpdate(): void {
     this.view?.webview.postMessage({
       type: "SET_PROCESSING_SESSIONS",
@@ -2556,6 +2592,10 @@ export class ChatViewProvider
     _token: vscode.CancellationToken,
   ): void | Thenable<void> {
     this.logger.info("[ChatViewProvider] resolving webview view");
+    // A provider can be resolved again before the previous view fully tears
+    // down. Dispose the prior view-scoped listeners first so subscriptions do
+    // not stack across reloads/reopens.
+    this.activeViewCleanup?.();
     this.view = webviewView;
     this.isBootstrappingWebview = false;
     this.hasInitializedWebview = false;
@@ -2754,32 +2794,22 @@ export class ChatViewProvider
             // Fetch and send chat history and sessions list
             if (currentSession) {
               this.subagentTracker.setActiveSession(currentSession.id);
-              const rawMessages = await this.sessionService.getMessages(
+              const sessionHistory = await this.loadCentralizedRenderableHistory(
                 currentSession.id,
               );
-              const rawSessionPayloads = await this.sessionService.loadCentralizedSessionData(
-                currentSession.id,
-              );
-              const rawHistoryMessages = rawSessionPayloads.rawMessages;
-              const historyMessages = rawHistoryMessages.length > 0
-                ? rawHistoryMessages
-                : rawMessages;
-              const messages = await this.processHistoryMessages(
-                historyMessages,
-                currentSession.id,
-              );
+              const messages = sessionHistory.messages;
               this.logHistoryRenderDiagnostics(
                 "webview.ready.current-session",
                 currentSession.id,
-                historyMessages,
+                sessionHistory.rawMessages,
                 messages,
               );
               this.view?.webview.postMessage({
                 type: "chatHistory",
                 sessionId: currentSession.id,
                 messages: messages,
-                rawMessages: rawHistoryMessages,
-                rawSdkEventPayloads: rawSessionPayloads.rawSdkEventPayloads,
+                rawMessages: sessionHistory.rawMessages,
+                rawSdkEventPayloads: sessionHistory.rawSdkEventPayloads,
                 processingSessionIds: this.getEffectiveProcessingSessionIds(),
               });
               await this.sendPersistedCompactionViewState(currentSession.id);
@@ -2850,6 +2880,7 @@ export class ChatViewProvider
               contexts: message.contexts,
               images: message.images,
               agent: message.agent,
+              delivery: message.delivery === "deferred" ? "deferred" : undefined,
               // Interactive popover submits should behave like a normal direct
               // user send, even if stale processing flags briefly linger from
               // the preceding question turn.
@@ -2920,6 +2951,12 @@ export class ChatViewProvider
                 },
               };
               await this.sessionService.appendMessage(replySessionId, answerMessage);
+              await this.sessionService.appendRawMessage(replySessionId, answerMessage);
+              this.logger.info("[CENTRALIZED-TAPE][HOST] persisted_raw_user_reply", {
+                sessionId: replySessionId,
+                messageId: answerMessage.id,
+                textLength: displayText.length,
+              });
               this.view?.webview.postMessage({
                 type: "userMessageAppended",
                 message: answerMessage,
@@ -2958,44 +2995,6 @@ export class ChatViewProvider
           }
           break;
         }
-        case "persistAssistantMessage": {
-          const sessionId = this.firstNonEmptyString(
-            message.sessionId,
-            this.currentSessionId,
-          );
-          if (!sessionId || !message.message) {
-            break;
-          }
-          const rawMessage = message.rawMessage;
-          const persistedMessage =
-            message.message && typeof message.message === "object"
-              ? {
-                ...message.message,
-                sessionID: this.firstNonEmptyString(
-                  message.message?.sessionID,
-                  message.message?.sessionId,
-                  message.message?.info?.sessionID,
-                  message.message?.info?.sessionId,
-                  sessionId,
-                ),
-                createdAt:
-                  this.historyMessageCreatedAt(message.message) ?? Date.now(),
-              }
-              : message.message;
-          if (typeof rawMessage !== "undefined") {
-            await this.sessionService.appendRawMessage(sessionId, rawMessage);
-          }
-          await this.sessionService.upsertMessage(sessionId, persistedMessage);
-          await this.persistSessionMessageOverride(sessionId, persistedMessage);
-          const snapshotFromMessage = this.buildSubagentPayloadFromMessage(
-            persistedMessage,
-            sessionId,
-          );
-          if (snapshotFromMessage) {
-            await this.persistSubagentLiveState(sessionId, snapshotFromMessage);
-          }
-          break;
-        }
         case "persistRawSdkEventPayload": {
           const sessionId = this.firstNonEmptyString(
             message.sessionId,
@@ -3010,9 +3009,12 @@ export class ChatViewProvider
               ? (message.event as Record<string, unknown>).type
               : undefined,
           });
+          const eventRecord = this.asRecord(message.event);
           await this.sessionService.appendRawSdkEventPayload(
             sessionId,
-            message.event,
+            eventRecord
+              ? { ...eventRecord, sessionId }
+              : message.event,
           );
           break;
         }
@@ -3577,28 +3579,22 @@ export class ChatViewProvider
             message.retryWithoutStructuredOutput === true;
           // Reload chat history to show clean state before retry
           try {
-            const rawMessages = await this.sessionService.getMessages(
+            const sessionHistory = await this.loadCentralizedRenderableHistory(
               retrySessionId,
             );
-            const rawSessionPayloads = await this.sessionService.loadCentralizedSessionData(
-              retrySessionId,
-            );
-            const messages = await this.processHistoryMessages(
-              rawMessages,
-              retrySessionId,
-            );
+            const messages = sessionHistory.messages;
             this.logHistoryRenderDiagnostics(
               "retryLastMessage.reload",
               retrySessionId,
-              rawMessages,
+              sessionHistory.rawMessages,
               messages,
             );
             this.view?.webview.postMessage({
               type: "chatHistory",
               sessionId: retrySessionId,
               messages: messages,
-              rawMessages: rawSessionPayloads.rawMessages,
-              rawSdkEventPayloads: rawSessionPayloads.rawSdkEventPayloads,
+              rawMessages: sessionHistory.rawMessages,
+              rawSdkEventPayloads: sessionHistory.rawSdkEventPayloads,
               processingSessionIds: this.getEffectiveProcessingSessionIds(),
             });
           } catch (err) {
@@ -3750,6 +3746,16 @@ export class ChatViewProvider
       const part = (properties?.part as Record<string, unknown> | undefined) || {};
       const eventKind = (part?.type as string | undefined) || "unknown";
       const streamEventSessionId = this.extractEventSessionId(event);
+      this.logger.info("[CENTRALIZED-TAPE][HOST] stream_callback_received", {
+        eventType,
+        eventSessionId: streamEventSessionId,
+        activeStreamSessionId: this.activeStreamSessionId,
+        currentSessionId: this.currentSessionId,
+        processingSessionIds: Array.from(this.processingSessionIds),
+        source: typeof eventRec?.source === "string" ? eventRec.source : undefined,
+        partType: typeof part?.type === "string" ? part.type : undefined,
+        hasRawEvent: typeof rawEvent !== "undefined",
+      });
 
       const isTerminalLifecycleEvent =
         eventType === "session.completed" ||
@@ -3852,6 +3858,13 @@ export class ChatViewProvider
       // with that resolved id lets the webview update the inactive session's
       // streaming cache instead of losing activity events.
       if (await this.handleSdkTodoUpdatedEvent(event, eventSessionId)) {
+        this.logger.info("[CENTRALIZED-TAPE][HOST] stream_event_consumed_before_persist", {
+          reason: "todo-updated",
+          eventType,
+          eventSessionId,
+          activeStreamSessionId: this.activeStreamSessionId,
+          currentSessionId: this.currentSessionId,
+        });
         return;
       }
       if (
@@ -3860,6 +3873,13 @@ export class ChatViewProvider
           this.sessionService,
         )
       ) {
+        this.logger.info("[CENTRALIZED-TAPE][HOST] stream_event_consumed_before_persist", {
+          reason: "compaction",
+          eventType,
+          eventSessionId,
+          activeStreamSessionId: this.activeStreamSessionId,
+          currentSessionId: this.currentSessionId,
+        });
         return;
       }
       // Skip forwarding events for sessions that were stopped by the user.
@@ -3875,9 +3895,14 @@ export class ChatViewProvider
         !this.isSessionEffectivelyProcessing(eventSessionId) &&
         !this.recentlyAbortedSessionIds.has(eventSessionId)
       ) {
-        this.logger.debug("Skipping stream event for non-processing session", {
+        this.logger.warn("[CENTRALIZED-TAPE][HOST] stream_event_skipped_before_persist", {
+          reason: "non-processing-session",
           sessionId: eventSessionId,
           eventType: event.type,
+          activeStreamSessionId: this.activeStreamSessionId,
+          currentSessionId: this.currentSessionId,
+          processingSessionIds: Array.from(this.processingSessionIds),
+          recentlyAborted: this.recentlyAbortedSessionIds.has(eventSessionId),
         });
         return;
       }
@@ -3890,9 +3915,12 @@ export class ChatViewProvider
         !this.isSessionEffectivelyProcessing(this.activeStreamSessionId) &&
         !this.recentlyAbortedSessionIds.has(this.activeStreamSessionId)
       ) {
-        this.logger.debug("Skipping stream event for stopped active stream session", {
+        this.logger.warn("[CENTRALIZED-TAPE][HOST] stream_event_skipped_before_persist", {
+          reason: "stopped-active-stream-session",
           activeStreamSessionId: this.activeStreamSessionId,
           eventType: event.type,
+          currentSessionId: this.currentSessionId,
+          processingSessionIds: Array.from(this.processingSessionIds),
         });
         return;
       }
@@ -4017,19 +4045,52 @@ export class ChatViewProvider
         event: { ...enrichedEvent, sessionId: resolvedSessionId },
       });
       if (resolvedSessionId) {
+        const centralizedEventPayload = {
+          ...enrichedEvent,
+          sessionId: resolvedSessionId,
+        };
         this.logger.info("[CENTRALIZED-TAPE][HOST] raw_event_before_store", {
           sessionId: resolvedSessionId,
-          eventType: typeof (enrichedEvent as Record<string, unknown>)?.type === "string"
-            ? (enrichedEvent as Record<string, unknown>).type
+          eventType: typeof (centralizedEventPayload as Record<string, unknown>)?.type === "string"
+            ? (centralizedEventPayload as Record<string, unknown>).type
             : event.type || "unknown",
           partType: typeof part?.type === "string" ? part.type : undefined,
+          rawSource: typeof rawEvent === "object" && rawEvent !== null
+            ? typeof (rawEvent as Record<string, unknown>).source === "string"
+              ? (rawEvent as Record<string, unknown>).source
+              : undefined
+            : undefined,
         });
         void this.sessionService.appendRawSdkEventPayload(
           resolvedSessionId,
-          rawEvent
-            ? { ...(rawEvent as Record<string, unknown>), sessionId: resolvedSessionId }
-            : { ...enrichedEvent, sessionId: resolvedSessionId },
-        );
+          centralizedEventPayload,
+        ).then(() => {
+          this.logger.info("[CENTRALIZED-TAPE][HOST] raw_event_store_append_completed", {
+            sessionId: resolvedSessionId,
+            eventType: typeof centralizedEventPayload.type === "string"
+              ? centralizedEventPayload.type
+              : event.type || "unknown",
+            partType: typeof part?.type === "string" ? part.type : undefined,
+          });
+        }).catch((error) => {
+          this.logger.error("[CENTRALIZED-TAPE][HOST] raw_event_store_append_failed", {
+            sessionId: resolvedSessionId,
+            eventType: typeof centralizedEventPayload.type === "string"
+              ? centralizedEventPayload.type
+              : event.type || "unknown",
+            partType: typeof part?.type === "string" ? part.type : undefined,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      } else {
+        this.logger.warn("[CENTRALIZED-TAPE][HOST] skipped_raw_event_without_session", {
+          eventType: typeof (enrichedEvent as Record<string, unknown>)?.type === "string"
+            ? (enrichedEvent as Record<string, unknown>).type
+            : event.type || "unknown",
+          activeStreamSessionId: this.activeStreamSessionId,
+          currentSessionId: this.currentSessionId,
+          hasRawEvent: typeof rawEvent !== "undefined",
+        });
       }
       if (hasBlockingInteractive && resolvedSessionId) {
         this.processingSessionIds.delete(resolvedSessionId);
@@ -4044,7 +4105,7 @@ export class ChatViewProvider
               const props = (eventRec?.properties as Record<string, unknown> | undefined) || {};
               const info = (props?.info as Record<string, unknown> | undefined) || {};
               const fin = info?.finish;
-              return fin === true || (typeof fin === "string" && ["true","done","stop","complete","completed","success","finished","tool-calls","error"].includes(fin.trim().toLowerCase()));
+              return fin === true || (typeof fin === "string" && ["true","done","stop","complete","completed","success","finished","error"].includes(fin.trim().toLowerCase()));
             })()
           )
         )
@@ -4160,8 +4221,7 @@ export class ChatViewProvider
     );
     this.postErrorToast(this.serverManager.getLastServerErrorOutput());
 
-    // Cleanup on dispose
-    webviewView.onDidDispose(() => {
+    const cleanupCurrentViewResources = () => {
       if (this.webviewMessageListener) {
         this.webviewMessageListener.dispose();
         this.webviewMessageListener = undefined;
@@ -4176,9 +4236,21 @@ export class ChatViewProvider
       this.lastSessionsPayloadFingerprint = undefined;
       statusSubscription.dispose();
       serverErrorOutputSubscription.dispose();
-      this.quotaService.dispose();
       // Don't dispose the singleton tracker - it's shared
-      this.view = undefined;
+      if (this.view === webviewView) {
+        this.view = undefined;
+      }
+      if (this.activeViewCleanup === cleanupCurrentViewResources) {
+        this.activeViewCleanup = undefined;
+      }
+    };
+    this.activeViewCleanup = cleanupCurrentViewResources;
+
+    // Cleanup on dispose
+    webviewView.onDidDispose(() => {
+      if (this.activeViewCleanup === cleanupCurrentViewResources) {
+        cleanupCurrentViewResources();
+      }
     });
   }
 
@@ -4235,6 +4307,35 @@ export class ChatViewProvider
       // Return original messages as fallback
       return messages;
     }
+  }
+
+  private async loadCentralizedRenderableHistory(sessionId: string): Promise<{
+    rawMessages: unknown[];
+    rawSdkEventPayloads: unknown[];
+    messages: any[];
+  }> {
+    const rawSessionPayloads = await this.sessionService.loadCentralizedSessionData(
+      sessionId,
+    );
+    const messages = await this.processHistoryMessages(
+      Array.isArray(rawSessionPayloads.rawMessages)
+        ? (rawSessionPayloads.rawMessages as any[])
+        : [],
+      sessionId,
+    );
+
+    this.logger.info("[CENTRALIZED-TAPE][HOST] loaded_renderable_history", {
+      sessionId,
+      rawMessageCount: rawSessionPayloads.rawMessages.length,
+      rawSdkEventCount: rawSessionPayloads.rawSdkEventPayloads.length,
+      renderableMessageCount: messages.length,
+    });
+
+    return {
+      rawMessages: rawSessionPayloads.rawMessages,
+      rawSdkEventPayloads: rawSessionPayloads.rawSdkEventPayloads,
+      messages,
+    };
   }
 
   private isAssistantHistoryMessage(message: any): boolean {
@@ -4575,25 +4676,22 @@ export class ChatViewProvider
             baselineAssistantMarker,
           )
         ) {
-          const rawSessionPayloads = await this.sessionService.loadCentralizedSessionData(
+          const sessionHistory = await this.loadCentralizedRenderableHistory(
             sessionId,
           );
-          const processedMessages = await this.processHistoryMessages(
-            rawMessages,
-            sessionId,
-          );
+          const processedMessages = sessionHistory.messages;
           this.logHistoryRenderDiagnostics(
             "timeout-recovery",
             sessionId,
-            rawMessages,
+            sessionHistory.rawMessages,
             processedMessages,
           );
           this.view?.webview.postMessage({
             type: "chatHistory",
             sessionId,
             messages: processedMessages,
-            rawMessages: rawSessionPayloads.rawMessages,
-            rawSdkEventPayloads: rawSessionPayloads.rawSdkEventPayloads,
+            rawMessages: sessionHistory.rawMessages,
+            rawSdkEventPayloads: sessionHistory.rawSdkEventPayloads,
             processingSessionIds: this.getEffectiveProcessingSessionIds(),
           });
           this.logger.info("Timeout recovery succeeded from session history", {
@@ -4824,6 +4922,122 @@ export class ChatViewProvider
       return adjustedTimeout;
     }
     return baseTimeout;
+  }
+
+  private buildDeferredSdkPrompt(options: {
+    text: string;
+    files?: string[];
+    contexts?: any[];
+    images?: any[];
+    agent?: string;
+  }): { text: string; files?: any[]; agents?: any[] } {
+    const promptFiles: any[] = [];
+    for (const filePath of options.files ?? []) {
+      if (typeof filePath !== "string" || !filePath.trim()) {
+        continue;
+      }
+      promptFiles.push({
+        uri: path.isAbsolute(filePath) ? vscode.Uri.file(filePath).toString() : filePath,
+        mime: "text/plain",
+        name: path.basename(filePath),
+      });
+    }
+    for (const context of options.contexts ?? []) {
+      const filePath = typeof context?.file === "string" ? context.file : "";
+      if (!filePath || filePath.startsWith("resource:")) {
+        continue;
+      }
+      const content = typeof context?.content === "string" ? context.content : "";
+      promptFiles.push({
+        uri: filePath,
+        mime: typeof context?.languageId === "string" ? context.languageId : "text/plain",
+        name: path.basename(filePath),
+        ...(content
+          ? {
+              source: {
+                start: 0,
+                end: content.length,
+                text: content,
+              },
+            }
+          : {}),
+      });
+    }
+    for (const image of options.images ?? []) {
+      const dataUrl =
+        typeof image === "string"
+          ? image
+          : typeof image?.dataUrl === "string"
+            ? image.dataUrl
+            : "";
+      if (!dataUrl) {
+        continue;
+      }
+      promptFiles.push({
+        uri: dataUrl,
+        mime: dataUrl.match(/^data:([^;]+);/)?.[1] ?? "image/png",
+        name:
+          typeof image === "object" && typeof image?.filename === "string"
+            ? image.filename
+            : "image",
+      });
+    }
+
+    return {
+      text: options.text,
+      ...(promptFiles.length > 0 ? { files: promptFiles } : {}),
+      ...(options.agent ? { agents: [{ name: options.agent }] } : {}),
+    };
+  }
+
+  private async sendDeferredPromptToAgentLoop(
+    sessionId: string,
+    options: {
+      text: string;
+      files?: string[];
+      contexts?: any[];
+      images?: any[];
+      agent?: string;
+      clientRequestId?: string;
+    },
+  ): Promise<void> {
+    const client = await this.serverManager.ensureRunning();
+    const promptFn = (client as any)?.v2?.session?.prompt;
+    if (typeof promptFn !== "function") {
+      this.logger.warn("[MessageFlow] SDK v2 deferred prompt unavailable; falling back to direct send", {
+        sessionId,
+        clientRequestId: options.clientRequestId,
+      });
+      await this.handleSendMessage(
+        options.text,
+        options.files,
+        options.contexts,
+        options.images,
+        options.agent,
+        false,
+        undefined,
+        false,
+        undefined,
+        undefined,
+        { clientRequestId: options.clientRequestId },
+      );
+      return undefined;
+    }
+
+    const workspaceDirectory = this.getWorkspaceDirectory();
+    const prompt = this.buildDeferredSdkPrompt(options);
+    // This is OpenCode's server-side prompt delivery, not the extension's
+    // visible QueueManager. While the assistant is responding, `delivery:
+    // "deferred"` appends the user's next prompt to the agent loop so OpenCode
+    // runs it after the current turn instead of us showing a local queue item or
+    // aborting the current response.
+    const response = await promptFn.call((client as any).v2.session, {
+      sessionID: sessionId,
+      ...(workspaceDirectory ? { directory: workspaceDirectory } : {}),
+      prompt,
+      delivery: "deferred",
+    });
+    return getSdkResponseData(response) ?? (response as any)?.data ?? response;
   }
 
   // PROMPT-OWNERSHIP: do not modify — transport-only path
@@ -6707,7 +6921,6 @@ export class ChatViewProvider
       const modelInputText = slashSkillSystemReminder
         ? `${slashSkillSystemReminder}\n\n${slashSkillInvocation?.request || text}`
         : text;
-
       // Save user message to local history immediately, unless this is a retry
       if (!isRetry) {
         const persistedUserText =
@@ -6729,6 +6942,11 @@ export class ChatViewProvider
             },
           };
           await this.sessionService.appendMessage(session.id, systemMessage);
+          await this.sessionService.appendRawMessage(session.id, systemMessage);
+          this.logger.info("[CENTRALIZED-TAPE][HOST] persisted_raw_system_message", {
+            sessionId: session.id,
+            textLength: slashSkillSystemReminder.length,
+          });
           this.view?.webview.postMessage({
             type: "userMessageAppended",
             sessionId: session.id,
@@ -6754,6 +6972,13 @@ export class ChatViewProvider
           },
         };
         await this.sessionService.appendMessage(session.id, userMessage);
+        await this.sessionService.appendRawMessage(session.id, userMessage);
+        this.logger.info("[CENTRALIZED-TAPE][HOST] persisted_raw_user_message", {
+          sessionId: session.id,
+          messageId: userMessage.id,
+          textLength: persistedUserText.length,
+          hasImages: imageUrls.length > 0,
+        });
 
         this.view?.webview.postMessage({
           type: "userMessageAppended",
@@ -9594,14 +9819,12 @@ export class ChatViewProvider
     // Mark disposed first so any in-flight async chains (e.g. title generation)
     // bail out early and don't hold closure references to this instance.
     this.isDisposed = true;
+    this.activeViewCleanup?.();
     if (this.unsubscribe) {
       this.unsubscribe();
       this.unsubscribe = undefined;
     }
-    if (this.quotaServiceListener) {
-      this.quotaServiceListener.dispose();
-      this.quotaServiceListener = undefined;
-    }
+    this.quotaService.off("quotaUpdate", this.handleQuotaUpdate);
     if (this.webviewMessageListener) {
       this.webviewMessageListener.dispose();
       this.webviewMessageListener = undefined;
