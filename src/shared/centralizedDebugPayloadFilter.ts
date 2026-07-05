@@ -18,6 +18,7 @@ const CENTRALIZED_DEBUG_EXCLUDED_PATH_RULES = [
       "server.heartbeat",
       "message.part.delta",
       "message.part.delta.1",
+      "tui.toast.show",
     ],
   },
   {
@@ -28,6 +29,7 @@ const CENTRALIZED_DEBUG_EXCLUDED_PATH_RULES = [
       "server.heartbeat",
       "message.part.delta",
       "message.part.delta.1",
+      "tui.toast.show",
     ],
   },
   {
@@ -38,6 +40,7 @@ const CENTRALIZED_DEBUG_EXCLUDED_PATH_RULES = [
       "server.heartbeat",
       "message.part.delta",
       "message.part.delta.1",
+      "tui.toast.show",
     ],
   },
 ] as const;
@@ -55,10 +58,13 @@ const CENTRALIZED_DEBUG_STRIP_FORMAT_PATHS = [
  * Persistence policy:
  * The centralized tape is now the source of truth, so persistence must be
  * permissive. We only drop explicit transport noise (heartbeats, connected
- * frames, deltas) via shouldIncludeCentralizedDebugPayload(). Semantic stream
- * events like question.asked, message.completed, session.completed, tool
- * activity, and other non-delta frames must remain persisted even when they do
- * not appear in a narrow allowlist.
+ * frames, explicit message.part.delta event types) via
+ * shouldIncludeCentralizedDebugPayload(). Semantic stream events like
+ * question.asked, message.completed, session.completed, tool activity, and
+ * non-reasoning message.part.updated lifecycle payloads must remain persisted
+ * even when they carry a delta field or do not appear in a narrow allowlist.
+ * Live-only UI events such as tui.toast.show and reasoning chunk frames are
+ * excluded separately so they do not bloat hydrated centralized data.
  *
  * Previously excluded rules. Kept here commented during the blacklist
  * reduction pass so we can restore them without re-deriving the paths:
@@ -168,6 +174,77 @@ function normalizedCentralizedEventType(event: Record<string, unknown>): string 
       : payloadSyncType || syncType || payloadType || directType;
 
   return rawType.replace(/\.\d+$/, "");
+}
+
+function hasReasoningLikeChunk(payload: Record<string, unknown>): boolean {
+  const properties = asRecord(payload.properties);
+  const part = asRecord(properties?.part) ?? asRecord(payload.part);
+  const normalizedPartType = asString(part?.type).trim().toLowerCase();
+
+  if (normalizedPartType === "reasoning" || normalizedPartType === "thinking") {
+    return true;
+  }
+
+  const reasoningFields = [
+    part?.reasoning,
+    part?.thought,
+    part?.thinking,
+    properties?.reasoning,
+    properties?.thought,
+    properties?.thinking,
+    payload.reasoning,
+    payload.thought,
+    payload.thinking,
+  ];
+
+  return reasoningFields.some((value) => asString(value).trim().length > 0);
+}
+
+function isEphemeralCentralizedPayload(payload: Record<string, unknown>): boolean {
+  const eventType = normalizedCentralizedEventType(payload);
+  if (eventType !== "message.part.updated") {
+    return false;
+  }
+
+  return hasReasoningLikeChunk(payload);
+}
+
+export type CentralizedDebugPayloadDisposition =
+  | "persist"
+  | "excluded-noise"
+  | "live-only";
+
+export function getCentralizedDebugPayloadDisposition(
+  payload: unknown,
+): CentralizedDebugPayloadDisposition {
+  const event = asRecord(payload);
+  if (!event) {
+    return "persist";
+  }
+
+  if (isEphemeralCentralizedPayload(event)) {
+    return "live-only";
+  }
+
+  for (const candidate of candidatePayloads(event)) {
+    const record = asRecord(candidate);
+    if (!record) {
+      continue;
+    }
+
+    for (const rule of CENTRALIZED_DEBUG_EXCLUDED_PATH_RULES) {
+      const value = valueAtDotPath(record, rule.path);
+      if (
+        rule.values.some(
+          (expected) => asString(value).trim().toLowerCase() === expected.toLowerCase(),
+        )
+      ) {
+        return record.type === "tui.toast.show" ? "live-only" : "excluded-noise";
+      }
+    }
+  }
+
+  return "persist";
 }
 
 export function getCentralizedDebugPayloadIdentity(payload: unknown): string {
@@ -318,88 +395,8 @@ export function sanitizeCentralizedDebugPayload(payload: unknown): unknown {
   return cloned;
 }
 
-/**
- * Returns true when a raw payload should remain visible in the centralized
- * debug tape.
- *
- * The function is deliberately tolerant of missing/non-object inputs so it can
- * be used safely from both live stream code and rehydrated cache reads.
- */
-/**
- * Returns true when a raw payload carries a streaming delta field.
- *
- * Streaming delta chunks (properties.delta or properties.part.delta) carry
- * incremental text fragments and should never appear in the centralized debug
- * tape because they represent transient streaming state rather than meaningful
- * SDK events.
- */
-function hasStreamingDelta(event: Record<string, unknown>): boolean {
-  const candidates = [
-    asString(event.type),
-    asString(valueAtDotPath(event, "syncEvent.type")),
-    asString(valueAtDotPath(event, "payload.syncEvent.type")),
-  ];
-  if (
-    candidates.some((candidate) =>
-      candidate.toLowerCase().includes("message.part.delta"),
-    )
-  ) {
-    return true;
-  }
-
-  for (const candidate of candidatePayloads(event)) {
-    const record = asRecord(candidate);
-    if (!record) {
-      continue;
-    }
-
-    const properties = asRecord(record.properties);
-    const part = asRecord(properties?.part) ?? asRecord(record.part);
-    const syncEvent = asRecord(record.syncEvent);
-    const syncData = asRecord(syncEvent?.data);
-    const syncPart = asRecord(syncData?.part);
-
-    if (
-      Object.prototype.hasOwnProperty.call(properties ?? {}, "delta") ||
-      Object.prototype.hasOwnProperty.call(part ?? {}, "delta") ||
-      Object.prototype.hasOwnProperty.call(syncData ?? {}, "delta") ||
-      Object.prototype.hasOwnProperty.call(syncPart ?? {}, "delta")
-    ) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
 export function shouldIncludeCentralizedDebugPayload(payload: unknown): boolean {
-  const event = asRecord(payload);
-  if (!event) {
-    return true;
-  }
-  if (hasStreamingDelta(event)) {
-    return false;
-  }
-
-  for (const candidate of candidatePayloads(event)) {
-    const record = asRecord(candidate);
-    if (!record) {
-      continue;
-    }
-
-    for (const rule of CENTRALIZED_DEBUG_EXCLUDED_PATH_RULES) {
-      const value = valueAtDotPath(record, rule.path);
-      if (
-        rule.values.some(
-          (expected) => asString(value).trim().toLowerCase() === expected.toLowerCase(),
-        )
-      ) {
-        return false;
-      }
-    }
-  }
-
-  return true;
+  return getCentralizedDebugPayloadDisposition(payload) === "persist";
 }
 
 export function shouldPersistCentralizedSessionEventPayload(payload: unknown): boolean {

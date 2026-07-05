@@ -46,6 +46,13 @@ import { StepIndicator } from "@/components/ui/StepIndicator";
 import { cn, formatDuration, toWorkspaceRelativePath } from "@/utils";
 
 import { MarkdownRenderer } from "../components/MarkdownRenderer";
+import {
+  FALLBACK_ICON_COLOR,
+  getFileIconFallbackKind,
+  getFileIconThemeClasses,
+  hasThemeIcon,
+  isLikelyDirectoryPath,
+} from "../components/fileIcons";
 import { CallOmoAgentStep } from "./components/activity-steps/CallOmoAgentStep";
 import { BackgroundOutputStep } from "./components/activity-steps/BackgroundOutputStep";
 import { DiffPreviewStep } from "./components/activity-steps/DiffPreviewStep";
@@ -975,17 +982,6 @@ function TerminalBlockWithOutput({
   );
 }
 
-const FALLBACK_ICON_COLOR = "#6e7681";
-
-function cleanKey(key: string): string {
-  return key
-    .replace(/\./g, "-")
-    .replace(/\//g, "-")
-    .replace(/\+/g, "p")
-    .replace(/#/g, "h")
-    .replace(/,/g, "");
-}
-
 function looksLikeInternalPlanningText(value: string): boolean {
   const normalized = value.trim().toLowerCase();
   if (!normalized) return false;
@@ -1109,59 +1105,90 @@ function getRenderablePlanResponseChunks(params: {
   };
 }
 
-function getFileIconKeys(filePath?: string): string[] {
-  if (!filePath) {
-    return [];
-  }
-
-  const fileName = (filePath.split(/[\\/]/).pop() || "").split(":")[0].toLowerCase();
-  if (!fileName) {
-    return [];
-  }
-
-  const parts = fileName.split(".");
-  const extensionKeys =
-    parts.length > 1
-      ? parts
-        .slice(1)
-        .map((_, index) => parts.slice(index + 1).join("."))
-        .reverse()
-      : [];
-
-  return Array.from(new Set([fileName, ...extensionKeys].filter(Boolean)));
+function normalizePathForComparison(path?: string): string {
+  return (path || "").trim().replace(/^file:\/\//i, "").replace(/[\\/]+$/, "").replace(/\\/g, "/").toLowerCase();
 }
 
-function hasThemeIcon(element: HTMLElement): boolean {
-  const before = window.getComputedStyle(element, "::before");
-  const content = before.getPropertyValue("content");
-  const backgroundImage = before.getPropertyValue("background-image");
+function pathsMatch(left?: string, right?: string): boolean {
+  const normalizedLeft = normalizePathForComparison(left);
+  const normalizedRight = normalizePathForComparison(right);
+  return normalizedLeft.length > 0 && normalizedLeft === normalizedRight;
+}
 
-  return (
-    (!!content && content !== "none" && content !== "normal" && content !== '""') ||
-    (!!backgroundImage && backgroundImage !== "none")
+function isDirectoryActivityPath(
+  filePath?: string,
+  activityDetail?: ActivityDetail,
+): boolean {
+  if (!filePath) {
+    return false;
+  }
+
+  if (activityDetail?.isDirectory === true) {
+    return true;
+  }
+
+  if (activityDetail?.metadata?.isDirectory === true) {
+    return true;
+  }
+
+  const input = asRecord(activityDetail?.input);
+  if (!input) {
+    return false;
+  }
+
+  const explicitDirectoryKeys = [
+    input.directory,
+    input.directoryPath,
+    input.directorypath,
+    input.searchDirectory,
+    input.searchdirectory,
+  ];
+  if (explicitDirectoryKeys.some((candidate) => pathsMatch(asString(candidate), filePath))) {
+    return true;
+  }
+
+  if (activityDetail?.kind === "read" && isLikelyDirectoryPath(filePath)) {
+    return true;
+  }
+
+  const tool = (activityDetail?.tool || "").trim().toLowerCase();
+  if (!["glob", "search", "grep", "ripgrep", "ast-grep", "find"].includes(tool)) {
+    return false;
+  }
+
+  return pathsMatch(
+    asString(input.searchPath) || asString(input.searchpath) || asString(input.path),
+    filePath,
   );
 }
 
 export function FileIcon({
   filePath,
+  isDirectory,
   className,
 }: {
   filePath?: string;
+  isDirectory?: boolean;
   className?: string;
 }) {
-  const [useGenericFileIcon, setUseGenericFileIcon] = useState(!filePath);
+  const resolvedDirectory = useMemo(
+    () => getFileIconFallbackKind({ filePath, isDirectory }) === "folder",
+    [filePath, isDirectory],
+  );
   const [showSvgFallback, setShowSvgFallback] = useState(false);
   const iconRef = useRef<HTMLSpanElement | null>(null);
-  const iconKeys = useMemo(() => getFileIconKeys(filePath), [filePath]);
+  const themeClasses = useMemo(
+    () => getFileIconThemeClasses({ filePath, isDirectory: resolvedDirectory }),
+    [filePath, resolvedDirectory],
+  );
   const { themeCssVersion } = useAppState(
     (state) => ({ themeCssVersion: state.themeCssVersion }),
     shallowEqual,
   );
 
   useEffect(() => {
-    setUseGenericFileIcon(!filePath);
     setShowSvgFallback(false);
-  }, [filePath, iconKeys.join("|"), themeCssVersion]);
+  }, [filePath, resolvedDirectory, themeCssVersion]);
 
   useEffect(() => {
     const icon = iconRef.current;
@@ -1174,27 +1201,20 @@ export function FileIcon({
         return;
       }
 
-      if (filePath && !useGenericFileIcon) {
-        setUseGenericFileIcon(true);
-        return;
-      }
-
       if (!showSvgFallback) {
         setShowSvgFallback(true);
       }
     });
 
     return () => window.cancelAnimationFrame(frame);
-  }, [filePath, iconKeys.join("|"), useGenericFileIcon, showSvgFallback, themeCssVersion]);
+  }, [filePath, resolvedDirectory, showSvgFallback, themeCssVersion]);
 
   return (
     <span
       ref={iconRef}
       className={cn(
         "file-icon",
-        useGenericFileIcon
-          ? "file-icon-type-file"
-          : iconKeys.map((key) => `file-icon-type-${cleanKey(key)}`),
+        themeClasses,
         className,
       )}
       aria-hidden="true"
@@ -1211,26 +1231,49 @@ export function FileIcon({
       }}
     >
       {showSvgFallback ? (
-        <svg
-          className="file-icon-svg"
-          viewBox="0 0 16 16"
-          width="16"
-          height="16"
-          fill="none"
-          xmlns="http://www.w3.org/2000/svg"
-        >
-          <path
-            d="M3.5 1.75h6.25L13 5v9.25H3.5V1.75Z"
-            fill={FALLBACK_ICON_COLOR}
-            opacity="0.18"
-          />
-          <path
-            d="M9.5 1.75V5.25H13M3.5 1.75h6.25L13 5v9.25H3.5V1.75Z"
-            stroke={FALLBACK_ICON_COLOR}
-            strokeWidth="1.2"
-            strokeLinejoin="round"
-          />
-        </svg>
+        getFileIconFallbackKind({ filePath, isDirectory: resolvedDirectory }) === "folder" ? (
+          <svg
+            className="file-icon-svg"
+            viewBox="0 0 16 16"
+            width="16"
+            height="16"
+            fill="none"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <path
+              d="M1.5 3.5h4.25l1.5 1.5h7.25v8.5H1.5V3.5Z"
+              fill={FALLBACK_ICON_COLOR}
+              opacity="0.18"
+            />
+            <path
+              d="M1.5 3.5h4.25l1.5 1.5h7.25v8.5H1.5V3.5Z"
+              stroke={FALLBACK_ICON_COLOR}
+              strokeWidth="1.2"
+              strokeLinejoin="round"
+            />
+          </svg>
+        ) : (
+          <svg
+            className="file-icon-svg"
+            viewBox="0 0 16 16"
+            width="16"
+            height="16"
+            fill="none"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <path
+              d="M3.5 1.75h6.25L13 5v9.25H3.5V1.75Z"
+              fill={FALLBACK_ICON_COLOR}
+              opacity="0.18"
+            />
+            <path
+              d="M9.5 1.75V5.25H13M3.5 1.75h6.25L13 5v9.25H3.5V1.75Z"
+              stroke={FALLBACK_ICON_COLOR}
+              strokeWidth="1.2"
+              strokeLinejoin="round"
+            />
+          </svg>
+        )
       ) : null}
     </span>
   );
@@ -1612,6 +1655,17 @@ function isActivityTextRedundantWithTitle(
   const compactTitle = normalizedTitle.replace(/\s+/g, "");
   const compactContent = normalizedContent.replace(/\s+/g, "");
   return compactTitle.length > 0 && compactTitle === compactContent;
+}
+
+function getVisibleDefaultActivitySummary(
+  title: unknown,
+  summary: unknown,
+  fallback?: unknown,
+): string {
+  if (isActivityTextRedundantWithTitle(title, summary)) {
+    return isActivityTextRedundantWithTitle(title, fallback) ? "" : asString(fallback);
+  }
+  return asString(summary) || asString(fallback);
 }
 
 function messageDisplaysSameErrorText(
@@ -4387,7 +4441,7 @@ function TodoWriteStep({ event }: { event: DisplayEvent }) {
     if (event.status === "pending") {
       return (
         <div className="oc-refined-event-content flex items-center gap-2 rounded-md px-3 py-2 text-xs text-oc-text-soft">
-          <ThinkingStatusTicker className="oc-thinking-status" />
+          <AIStatusTicker className="oc-thinking-status" />
           <span>Generating checklist...</span>
         </div>
       );
@@ -4742,6 +4796,7 @@ type MessageViewState = {
   showActivityDetails: boolean;
   showThinkingDetails: boolean;
   showInternalActivity: boolean;
+  showExpandedActivityTimeline: boolean;
   expandedReasoningSteps: Set<string>; // Track individual reasoning step expansion
 };
 
@@ -5229,8 +5284,10 @@ function subagentModelLabel(
     }
   }
 
-  // For recently started pending/running subagents, show loading state
-  return "Loading...";
+  // Keep subagent labels stable when metadata has not arrived yet.
+  // The animated AI loading text is rendered by the shared loader component,
+  // not reused as inline metadata text.
+  return "Subagent";
 }
 
 function SubagentsInlineCard({
@@ -5580,41 +5637,41 @@ function FadeSwapText({
   );
 }
 
-const THINKING_LOADING_TEXTS = [
-  "Bribing the intern to type faster…",
-  "Download more RAM…",
-  "Checking for typos I made up…",
-  "Looking busy…",
-  "Locating the 'any' key…",
-  "Brewing virtual coffee…",
-  "Herding the bits…",
-  "Updating the flux capacitor…",
-  "Waiting for the magic smoke to clear…",
-  "Untangling the spaghetti code…",
-  "Asking StackOverflow…",
-  "Convincing the compiler to cooperate…",
-  "Reversing the polarity…",
-];
-const THINKING_LOADING_TEXT_SWITCH_INTERVAL_MS = 4200;
+const AI_LOADING_TEXT = [
+  "Bribing the intern to type faster...",
+  "Download more RAM...",
+  "Checking for typos I made up...",
+  "Looking busy...",
+  "Locating the 'any' key...",
+  "Brewing virtual coffee...",
+  "Herding the bits...",
+  "Updating the flux capacitor...",
+  "Waiting for the magic smoke to clear...",
+  "Untangling the spaghetti code...",
+  "Asking StackOverflow...",
+  "Convincing the compiler to cooperate...",
+  "Reversing the polarity...",
+] as const;
+const AI_LOADING_TEXT_SWITCH_INTERVAL_MS = 4200;
 
-function ThinkingStatusTicker({ className }: { className?: string }) {
+export function AIStatusTicker({ className }: { className?: string }) {
   const [messageIndex, setMessageIndex] = useState(() =>
-    Math.floor(Math.random() * THINKING_LOADING_TEXTS.length),
+    Math.floor(Math.random() * AI_LOADING_TEXT.length),
   );
 
   useEffect(() => {
-    if (THINKING_LOADING_TEXTS.length <= 1) {
+    if (AI_LOADING_TEXT.length <= 1) {
       return;
     }
     const timer = window.setInterval(() => {
       setMessageIndex((current) => {
         let next = current;
         while (next === current) {
-          next = Math.floor(Math.random() * THINKING_LOADING_TEXTS.length);
+          next = Math.floor(Math.random() * AI_LOADING_TEXT.length);
         }
         return next;
       });
-    }, THINKING_LOADING_TEXT_SWITCH_INTERVAL_MS);
+    }, AI_LOADING_TEXT_SWITCH_INTERVAL_MS);
 
     return () => window.clearInterval(timer);
   }, []);
@@ -5627,7 +5684,7 @@ function ThinkingStatusTicker({ className }: { className?: string }) {
       )}
     >
       <FadeSwapText
-        text={THINKING_LOADING_TEXTS[messageIndex]}
+        text={AI_LOADING_TEXT[messageIndex]}
         className="italic opacity-85 tracking-wide oc-glowing-text"
         durationMs={220}
         useTypewriter={true}
@@ -7308,6 +7365,44 @@ function ResponseMessageInner({
     assistantTurnPending ||
     hasCentralizedPendingAssistantReply
   );
+  const currentMessageIdentityCandidates = useMemo(
+    () => collectMessageIdentityCandidates(message),
+    [message],
+  );
+  const liveAssistantTurnIdentityCandidates = useMemo(() => {
+    const ids = new Set<string>();
+    for (const candidate of [
+      assistantTurnMessageId,
+      activityTimelineStreaming?.messageId,
+    ]) {
+      if (typeof candidate === "string" && candidate.trim().length > 0) {
+        ids.add(candidate.trim());
+      }
+    }
+    return ids;
+  }, [activityTimelineStreaming?.messageId, assistantTurnMessageId]);
+  const isCurrentCardLiveAssistantTurn = useMemo(() => {
+    if (!isLiveAssistantTurn) {
+      return false;
+    }
+    if (!message) {
+      return true;
+    }
+    if (currentMessageIdentityCandidates.size === 0) {
+      return false;
+    }
+    for (const candidate of currentMessageIdentityCandidates) {
+      if (liveAssistantTurnIdentityCandidates.has(candidate)) {
+        return true;
+      }
+    }
+    return false;
+  }, [
+    currentMessageIdentityCandidates,
+    isLiveAssistantTurn,
+    liveAssistantTurnIdentityCandidates,
+    message,
+  ]);
   const assistantTurnRootMessageId = firstNonEmptyString(
     assistantMessageId,
     activityTimelineStreaming?.messageId,
@@ -7635,7 +7730,21 @@ function ResponseMessageInner({
   );
   const responseType = (structured?.type ?? structured?.responseType)?.toLowerCase();
   const plan = structured?.plan;
-  const fileChanges = structured?.fileChanges;
+  const messageChangeSummary = message?.changeSummary;
+  const fileChanges = useMemo(() => {
+    if (Array.isArray(messageChangeSummary?.files) && messageChangeSummary.files.length > 0) {
+      return messageChangeSummary.files.map((file) => ({
+        file: file.file,
+        diffStats: {
+          added: Math.max(0, Number(file.added) || 0),
+          deleted: Math.max(0, Number(file.deleted) || 0),
+        },
+        diffExcerpt: file.diffExcerpt,
+      })) satisfies StructuredFileChange[];
+    }
+
+    return structured?.fileChanges;
+  }, [messageChangeSummary, structured?.fileChanges]);
 
   // Message-scoped rendering depends on this ID. Keep it above every memo that
   // filters timeline rows so React never evaluates a useMemo while `messageId`
@@ -7769,6 +7878,15 @@ function ResponseMessageInner({
       return false;
     }
 
+    if (Array.isArray(messageChangeSummary?.files) && messageChangeSummary.files.length > 0) {
+      const summaryMessageId = firstNonEmptyString(messageChangeSummary.messageId);
+      if (!summaryMessageId) {
+        return true;
+      }
+      const ownershipIds = collectMessageIdentityCandidates(message);
+      return ownershipIds.size === 0 || ownershipIds.has(summaryMessageId);
+    }
+
     if (!Array.isArray(fileChanges) || fileChanges.length === 0) {
       return false;
     }
@@ -7823,7 +7941,7 @@ function ResponseMessageInner({
       }
       return candidateRichness === ownRichness && ownIndex >= 0 && index > ownIndex;
     });
-  }, [fileChanges, plan?.file, messageId, messages, message]);
+  }, [fileChanges, plan?.file, messageChangeSummary, messageId, messages, message]);
 
   const shouldShowPlanCard = useMemo(
     () =>
@@ -7836,7 +7954,6 @@ function ResponseMessageInner({
       }),
     [message, messageId, messages, plan, responseType],
   );
-
   const latestAssistantMessageId = useMemo(() => {
     if (!Array.isArray(messages)) return undefined;
     for (let index = (messages || []).length - 1; index >= 0; index--) {
@@ -7850,10 +7967,12 @@ function ResponseMessageInner({
   }, [messages]);
   const isLatestAssistantMessage =
     !!messageId && latestAssistantMessageId === messageId;
+
   const [viewState, setViewState] = useState<MessageViewState>({
     showActivityDetails: false,
     showThinkingDetails: false,
     showInternalActivity: false,
+    showExpandedActivityTimeline: false,
     expandedReasoningSteps: new Set<string>(),
   });
   // The centralized event tape is the source of truth for ordering. Do not
@@ -8615,7 +8734,19 @@ function ResponseMessageInner({
     const filteredChunks = responseBodyChunks.filter(
       (chunk) => !duplicateFingerprints.has(normalizeComparableText(chunk)),
     );
-    return filteredChunks.length > 0 ? filteredChunks : responseBodyChunks;
+    if (filteredChunks.length > 0) {
+      return filteredChunks;
+    }
+
+    const questionToolOnlyResponse =
+      responseBodyChunks.length > 0 &&
+      responseBodyChunks.every((chunk) =>
+        duplicateFingerprints.has(normalizeComparableText(chunk)),
+      ) &&
+      responseBodyChunks.some((chunk) =>
+        renderedQuestionOutputs.has(normalizeComparableText(chunk)),
+      );
+    return questionToolOnlyResponse ? [] : responseBodyChunks;
   }, [
     assistantScopeMessageIds,
     questionPreludeFingerprints,
@@ -8652,6 +8783,10 @@ function ResponseMessageInner({
   );
   const showAssistantResponseHeader = hasPrimaryResponseBody;
   const isAborted = cardMessage?.aborted === true;
+  const interruptedPresentation =
+    cardMessage?.interruptedPresentation ||
+    cardMessage?.info?.interruptedPresentation ||
+    (isAborted ? "inline" : undefined);
   const structuredRetryError =
     !!cardMessage?.error &&
     (cardMessage.retryWithoutStructuredOutput === true ||
@@ -8682,6 +8817,35 @@ function ResponseMessageInner({
   // Use the sticky timeline snapshot, not the ephemeral live array, so rows
   // already painted in the UI remain visible through hydration rerenders.
   const hasStickyTimelineActivity = timelineDisplayEvents.length > 0;
+  const canCollapseCompletedAssistantTurn =
+    !isAborted &&
+    !isCurrentCardLiveAssistantTurn &&
+    !(assistantTurnPending && isLatestAssistantMessage) &&
+    hasStickyTimelineActivity;
+  const isAssistantTurnCollapsed =
+    canCollapseCompletedAssistantTurn &&
+    !viewState.showExpandedActivityTimeline;
+  const visibleStepsCount = timelineDisplayEvents.filter((event) => {
+    const labelLower = (event.label || "").trim().toLowerCase();
+    const isLifecycleMarkerEvent =
+      event.internal === true && (
+        labelLower === "step-start" ||
+        labelLower === "step-finish" ||
+        (labelLower === "step" && (
+          (event.summary || "").trim().toLowerCase() === "start" ||
+          (event.summary || "").trim().toLowerCase() === "finish"
+        )) ||
+        (labelLower === "start" && (event.summary || "").trim().toLowerCase() === "start") ||
+        (labelLower === "finish" && (event.summary || "").trim().toLowerCase() === "finish")
+      );
+    return !isLifecycleMarkerEvent;
+  }).length;
+  const collapsedTimelineLabel =
+    typeof duration === "number" && Number.isFinite(duration) && duration > 0
+      ? `Worked for ${formatDuration(duration * 1000)}`
+      : visibleStepsCount === 1
+        ? "Worked through 1 step"
+        : `Worked through ${visibleStepsCount} steps`;
   const hasLiveTimelineActivity =
     hasStreamingActivity ||
     hasActiveTimelineWork ||
@@ -8764,6 +8928,16 @@ function ResponseMessageInner({
     hasPrimaryResponseBody, isAborted, displayEvents, thoughtItems,
     config.debug.showPreRenderDebug,
   ]);
+  const hasVisibleResponseSectionContent =
+    showResponseBody ||
+    (shouldShowPlanCard && !!plan) ||
+    showRawResponseDebug ||
+    config.debug.showInteractiveEventsDebug ||
+    (config.debug.showPreRenderDebug && !!preRenderDebug);
+  const responseChunksVisibleInCurrentView =
+    isAssistantTurnCollapsed && responseChunksToRender.length > 0
+      ? responseChunksToRender.slice(-1)
+      : responseChunksToRender;
 
   const responseSectionClass = hasResponseContent
     ? "rounded-md border border-oc-border-soft bg-background p-2.5 shadow-sm"
@@ -8885,7 +9059,7 @@ function ResponseMessageInner({
     <div
       id={messageId ? `msg-${messageId}` : undefined}
       data-message-id={messageId || undefined}
-      className={`oc-message-enter ${responseEnterClass} ${isContiguous ? "mb-2.5 mt-[-8px]" : "mb-3.5"} px-4`}
+      className={`oc-message-enter ${responseEnterClass} ${isContiguous ? "mb-2.5 mt-2" : "mb-3.5"} px-4`}
     >
       <div
         className={cn(
@@ -8947,40 +9121,40 @@ function ResponseMessageInner({
               </div>
               <div className="oc-msg-header-actions flex min-w-0 flex-wrap items-center gap-1.5">
                 {hasMetrics && (
-                  <div className="oc-metrics-rail flex flex-wrap items-center gap-2.5 px-1 py-0.5 text-[11px] text-oc-text-secondary/60 hover:text-oc-text-secondary transition-colors" role="list" aria-label="Response metrics">
+                  <div className="oc-metrics-rail flex flex-wrap items-center gap-2 px-1 py-0.5 text-[10px] text-oc-text-secondary/60 hover:text-oc-text-secondary transition-colors" role="list" aria-label="Response metrics">
                     {inputTok > 0 && (
                       <div className="flex items-center gap-1" title={`Prompt: ${inputTok.toLocaleString()} tokens`}>
-                        <ArrowUp className="h-3 w-3 opacity-70" />
+                        <ArrowUp className="h-2.5 w-2.5 opacity-70" />
                         <span className="tabular-nums">{inputTok.toLocaleString()}</span>
                       </div>
                     )}
                     {outputTok > 0 && (
                       <div className="flex items-center gap-1" title={`Response: ${outputTok.toLocaleString()} tokens`}>
-                        <ArrowDown className="h-3 w-3 opacity-70" />
+                        <ArrowDown className="h-2.5 w-2.5 opacity-70" />
                         <span className="tabular-nums">{outputTok.toLocaleString()}</span>
                       </div>
                     )}
                     {reasoningTok > 0 && (
                       <div className="flex items-center gap-1" title={`Reasoning: ${reasoningTok.toLocaleString()} tokens`}>
-                        <Brain className="h-3 w-3 opacity-70" />
+                        <Brain className="h-2.5 w-2.5 opacity-70" />
                         <span className="tabular-nums">{reasoningTok.toLocaleString()}</span>
                       </div>
                     )}
                     {cacheRead > 0 && (
                       <div className="flex items-center gap-1" title={`Cache Read: ${cacheRead.toLocaleString()} tokens`}>
-                        <Database className="h-3 w-3 opacity-70" />
+                        <Database className="h-2.5 w-2.5 opacity-70" />
                         <span className="tabular-nums">{cacheRead.toLocaleString()}</span>
                       </div>
                     )}
                     {cacheWrite > 0 && (
                       <div className="flex items-center gap-1" title={`Cache Write: ${cacheWrite.toLocaleString()} tokens`}>
-                        <Database className="h-3 w-3 opacity-40" />
+                        <Database className="h-2.5 w-2.5 opacity-40" />
                         <span className="tabular-nums">{cacheWrite.toLocaleString()}</span>
                       </div>
                     )}
                     {typeof duration === "number" && (
                       <div className="flex items-center gap-1" title={`Duration: ${duration.toFixed(1)} seconds`}>
-                        <Clock className="h-3 w-3 opacity-70" />
+                        <Clock className="h-2.5 w-2.5 opacity-70" />
                         <span className="tabular-nums">{duration.toFixed(1)}s</span>
                       </div>
                     )}
@@ -9017,10 +9191,14 @@ function ResponseMessageInner({
                 return (
                   <Stepper
                     key={`question-prelude-stepper-${groupIdx}`}
-                    className="oc-refined-stepper"
+                    className="oc-refined-stepper oc-activity-timeline-compact"
                   >
                     {group.events.map((event, index) => {
                       const isLast = index === group.events.length - 1;
+                      const visibleQuestionPreludeSummary = getVisibleDefaultActivitySummary(
+                        event.label,
+                        event.summary,
+                      );
                       return (
                         <StepperItem
                           key={`question-prelude-${event.key}`}
@@ -9033,20 +9211,22 @@ function ResponseMessageInner({
                         >
                           <div className="flex items-start justify-between gap-2 w-full">
                             <ExpandableStep className="flex-1">
-                              <div className="flex flex-col items-start gap-2 w-full min-w-0">
+                              <div className="oc-activity-step-surface flex flex-col items-start gap-2 w-full min-w-0">
                                 <div className="flex items-center gap-2 flex-wrap min-h-[20px]">
-                                  <span className="font-medium text-oc-text capitalize text-[13px]">
+                                  <span className="oc-activity-step-title font-medium text-oc-text capitalize">
                                     {event.label}
                                   </span>
                                 </div>
-                                <div className="flex flex-col gap-1 w-full">
-                                  <div className="oc-refined-event-summary">
-                                    <CollapsedMarkdownPreview
-                                      title={event.label}
-                                      content={event.summary || ""}
-                                    />
+                                {visibleQuestionPreludeSummary && (
+                                  <div className="flex flex-col gap-1 w-full">
+                                    <div className="oc-refined-event-summary">
+                                      <CollapsedMarkdownPreview
+                                        title={event.label}
+                                        content={visibleQuestionPreludeSummary}
+                                      />
+                                    </div>
                                   </div>
-                                </div>
+                                )}
                               </div>
                             </ExpandableStep>
                           </div>
@@ -9059,9 +9239,10 @@ function ResponseMessageInner({
             </section>
           )}
 
-          {(hasStickyTimelineActivity ||
-            showThinkingPlaceholder ||
-            nonQuestionTimelineDisplayEventGroups.length > 0) && (
+          {!isAssistantTurnCollapsed &&
+            (hasStickyTimelineActivity ||
+              showThinkingPlaceholder ||
+              nonQuestionTimelineDisplayEventGroups.length > 0) && (
               <section data-assistant-section="activity" className="space-y-2">
                 {nonQuestionTimelineDisplayEventGroups.map((group, groupIdx) => {
                   if (group.type === "commentary") {
@@ -9114,11 +9295,13 @@ function ResponseMessageInner({
                         const shouldHideSummary =
                           labelLower === "compress" ||
                           isActivityTextRedundantWithTitle(event.label, event.summary);
-                        const visibleSummary = shouldHideSummary
-                          ? (isActivityTextRedundantWithTitle(event.label, event.filePath)
-                            ? ""
-                            : event.filePath || "")
-                          : event.summary || event.filePath || "";
+                        const visibleSummary = shouldHideSummary && labelLower === "compress"
+                          ? ""
+                          : getVisibleDefaultActivitySummary(
+                              event.label,
+                              event.summary,
+                              event.filePath,
+                            );
                         const shouldHideDescription =
                           !!event.description &&
                           (isActivityTextRedundantWithTitle(event.label, event.description) ||
@@ -9129,9 +9312,11 @@ function ResponseMessageInner({
                             isActivityTextRedundantWithTitle(visibleSummary, event.detail) ||
                             isActivityTextRedundantWithTitle(event.description, event.detail));
 
-                        // Lifecycle markers (step-start / step-finish) are rendered as compact
-                        // Claude Code / Codex-style chips — a subtle pill with a small icon and
-                        // muted text — instead of full expandable stepper cards.
+                        // Lifecycle markers (step-start / step-finish) are used internally by the 
+                        // message handler to group and structure the activity timeline.
+                        // We render them into the DOM so that React logic (like `isLast`, etc.)
+                        // and structural integrity are maintained, but we use the `hidden` class 
+                        // to ensure they are visually hidden from the user in the UI.
                         const isLifecycleMarkerEvent =
                           event.internal === true && (
                             labelLower === "step-start" ||
@@ -9152,7 +9337,7 @@ function ResponseMessageInner({
                               isLast={isLast}
                               indicator={indicatorNode}
                               className={cn(
-                                "oc-refined-stepper-item group",
+                                "oc-refined-stepper-item group hidden", // explicitly hidden but rendered for logic
                                 event.status === "running" ? "is-streaming" : "",
                               )}
                             >
@@ -9291,20 +9476,20 @@ function ResponseMessageInner({
                                           activityDetail={event.activityDetail}
                                         />
                                       ) : (
-                                        <div className="flex flex-col items-start gap-2 w-full min-w-0">
+                                        <div className="oc-activity-step-surface flex flex-col items-start gap-2 w-full min-w-0">
                                           <div className="flex items-center gap-2 flex-wrap w-full min-h-[20px]">
-                                            <span className="font-medium text-oc-text capitalize text-[13px]">
+                                            <span className="oc-activity-step-title font-medium text-oc-text capitalize">
                                               {event.label}
                                             </span>
                                             {compressTopic ? (
-                                              <span className="text-oc-text-soft text-xs truncate max-w-[min(42ch,60vw)]">
+                                              <span className="oc-activity-step-meta truncate max-w-[min(42ch,60vw)] text-oc-text-soft">
                                                 {compressTopic}
                                               </span>
                                             ) : null}
                                             {(() => {
                                               const desc = (event.activityDetail?.metadata?.description as string) || (event.activityDetail?.input?.description as string);
                                               return desc ? (
-                                                <span className="text-oc-text-soft text-xs flex items-center gap-2">
+                                                <span className="oc-activity-step-meta flex items-center gap-2 text-oc-text-soft">
                                                   <span>&middot;</span>
                                                   <span>{desc}</span>
                                                 </span>
@@ -9323,11 +9508,14 @@ function ResponseMessageInner({
                                                   })
                                                 }
                                               >
-                                                <FileIcon filePath={event.filePath} />
+                                                <FileIcon
+                                                  filePath={event.filePath}
+                                                  isDirectory={isDirectoryActivityPath(event.filePath, event.activityDetail)}
+                                                />
                                                 <span className="truncate">
                                                   {event.filePath}
                                                 </span>
-                                                <span className="oc-refined-file-link-tooltip" role="tooltip">
+                                                <span className="oc-refined-file-link-tooltip oc-refined-file-link-tooltip-below" role="tooltip">
                                                   {event.filePath}
                                                 </span>
                                               </button>
@@ -9355,11 +9543,14 @@ function ResponseMessageInner({
                                                         })
                                                       }
                                                     >
-                                                      <FileIcon filePath={event.filePath} />
+                                                      <FileIcon
+                                                        filePath={event.filePath}
+                                                        isDirectory={isDirectoryActivityPath(event.filePath, event.activityDetail)}
+                                                      />
                                                       <span className="break-words whitespace-pre-wrap">
                                                         {visibleSummary}
                                                       </span>
-                                                      <span className="oc-refined-file-link-tooltip" role="tooltip">
+                                                      <span className="oc-refined-file-link-tooltip oc-refined-file-link-tooltip-below" role="tooltip">
                                                         {event.filePath}
                                                       </span>
                                                     </button>
@@ -9509,6 +9700,29 @@ function ResponseMessageInner({
               </section>
             )}
 
+          {isAssistantTurnCollapsed && (
+            <section data-assistant-section="activity-collapsed">
+              <button
+                type="button"
+                className="oc-assistant-turn-collapse-toggle group flex w-full items-center justify-between gap-2 rounded-lg border border-oc-border-soft bg-oc-panel-soft/35 px-3 py-1 text-left transition-colors hover:bg-oc-panel-soft/55"
+                onClick={() =>
+                  setViewState((current) => ({
+                    ...current,
+                    showExpandedActivityTimeline: true,
+                  }))
+                }
+                aria-expanded="false"
+                aria-label="Expand activity timeline"
+                title="Expand activity timeline"
+              >
+                <span className="truncate text-[11px] font-normal oc-text-secondary">
+                  {collapsedTimelineLabel}
+                </span>
+                <ChevronRight className="h-2.5 w-2.5 shrink-0 oc-text-secondary transition-transform group-hover:translate-x-0.5" />
+              </button>
+            </section>
+          )}
+
           <SubagentsInlineCard
             subagents={subagents}
             subagentDetailsById={subagentDetailsById || {}}
@@ -9519,14 +9733,14 @@ function ResponseMessageInner({
             openSubagentModal={openSubagentModal}
           />
 
-          {showResponseSection && (
+              {showResponseSection && hasVisibleResponseSectionContent && (
             <section
               data-assistant-section="response"
               className={responseSectionClass}
             >
               {showResponseBody && (
                 <div className="mt-1.5 space-y-1.5">
-                  {responseChunksToRender.map((chunk, index) => (
+                  {responseChunksVisibleInCurrentView.map((chunk, index) => (
                     <ResponseMessageBody
                       key={`${messageId || "assistant"}-response-${index}`}
                       content={[chunk]}
@@ -9629,9 +9843,32 @@ function ResponseMessageInner({
             </section>
           )}
 
+          {!isAssistantTurnCollapsed && canCollapseCompletedAssistantTurn && (
+            <div className="flex justify-start">
+              <button
+                type="button"
+                className="oc-assistant-turn-collapse-link inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] font-medium oc-text-secondary transition-colors hover:text-oc-text"
+                onClick={() =>
+                  setViewState((current) => ({
+                    ...current,
+                    showExpandedActivityTimeline: false,
+                  }))
+                }
+                aria-expanded="true"
+                aria-label="Collapse activity timeline"
+                title="Collapse activity timeline"
+              >
+                <ChevronDown className="h-3 w-3" />
+                <span>Collapse</span>
+              </button>
+            </div>
+          )}
+
         </div>
 
-{!isStreamingActive && showResponseSection && hasCopyableResponseContent && (
+        {!isStreamingActive &&
+          showResponseSection &&
+          hasCopyableResponseContent && (
           <div className="mt-1 flex items-center justify-start gap-1.5">
             <button
               type="button"
@@ -9662,7 +9899,13 @@ function ResponseMessageInner({
           </div>
         )}
 
-        {isAborted && !hasQuestionLikeInteractiveContent(cardMessage) && (
+        {interruptedPresentation === "inline" &&
+          !hasQuestionLikeInteractiveContent(cardMessage) && (
+          // Inline interrupted badge is correct only when the abort belongs to
+          // this card's own transcript position. If projection switches the
+          // presentation to `detached`, a separate later conversation entry
+          // will render it so the UI can match the centralized tape order
+          // without moving the assistant response block itself.
           <div className="mt-2 flex items-center justify-center">
             <div className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 py-1 text-[10px] font-medium tracking-wide text-amber-400">
               <div className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse" />
@@ -9766,7 +10009,8 @@ function ResponseMessageInner({
           <div className="mt-4">
             <FileChangesSection
               structuredFileChanges={fileChanges || []}
-              messageId={messageId}
+              changeSummary={messageChangeSummary}
+              messageId={firstNonEmptyString(messageChangeSummary?.messageId, messageId) || null}
               sessionId={currentSessionId}
             />
           </div>
@@ -9852,11 +10096,13 @@ function parseSessionDiffPatch(patch?: string): { header?: string; lines: string
 
 export const FileChangesSection = memo(function FileChangesSection({
   structuredFileChanges,
+  changeSummary,
   messageId,
   sessionId,
   centralizedDiffEvent,
 }: {
   structuredFileChanges: StructuredFileChange[];
+  changeSummary?: Message["changeSummary"];
   messageId?: string | null;
   sessionId?: string | null;
   centralizedDiffEvent?: {
@@ -9874,6 +10120,7 @@ export const FileChangesSection = memo(function FileChangesSection({
 }) {
   type DiffExcerpt = { header?: string; lines?: string[]; added?: number; deleted?: number };
   type FileChange = { file: string; added: number; deleted: number; diffExcerpt?: DiffExcerpt };
+  const summaryMessageId = firstNonEmptyString(changeSummary?.messageId, messageId) || null;
 
   const compactDisplayDir = (dir: string): string => {
     const normalized = dir.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -9884,6 +10131,27 @@ export const FileChangesSection = memo(function FileChangesSection({
   };
 
   const fileChanges = useMemo<FileChange[]>(() => {
+    if (Array.isArray(changeSummary?.files) && changeSummary.files.length > 0) {
+      return changeSummary.files
+        .map((item) => ({
+          file: item.file,
+          added: Math.max(0, Number(item.added) || 0),
+          deleted: Math.max(0, Number(item.deleted) || 0),
+          diffExcerpt: item.diffExcerpt
+            ? {
+                ...item.diffExcerpt,
+                lines: Array.isArray(item.diffExcerpt.lines)
+                  ? item.diffExcerpt.lines.filter(
+                      (line): line is string =>
+                        typeof line === "string" && line.trim().length > 0,
+                    )
+                  : undefined,
+              }
+            : undefined,
+        }))
+        .sort((a, b) => a.file.localeCompare(b.file));
+    }
+
     if (Array.isArray(structuredFileChanges) && structuredFileChanges.length > 0) {
       return structuredFileChanges
       .map((item) => {
@@ -9925,7 +10193,7 @@ export const FileChangesSection = memo(function FileChangesSection({
     }
 
     return [];
-  }, [structuredFileChanges, centralizedDiffEvent]);
+  }, [changeSummary, structuredFileChanges, centralizedDiffEvent]);
 
   const filesChanged = fileChanges.length;
   const totalAdded = fileChanges.reduce((sum, file) => sum + file.added, 0);
@@ -9933,7 +10201,7 @@ export const FileChangesSection = memo(function FileChangesSection({
 
   const visibleChanges = fileChanges.slice(0, 12);
 
-  const undoMessageId = messageId;
+  const undoMessageId = summaryMessageId;
 
   const handleUndo = () => {
     if (!undoMessageId) {
@@ -9971,7 +10239,7 @@ export const FileChangesSection = memo(function FileChangesSection({
       if (!data || data.type !== "messageFileDiffPreview") {
         return;
       }
-      if (messageId && data.messageId && data.messageId !== messageId) {
+      if (summaryMessageId && data.messageId && data.messageId !== summaryMessageId) {
         return;
       }
       const file = (data.file || "").trim();
@@ -9993,7 +10261,7 @@ export const FileChangesSection = memo(function FileChangesSection({
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [messageId]);
+  }, [summaryMessageId]);
 
   const toggleExpanded = (file: string) => {
     const key = normalizePath(file);
@@ -10005,10 +10273,10 @@ export const FileChangesSection = memo(function FileChangesSection({
       !!current &&
       Array.isArray(current.diffExcerpt?.lines) &&
       current.diffExcerpt.lines.length > 0;
-    if (!hasLocalPreview && !hasExistingPreview && messageId) {
+    if (!hasLocalPreview && !hasExistingPreview && summaryMessageId) {
       vscode.postMessage({
         type: "getMessageFileDiffPreview",
-        messageId,
+        messageId: summaryMessageId,
         sessionId: sessionId || undefined,
         file,
       });
@@ -10348,46 +10616,11 @@ export function InfoBanner({ message, error }: InfoBannerProps) {
   );
 }
 
-function formatThinkingStatusLabel(statusType?: string | null): string | null {
-  const normalized = typeof statusType === "string" ? statusType.trim().toLowerCase() : "";
-  if (!normalized || normalized === "busy") {
-    return null;
-  }
-
-  switch (normalized) {
-    case "running":
-      return "Running tasks";
-    case "processing":
-      return "Processing request";
-    case "in_progress":
-      return "Working through steps";
-    case "streaming":
-      return "Streaming response";
-    default:
-      return normalized
-        .split(/[_\s-]+/)
-        .filter(Boolean)
-        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-        .join(" ");
-  }
-}
-
-export const ThinkingBubble = memo(function ThinkingBubble({
-  statusType,
-}: {
-  statusType?: string | null;
-}) {
-  const statusLabel = formatThinkingStatusLabel(statusType);
-
+export const ThinkingBubble = memo(function ThinkingBubble() {
   return (
-    <div className="mb-4 px-4">
-      <div className="inline-flex items-center gap-2 rounded-full border border-oc-border-soft bg-oc-panel px-3 py-1.5 text-[11px] font-medium text-oc-text-soft shadow-sm">
-        <div className="flex gap-1.5" aria-hidden="true">
-          <div className="h-2 w-2 rounded-full bg-oc-accent animate-[pulse_1.4s_ease-in-out_infinite]" style={{ animationDelay: "0s" }} />
-          <div className="h-2 w-2 rounded-full bg-oc-accent animate-[pulse_1.4s_ease-in-out_infinite]" style={{ animationDelay: "0.2s" }} />
-          <div className="h-2 w-2 rounded-full bg-oc-accent animate-[pulse_1.4s_ease-in-out_infinite]" style={{ animationDelay: "0.4s" }} />
-        </div>
-        <span>{statusLabel ? `AI is responding... ${statusLabel}.` : "AI is responding..."}</span>
+    <div className="mb-4">
+      <div className="inline-flex items-center py-1.5 text-[11px] font-medium text-oc-text-soft">
+        <AIStatusTicker />
       </div>
     </div>
   );
@@ -10519,7 +10752,6 @@ export const CentralizedDebugPanel = memo(function CentralizedDebugPanel() {
     rawSdkEventPayloadsBySessionId,
     receivedInitState,
     serverStatus,
-    showLogger,
   } = useAppState(
     (state) => ({
       currentSessionId: state.currentSessionId,
@@ -10527,17 +10759,16 @@ export const CentralizedDebugPanel = memo(function CentralizedDebugPanel() {
       rawSdkEventPayloadsBySessionId: state.rawSdkEventPayloadsBySessionId,
       receivedInitState: state.receivedInitState,
       serverStatus: state.serverStatus,
-      showLogger: state.showLogger,
     }),
     shallowEqual,
   );
 
   const centralizedSessionId = currentSessionId;
-  const rawSdkEventPayloads = centralizedSessionId && Array.isArray(rawSdkEventPayloadsBySessionId?.[centralizedSessionId]) 
-    ? rawSdkEventPayloadsBySessionId[centralizedSessionId] 
+  const rawSdkEventPayloads = centralizedSessionId && Array.isArray(rawSdkEventPayloadsBySessionId?.[centralizedSessionId])
+    ? rawSdkEventPayloadsBySessionId[centralizedSessionId]
     : [];
-    
-  if (process.env.NODE_ENV !== 'development' && !window.location.search.includes('debug=true') && !showLogger) {
+
+  if (!config.debug.showCentralizedDebug) {
     return null;
   }
 

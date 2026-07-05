@@ -20,7 +20,7 @@ test("PlanViewProvider loads plan content from sourceFile when payload content i
 
   assert.match(
     planViewProviderSource,
-    /const content = await this\.resolvePlanContent\(\s*context,\s*typeof payload === 'string' \? payload : payload\?\.content \?\? '',\s*sourceFile,\s*\)/s,
+    /const content = await this\.resolvePlanContent\(\s*context,\s*sourceFile,\s*typeof payload === 'string' \? payload : payload\?\.content \?\? '',\s*\)/s,
     "plan view show flow should resolve content from sourceFile before rendering the panel",
   );
 
@@ -28,5 +28,11 @@ test("PlanViewProvider loads plan content from sourceFile when payload content i
     planViewProviderSource,
     /const fileBytes = await vscode\.workspace\.fs\.readFile\([\s\S]*path\.normalize\(candidatePath\)[\s\S]*\);/s,
     "file-backed plan view should read markdown directly from disk",
+  );
+
+  assert.match(
+    planViewProviderSource,
+    /if \(!normalizedSourceFile\) \{\s*return content;\s*\}[\s\S]*return "";/s,
+    "plan view provider should prefer file-backed content over the payload content when a source file is present",
   );
 });

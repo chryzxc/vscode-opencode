@@ -43,8 +43,13 @@ import {
   sanitizeStructuredOutput,
   validateStructuredOutput,
 } from "./structuredOutputValidator";
+import { getCentralizedDebugPayloadDisposition } from "./generated/centralizedDebugPayloadFilter";
 import { config } from "../../config";
 import vscode from "./vscode";
+import {
+  PENDING_CURRENT_SESSION_KEY,
+} from "./pendingUserMessages";
+import { toastNotificationFromPayload } from "./toastEvents";
 
 // NEW: Import modular subagent processing functions
 import {
@@ -909,9 +914,7 @@ export function latestAssistantMessageIdFromCentralizedTape(
     const info = asRecord(properties?.info) ?? asRecord(event.info) ?? getCentralizedEventInfo(event);
     const part = getCentralizedEventPart(event);
 
-    const eventType =
-      asString(event.type).trim() ||
-      getCentralizedEventType(event);
+    const eventType = getCentralizedEventType(event);
 
     if (
       eventType === "message.updated" &&
@@ -8286,41 +8289,6 @@ function finalizeStreamingSnapshotSteps(
   };
 }
 
-function completeStreamingTurnFromCentralizedStepFinish(
-  dispatch: Dispatch<AppAction>,
-  getState: () => AppState,
-  messageId?: string | null,
-  terminalStatus: "done" | "error" = "done",
-): boolean {
-  const streaming = getState().streaming;
-  if (!streaming?.isActive) return false;
-  if (streaming.inReasoningPart) return false;
-
-  const activeMessageId =
-    streaming.messageId || getState().assistantTurnMessageId || null;
-  if (activeMessageId && messageId && activeMessageId !== messageId) {
-    return false;
-  }
-
-  const finalized = finalizeStreamingSnapshotSteps(streaming, terminalStatus);
-  if (finalized) {
-    dispatch({
-      type: "SET_STREAMING",
-      payload: {
-        ...finalized,
-        hasTerminalStepSignal: true,
-      },
-    });
-  }
-  dispatch({
-    type: "SET_ASSISTANT_TURN_PENDING",
-    payload: { pending: false, messageId: null },
-  });
-  dispatch({ type: "SET_PROCESSING", payload: false });
-  dispatch({ type: "FINISH_STREAMING" });
-  return true;
-}
-
 function handleStreamEvent(
   dispatch: Dispatch<AppAction>,
   getState: () => AppState,
@@ -8656,10 +8624,6 @@ function handleStreamEvent(
       if (interactiveEvents.length > 0) {
         dispatch({ type: "SET_INTERACTIVE_EVENTS", payload: interactiveEvents });
         maybeInjectStreamingInteractiveContext(dispatch, getState, interactiveEvents);
-        if (hasBlockingInteractiveEvents(interactiveEvents)) {
-          dispatch({ type: "SET_PROCESSING", payload: false });
-          dispatch({ type: "FINISH_STREAMING" });
-        }
       }
       break;
     }
@@ -9029,16 +8993,6 @@ function handleStreamEvent(
           duration: asOptionalNumber(asRecord(part.timing)?.duration),
           diffStats,
         });
-        completeStreamingTurnFromCentralizedStepFinish(
-          dispatch,
-          getState,
-          asString(part.messageID) || asString(part.messageId) || messageId,
-          "done",
-        );
-        markAssistantTurnClosed(
-          asString(part.messageID) || asString(part.messageId),
-          messageId,
-        );
         terminalTurnClosed = true;
       }
 
@@ -9263,6 +9217,7 @@ function handleStreamEvent(
             break;
           }
         }
+
       }
 
       if (
@@ -9340,13 +9295,6 @@ function handleStreamEvent(
           meta: asString(part.meta) || undefined,
           startTime: Date.now(),
         });
-      }
-
-      if (hasBlockingInteractive) {
-        flushVisibleStreamingSnapshotToMessages(dispatch, getState);
-        dispatch({ type: "FINISH_STREAMING" });
-        dispatch({ type: "SET_PROCESSING", payload: false });
-        break;
       }
 
       if (terminalTurnClosed) {
@@ -9488,16 +9436,6 @@ function handleStreamEvent(
           getState,
           liveStructuredInteractiveEvents,
         );
-        if (liveHasBlockingInteractive && !finish) {
-          const streamingNow = getState().streaming;
-          const streamingOverride = injectedContent && streamingNow
-            ? { ...streamingNow, content: injectedContent }
-            : null;
-          flushVisibleStreamingSnapshotToMessages(dispatch, getState, streamingOverride);
-          dispatch({ type: "FINISH_STREAMING" });
-          dispatch({ type: "SET_PROCESSING", payload: false });
-          break;
-        }
       }
 
       const hasRenderableLiveStructuredUpdate =
@@ -9689,22 +9627,7 @@ function handleStreamEvent(
         dispatch({ type: "SET_PROCESSING", payload: false });
         dispatch({ type: "FINISH_STREAMING" });
       } else {
-        const currentStreaming = getState().streaming;
-        const turnAlreadyClosed = Boolean(
-          currentStreaming?.hasTerminalStepSignal ||
-          currentStreaming?.hasAssistantFinishSignal ||
-          (responseMessageId && closedAssistantTurnMessageIds.has(responseMessageId)),
-        );
-        if (turnAlreadyClosed) {
-          dispatch({
-            type: "SET_ASSISTANT_TURN_PENDING",
-            payload: { pending: false, messageId: null },
-          });
-          dispatch({ type: "SET_PROCESSING", payload: false });
-          dispatch({ type: "FINISH_STREAMING" });
-        } else {
-          dispatch({ type: 'SET_PROCESSING', payload: true });
-        }
+        dispatch({ type: 'SET_PROCESSING', payload: true });
       }
       break;
     }
@@ -10042,12 +9965,6 @@ function handleStreamEvent(
           }
         }
       });
-      completeStreamingTurnFromCentralizedStepFinish(
-        dispatch,
-        getState,
-        asString(payload.messageID) || asString(payload.messageId),
-        "done",
-      );
       break;
     }
     case 'stepError': {
@@ -10064,12 +9981,6 @@ function handleStreamEvent(
           }
         }
       });
-      completeStreamingTurnFromCentralizedStepFinish(
-        dispatch,
-        getState,
-        asString(payload.messageID) || asString(payload.messageId),
-        "error",
-      );
       break;
     }
     case 'edit':
@@ -10277,13 +10188,6 @@ function handleStreamEvent(
           });
           consumed = true;
         }
-      }
-
-      if (hasBlockingInteractive) {
-        flushVisibleStreamingSnapshotToMessages(dispatch, getState);
-        dispatch({ type: "FINISH_STREAMING" });
-        dispatch({ type: "SET_PROCESSING", payload: false });
-        break;
       }
 
       if (consumed) {
@@ -11051,8 +10955,16 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               }
             }
 
-            // Set aborted flag to indicate user stopped the response
+            // Set aborted flag to indicate user stopped the response and clear
+            // stale blocking interactive payloads so the interrupted badge can
+            // render for the finalized assistant turn.
             (normalizedMessage as unknown as UnknownRecord).aborted = true;
+            normalizedMessage.interactiveEvents = [];
+            const normalizedInfo = asRecord(normalizedMessage.info) || {};
+            normalizedMessage.info = {
+              ...normalizedInfo,
+              aborted: true,
+            };
 
             const normalizedMessageId =
               asString(asRecord(normalizedMessage.info)?.id) ||
@@ -12321,15 +12233,32 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             streamEventType === "start" || streamEventType === "streamStart";
           const canStartVisibleAssistantTurn =
             streamEventCanStartVisibleAssistantTurn(payload);
+          const centralizedDisposition =
+            getCentralizedDebugPayloadDisposition(payload);
+          const liveToastNotification = toastNotificationFromPayload(payload);
           const shouldLogStreamEvent = !streamEventType.includes("message.part") ||
                                       streamEventType === "message.completed" ||
                                       streamEventType === "session.completed";
+
+          if (liveToastNotification) {
+            dispatch({
+              type: "APPEND_LIVE_TOAST_NOTIFICATION",
+              payload: {
+                sessionId: eventSessionId || activeSessionId || null,
+                notification: liveToastNotification,
+              },
+            });
+          }
 
           // Persist the raw centralized tape as soon as the stream event is accepted.
           // We do this before the visibility gate so the debug tape and hydrated
           // session state stay in sync even while the live UI waits for a renderable
           // assistant turn.
-          if (streamEventType !== "server.heartbeat" && !terminalErrorReached) {
+          if (
+            centralizedDisposition === "persist" &&
+            streamEventType !== "server.heartbeat" &&
+            !terminalErrorReached
+          ) {
             logger.info("[CENTRALIZED-TAPE][WEBVIEW] append_raw_sdk_event", {
               sessionId: eventSessionId || activeSessionId || getState().currentSessionId || null,
               eventType: streamEventType,
@@ -12351,6 +12280,16 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                 event: payload,
               });
             }
+          } else if (
+            centralizedDisposition !== "persist" &&
+            streamEventType !== "server.heartbeat" &&
+            !terminalErrorReached
+          ) {
+            logger.info("[CENTRALIZED-TAPE][WEBVIEW] skip_raw_sdk_event", {
+              sessionId: eventSessionId || activeSessionId || getState().currentSessionId || null,
+              eventType: streamEventType,
+              disposition: centralizedDisposition,
+            });
           }
 
           if (
@@ -12766,6 +12705,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               asString(data.sessionId),
               asString(data.sessionID),
             ) ?? null;
+          const appendedClientRequestId = asOptionalString(data.clientRequestId);
           const resumedSessionId = firstNonEmptyString(
             messageSessionId ?? undefined,
             getState().currentSessionId ?? undefined,
@@ -12777,6 +12717,69 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             dispatch({ type: "SET_SESSION_ID", payload: messageSessionId });
           }
           if (message && typeof message === "object") {
+            const appendedRole = firstNonEmptyString(
+              message.role,
+              message.info?.role,
+            )?.toLowerCase();
+            if (appendedRole === "user" && appendedClientRequestId) {
+              const candidateSessionIds = Array.from(
+                new Set(
+                  [
+                    messageSessionId,
+                    getState().currentSessionId ?? null,
+                    PENDING_CURRENT_SESSION_KEY,
+                  ].filter(
+                    (value): value is string =>
+                      typeof value === "string" && value.trim().length > 0,
+                  ),
+                ),
+              );
+              const messageCreatedAt =
+                typeof message.time?.created === "number"
+                  ? message.time.created
+                  : typeof message.info?.time?.created === "number"
+                    ? message.info.time.created
+                    : typeof message.created === "number"
+                      ? message.created
+                      : typeof (message as { createdAt?: number }).createdAt === "number"
+                        ? (message as { createdAt?: number }).createdAt
+                        : undefined;
+              for (const sessionId of candidateSessionIds) {
+                // Confirm the optimistic overlay against the host echo, but do
+                // not remove it yet. The centralized transcript still needs a
+                // beat to catch up, and deleting the optimistic bubble here
+                // causes the visible gap where the user message disappears just
+                // as the assistant begins streaming.
+                dispatch({
+                  type: "CONFIRM_PENDING_USER_MESSAGE",
+                  payload: {
+                    sessionId,
+                    clientRequestId: appendedClientRequestId,
+                    messageId: firstNonEmptyString(
+                      message.info?.id,
+                      message.id,
+                      message.messageId,
+                    ),
+                    createdAt: messageCreatedAt,
+                    text: firstNonEmptyString(
+                      message.content,
+                      message.text,
+                      message.info?.content,
+                      message.info?.text,
+                    ),
+                    images: Array.isArray(message.images)
+                      ? message.images.filter(
+                        (image): image is string => typeof image === "string",
+                      )
+                      : undefined,
+                    interactiveSubmit:
+                      typeof message.interactiveSubmit === "boolean"
+                        ? message.interactiveSubmit
+                        : undefined,
+                  },
+                });
+              }
+            }
             const pendingInteractive = latestPendingInteractiveEvents(
               getState().messages || [],
             );
@@ -12926,47 +12929,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             type: "SET_PROCESSING_SESSIONS",
             payload: sessionIds,
           });
-          const stateAfterProcessingUpdate = getState();
-          const activeSessionId = stateAfterProcessingUpdate.currentSessionId;
-          const isActiveSessionStillProcessing = !!(
-            activeSessionId && sessionIds.includes(activeSessionId)
-          );
-          if (!isActiveSessionStillProcessing) {
-            awaitingInteractiveTurnStart = false;
-            if (stateAfterProcessingUpdate.assistantTurnPending) {
-              dispatch({
-                type: "SET_ASSISTANT_TURN_PENDING",
-                payload: { pending: false, messageId: null },
-              });
-            }
-            if (stateAfterProcessingUpdate.isSteering) {
-              dispatch({ type: "SET_STEERING", payload: false });
-            }
-            flushVisibleStreamingSnapshotToMessages(dispatch, getState);
-            if (stateAfterProcessingUpdate.isProcessing) {
-              dispatch({ type: "SET_PROCESSING", payload: false });
-            }
-            if (stateAfterProcessingUpdate.streaming) {
-              dispatch({ type: "FINISH_STREAMING" });
-            }
-            const pendingInteractiveEvents = latestPendingInteractiveEvents(
-              stateAfterProcessingUpdate.messages || [],
-            );
-            const streamingInteractiveEvents = stateAfterProcessingUpdate
-              .streaming?.interactiveEvents ?? [];
-            const mergedInteractiveEvents =
-              pendingInteractiveEvents.length > 0
-                ? pendingInteractiveEvents
-                : streamingInteractiveEvents;
-            if (mergedInteractiveEvents.length > 0) {
-              dispatch({
-                type: "SET_INTERACTIVE_EVENTS",
-                payload: mergedInteractiveEvents,
-              });
-            } else if (stateAfterProcessingUpdate.interactiveEvents.length > 0) {
-              dispatch({ type: "SET_INTERACTIVE_EVENTS", payload: [] });
-            }
-          }
           break;
         }
         case "queueUpdate": {

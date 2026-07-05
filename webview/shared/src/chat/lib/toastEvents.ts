@@ -68,6 +68,33 @@ function buildToastKey(payload: RawRecord, index: number): string {
   ].join(":");
 }
 
+export function toastNotificationFromPayload(
+  entry: unknown,
+  index = 0,
+): CentralizedToastNotification | null {
+  const payload = asRecord(entry);
+  if (!payload || asString(payload.type) !== "tui.toast.show") {
+    return null;
+  }
+
+  const properties = asRecord(payload.properties) as RawToastProperties | null;
+  const title = asString(properties?.title)?.trim() || "OpenCode";
+  const message = asString(properties?.message)?.trim() || "";
+  const variant = normalizeVariant(properties?.variant);
+  const durationMs = asNumber(properties?.duration);
+
+  return {
+    key: buildToastKey(payload, index),
+    id: asString(payload.id),
+    type: "tui.toast.show",
+    title,
+    message,
+    variant,
+    durationMs: durationMs && durationMs > 0 ? durationMs : 4000,
+    sessionId: asString(payload.sessionId),
+  };
+}
+
 export function extractCentralizedToastNotifications(
   rawSdkEventPayloads: unknown[] | undefined,
 ): CentralizedToastNotification[] {
@@ -76,28 +103,7 @@ export function extractCentralizedToastNotifications(
   }
 
   return rawSdkEventPayloads.flatMap((entry, index) => {
-    const payload = asRecord(entry);
-    if (!payload || asString(payload.type) !== "tui.toast.show") {
-      return [];
-    }
-
-    const properties = asRecord(payload.properties) as RawToastProperties | null;
-    const title = asString(properties?.title)?.trim() || "OpenCode";
-    const message = asString(properties?.message)?.trim() || "";
-    const variant = normalizeVariant(properties?.variant);
-    const durationMs = asNumber(properties?.duration);
-
-    return [
-      {
-        key: buildToastKey(payload, index),
-        id: asString(payload.id),
-        type: "tui.toast.show",
-        title,
-        message,
-        variant,
-        durationMs: durationMs && durationMs > 0 ? durationMs : 4000,
-        sessionId: asString(payload.sessionId),
-      },
-    ];
+    const notification = toastNotificationFromPayload(entry, index);
+    return notification ? [notification] : [];
   });
 }

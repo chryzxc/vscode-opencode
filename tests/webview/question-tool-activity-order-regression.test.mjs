@@ -185,7 +185,7 @@ test("question activity labels prefer polished titles over the raw tool name", (
   );
 });
 
-test("response-body dedupe never blanks the entire assistant response block", () => {
+test("response-body dedupe can fully suppress redundant question-tool completion bodies", () => {
   const body = extractFunctionBody(
     messageComponentsSource,
     "const visibleResponseBodyChunks = useMemo(() => {",
@@ -198,8 +198,13 @@ test("response-body dedupe never blanks the entire assistant response block", ()
   );
   assert.match(
     body,
-    /return filteredChunks\.length > 0 \? filteredChunks : responseBodyChunks;/,
-    "response-body dedupe should fall back to the original response chunks when filtering would blank the whole assistant block",
+    /const questionToolOnlyResponse =[\s\S]*responseBodyChunks\.every\(\(chunk\) =>[\s\S]*duplicateFingerprints\.has\(normalizeComparableText\(chunk\)\)/,
+    "response-body dedupe should detect when the assistant body is entirely redundant question-tool completion text",
+  );
+  assert.match(
+    body,
+    /return questionToolOnlyResponse \? \[\] : responseBodyChunks;/,
+    "response-body dedupe should blank the assistant body when the timeline already renders the captured question response",
   );
 });
 

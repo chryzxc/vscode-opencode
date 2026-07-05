@@ -101,10 +101,39 @@ test('handleSendMessage drains the queue after the response is processed', () =>
   assert.match(body, /if \(drainSessionId\) \{[\s\S]*void this\.handleExecuteQueue\(drainSessionId\);/, 'queue drain should only run once the session is known');
 });
 
+test('interactive question replies preserve processing state until stream terminal events arrive', () => {
+  const body = extractFunctionBody(source, '  private async handleSendMessage(');
+  assert.match(
+    body,
+    /const shouldPreserveInteractiveContinuation =[\s\S]*sendMeta\?\.interactiveSubmit === true[\s\S]*this\.activeStreamSessionId === drainSessionId[\s\S]*this\.processingSessionIds\.has\(drainSessionId\);/s,
+    'interactive replies should keep the session marked as processing during the continuation handoff',
+  );
+  assert.match(
+    body,
+    /if \(shouldPreserveInteractiveContinuation\) \{[\s\S]*Preserving processing state for interactive continuation[\s\S]*\} else \{[\s\S]*this\.processingSessionIds\.delete\(drainSessionId\);/s,
+    'interactive reply cleanup should skip the normal processing-state teardown until stream lifecycle cleanup runs',
+  );
+});
+
 test('handleStopRequest aborts the SDK session and cleans up processing state', () => {
   // Implementation detail test simplified - function signatures are implementation details
   assert.match(source, /handleStopRequest|abort|session|stop/, 'should handle stop request and session abort');
   assert.match(source, /processingSessionIds|clear|cleanup|delete/, 'should clean up processing state');
+});
+
+test('direct stop requests keep the session eligible for post-abort centralized lifecycle events', () => {
+  assert.match(
+    source,
+    /private async handleStopRequest\([\s\S]*this\.recentlyAbortedSessionIds\.add\(resolvedSessionId\);[\s\S]*await client\.session\.abort\(/s,
+    'handleStopRequest should mark the session recently aborted before calling the SDK abort API',
+  );
+
+  const streamBody = extractFunctionBody(source, '    this.unsubscribe = this.streamService.subscribe(async (event, rawEvent) => {');
+  assert.match(
+    streamBody,
+    /!this\.isSessionEffectivelyProcessing\(eventSessionId\)[\s\S]*!this\.recentlyAbortedSessionIds\.has\(eventSessionId\)/s,
+    'stream gating should keep allowing recently-aborted sessions through to centralized persistence',
+  );
 });
 
 test('handleLoadSession does not borrow AI processing markers for session loading', () => {

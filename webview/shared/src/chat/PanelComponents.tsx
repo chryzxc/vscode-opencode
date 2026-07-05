@@ -50,6 +50,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { shallowEqual, useAppDispatch, useAppState } from "./lib/store";
 import { getInteractiveEventsFromRawSdkEventPayloads } from "./lib/rawResponse";
 import { normalizeCentralizedEventPayloads } from "./lib/messageHandler";
+import { PENDING_CURRENT_SESSION_KEY } from "./lib/pendingUserMessages";
 import vscode from "./lib/vscode";
 import type {
   InteractiveEvent,
@@ -2378,6 +2379,26 @@ export function InputWrapper() {
           e.type === "confirm" ||
           e.type === "quick_input",
       );
+    // Only paint an optimistic transcript bubble when this prompt is actually
+    // being sent now. Deferred prompts already have their own queue UI, and
+    // rendering them as transcript messages can move them ahead of the turn
+    // that is still in progress.
+    const isDeferredDelivery = hasLiveAssistantTurn;
+    const pendingSessionId = sessionId ?? PENDING_CURRENT_SESSION_KEY;
+    if (!isDeferredDelivery) {
+      dispatch({
+        type: "ADD_PENDING_USER_MESSAGE",
+        payload: {
+          id: clientRequestId,
+          clientRequestId,
+          sessionId: pendingSessionId,
+          createdAt: Date.now(),
+          text,
+          images: currentAttachments.map((attachment) => attachment.dataUrl),
+          interactiveSubmit: hasPendingQuestion,
+        },
+      });
+    }
 
     vscode.postMessage({
       type: "sendMessage",
@@ -2388,13 +2409,10 @@ export function InputWrapper() {
       contexts: currentContexts,
       agent: currentAgent,
       images: currentAttachments,
-      ...(hasLiveAssistantTurn ? { delivery: "deferred" } : {}),
+      ...(isDeferredDelivery ? { delivery: "deferred" } : {}),
       ...(hasPendingQuestion ? { interactiveSubmit: true } : {}),
     });
 
-    // TEMPORARY: do not optimistically render the outgoing user message.
-    // The conversation surface now waits for the centralized session tape so
-    // the UI stays aligned with the raw server-backed source of truth.
     dispatch({ type: "SET_PROCESSING", payload: true });
     logger.info("[LOADING][INPUT] User sent message, dispatching SET_PROCESSING(true)", {
       sessionId: sessionId || null,
@@ -2653,6 +2671,27 @@ export function InputWrapper() {
       ...(currentSessionId ? { sessionId: currentSessionId } : {}),
     });
 
+  const abortActiveResponse = () =>
+    vscode.postMessage({
+      type: "abortResponse",
+      ...(currentSessionId ? { sessionId: currentSessionId } : {}),
+    });
+
+  const dismissInteractivePopover = (interactiveEvent: InteractiveEvent) => {
+    const shouldAbortActiveResponse =
+      interactiveEvent.type === "question" &&
+      (isProcessing || assistantTurnPending || Boolean(streaming));
+
+    if (shouldAbortActiveResponse) {
+      abortActiveResponse();
+    }
+
+    dispatch({
+      type: "DISMISS_INTERACTIVE_EVENT",
+      payload: interactiveEvent.id,
+    });
+  };
+
   const isImageAttachment = (mimeType?: string, dataUrl?: string) => {
     if (typeof mimeType === "string" && mimeType.startsWith("image/")) {
       return true;
@@ -2733,12 +2772,7 @@ export function InputWrapper() {
                     type="button"
                     className="oc-quick-input-icon-btn rounded p-1 transition-colors"
                     title="Dismiss This"
-                    onClick={() => {
-                      dispatch({
-                        type: "DISMISS_INTERACTIVE_EVENT",
-                        payload: event.id,
-                      });
-                    }}
+                    onClick={() => dismissInteractivePopover(event)}
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>

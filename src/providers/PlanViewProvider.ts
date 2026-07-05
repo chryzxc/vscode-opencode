@@ -175,8 +175,8 @@ export class PlanViewProvider {
     const sourceFile = typeof payload === 'string' ? undefined : payload?.sourceFile;
     const content = await this.resolvePlanContent(
       context,
-      typeof payload === 'string' ? payload : payload?.content ?? '',
       sourceFile,
+      typeof payload === 'string' ? payload : payload?.content ?? '',
     );
     const title = typeof payload === 'string' ? undefined : payload?.title;
     const column = vscode.window.activeTextEditor
@@ -216,12 +216,9 @@ export class PlanViewProvider {
 
   private static async resolvePlanContent(
     context: vscode.ExtensionContext,
-    content: string,
     sourceFile?: string,
+    content: string = "",
   ): Promise<string> {
-    if (content.trim()) {
-      return content;
-    }
     const normalizedSourceFile = sourceFile?.trim();
     if (!normalizedSourceFile) {
       return content;
@@ -253,7 +250,7 @@ export class PlanViewProvider {
       }
     }
 
-    return content;
+    return "";
   }
 
   public static closeCurrentPanel() {

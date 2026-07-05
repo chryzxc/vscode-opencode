@@ -7,6 +7,10 @@ const panelSource = readSource(
   [joinFromRoot('webview', 'shared', 'src', 'chat', 'PanelComponents.tsx')],
   'PanelComponents.tsx',
 );
+const chatShellSource = readSource(
+  [joinFromRoot('webview', 'shared', 'src', 'chat', 'ChatShell.tsx')],
+  'ChatShell.tsx',
+);
 const sessionProcessingSource = readSource(
   [joinFromRoot('webview', 'shared', 'src', 'chat', 'lib', 'sessionProcessing.ts')],
   'sessionProcessing.ts',
@@ -22,5 +26,10 @@ test('InputWrapper derives stop/send toggle from the active assistant response s
     panelSource,
     /const hasLiveAssistantTurn = shouldDeferComposerSendInCurrentSession\([\s\S]*\{hasLiveAssistantTurn \? \([\s\S]*aria-label="Stop"/s,
     'InputWrapper stop button should follow the stricter live-turn signal',
+  );
+  assert.match(
+    chatShellSource,
+    /const hasLiveAssistantTurn = shouldDeferComposerSendInCurrentSession\([\s\S]*const showAiResponseLoading =[\s\S]*hasLiveAssistantTurn[\s\S]*const showExtendedLoading =[\s\S]*hasLiveAssistantTurn/s,
+    'loading indicator should use the same live-turn condition as the stop button',
   );
 });

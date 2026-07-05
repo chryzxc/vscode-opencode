@@ -24,8 +24,23 @@ test("activity timeline tracks an explicit expanded-vs-collapsed assistant turn 
 test("activity timeline only collapses after the assistant turn is finished", () => {
   assert.match(
     messageComponentsSource,
-    /const canCollapseCompletedAssistantTurn =[\s\S]*!isLiveAssistantTurn[\s\S]*hasStickyTimelineActivity;/,
-    "collapse should only be enabled for non-live assistant turns that already have activity",
+    /const isCurrentCardLiveAssistantTurn = useMemo\(/,
+    "collapse logic should distinguish the current live assistant card from older completed cards",
+  );
+  assert.match(
+    messageComponentsSource,
+    /for \(const candidate of \[\s*assistantTurnMessageId,\s*activityTimelineStreaming\?\.messageId,\s*\]\)/s,
+    "live-card matching should key off the active turn ids only, not every rendered assistant card id",
+  );
+  assert.match(
+    messageComponentsSource,
+    /const canCollapseCompletedAssistantTurn =[\s\S]*!isCurrentCardLiveAssistantTurn[\s\S]*hasStickyTimelineActivity;/,
+    "collapse should only be disabled for the currently live assistant turn, not every older card in the session",
+  );
+  assert.match(
+    messageComponentsSource,
+    /const canCollapseCompletedAssistantTurn =[\s\S]*!\(assistantTurnPending && isLatestAssistantMessage\)[\s\S]*hasStickyTimelineActivity;/,
+    "the newest assistant card should stay expanded while its turn is still pending, even before stream ids fully attach",
   );
   assert.match(
     messageComponentsSource,
@@ -47,20 +62,30 @@ test("collapsed activity timeline renders the worked-for summary affordance", ()
   );
   assert.match(
     messageComponentsSource,
-    /Expand activity timeline and assistant response/,
-    "collapsed summary row should expand both the timeline and the hidden final response",
+    /Expand activity timeline/,
+    "collapsed summary row should expand the activity timeline after the turn completes",
   );
 });
 
-test("collapsed mode hides the final response section until expanded", () => {
+test("collapsed mode keeps only the last response chunk visible while earlier assistant chunks stay collapsed", () => {
   assert.match(
     messageComponentsSource,
-    /!\s*isAssistantTurnCollapsed\s*&&\s*showResponseSection/,
-    "final assistant response should stay hidden while the completed turn is collapsed",
+    /showResponseSection && hasVisibleResponseSectionContent/,
+    "response section should stay mounted even when the activity timeline is collapsed",
   );
   assert.match(
     messageComponentsSource,
-    /Collapse activity timeline and hide final response/,
-    "expanded completed turns should offer a way to collapse back to the summary row",
+    /const responseChunksVisibleInCurrentView =[\s\S]*isAssistantTurnCollapsed[\s\S]*responseChunksToRender\.slice\(-1\)[\s\S]*:\s*responseChunksToRender;/,
+    "collapsed mode should keep only the final assistant response chunk visible",
+  );
+  assert.match(
+    messageComponentsSource,
+    /responseChunksVisibleInCurrentView\.map\(/,
+    "response rendering should use the collapse-aware response chunk selection",
+  );
+  assert.match(
+    messageComponentsSource,
+    /Collapse activity timeline/,
+    "expanded completed turns should offer a way to collapse the non-final assistant context back to the summary row",
   );
 });

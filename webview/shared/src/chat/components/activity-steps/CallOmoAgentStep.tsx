@@ -316,11 +316,11 @@ export function CallOmoAgentStep({
     <>
       <div className="oc-activity-step-surface flex flex-col items-start gap-1.5 w-full min-w-0">
         <div className="flex items-center gap-1.5 flex-wrap min-h-[18px]">
-          <span className="oc-activity-step-title font-medium text-oc-text capitalize text-[12px]">
+          <span className="oc-activity-step-title font-medium text-oc-text capitalize">
             Invoke Subagent
           </span>
           {agent && (
-            <span className="oc-activity-step-meta text-oc-text-soft text-[11px] flex items-center gap-1.5">
+            <span className="oc-activity-step-meta flex items-center gap-1.5 text-oc-text-soft">
               <span>&middot;</span>
               <span>{agent}</span>
             </span>
@@ -335,11 +335,11 @@ export function CallOmoAgentStep({
             aria-label="View subagent details"
           >
             <div className="relative overflow-hidden p-2">
-              <div className="oc-activity-step-summary font-mono text-[10px] text-oc-text-soft whitespace-pre-wrap break-words flex items-start gap-1.5">
+              <div className="oc-activity-step-summary flex items-start gap-1.5 whitespace-pre-wrap break-words font-mono text-oc-text-soft">
                 <span className="flex-1">{summaryLine}</span>
               </div>
               {(resolvedBackgroundTaskId || sessionValue) && (
-                <div className="oc-activity-step-meta mt-1 font-mono text-[9px] text-oc-text-soft/40">
+                <div className="oc-activity-step-meta mt-1 font-mono text-oc-text-soft/40">
                   {resolvedBackgroundTaskId || sessionValue}
                 </div>
               )}

@@ -196,6 +196,18 @@ export interface PendingDeferredPrompt {
   clientRequestId?: string;
 }
 
+export interface PendingUserMessage {
+  id: string;
+  sessionId: string;
+  createdAt: number;
+  text: string;
+  clientRequestId?: string;
+  images?: string[];
+  interactiveSubmit?: boolean;
+  confirmedMessageId?: string;
+  confirmedAt?: number;
+}
+
 export interface StreamingStep {
   id?: string;
   callID?: string;
@@ -332,6 +344,8 @@ export interface MessageInfo {
   structuredOutput?: {
     fileChanges?: StructuredFileChange[];
   } & Record<string, unknown>;
+  terminalRawIndex?: number;
+  interruptedPresentation?: "inline" | "detached";
 }
 
 export interface MessagePart {
@@ -519,6 +533,7 @@ export interface ActivityDetail {
   tool?: string;
   query?: string;
   file?: string;
+  isDirectory?: boolean;
   /** Display title for read steps (e.g., relative path like "desktop/renderer/package.json") */
   title?: string;
   diffExcerpt?: ActivityDiffExcerpt;
@@ -696,6 +711,14 @@ export interface Message {
   plainTextFallbackReason?: string;
   /** Indicates this assistant message was aborted by the user (stop button). */
   aborted?: boolean;
+  /** Carries the centralized raw index for a detached terminal lifecycle marker. */
+  terminalRawIndex?: number;
+  /**
+   * Single source of truth for how an interrupted assistant turn should render:
+   * `inline` keeps the badge on the assistant card; `detached` renders a later
+   * synthetic interruption row at the centralized abort position.
+   */
+  interruptedPresentation?: "inline" | "detached";
   /** Marks a user echo as an interactive popover answer submission. */
   interactiveSubmit?: boolean;
   /** Local-only marker for a user prompt accepted by OpenCode deferred delivery. */
@@ -787,9 +810,11 @@ export interface AppState {
   messagesBySessionId?: Record<string, Message[]>;
   rawMessagesBySessionId?: Record<string, unknown[]>;
   rawSdkEventPayloadsBySessionId?: Record<string, unknown[]>;
+  liveToastNotificationsBySessionId?: Record<string, import("./toastEvents").CentralizedToastNotification[]>;
   promptQueue: QueueItem[];
   queueBySessionId: Record<string, QueueItem[]>;
   pendingDeferredPromptsBySessionId?: Record<string, PendingDeferredPrompt[]>;
+  pendingUserMessagesBySessionId?: Record<string, PendingUserMessage[]>;
   isExecutingQueue: boolean; // Legacy global flag, to be removed or used carefully
   executingQueueSessionIds: Set<string>;
   isQueueOpen: boolean;

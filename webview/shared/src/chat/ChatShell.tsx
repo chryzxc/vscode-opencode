@@ -3,6 +3,7 @@ import { Archive, X } from "lucide-react";
 
 import { AppProvider, shallowEqual, useAppDispatch, useAppState } from "./lib/store";
 import {
+  asString,
   createMessageHandler,
   extractSubagentsFromCentralizedEvents,
   getCentralizedEventInfo,
@@ -20,11 +21,20 @@ import {
   isBackgroundTaskChildAssistantMessage,
 } from "./lib/backgroundTaskOwnership";
 import {
-  isAssistantRespondingInCurrentSession,
   isProcessingInCurrentSession,
   latestAssistantMessageIdFromCentralizedTape,
-  latestSessionStatusTypeFromCentralizedTape,
+  shouldDeferComposerSendInCurrentSession,
 } from "./lib/sessionProcessing";
+import {
+  getRepresentedPendingUserMessageIds,
+  getVisiblePendingUserMessages,
+  pendingUserMessageToMessage,
+  PENDING_CURRENT_SESSION_KEY,
+} from "./lib/pendingUserMessages";
+import {
+  buildMessageConversationEntries,
+  countCanonicalMessagesAtOrBeforeRawIndex,
+} from "./lib/conversationProjection";
 import vscode from "./lib/vscode";
 import logger, { getGlobalShowBrowserConsole } from "./lib/logger";
 
@@ -45,6 +55,7 @@ import {
 import { CentralizedToastOverlay } from "./ToastOverlay";
 import { StreamingCard } from "./StreamingComponents";
 import {
+  AIStatusTicker,
   BackgroundTaskReminderMessage,
   ResponseMessage,
   CentralizedDebugPanel,
@@ -170,8 +181,20 @@ function getCanonicalMessageCreatedAt(message: Message): number {
   if (typeof message.created === "number") {
     return message.created;
   }
+  if (typeof (message as { createdAt?: number }).createdAt === "number") {
+    return (message as { createdAt?: number }).createdAt as number;
+  }
   if (typeof message.info?.created === "number") {
     return message.info.created;
+  }
+  if (typeof (message.info as { createdAt?: number } | undefined)?.createdAt === "number") {
+    return (message.info as { createdAt?: number }).createdAt as number;
+  }
+  if (typeof message.time?.created === "number") {
+    return message.time.created;
+  }
+  if (typeof message.info?.time?.created === "number") {
+    return message.info.time.created;
   }
   return 0;
 }
@@ -180,6 +203,68 @@ type CentralizedAssistantTurnIndex = {
   assistantParentIdByMessageId: Map<string, string>;
   firstRawIndexByMessageId: Map<string, number>;
 };
+
+function getAssistantMessageIdBeforeRawIndex(
+  rawSdkEventPayloads: unknown[],
+  rawIndexExclusive: number,
+): string | null {
+  if (!Array.isArray(rawSdkEventPayloads) || rawSdkEventPayloads.length === 0) {
+    return null;
+  }
+
+  for (
+    let index = Math.min(rawIndexExclusive - 1, rawSdkEventPayloads.length - 1);
+    index >= 0;
+    index -= 1
+  ) {
+    const event = asRecord(rawSdkEventPayloads[index]);
+    if (!event) {
+      continue;
+    }
+
+    const properties = asRecord(event.properties);
+    const info =
+      asRecord(properties?.info) ??
+      asRecord(event.info) ??
+      getCentralizedEventInfo(event);
+    const part = getCentralizedEventPart(event);
+    const eventType = getCentralizedEventType(event);
+
+    if (
+      eventType === "message.updated" &&
+      asString(info?.role).trim().toLowerCase() === "assistant"
+    ) {
+      const assistantId = firstNonEmptyString(
+        info?.id,
+        info?.messageID,
+        info?.messageId,
+      );
+      if (assistantId) {
+        return assistantId;
+      }
+    }
+
+    const partType = asString(part?.type).trim().toLowerCase();
+    const toolName = firstNonEmptyString(part?.tool, part?.name)?.toLowerCase();
+    if (
+      partType === "step-finish" ||
+      partType === "step-start" ||
+      partType === "reasoning" ||
+      partType === "tool" ||
+      !!toolName
+    ) {
+      const assistantId = firstNonEmptyString(
+        part?.messageID,
+        part?.messageId,
+      );
+      if (assistantId) {
+        return assistantId;
+      }
+    }
+  }
+
+  return null;
+}
 
 /**
  * Canonical message identity for centralized transcript rendering.
@@ -262,8 +347,12 @@ function getCentralizedEventCreatedAt(
   part: Record<string, unknown> | null,
 ): number | undefined {
   const properties = asRecord(event.properties);
+  const info = getCentralizedEventInfo(event);
+  const infoTime = asRecord(info?.time);
   return typeof properties?.time === "number"
     ? properties.time
+    : typeof infoTime?.created === "number"
+      ? (infoTime.created as number)
     : typeof asRecord(part?.time)?.start === "number"
       ? (asRecord(part?.time)?.start as number)
       : typeof asRecord(part?.time)?.end === "number"
@@ -346,11 +435,11 @@ function buildCentralizedRenderMessages(rawSdkEventPayloads: unknown[]): Message
    * ============================================================================
    * STRICT CENTRALIZED DATA ENFORCEMENT
    * ============================================================================
-   * Per strict architectural requirements: All data that will be rendered in the 
-   * conversation list MUST come from the centralized data (rawSdkEventPayloads), 
-   * nothing else. 
-   * 
-   * We do NOT render optimistic messages from the local `messages` state. 
+   * Per strict architectural requirements: All data that will be rendered in the
+   * conversation list MUST come from the centralized data (rawSdkEventPayloads),
+   * nothing else.
+   *
+   * We do NOT render optimistic messages from the local `messages` state.
    * Even user messages are purely derived from the central tape echoing them back.
    * If a message is not in `rawSdkEventPayloads`, it does not exist in the UI.
    * ============================================================================
@@ -389,6 +478,7 @@ function buildCentralizedRenderMessages(rawSdkEventPayloads: unknown[]): Message
   const rawEventsByMessageId = new Map<string, unknown[]>();
   const partsByMessageId = new Map<string, unknown[]>();
   const firstRawIndexByMessageId = new Map<string, number>();
+  const createdAtByMessageId = new Map<string, number>();
   const rawIndexByEvent = new Map<unknown, number>();
   const coalescedIdsByMessageId = new Map<string, string[]>();
   const centralizedAssistantTurnIndex: CentralizedAssistantTurnIndex = {
@@ -397,6 +487,69 @@ function buildCentralizedRenderMessages(rawSdkEventPayloads: unknown[]): Message
   };
   const latestAssistantMessageId =
     latestAssistantMessageIdFromCentralizedTape(normalizedRawSdkEventPayloads);
+  const isAbortLikeCentralizedSignal = (value: unknown): boolean => {
+    const normalized = firstNonEmptyString(value)?.trim().toLowerCase();
+    if (!normalized) {
+      return false;
+    }
+    return (
+      normalized.includes("messageabortederror") ||
+      normalized === "aborted" ||
+      normalized.endsWith(": aborted") ||
+      normalized.includes("aborterror")
+    );
+  };
+  const isCentralizedAbortEvent = (event: unknown): boolean => {
+    const eventRec = asRecord(event);
+    if (!eventRec) {
+      return false;
+    }
+    const eventType = getCentralizedEventType(eventRec);
+    if (
+      eventType !== "session.error" &&
+      eventType !== "error" &&
+      eventType !== "message.updated"
+    ) {
+      return false;
+    }
+
+    const properties = asRecord(eventRec.properties);
+    const info = getCentralizedEventInfo(eventRec);
+    const errorRec =
+      asRecord(properties?.error) ??
+      asRecord(eventRec.error) ??
+      asRecord(info?.error);
+    const errorData = asRecord(errorRec?.data);
+
+    return (
+      info?.aborted === true ||
+      errorRec?.aborted === true ||
+      isAbortLikeCentralizedSignal(errorRec?.name) ||
+      isAbortLikeCentralizedSignal(errorRec?.message) ||
+      isAbortLikeCentralizedSignal(errorData?.message) ||
+      isAbortLikeCentralizedSignal(properties?.message) ||
+      isAbortLikeCentralizedSignal(eventRec.message)
+    );
+  };
+  const lastAbortRawIndex = (() => {
+    for (
+      let rawIndex = normalizedRawSdkEventPayloads.length - 1;
+      rawIndex >= 0;
+      rawIndex -= 1
+    ) {
+      if (isCentralizedAbortEvent(normalizedRawSdkEventPayloads[rawIndex])) {
+        return rawIndex;
+      }
+    }
+    return -1;
+  })();
+  const assistantMessageIdBeforeAbort =
+    lastAbortRawIndex >= 0
+      ? getAssistantMessageIdBeforeRawIndex(
+          normalizedRawSdkEventPayloads,
+          lastAbortRawIndex,
+        )
+      : null;
   const rememberAssistantDescriptor = (descriptor: {
     messageId: string;
     parentId?: string;
@@ -438,6 +591,16 @@ function buildCentralizedRenderMessages(rawSdkEventPayloads: unknown[]): Message
       rawEventsByMessageId.set(eventMessageId, existing);
       if (!firstRawIndexByMessageId.has(eventMessageId)) {
         firstRawIndexByMessageId.set(eventMessageId, rawIndex);
+      }
+      const eventCreatedAt = getCentralizedEventCreatedAt(event, eventPart);
+      if (typeof eventCreatedAt === "number") {
+        const existingCreatedAt = createdAtByMessageId.get(eventMessageId);
+        if (
+          typeof existingCreatedAt !== "number" ||
+          eventCreatedAt < existingCreatedAt
+        ) {
+          createdAtByMessageId.set(eventMessageId, eventCreatedAt);
+        }
       }
     }
 
@@ -533,7 +696,9 @@ function buildCentralizedRenderMessages(rawSdkEventPayloads: unknown[]): Message
     pendingTextDescriptors.push({
       messageId,
       text,
-      createdAt: getCentralizedEventCreatedAt(event, part),
+      createdAt:
+        getCentralizedEventCreatedAt(event, part) ??
+        createdAtByMessageId.get(messageId),
       rawIndex,
     });
   }
@@ -709,19 +874,70 @@ function buildCentralizedRenderMessages(rawSdkEventPayloads: unknown[]): Message
         id: descriptor.messageId,
         role: "assistant",
         created: descriptor.createdAt,
+        createdAt: descriptor.createdAt,
+        time:
+          typeof descriptor.createdAt === "number"
+            ? { created: descriptor.createdAt }
+            : undefined,
         parentID: descriptor.parentId,
       },
       coalescedIds: coalescedIdsByMessageId.get(descriptor.messageId) ?? undefined,
       created: descriptor.createdAt,
+      createdAt: descriptor.createdAt,
+      time:
+        typeof descriptor.createdAt === "number"
+          ? { created: descriptor.createdAt }
+          : undefined,
       parts: collectedParts.length > 0 ? collectedParts : undefined,
       rawSdkEventPayloads,
     } as Message;
-    
+
     const normalized = applyCentralizedAssistantTurnIdentity(
       normalizeMessage(rawAssistantMessage, null) ?? rawAssistantMessage,
       centralizedAssistantTurnIndex,
       descriptor.parentId,
     );
+    const hasMessageScopedAbortSignal = rawSdkEventPayloads.some((event) =>
+      isCentralizedAbortEvent(event),
+    );
+    const isLatestAssistantTurnAbortedBySessionError =
+      descriptor.messageId ===
+        (assistantMessageIdBeforeAbort || latestAssistantMessageId) &&
+      lastAbortRawIndex >= 0 &&
+      (firstRawIndexByMessageId.get(descriptor.messageId) ?? Number.MAX_SAFE_INTEGER) <=
+        lastAbortRawIndex;
+    if (hasMessageScopedAbortSignal || isLatestAssistantTurnAbortedBySessionError) {
+      normalized.aborted = true;
+      normalized.interactiveEvents = [];
+      // Preserve the centralized terminal raw index on the assistant message,
+      // but do NOT use it to move the assistant card itself. The response block
+      // still belongs at its canonical turn position (after the user prompt that
+      // created it). This metadata only exists so the projection layer can emit
+      // a separate late interruption marker when the abort row lands after newer
+      // visible transcript content.
+      (normalized as Record<string, unknown>).terminalRawIndex =
+        hasMessageScopedAbortSignal
+          ? Math.max(
+              ...rawSdkEventPayloads
+                .map((event) => rawIndexByEvent.get(event))
+                .filter((index): index is number => typeof index === "number"),
+            )
+          : lastAbortRawIndex;
+      normalized.info = {
+        ...(normalized.info || {}),
+        aborted: true,
+        interruptedPresentation: "inline",
+        terminalRawIndex:
+          hasMessageScopedAbortSignal
+            ? Math.max(
+                ...rawSdkEventPayloads
+                  .map((event) => rawIndexByEvent.get(event))
+                  .filter((index): index is number => typeof index === "number"),
+              )
+            : lastAbortRawIndex,
+      };
+      normalized.interruptedPresentation = "inline";
+    }
     merged.push(normalized);
   }
 
@@ -742,9 +958,16 @@ function buildCentralizedRenderMessages(rawSdkEventPayloads: unknown[]): Message
       info: {
         id: descriptor.messageId,
         role: "user",
+        created: descriptor.createdAt,
+        createdAt: descriptor.createdAt,
+        time:
+          typeof descriptor.createdAt === "number"
+            ? { created: descriptor.createdAt }
+            : undefined,
       },
       coalescedIds: coalescedIdsByMessageId.get(descriptor.messageId) ?? undefined,
       created: descriptor.createdAt,
+      createdAt: descriptor.createdAt,
       rawSdkEventPayloads: getRawEventsForMessageId(descriptor.messageId),
     } as Message);
   }
@@ -763,8 +986,15 @@ function buildCentralizedRenderMessages(rawSdkEventPayloads: unknown[]): Message
       info: {
         id: descriptor.messageId,
         role: "system",
+        created: descriptor.createdAt,
+        createdAt: descriptor.createdAt,
+        time:
+          typeof descriptor.createdAt === "number"
+            ? { created: descriptor.createdAt }
+            : undefined,
       },
       created: descriptor.createdAt,
+      createdAt: descriptor.createdAt,
       rawSdkEventPayloads: getRawEventsForMessageId(descriptor.messageId),
     } as Message);
   }
@@ -775,6 +1005,12 @@ function buildCentralizedRenderMessages(rawSdkEventPayloads: unknown[]): Message
   // non-centralized user/assistant/system messages paint before the tape does.
 
   const sorted = merged.sort((left, right) => {
+    const leftCreated = getCanonicalMessageCreatedAt(left);
+    const rightCreated = getCanonicalMessageCreatedAt(right);
+    if (leftCreated !== rightCreated) {
+      return leftCreated - rightCreated;
+    }
+
     const leftId = firstNonEmptyString(left.info?.id, left.id, left.messageId) ?? "";
     const rightId = firstNonEmptyString(right.info?.id, right.id, right.messageId) ?? "";
     const rawIndexForMessage = (messageId: string): number =>
@@ -801,11 +1037,6 @@ function buildCentralizedRenderMessages(rawSdkEventPayloads: unknown[]): Message
     const rightRawIndex = rawIndexForMessage(rightId);
     if (leftRawIndex !== rightRawIndex) {
       return leftRawIndex - rightRawIndex;
-    }
-    const leftCreated = getCanonicalMessageCreatedAt(left);
-    const rightCreated = getCanonicalMessageCreatedAt(right);
-    if (leftCreated !== rightCreated) {
-      return leftCreated - rightCreated;
     }
     return 0;
   });
@@ -866,6 +1097,12 @@ type ConversationRenderEntry =
       kind: "session.diff";
       key: string;
       diff: CentralizedSessionDiffEvent;
+      order: number;
+    }
+  | {
+      kind: "assistant.abort";
+      key: string;
+      messageId?: string;
       order: number;
     };
 
@@ -961,19 +1198,13 @@ function buildCentralizedTranscriptProjection(
   const normalizedRawSdkEventPayloads = normalizeCentralizedEventPayloads(rawSdkEventPayloads);
   const renderMessages = buildCentralizedRenderMessages(normalizedRawSdkEventPayloads);
   const firstRawIndexByMessageId = new Map<string, number>();
-  const assistantParentIdByMessageId = new Map<string, string>();
-  const centralizedAssistantTurnIndex: CentralizedAssistantTurnIndex = {
-    assistantParentIdByMessageId,
-    firstRawIndexByMessageId,
-  };
   const conversationEntries: ConversationRenderEntry[] = [];
 
-  // Build a small turn index from the same normalized centralized tape used by
-  // the render-message builder. Conversation ordering must not rely on array
-  // position alone: streamed/hydrated events can arrive as assistant updates
-  // before the UI-visible user bubble, and sync-wrapped payloads can omit fields
-  // that the normal event shape has. The shared parent lookup below reconciles
-  // those shapes before we pair user -> assistant.
+  // Projection should not invent a second ordering system. The canonical
+  // centralized render-message builder already resolved duplicate ids and
+  // produced transcript order. This layer only records each message's earliest
+  // raw tape index so non-message cards can be inserted relative to that single
+  // canonical order.
   for (let rawIndex = 0; rawIndex < normalizedRawSdkEventPayloads.length; rawIndex += 1) {
     const event = asRecord(normalizedRawSdkEventPayloads[rawIndex]);
     if (!event) {
@@ -988,28 +1219,23 @@ function buildCentralizedTranscriptProjection(
       part?.messageID,
       part?.messageId,
     );
-    const role = firstNonEmptyString(info?.role)?.toLowerCase();
-    const parentId = firstNonEmptyString(info?.parentID, info?.parentId);
-    if (messageId && role === "assistant" && parentId) {
-      assistantParentIdByMessageId.set(messageId, parentId);
-    }
     if (messageId && !firstRawIndexByMessageId.has(messageId)) {
       firstRawIndexByMessageId.set(messageId, rawIndex);
     }
   }
 
-  const messageRawOrders = renderMessages.map((message) => {
+  const getRawOrderForMessage = (message: Message): number => {
     const rawIndexes = getMessageAndCoalescedIds(message)
       .map((messageId) => firstRawIndexByMessageId.get(messageId))
       .filter((value): value is number => typeof value === "number");
     return rawIndexes.length > 0 ? Math.min(...rawIndexes) : Number.MAX_SAFE_INTEGER;
-  });
+  };
 
   const renderMessageEntries = renderMessages.map((message, index) => ({
     message,
     index,
     ids: getMessageAndCoalescedIds(message),
-    rawOrder: messageRawOrders[index] ?? Number.MAX_SAFE_INTEGER,
+    rawOrder: getRawOrderForMessage(message),
     role: firstNonEmptyString(message.role, message.info?.role)?.toLowerCase() ?? "",
     renderKind: classifyConversationMessageRenderKind({
       message,
@@ -1017,107 +1243,56 @@ function buildCentralizedTranscriptProjection(
       messages: renderMessages,
     }),
   }));
-
-  const userEntries = renderMessageEntries
-    .filter((entry) => entry.role === "user")
-    .sort((left, right) => {
-      if (left.rawOrder !== right.rawOrder) return left.rawOrder - right.rawOrder;
-      return left.index - right.index;
-    });
-  // We still pre-index user entries by owned/coalesced ids so assistant turns
-  // can find their logical parent even when centralized payload shapes differ.
-  // This lookup is only for relationship resolution. It must not be used as the
-  // primary source of transcript ordering, otherwise later user turns can pull
-  // the timeline forward and strand earlier assistant-only entries behind them.
-  const userEntryByOwnedId = new Map<string, (typeof renderMessageEntries)[number]>();
-  for (const entry of userEntries) {
-    for (const id of entry.ids) {
-      if (!userEntryByOwnedId.has(id)) {
-        userEntryByOwnedId.set(id, entry);
-      }
-    }
-  }
-
-  const assistantEntriesByUserPrimaryId = new Map<
-    string,
-    Array<(typeof renderMessageEntries)[number]>
-  >();
-  for (const entry of renderMessageEntries) {
-    if (entry.role !== "assistant") {
-      continue;
-    }
-    // Use the shared turn identity helper here. Do not inline
-    // `entry.message.info.parentID` or `assistantParentIdByMessageId.get(id)`:
-    // that was the source of the regression where the first assistant response
-    // lost its parent and its reasoning/content appeared under the next prompt.
-    const parentId = getCentralizedAssistantParentId(entry.message, centralizedAssistantTurnIndex);
-    const parentUserEntry = parentId ? userEntryByOwnedId.get(parentId) : undefined;
-    const parentUserPrimaryId = parentUserEntry?.ids[0];
-    if (!parentUserPrimaryId) {
-      continue;
-    }
-    const siblings = assistantEntriesByUserPrimaryId.get(parentUserPrimaryId);
-    if (siblings) {
-      siblings.push(entry);
-      continue;
-    }
-    assistantEntriesByUserPrimaryId.set(parentUserPrimaryId, [entry]);
-  }
-
-  const orderedMessageEntries: typeof renderMessageEntries = [];
-  const emittedMessageIndexes = new Set<number>();
-  const pushMessageEntry = (entry: (typeof renderMessageEntries)[number] | undefined): void => {
-    if (!entry || emittedMessageIndexes.has(entry.index)) {
-      return;
-    }
-    emittedMessageIndexes.add(entry.index);
-    orderedMessageEntries.push(entry);
+  const getTerminalRawIndex = (message: Message): number | undefined => {
+    return typeof message.terminalRawIndex === "number"
+      ? message.terminalRawIndex
+      : typeof message.info?.terminalRawIndex === "number"
+        ? message.info.terminalRawIndex
+        : undefined;
   };
 
-  // Centralized transcript order is the source of truth. We walk every render
-  // message in raw tape order first, then opportunistically emit assistant
-  // siblings immediately after their user turn. This preserves the user's
-  // mental model of the session while still keeping a user prompt and its
-  // assistant replies visually grouped together.
-  //
-  // The earlier regression came from iterating user turns first and appending
-  // "remaining" entries afterward. That looked harmless, but it moved orphaned
-  // or partially-linked assistant entries to the end of the transcript. In the
-  // reported bug, that made the later "where is the summary?" turn appear in
-  // the middle because an earlier assistant reasoning entry was emitted too late.
-  const entriesByRawOrder = [...renderMessageEntries].sort((left, right) => {
-    if (left.rawOrder !== right.rawOrder) return left.rawOrder - right.rawOrder;
-    return left.index - right.index;
-  });
-
-  for (const entry of entriesByRawOrder) {
-    if (emittedMessageIndexes.has(entry.index)) {
+  for (const entry of renderMessageEntries) {
+    const terminalRawIndex = getTerminalRawIndex(entry.message);
+    if (
+      entry.message.aborted !== true ||
+      typeof terminalRawIndex !== "number" ||
+      terminalRawIndex <= entry.rawOrder
+    ) {
       continue;
     }
 
-    if (entry.role !== "user") {
-      // Non-user entries must stay exactly where the centralized tape put them.
-      // If we postpone them until after all user turns, we break chronology for
-      // assistant-only updates, failed turns, reasoning-only messages, and other
-      // entries that do not cleanly pair back to a user bubble.
-      pushMessageEntry(entry);
+    const hasInterveningCanonicalMessage = renderMessageEntries.some(
+      (candidate) =>
+        candidate.index !== entry.index &&
+        candidate.renderKind !== "hidden" &&
+        candidate.rawOrder > entry.rawOrder &&
+        candidate.rawOrder <= terminalRawIndex,
+    );
+    if (!hasInterveningCanonicalMessage) {
       continue;
     }
 
-    pushMessageEntry(entry);
-    const assistantEntries = assistantEntriesByUserPrimaryId
-      .get(entry.ids[0] ?? "")
-      ?.sort((left, right) => {
-        if (left.rawOrder !== right.rawOrder) return left.rawOrder - right.rawOrder;
-        return left.index - right.index;
-      });
-    assistantEntries?.forEach((assistantEntry) => {
-      // Pairing still matters for normal prompt/response turns, but only after
-      // the parent user entry has been encountered in raw order. Because
-      // `pushMessageEntry` de-dupes by render-message index, an assistant that
-      // already appeared earlier in the tape will not be duplicated here.
-      pushMessageEntry(assistantEntry);
-    });
+    // Detach only the interruption badge, not the assistant card.
+    //
+    // Required ordering contract:
+    // 1. user prompt that started the turn
+    // 2. assistant response card with its real content/timeline
+    // 3. newer user turns that may already exist in the centralized tape
+    // 4. a trailing interruption marker if the SDK abort row arrived later
+    //
+    // Marking the message this way lets ResponseMessage hide its inline badge,
+    // while this projection emits a separate `assistant.abort` entry at the
+    // terminal raw position below. Without this split, we can only choose one of
+    // two bad outcomes: either the assistant card moves too late, or the badge
+    // renders too early inside the assistant card.
+    entry.message = {
+      ...entry.message,
+      interruptedPresentation: "detached",
+      info: {
+        ...(entry.message.info || {}),
+        interruptedPresentation: "detached",
+      },
+    };
   }
 
   renderMessageEntries
@@ -1127,12 +1302,12 @@ function buildCentralizedTranscriptProjection(
         messageId: getCanonicalMessageId(entry.message),
         rawOrder: entry.rawOrder,
         index: entry.index,
-        emittedDuringUserPass: emittedMessageIndexes.has(entry.index),
+        emittedDuringUserPass: true,
         role: entry.role,
       });
     });
 
-  orderedMessageEntries
+  renderMessageEntries
     .filter((entry) => isBackgroundTaskReminderMessage(entry.message))
     .forEach((entry, index) => {
       logBackgroundTaskReminderTrace("ORDER_FINAL", {
@@ -1143,27 +1318,49 @@ function buildCentralizedTranscriptProjection(
       });
     });
 
-  for (let index = 0; index < orderedMessageEntries.length; index += 1) {
-    const entry = orderedMessageEntries[index];
-    if (entry.renderKind === "hidden") {
-      continue;
+  buildMessageConversationEntries(renderMessageEntries).forEach((entry) => {
+    if (entry.kind !== "message") {
+      return;
     }
-    const messageId = entry.ids[0] ?? `idx:${entry.index}`;
-    if (entry.renderKind === "background-task-reminder" || entry.renderKind === "hidden") {
+    if (
+      entry.renderKind === "background-task-reminder" ||
+      entry.renderKind === "hidden"
+    ) {
       logBackgroundTaskReminderTrace("RENDER_ENTRY", {
-        messageId,
+        messageId: firstNonEmptyString(entry.key.replace(/^message:/, "")) ?? entry.key,
         renderKind: entry.renderKind,
-        rawOrder: entry.rawOrder,
-        index: entry.index,
+        rawOrder:
+          renderMessageEntries.find((candidate) => candidate.index === entry.messageIndex)
+            ?.rawOrder ?? Number.MAX_SAFE_INTEGER,
+        index: entry.messageIndex,
       });
     }
+    conversationEntries.push(entry);
+  });
+
+  for (const entry of renderMessageEntries) {
+    const terminalRawIndex = getTerminalRawIndex(entry.message);
+    if (
+      entry.message.aborted !== true ||
+      entry.message.interruptedPresentation !== "detached" ||
+      typeof terminalRawIndex !== "number"
+    ) {
+      continue;
+    }
+
+    // Place the detached interruption badge using the canonical message count at
+    // the abort row. This keeps the badge in raw-tape order relative to later
+    // user/system/diff entries without disturbing the already-correct placement
+    // of the assistant response card itself.
     conversationEntries.push({
-      kind: "message",
-      key: `message:${messageId}`,
-      message: entry.message,
-      messageIndex: entry.index,
-      order: index * 10,
-      renderKind: entry.renderKind,
+      kind: "assistant.abort",
+      key: `assistant.abort:${entry.ids[0] ?? entry.index}`,
+      messageId: entry.ids[0],
+      order:
+        countCanonicalMessagesAtOrBeforeRawIndex(
+          renderMessageEntries,
+          terminalRawIndex,
+        ) * 10 + 7,
     });
   }
 
@@ -1182,7 +1379,10 @@ function buildCentralizedTranscriptProjection(
       continue;
     }
     seenSessionDiffFingerprints.add(diffFingerprint);
-    const priorMessageCount = orderedMessageEntries.filter((entry) => entry.rawOrder <= rawIndex).length;
+    const priorMessageCount = countCanonicalMessagesAtOrBeforeRawIndex(
+      renderMessageEntries,
+      rawIndex,
+    );
     conversationEntries.push({
       kind: "session.diff",
       key: `session.diff:${diff.id ?? rawIndex}`,
@@ -1195,13 +1395,6 @@ function buildCentralizedTranscriptProjection(
     renderMessages,
     conversationEntries: conversationEntries.sort((left, right) => left.order - right.order),
   };
-}
-
-function buildCentralizedConversationEntries(
-  rawSdkEventPayloads: unknown[],
-): ConversationRenderEntry[] {
-  return buildCentralizedTranscriptProjection(rawSdkEventPayloads)
-    .conversationEntries;
 }
 
 function collectMessageIdentityCandidates(message?: Message): string[] {
@@ -1316,13 +1509,8 @@ function getToastSeverity(message: string): "warning" | "error" {
 
 function SessionLoadingSpinner() {
   return (
-    <div className="flex items-center justify-center gap-2">
-      {/* Three dot loading animation */}
-      <div className="flex gap-1.5">
-        <div className="h-2 w-2 rounded-full bg-oc-accent animate-[pulse_1.4s_ease-in-out_infinite]" style={{ animationDelay: '0s' }} />
-        <div className="h-2 w-2 rounded-full bg-oc-accent animate-[pulse_1.4s_ease-in-out_infinite]" style={{ animationDelay: '0.2s' }} />
-        <div className="h-2 w-2 rounded-full bg-oc-accent animate-[pulse_1.4s_ease-in-out_infinite]" style={{ animationDelay: '0.4s' }} />
-      </div>
+    <div className="flex items-center justify-center">
+      <AIStatusTicker />
     </div>
   );
 }
@@ -1349,6 +1537,7 @@ function ChatContent() {
       lastCompactedAt: appState.lastCompactedAt,
       messages: appState.messages,
       pendingDeferredPromptsBySessionId: appState.pendingDeferredPromptsBySessionId,
+      pendingUserMessagesBySessionId: appState.pendingUserMessagesBySessionId,
       processingSessionIds: appState.processingSessionIds,
       rawSdkEventPayloadsBySessionId: appState.rawSdkEventPayloadsBySessionId,
       receivedInitState: appState.receivedInitState,
@@ -1492,6 +1681,37 @@ function ChatContent() {
     [centralizedSessionRawSdkEventPayloads],
   );
   const renderMessages = transcriptProjection.renderMessages;
+  const pendingUserMessages = useMemo(() => {
+    const bySessionId = state.pendingUserMessagesBySessionId ?? {};
+    const sessionKey = state.currentSessionId ?? PENDING_CURRENT_SESSION_KEY;
+    return bySessionId[sessionKey] ?? [];
+  }, [state.pendingUserMessagesBySessionId, state.currentSessionId]);
+  const visiblePendingUserMessages = useMemo(
+    () => getVisiblePendingUserMessages(pendingUserMessages, renderMessages),
+    [pendingUserMessages, renderMessages],
+  );
+
+  useEffect(() => {
+    const sessionId = state.currentSessionId ?? PENDING_CURRENT_SESSION_KEY;
+    const representedIds = getRepresentedPendingUserMessageIds(
+      pendingUserMessages,
+      renderMessages,
+    );
+    if (representedIds.length === 0) {
+      return;
+    }
+    // This is the optimistic-to-canonical handoff. The local overlay message
+    // should disappear only after the centralized transcript already contains
+    // the matching user turn, otherwise the composer feels fast but the bubble
+    // flickers or jumps when streaming starts.
+    dispatch({
+      type: "REMOVE_PENDING_USER_MESSAGES",
+      payload: {
+        sessionId,
+        ids: representedIds,
+      },
+    });
+  }, [dispatch, pendingUserMessages, renderMessages, state.currentSessionId]);
 
   useEffect(() => {
     const isStreamingNow = Boolean(state.streaming?.isActive);
@@ -1660,7 +1880,6 @@ function ChatContent() {
     return () => clearTimeout(timeoutId);
   }, [state.isLoadingSession, dispatch]);
 
-  // Check if AI is currently responding (processing user message)
   const isAiResponding = isProcessingInCurrentSession(
     state.isProcessing,
     state.currentSessionId,
@@ -1669,19 +1888,12 @@ function ChatContent() {
   const hasAnyRenderableConversation =
     centralizedSessionRawSdkEventPayloads.length > 0 ||
     Boolean(state.streaming?.isActive);
-  const isAiStillResponding = isAssistantRespondingInCurrentSession(
-    state.isProcessing,
+  const hasLiveAssistantTurn = shouldDeferComposerSendInCurrentSession(
     state.currentSessionId,
     state.processingSessionIds,
     Boolean(state.streaming?.isActive),
     state.assistantTurnPending,
-    hasAnyRenderableConversation,
-    centralizedSessionRawSdkEventPayloads,
   );
-  const latestSessionStatusType = latestSessionStatusTypeFromCentralizedTape(
-    centralizedSessionRawSdkEventPayloads,
-  );
-
   // Check if we're switching to a different session (loading conversation)
   // Uses the new isLoadingSession state which is set during session switches
   // Note: We don't check if loadingSessionId === currentSessionId because during
@@ -1747,7 +1959,7 @@ function ChatContent() {
   const hasRenderableStreamingContent = Boolean(state.streaming?.hasRenderableContent);
   const showAiResponseLoading =
     !state.isLoadingSession && // Direct state check to avoid timing issues
-    isAiStillResponding && // Keep loading affordance visible while the turn is active
+    hasLiveAssistantTurn &&
     !state.isCompacting;
 
   // Enforce minimum display duration for loading state
@@ -1766,7 +1978,9 @@ function ChatContent() {
   // Extend the loading state display time if content arrived too quickly
   const showExtendedLoading =
     showAiResponseLoading || // Normal loading state
-    (loadingStartTimeRef.current && loadingElapsedTime < LOADING_MIN_DISPLAY_MS && isAiStillResponding); // Extended for minimum duration
+    (loadingStartTimeRef.current &&
+      loadingElapsedTime < LOADING_MIN_DISPLAY_MS &&
+      hasLiveAssistantTurn); // Extended for minimum duration
 
   const compactionDividerIndex =
     typeof state.compactionDividerIndex === "number"
@@ -1956,6 +2170,11 @@ function ChatContent() {
             ? state.rawSdkEventPayloadsBySessionId?.[state.currentSessionId]
             : undefined
         }
+        liveNotifications={
+          state.currentSessionId
+            ? state.liveToastNotificationsBySessionId?.[state.currentSessionId]
+            : undefined
+        }
       />
 
       {/* === LEFT: History sidebar overlay (hamburger-toggled, absolute positioned) === */}
@@ -2081,7 +2300,7 @@ function ChatContent() {
 
           {(() => {
             let messageCountSeen = 0;
-            return visibleConversationEntries.map((entry) => {
+            const renderedEntries = visibleConversationEntries.map((entry) => {
               const dividerHere = !isCompressed && compactionDividerIndex === messageCountSeen;
               if (entry.kind === "message") {
                 const msg = entry.message;
@@ -2162,6 +2381,22 @@ function ChatContent() {
                 );
               }
 
+              if (entry.kind === "assistant.abort") {
+                return (
+                  <Fragment key={entry.key}>
+                    {dividerHere ? <CompactionDivider at={state.lastCompactedAt} /> : null}
+                    <div className="px-4">
+                      <div className="mt-2 flex items-center justify-center">
+                        <div className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 py-1 text-[10px] font-medium tracking-wide text-amber-400">
+                          <div className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse" />
+                          <span>Interrupted</span>
+                        </div>
+                      </div>
+                    </div>
+                  </Fragment>
+                );
+              }
+
               return (
                 <Fragment key={entry.key}>
                   {dividerHere ? <CompactionDivider at={state.lastCompactedAt} /> : null}
@@ -2173,6 +2408,13 @@ function ChatContent() {
                 </Fragment>
               );
             });
+            const pendingEntries = visiblePendingUserMessages.map((pendingMessage) => (
+              <UserMessage
+                key={`pending-user:${pendingMessage.id}`}
+                message={pendingUserMessageToMessage(pendingMessage)}
+              />
+            ));
+            return [...renderedEntries, ...pendingEntries];
           })()}
 
               {!isCompressed && compactionDividerIndex === renderMessages.length ? (
@@ -2203,7 +2445,7 @@ function ChatContent() {
 
           {/* Single loading indicator pinned to the bottom of the chat. */}
           {showExtendedLoading ? (
-            <ThinkingBubble statusType={latestSessionStatusType} />
+            <ThinkingBubble />
           ) : null}
 
           {state.isCompacting ? (

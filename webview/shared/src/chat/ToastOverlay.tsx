@@ -45,14 +45,16 @@ function toastVariantStyles(variant: ToastVariant) {
 export function CentralizedToastOverlay({
   sessionId,
   rawSdkEventPayloads,
+  liveNotifications,
 }: {
   sessionId?: string | null;
   rawSdkEventPayloads?: unknown[];
+  liveNotifications?: CentralizedToastNotification[];
 }) {
-  const notifications = useMemo(
-    () => extractCentralizedToastNotifications(rawSdkEventPayloads),
-    [rawSdkEventPayloads],
-  );
+  const notifications = useMemo(() => {
+    const persisted = extractCentralizedToastNotifications(rawSdkEventPayloads);
+    return [...persisted, ...(liveNotifications ?? [])];
+  }, [liveNotifications, rawSdkEventPayloads]);
   const [activeToast, setActiveToast] = useState<CentralizedToastNotification | null>(null);
   const toastQueueRef = useRef<CentralizedToastNotification[]>([]);
   const activeToastRef = useRef<CentralizedToastNotification | null>(null);

@@ -3382,6 +3382,10 @@ export class ChatViewProvider
           await this.handleStopRequest(message.sessionId);
           break;
         }
+        case "abortResponse": {
+          await this.handleStopRequest(message.sessionId);
+          break;
+        }
         case "compactSession": {
           await this.handleCompactSession(
             message.sessionId,
@@ -4092,13 +4096,7 @@ export class ChatViewProvider
           hasRawEvent: typeof rawEvent !== "undefined",
         });
       }
-      if (hasBlockingInteractive && resolvedSessionId) {
-        this.processingSessionIds.delete(resolvedSessionId);
-        if (this.activeStreamSessionId === resolvedSessionId) {
-          this.activeStreamSessionId = undefined;
-        }
-        this.sendProcessingSessionsUpdate();
-      } else if (resolvedSessionId && (
+      if (resolvedSessionId && (
         isTerminalLifecycleEvent || (
           eventType === "message.updated" && (
             (() => {
@@ -4121,7 +4119,7 @@ export class ChatViewProvider
         this.logger.debug("streamEvent forwarded", {
           type: (enrichedEvent as any)?.type || event.type,
           kind: partType || "unknown",
-          finalizedForInteractive: hasBlockingInteractive,
+          hasBlockingInteractive,
         });
       }
 
@@ -5467,6 +5465,20 @@ export class ChatViewProvider
       toolName.includes("request-user-input");
 
     const state = this.asRecord(part.state);
+    const questionToolStatus = this.firstNonEmptyString(
+      state?.status,
+      part.status,
+    )?.toLowerCase();
+    const questionToolMetadata = this.asRecord(state?.metadata);
+    const questionToolAnswers = Array.isArray(questionToolMetadata?.answers)
+      ? questionToolMetadata.answers
+      : [];
+    const questionToolOutput = this.firstNonEmptyString(state?.output, part.output);
+    const completedQuestionToolHasAnswer =
+      questionToolStatus === "completed" &&
+      (questionToolAnswers.length > 0 ||
+        !!questionToolOutput ||
+        questionToolMetadata?.truncated === false);
     const input =
       this.asRecord(state?.input) ||
       this.asRecord(part.input) ||
@@ -5477,6 +5489,9 @@ export class ChatViewProvider
     }
 
     if (isQuestionTool) {
+      if (completedQuestionToolHasAnswer) {
+        return false;
+      }
       const inputCollections = [
         input.questions,
         input.items,
@@ -6983,6 +6998,7 @@ export class ChatViewProvider
         this.view?.webview.postMessage({
           type: "userMessageAppended",
           sessionId: session.id,
+          clientRequestId: sendMeta?.clientRequestId,
           message: userMessage,
         });
 
@@ -7900,17 +7916,32 @@ export class ChatViewProvider
         this.promptDebugBySession.delete(debugSessionId);
       }
       if (drainSessionId) {
-        this.processingSessionIds.delete(drainSessionId);
-        this.sessionsWithFileChangeEvidence.delete(drainSessionId);
-        if (this.activeStreamSessionId === drainSessionId) {
-          this.activeStreamSessionId = undefined;
+        const shouldPreserveInteractiveContinuation =
+          sendMeta?.interactiveSubmit === true &&
+          this.activeStreamSessionId === drainSessionId &&
+          this.processingSessionIds.has(drainSessionId);
+        if (shouldPreserveInteractiveContinuation) {
+          this.logger.info(
+            "[OPENCOD GO MODEL] Preserving processing state for interactive continuation",
+            {
+              sessionId: drainSessionId,
+              providerID: this.selectedModel.providerID,
+              modelID: this.selectedModel.modelID,
+            },
+          );
+        } else {
+          this.processingSessionIds.delete(drainSessionId);
+          this.sessionsWithFileChangeEvidence.delete(drainSessionId);
+          if (this.activeStreamSessionId === drainSessionId) {
+            this.activeStreamSessionId = undefined;
+          }
+          this.sendProcessingSessionsUpdate();
+          this.logger.info("[OPENCOD GO MODEL] Processing ended (loading state OFF)", {
+            sessionId: drainSessionId,
+            providerID: this.selectedModel.providerID,
+            modelID: this.selectedModel.modelID,
+          });
         }
-        this.sendProcessingSessionsUpdate();
-        this.logger.info("[OPENCOD GO MODEL] Processing ended (loading state OFF)", {
-          sessionId: drainSessionId,
-          providerID: this.selectedModel.providerID,
-          modelID: this.selectedModel.modelID,
-        });
 
         if (this.sessionsNeedingTitle?.has(drainSessionId)) {
           this.sessionsNeedingTitle.delete(drainSessionId);
@@ -8001,6 +8032,10 @@ export class ChatViewProvider
       this.logger.info("Stopping request", {
         sessionId: resolvedSessionId,
       });
+
+      // Keep accepting post-abort terminal events from the SDK/server so the
+      // centralized tape can persist the real aborted lifecycle payload.
+      this.recentlyAbortedSessionIds.add(resolvedSessionId);
 
       const workspaceDirectory = this.getWorkspaceDirectory();
       await client.session.abort({

@@ -71,6 +71,24 @@ test("file change summary card is scoped to the owning assistant message", () =>
   );
 });
 
+test("file change summary card prefers provider-attached message change summaries", () => {
+  assert.match(
+    messageComponentsSource,
+    /const messageChangeSummary = message\?\.changeSummary;/,
+    "response rendering should read the provider-attached message change summary",
+  );
+  assert.match(
+    messageComponentsSource,
+    /changeSummary=\{messageChangeSummary\}/,
+    "file change section should receive the explicit change summary payload",
+  );
+  assert.match(
+    messageComponentsSource,
+    /firstNonEmptyString\(messageChangeSummary\?\.messageId,\s*messageId\)/,
+    "explicit change summaries should supply the owning message id for undo and preview actions",
+  );
+});
+
 test("file change summary normalizes .sisyphus absolute and relative paths to avoid duplicates", () => {
   assert.match(
     messageComponentsSource,

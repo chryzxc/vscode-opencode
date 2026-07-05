@@ -36,7 +36,67 @@ test("centralized debug payload filter keeps step-start and step-finish event ty
   assert.match(
     source,
     /"message\.part\.delta"/,
-    "streaming delta events should remain excluded",
+    "explicit message.part.delta event types should remain excluded",
+  );
+  assert.match(
+    source,
+    /"tui\.toast\.show"/,
+    "toast events should be excluded from the centralized debug payload filter",
+  );
+  assert.match(
+    generated,
+    /"tui\.toast\.show"/,
+    "generated centralized debug payload filter should also exclude toast events",
+  );
+  assert.match(
+    source,
+    /function isEphemeralCentralizedPayload\(/,
+    "shared centralized debug payload filter should define an ephemeral payload guard",
+  );
+  assert.match(
+    generated,
+    /function isEphemeralCentralizedPayload\(/,
+    "generated centralized debug payload filter should stay aligned with the ephemeral payload guard",
+  );
+  assert.match(
+    source,
+    /export function getCentralizedDebugPayloadDisposition\(/,
+    "shared centralized debug payload filter should export a shared disposition helper",
+  );
+  assert.match(
+    generated,
+    /export function getCentralizedDebugPayloadDisposition\(/,
+    "generated centralized debug payload filter should export the same disposition helper",
+  );
+  assert.match(
+    source,
+    /normalizedCentralizedEventType\(payload\)[\s\S]*message\.part\.updated[\s\S]*hasReasoningLikeChunk\(payload\)/,
+    "reasoning-only message.part.updated chunks should be excluded from centralized persistence",
+  );
+  assert.match(
+    generated,
+    /normalizedCentralizedEventType\(payload\)[\s\S]*message\.part\.updated[\s\S]*hasReasoningLikeChunk\(payload\)/,
+    "generated centralized debug payload filter should also exclude reasoning-only part updates",
+  );
+  assert.doesNotMatch(
+    source,
+    /function hasStreamingDelta\(/,
+    "shared centralized debug payload filter should not blanket-drop payloads just because they carry delta fields",
+  );
+  assert.doesNotMatch(
+    generated,
+    /function hasStreamingDelta\(/,
+    "generated centralized debug payload filter should stay aligned and avoid blanket delta-field filtering",
+  );
+  assert.match(
+    source,
+    /return getCentralizedDebugPayloadDisposition\(payload\) === "persist"/,
+    "shared shouldIncludeCentralizedDebugPayload should delegate to the shared disposition helper",
+  );
+  assert.match(
+    generated,
+    /return getCentralizedDebugPayloadDisposition\(payload\) === "persist"/,
+    "generated shouldIncludeCentralizedDebugPayload should delegate to the shared disposition helper",
   );
   assert.match(
     source,
@@ -113,5 +173,25 @@ test("centralized session persistence is permissive for meaningful non-delta eve
     generated,
     /Persist every non-noise centralized event/,
     "generated filter should stay aligned with the permissive persistence policy",
+  );
+  assert.match(
+    source,
+    /non-reasoning message\.part\.updated lifecycle payloads must remain persisted[\s\S]*carry a delta field/,
+    "source filter should document that non-reasoning message.part.updated payloads are not excluded solely for carrying delta fields",
+  );
+  assert.match(
+    generated,
+    /non-reasoning message\.part\.updated lifecycle payloads must remain persisted[\s\S]*carry a delta field/,
+    "generated filter should document the same non-reasoning message.part.updated delta-field persistence rule",
+  );
+  assert.match(
+    source,
+    /Live-only UI events such as tui\.toast\.show and reasoning chunk frames are[\s\S]*excluded separately/,
+    "source filter should document the live-only exclusions for toast and reasoning chunk events",
+  );
+  assert.match(
+    generated,
+    /Live-only UI events such as tui\.toast\.show and reasoning chunk frames are[\s\S]*excluded separately/,
+    "generated filter should document the same live-only exclusions",
   );
 });

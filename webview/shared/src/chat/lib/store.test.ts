@@ -25,6 +25,151 @@ import {
 } from './store';
 import type { Message, Session, TodoItem } from './types';
 
+describe('pending user messages', () => {
+  it('adds a pending user message keyed by session', () => {
+    const next = appReducer(initialState, {
+      type: 'ADD_PENDING_USER_MESSAGE',
+      payload: {
+        id: 'pending-1',
+        clientRequestId: 'req-1',
+        sessionId: 'session-a',
+        createdAt: 1000,
+        text: 'hello',
+      },
+    });
+
+    assert.deepStrictEqual(
+      next.pendingUserMessagesBySessionId?.['session-a']?.map((message) => message.id),
+      ['pending-1'],
+    );
+  });
+
+  it('deduplicates optimistic pending user messages by client request id', () => {
+    const seededState = appReducer(initialState, {
+      type: 'ADD_PENDING_USER_MESSAGE',
+      payload: {
+        id: 'pending-1',
+        clientRequestId: 'req-1',
+        sessionId: 'session-a',
+        createdAt: 1000,
+        text: 'hello',
+      },
+    });
+
+    const next = appReducer(seededState, {
+      type: 'ADD_PENDING_USER_MESSAGE',
+      payload: {
+        id: 'pending-2',
+        clientRequestId: 'req-1',
+        sessionId: 'session-a',
+        createdAt: 1001,
+        text: 'hello again',
+      },
+    });
+
+    assert.deepStrictEqual(
+      next.pendingUserMessagesBySessionId?.['session-a']?.map((message) => message.id),
+      ['pending-1'],
+    );
+  });
+
+  it('confirms an optimistic pending user message without removing it before transcript handoff', () => {
+    const seededState = appReducer(initialState, {
+      type: 'ADD_PENDING_USER_MESSAGE',
+      payload: {
+        id: 'pending-1',
+        clientRequestId: 'req-1',
+        sessionId: 'session-a',
+        createdAt: 1000,
+        text: 'hello',
+      },
+    });
+
+    const next = appReducer(seededState, {
+      type: 'CONFIRM_PENDING_USER_MESSAGE',
+      payload: {
+        sessionId: 'session-a',
+        clientRequestId: 'req-1',
+        messageId: 'msg-1',
+        createdAt: 1005,
+        text: 'hello',
+      },
+    });
+
+    assert.deepStrictEqual(
+      next.pendingUserMessagesBySessionId?.['session-a']?.map((message) => ({
+        id: message.id,
+        confirmedMessageId: message.confirmedMessageId,
+        confirmedAt: message.confirmedAt,
+      })),
+      [{ id: 'msg-1', confirmedMessageId: 'msg-1', confirmedAt: 1005 }],
+    );
+  });
+
+  it('removes reconciled pending user messages by id', () => {
+    const seededState = {
+      ...initialState,
+      currentSessionId: 'session-a',
+      pendingUserMessagesBySessionId: {
+        'session-a': [
+          {
+            id: 'pending-1',
+            sessionId: 'session-a',
+            createdAt: 1000,
+            text: 'hello',
+          },
+          {
+            id: 'pending-2',
+            sessionId: 'session-a',
+            createdAt: 1001,
+            text: 'world',
+          },
+        ],
+      },
+    };
+
+    const next = appReducer(seededState, {
+      type: 'REMOVE_PENDING_USER_MESSAGES',
+      payload: { sessionId: 'session-a', ids: ['pending-1'] },
+    });
+
+    assert.deepStrictEqual(
+      next.pendingUserMessagesBySessionId?.['session-a']?.map((message) => message.id),
+      ['pending-2'],
+    );
+  });
+
+  it('moves draft-session pending messages onto the real session id during session hydration', () => {
+    const seededState = {
+      ...initialState,
+      pendingUserMessagesBySessionId: {
+        '__pending__:current': [
+          {
+            id: 'pending-1',
+            sessionId: '__pending__:current',
+            createdAt: 1000,
+            text: 'hello',
+          },
+        ],
+      },
+    };
+
+    const next = appReducer(seededState, {
+      type: 'SET_SESSION_ID',
+      payload: 'session-a',
+    });
+
+    assert.deepStrictEqual(
+      next.pendingUserMessagesBySessionId?.['session-a']?.map((message) => message.id),
+      ['pending-1'],
+    );
+    assert.strictEqual(
+      next.pendingUserMessagesBySessionId?.['__pending__:current'],
+      undefined,
+    );
+  });
+});
+
 describe('isInternalTransportReminderMessage', () => {
   it('should detect square-bracketed system messages', () => {
     const message: Message = {
@@ -175,6 +320,90 @@ describe('error message reducer state', () => {
     });
 
     assert.deepStrictEqual(nextState.errorMessages, ['Provider list timeout']);
+  });
+
+  it('stores live toast notifications separately from centralized raw events', () => {
+    const nextState = appReducer(
+      {
+        ...initialState,
+        currentSessionId: 'ses-live-toast',
+      },
+      {
+        type: 'APPEND_LIVE_TOAST_NOTIFICATION',
+        payload: {
+          sessionId: 'ses-live-toast',
+          notification: {
+            key: 'toast-1',
+            type: 'tui.toast.show',
+            title: 'Heads up',
+            message: 'Toast stays live-only',
+            variant: 'info',
+            durationMs: 1500,
+          },
+        },
+      },
+    );
+
+    assert.deepStrictEqual(
+      nextState.liveToastNotificationsBySessionId?.['ses-live-toast'],
+      [
+        {
+          key: 'toast-1',
+          type: 'tui.toast.show',
+          title: 'Heads up',
+          message: 'Toast stays live-only',
+          variant: 'info',
+          durationMs: 1500,
+        },
+      ],
+    );
+    assert.deepStrictEqual(
+      nextState.rawSdkEventPayloadsBySessionId?.['ses-live-toast'],
+      undefined,
+    );
+  });
+
+  it('deduplicates live toast notifications by key', () => {
+    const seededState = appReducer(
+      {
+        ...initialState,
+        currentSessionId: 'ses-live-toast',
+      },
+      {
+        type: 'APPEND_LIVE_TOAST_NOTIFICATION',
+        payload: {
+          sessionId: 'ses-live-toast',
+          notification: {
+            key: 'toast-1',
+            type: 'tui.toast.show',
+            title: 'Heads up',
+            message: 'Toast stays live-only',
+            variant: 'info',
+            durationMs: 1500,
+          },
+        },
+      },
+    );
+
+    const nextState = appReducer(seededState, {
+      type: 'APPEND_LIVE_TOAST_NOTIFICATION',
+      payload: {
+        sessionId: 'ses-live-toast',
+        notification: {
+          key: 'toast-1',
+          type: 'tui.toast.show',
+          title: 'Heads up',
+          message: 'Toast stays live-only',
+          variant: 'info',
+          durationMs: 1500,
+        },
+      },
+    });
+
+    assert.strictEqual(
+      nextState.liveToastNotificationsBySessionId?.['ses-live-toast']?.length,
+      1,
+    );
   });
 });
 

@@ -14,6 +14,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         chat: path.resolve(__dirname, 'src/chat/index.tsx'),
+        plan: path.resolve(__dirname, 'src/plan/index.tsx'),
       },
       output: {
         entryFileNames: '[name].js',

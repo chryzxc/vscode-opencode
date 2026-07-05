@@ -357,12 +357,12 @@ export function DiffPreviewStep({
                 <span className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-oc-border-soft bg-oc-bg-soft text-oc-text-secondary">
                   <Diff className="h-3 w-3" />
                 </span>
-                <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-oc-text-secondary">
+                <span className="oc-activity-step-label font-mono font-semibold uppercase tracking-[0.18em] text-oc-text-secondary">
                   diff
                 </span>
                 {status ? <ActivityStepStatusChip status={status} /> : null}
                 {source === "raw_debug" ? (
-                  <span className="rounded-full border border-oc-border-soft bg-oc-bg/30 px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.12em] oc-text-secondary">
+                  <span className="oc-activity-step-meta rounded-full border border-oc-border-soft bg-oc-bg/30 px-2 py-0.5 font-mono uppercase tracking-[0.12em] oc-text-secondary">
                     raw
                   </span>
                 ) : null}

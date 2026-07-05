@@ -31,13 +31,18 @@ test("activity timeline defines a normalized redundant-content helper", () => {
     /function normalizeComparableActivityText\(/,
     "redundant-content helper should normalize punctuation and casing before comparison",
   );
+  assert.match(
+    messageComponentsSource,
+    /function getVisibleDefaultActivitySummary\(/,
+    "default activity-step UI should centralize redundant-summary filtering in a shared helper",
+  );
 });
 
 test("activity timeline suppresses summary blocks when summary matches the title", () => {
   assert.match(
     messageComponentsSource,
-    /const shouldHideSummary =\s*[\s\S]*isActivityTextRedundantWithTitle\(event\.label,\s*event\.summary\)/,
-    "summary visibility should be computed from title/content similarity",
+    /const visibleSummary =[\s\S]*getVisibleDefaultActivitySummary\(\s*event\.label,\s*event\.summary,\s*event\.filePath,/s,
+    "default activity-step summary visibility should be computed through the shared helper",
   );
   assert.match(
     messageComponentsSource,
@@ -74,6 +79,19 @@ test("activity timeline also suppresses redundant descriptions and details", () 
     messageComponentsSource,
     /const shouldHideDetail =\s*[\s\S]*isActivityTextRedundantWithTitle\(event\.label,\s*event\.detail\)/,
     "detail visibility should also respect title/content similarity",
+  );
+});
+
+test("question prelude activity rows also suppress redundant summary text", () => {
+  assert.match(
+    messageComponentsSource,
+    /const visibleQuestionPreludeSummary = getVisibleDefaultActivitySummary\(\s*event\.label,\s*event\.summary,\s*\);/s,
+    "question prelude rows should reuse the shared default-summary helper",
+  );
+  assert.match(
+    messageComponentsSource,
+    /\{visibleQuestionPreludeSummary && \(/,
+    "question prelude rows should skip rendering the summary block when it duplicates the title",
   );
 });
 

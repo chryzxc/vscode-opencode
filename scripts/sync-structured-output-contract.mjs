@@ -46,6 +46,24 @@ const targets = [
       "structuredOutputValidator.ts",
     ),
   },
+  {
+    source: path.join(
+      repoRoot,
+      "src",
+      "shared",
+      "centralizedDebugPayloadFilter.ts",
+    ),
+    dest: path.join(
+      repoRoot,
+      "webview",
+      "shared",
+      "src",
+      "chat",
+      "lib",
+      "generated",
+      "centralizedDebugPayloadFilter.ts",
+    ),
+  },
 ];
 
 function normalize(value) {

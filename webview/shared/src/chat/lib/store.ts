@@ -8,6 +8,7 @@ import React, {
   useSyncExternalStore,
 } from 'react';
 import logger from './logger';
+import { PENDING_CURRENT_SESSION_KEY } from "./pendingUserMessages";
 import {
   getCentralizedAssistantContentFromRawSdkEventPayloads,
   normalizedCentralizedEventIdentity,
@@ -21,6 +22,7 @@ import {
   sanitizeCentralizedDebugPayload,
   shouldIncludeCentralizedDebugPayload,
 } from "./generated/centralizedDebugPayloadFilter";
+import type { CentralizedToastNotification } from "./toastEvents";
 
 import type {
   Agent,
@@ -37,6 +39,7 @@ import type {
   Message,
   Model,
   PendingDeferredPrompt,
+  PendingUserMessage,
   QueueItem,
   QuotaData,
   Session,
@@ -69,9 +72,11 @@ export const initialState: AppState = {
   messagesBySessionId: {},
   rawMessagesBySessionId: {},
   rawSdkEventPayloadsBySessionId: {},
+  liveToastNotificationsBySessionId: {},
   promptQueue: [],
   queueBySessionId: {},
   pendingDeferredPromptsBySessionId: {},
+  pendingUserMessagesBySessionId: {},
   isExecutingQueue: false,
   executingQueueSessionIds: new Set<string>(),
   isQueueOpen: false,
@@ -189,6 +194,10 @@ export type AppAction =
   }
   | { type: "APPEND_RAW_SDK_EVENT_PAYLOAD"; payload: { sessionId?: string | null; event: unknown } }
   | {
+    type: "APPEND_LIVE_TOAST_NOTIFICATION";
+    payload: { sessionId?: string | null; notification: CentralizedToastNotification };
+  }
+  | {
     type: "CACHE_SESSION_MESSAGES";
     payload: { sessionId: string; messages: Message[] };
   }
@@ -249,6 +258,23 @@ export type AppAction =
     payload: { sessionId: string | null; queue: QueueItem[] };
   }
   | { type: "ADD_PENDING_DEFERRED_PROMPT"; payload: PendingDeferredPrompt }
+  | { type: "ADD_PENDING_USER_MESSAGE"; payload: PendingUserMessage }
+  | {
+    type: "CONFIRM_PENDING_USER_MESSAGE";
+    payload: {
+      sessionId: string;
+      clientRequestId: string;
+      messageId?: string;
+      createdAt?: number;
+      text?: string;
+      images?: string[];
+      interactiveSubmit?: boolean;
+    };
+  }
+  | {
+    type: "REMOVE_PENDING_USER_MESSAGES";
+    payload: { sessionId: string; ids: string[] };
+  }
   | { type: "SET_EXECUTING_QUEUE"; payload: { sessionId: string; executing: boolean } }
   | { type: "SET_QUEUE_OPEN"; payload: boolean }
   | { type: "ADD_TO_LOCAL_QUEUE"; payload: QueueItem }
@@ -2507,6 +2533,22 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       );
       const restoredAssistantTurnMessageId =
         restoredStreamingForNew?.messageId ?? null;
+      const pendingUserMessagesBySessionId = {
+        ...(state.pendingUserMessagesBySessionId ?? {}),
+      };
+      if (
+        newId &&
+        pendingUserMessagesBySessionId[PENDING_CURRENT_SESSION_KEY]?.length
+      ) {
+        const draftMessages = pendingUserMessagesBySessionId[PENDING_CURRENT_SESSION_KEY];
+        const existingMessages = pendingUserMessagesBySessionId[newId] ?? [];
+        pendingUserMessagesBySessionId[newId] = [...existingMessages, ...draftMessages]
+          .filter((message, index, list) =>
+            list.findIndex((candidate) => candidate.id === message.id) === index,
+          )
+          .map((message) => ({ ...message, sessionId: newId }));
+        delete pendingUserMessagesBySessionId[PENDING_CURRENT_SESSION_KEY];
+      }
 
       return {
         ...state,
@@ -2527,6 +2569,10 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         // processing; otherwise keep the old session's progress hidden.
         streaming: restoredStreamingForNew,
         streamingBySessionId: pruneSessionCache(streamingBySessionId, action.payload),
+        pendingUserMessagesBySessionId: pruneSessionCache(
+          pendingUserMessagesBySessionId,
+          action.payload,
+        ),
         isCompacting: false,
         compactionError: undefined,
         compactionNotice: undefined,
@@ -2744,6 +2790,24 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         ...state,
         rawSdkEventPayloadsBySessionId: pruneSessionCache({
           ...(state.rawSdkEventPayloadsBySessionId ?? {}),
+          [sessionId]: next,
+        }, sessionId),
+      };
+    }
+    case "APPEND_LIVE_TOAST_NOTIFICATION": {
+      const sessionId = action.payload.sessionId ?? state.currentSessionId ?? "";
+      if (!sessionId) {
+        return state;
+      }
+      const existing = state.liveToastNotificationsBySessionId?.[sessionId] ?? [];
+      if (existing.some((notification) => notification.key === action.payload.notification.key)) {
+        return state;
+      }
+      const next = [...existing, action.payload.notification].slice(-20);
+      return {
+        ...state,
+        liveToastNotificationsBySessionId: pruneSessionCache({
+          ...(state.liveToastNotificationsBySessionId ?? {}),
           [sessionId]: next,
         }, sessionId),
       };
@@ -3403,6 +3467,119 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return {
         ...state,
         pendingDeferredPromptsBySessionId: pruneSessionCache(
+          nextBySession,
+          state.currentSessionId,
+        ),
+      };
+    }
+    case "ADD_PENDING_USER_MESSAGE": {
+      const item = action.payload;
+      if (!item.sessionId || !item.id || !item.text.trim()) {
+        return state;
+      }
+      // This store slice is intentionally a thin optimistic overlay only.
+      // It must never become a second transcript source of truth. We keep
+      // messages scoped by session and dedupe by request identity so the UI can
+      // show a local user bubble immediately, then remove it once the canonical
+      // centralized tape echoes the real user turn back.
+      const nextBySession = { ...(state.pendingUserMessagesBySessionId ?? {}) };
+      const existing = nextBySession[item.sessionId] ?? [];
+      const alreadyExists = existing.some(
+        (message) =>
+          message.id === item.id ||
+          (message.clientRequestId &&
+            item.clientRequestId &&
+            message.clientRequestId === item.clientRequestId),
+      );
+      if (alreadyExists) {
+        return state;
+      }
+      nextBySession[item.sessionId] = [...existing, item];
+      return {
+        ...state,
+        pendingUserMessagesBySessionId: pruneSessionCache(
+          nextBySession,
+          state.currentSessionId,
+        ),
+      };
+    }
+    case "CONFIRM_PENDING_USER_MESSAGE": {
+      const {
+        sessionId,
+        clientRequestId,
+        messageId,
+        createdAt,
+        text,
+        images,
+        interactiveSubmit,
+      } = action.payload;
+      if (!sessionId || !clientRequestId.trim()) {
+        return state;
+      }
+      const existing = state.pendingUserMessagesBySessionId?.[sessionId] ?? [];
+      if (existing.length === 0) {
+        return state;
+      }
+      let changed = false;
+      const updated = existing.map((message) => {
+        if (message.clientRequestId !== clientRequestId) {
+          return message;
+        }
+        changed = true;
+        return {
+          ...message,
+          id: messageId || message.id,
+          sessionId,
+          createdAt: typeof createdAt === "number" ? createdAt : message.createdAt,
+          text: typeof text === "string" && text.trim() ? text : message.text,
+          images: Array.isArray(images) ? images : message.images,
+          interactiveSubmit:
+            typeof interactiveSubmit === "boolean"
+              ? interactiveSubmit
+              : message.interactiveSubmit,
+          confirmedMessageId: messageId || message.confirmedMessageId,
+          confirmedAt: typeof createdAt === "number" ? createdAt : message.confirmedAt,
+        };
+      });
+      if (!changed) {
+        return state;
+      }
+      const nextBySession = { ...(state.pendingUserMessagesBySessionId ?? {}) };
+      nextBySession[sessionId] = updated;
+      return {
+        ...state,
+        pendingUserMessagesBySessionId: pruneSessionCache(
+          nextBySession,
+          state.currentSessionId,
+        ),
+      };
+    }
+    case "REMOVE_PENDING_USER_MESSAGES": {
+      const { sessionId, ids } = action.payload;
+      if (!sessionId || !Array.isArray(ids) || ids.length === 0) {
+        return state;
+      }
+      // Reconciliation removes only the optimistic overlay copy. The canonical
+      // transcript message remains rendered from centralized data, so deleting
+      // the overlay here must never affect the persisted conversation history.
+      const existing = state.pendingUserMessagesBySessionId?.[sessionId] ?? [];
+      if (existing.length === 0) {
+        return state;
+      }
+      const removalIds = new Set(ids);
+      const remaining = existing.filter((message) => !removalIds.has(message.id));
+      if (remaining.length === existing.length) {
+        return state;
+      }
+      const nextBySession = { ...(state.pendingUserMessagesBySessionId ?? {}) };
+      if (remaining.length > 0) {
+        nextBySession[sessionId] = remaining;
+      } else {
+        delete nextBySession[sessionId];
+      }
+      return {
+        ...state,
+        pendingUserMessagesBySessionId: pruneSessionCache(
           nextBySession,
           state.currentSessionId,
         ),
