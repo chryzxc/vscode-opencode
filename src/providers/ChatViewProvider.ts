@@ -2562,6 +2562,12 @@ export class ChatViewProvider
     if (!message) {
       return;
     }
+    if (this.shouldSuppressErrorToast(message)) {
+      this.logger.warn("Suppressing non-fatal error toast", {
+        message,
+      });
+      return;
+    }
 
     const now = Date.now();
     for (const [key, timestamp] of this.recentUiErrorToastTimestamps.entries()) {
@@ -2584,6 +2590,10 @@ export class ChatViewProvider
       type: "errorToast",
       message,
     });
+  }
+
+  private shouldSuppressErrorToast(message: string): boolean {
+    return /MaxListenersExceededWarning/i.test(message);
   }
 
   resolveWebviewView(

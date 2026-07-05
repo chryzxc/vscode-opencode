@@ -11,6 +11,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  ChevronUp,
   Copy,
   FileText,
   FileText as FileTextIcon,
@@ -4591,6 +4592,21 @@ function splitInjectedSystemPromptFromUserText(raw: string): {
   systemText?: string;
   userText: string;
 } {
+  // Rendering contract:
+  // Some user turns are persisted as one raw text blob containing:
+  //   [transport/system reminder]
+  //   ---
+  //   actual user prompt
+  //
+  // The chat UI intentionally splits that into:
+  // - a separate system card (`systemText`), and
+  // - the visible user bubble (`userText`)
+  //
+  // Keep this behavior aligned with pending-user reconciliation in
+  // `pendingUserMessages.ts`. If one side strips the injected prefix and the
+  // other compares the raw combined blob, the same user turn can render twice:
+  // once as the canonical centralized message and once as the optimistic
+  // overlay lingering at the bottom during streaming.
   const sanitized = sanitizeUserContent(raw);
   if (!sanitized) {
     return { userText: "" };
@@ -6453,7 +6469,7 @@ export const BackgroundTaskReminderMessage = memo(function BackgroundTaskReminde
   ]);
 
   return (
-    <div className="oc-message-enter mb-4 px-4">
+    <div className="oc-message-enter mb-4">
       <BackgroundOutputStep
         sessionID={firstNonEmptyString(
           message?.info?.sessionID,
@@ -6534,7 +6550,7 @@ export const UserMessage = memo(function UserMessage({ message }: { message?: Me
 
   if (isPlanProceedMessageContent(content)) {
     return (
-    <div className="oc-message-enter mb-3.5 px-4 flex justify-end">
+    <div className="oc-message-enter mb-3.5 flex justify-end">
         <div className="flex w-fit max-w-[78%] flex-col items-end gap-2">
           <div className="oc-plan-approved-badge flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-oc-xs">
             <Check className="h-3.5 w-3.5" />
@@ -6551,7 +6567,7 @@ export const UserMessage = memo(function UserMessage({ message }: { message?: Me
   }
 
   return (
-      <div className="oc-message-enter mb-3.5 flex flex-col gap-1.5 px-4">
+      <div className="oc-message-enter mb-3.5 flex flex-col gap-1.5">
       {(content || hasImages) ? (
         <div className="flex items-end justify-end gap-1.5">
           <div className="w-fit max-w-[78%]">
@@ -7270,6 +7286,12 @@ function ResponseMessageInner({
   subagentDetailsById,
   availableAgents,
   todoItems = [],
+  blockGroupKey,
+  isLastInBlock,
+  isBlockExpanded,
+  onSetBlockExpanded,
+  blockSize = 1,
+  isHiddenByBlock = false,
 }: {
   message?: Message;
   streaming?: StreamingState;
@@ -7283,6 +7305,20 @@ function ResponseMessageInner({
   subagentDetailsById?: AppState["subagentDetailsById"];
   availableAgents?: AppState["availableAgents"];
   todoItems?: AppState["todoItems"];
+  // Block-level collapse/expand props (lifted from ChatShell).
+  // Non-last assistant cards in a contiguous block share a single expanded state
+  // so the entire block collapses/expands together. The last card in the block
+  // (isLastInBlock === true) is always expanded and is never collapsible.
+  blockGroupKey?: string;
+  isLastInBlock?: boolean;
+  isBlockExpanded?: boolean;
+  onSetBlockExpanded?: (expanded: boolean) => void;
+  // Total number of assistant cards in this block (1 = single-card, unchanged behaviour).
+  blockSize?: number;
+  // When true the entire card should be visually hidden (non-last card in a
+  // collapsed multi-card block). It stays in the DOM so DOM-dependent logic
+  // (streaming refs, etc.) is not broken.
+  isHiddenByBlock?: boolean;
 }) {
   const dispatch = useAppDispatch();
   const {
@@ -7967,6 +8003,24 @@ function ResponseMessageInner({
   }, [messages]);
   const isLatestAssistantMessage =
     !!messageId && latestAssistantMessageId === messageId;
+
+  const isAfterLatestUserMessage = useMemo(() => {
+    if (!Array.isArray(messages)) return false;
+    let latestUserIndex = -1;
+    let thisMessageIndex = -1;
+    for (let i = 0; i < messages.length; i++) {
+      const candidate = messages[i];
+      const role = candidate.role ?? candidate.info?.role ?? "user";
+      if (role === "user") {
+        latestUserIndex = i;
+      }
+      const candidateId = candidate.info?.id ?? candidate.id;
+      if (messageId && candidateId === messageId) {
+        thisMessageIndex = i;
+      }
+    }
+    return thisMessageIndex > latestUserIndex;
+  }, [messages, messageId]);
 
   const [viewState, setViewState] = useState<MessageViewState>({
     showActivityDetails: false,
@@ -8820,11 +8874,16 @@ function ResponseMessageInner({
   const canCollapseCompletedAssistantTurn =
     !isAborted &&
     !isCurrentCardLiveAssistantTurn &&
-    !(assistantTurnPending && isLatestAssistantMessage) &&
+    !(assistantTurnPending && isLatestAssistantMessage && isAfterLatestUserMessage) &&
     hasStickyTimelineActivity;
+  // Drive the collapsed state from the shared block-level prop when available
+  // (so all non-last cards in the block toggle together), otherwise fall back
+  // to the local viewState for standalone or legacy usage.
+  const effectiveExpanded =
+    typeof isBlockExpanded === "boolean" ? isBlockExpanded : viewState.showExpandedActivityTimeline;
   const isAssistantTurnCollapsed =
     canCollapseCompletedAssistantTurn &&
-    !viewState.showExpandedActivityTimeline;
+    !effectiveExpanded;
   const visibleStepsCount = timelineDisplayEvents.filter((event) => {
     const labelLower = (event.label || "").trim().toLowerCase();
     const isLifecycleMarkerEvent =
@@ -8942,9 +9001,9 @@ function ResponseMessageInner({
   const responseSectionClass = hasResponseContent
     ? "rounded-md border border-oc-border-soft bg-background p-2.5 shadow-sm"
     : "p-0 border-0 bg-transparent shadow-none";
-  const hasCopyableResponseContent = (resolvedContent?.trim()?.length ?? 0) > 0;
+  const hasCopyableResponseContent = (visibleResolvedContent?.trim()?.length ?? 0) > 0;
   const handleCopy = async () => {
-    const textToCopy = resolvedContent?.trim() ?? "";
+    const textToCopy = visibleResolvedContent?.trim() ?? "";
     if (!textToCopy) return;
 
     try {
@@ -9059,7 +9118,7 @@ function ResponseMessageInner({
     <div
       id={messageId ? `msg-${messageId}` : undefined}
       data-message-id={messageId || undefined}
-      className={`oc-message-enter ${responseEnterClass} ${isContiguous ? "mb-2.5 mt-2" : "mb-3.5"} px-4`}
+      className={`oc-message-enter ${responseEnterClass} ${isContiguous ? "mb-2.5 mt-2" : "mb-3.5"}${isHiddenByBlock ? " hidden" : ""}`}
     >
       <div
         className={cn(
@@ -9700,17 +9759,25 @@ function ResponseMessageInner({
               </section>
             )}
 
-          {isAssistantTurnCollapsed && (
+          {/* Per-card collapsed pill — only for single-card blocks or
+              non-last cards that have their own collapse state. */}
+          {isAssistantTurnCollapsed && !(isLastInBlock && blockSize > 1) && !(blockSize > 1 && !isLastInBlock) && (
             <section data-assistant-section="activity-collapsed">
               <button
                 type="button"
-                className="oc-assistant-turn-collapse-toggle group flex w-full items-center justify-between gap-2 rounded-lg border border-oc-border-soft bg-oc-panel-soft/35 px-3 py-1 text-left transition-colors hover:bg-oc-panel-soft/55"
-                onClick={() =>
-                  setViewState((current) => ({
-                    ...current,
-                    showExpandedActivityTimeline: true,
-                  }))
-                }
+                className="oc-assistant-turn-collapse-toggle group flex w-full items-center justify-start gap-1 px-1.5 py-1 text-left transition-colors"
+                onClick={() => {
+                  // Prefer the shared block-level handler so sibling cards
+                  // in the same block expand together.
+                  if (onSetBlockExpanded) {
+                    onSetBlockExpanded(true);
+                  } else {
+                    setViewState((current) => ({
+                      ...current,
+                      showExpandedActivityTimeline: true,
+                    }));
+                  }
+                }}
                 aria-expanded="false"
                 aria-label="Expand activity timeline"
                 title="Expand activity timeline"
@@ -9720,6 +9787,29 @@ function ResponseMessageInner({
                 </span>
                 <ChevronRight className="h-2.5 w-2.5 shrink-0 oc-text-secondary transition-transform group-hover:translate-x-0.5" />
               </button>
+            </section>
+          )}
+
+          {/* Block-level pill for the last card in a multi-card block.
+              When collapsed: replaces ALL the per-card pills with one unified summary
+              and is displayed ABOVE the final text to maintain chronological sense. */}
+          {isLastInBlock && blockSize > 1 && !isBlockExpanded && (
+            <section data-assistant-section="block-collapse-control-collapsed">
+              <div className="flex justify-start mb-2">
+                <button
+                  type="button"
+                  className="oc-assistant-turn-collapse-toggle group flex items-center justify-start gap-1 rounded-md px-1.5 py-1 text-left transition-colors"
+                  onClick={() => onSetBlockExpanded?.(true)}
+                  aria-expanded="false"
+                  aria-label="Expand all steps"
+                  title="Expand all steps"
+                >
+                  <span className="truncate text-[11px] font-normal oc-text-secondary">
+                    {blockSize - 1} earlier {blockSize - 1 === 1 ? "step" : "steps"} collapsed
+                  </span>
+                  <ChevronRight className="h-2.5 w-2.5 shrink-0 oc-text-secondary transition-transform group-hover:translate-x-0.5" />
+                </button>
+              </div>
             </section>
           )}
 
@@ -9843,17 +9933,47 @@ function ResponseMessageInner({
             </section>
           )}
 
-          {!isAssistantTurnCollapsed && canCollapseCompletedAssistantTurn && (
+          {/* Block-level pill for the last card in a multi-card block.
+              When expanded: shows a single Collapse link at the very end to fold the whole block. */}
+          {isLastInBlock && blockSize > 1 && isBlockExpanded && (
+            <section data-assistant-section="block-collapse-control-expanded">
+              <div className="flex justify-start mt-1">
+                <button
+                  type="button"
+                  className="oc-assistant-turn-collapse-link inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] font-medium oc-text-secondary transition-colors hover:text-oc-text"
+                  onClick={() => onSetBlockExpanded?.(false)}
+                  aria-expanded="true"
+                  aria-label="Collapse steps"
+                  title="Collapse steps"
+                >
+                  <ChevronUp className="h-2.5 w-2.5" />
+                  Collapse
+                </button>
+              </div>
+            </section>
+          )}
+
+          {/* Per-card Collapse link — suppressed for non-last cards in a
+              multi-card block (they are hidden when collapsed, so the link
+              is never needed) and for the last card which uses the
+              block-level control above. */}
+          {!isAssistantTurnCollapsed && canCollapseCompletedAssistantTurn && !(blockSize > 1) && (
             <div className="flex justify-start">
               <button
                 type="button"
                 className="oc-assistant-turn-collapse-link inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] font-medium oc-text-secondary transition-colors hover:text-oc-text"
-                onClick={() =>
-                  setViewState((current) => ({
-                    ...current,
-                    showExpandedActivityTimeline: false,
-                  }))
-                }
+                onClick={() => {
+                  // Prefer the shared block-level handler so sibling cards
+                  // in the same block collapse together.
+                  if (onSetBlockExpanded) {
+                    onSetBlockExpanded(false);
+                  } else {
+                    setViewState((current) => ({
+                      ...current,
+                      showExpandedActivityTimeline: false,
+                    }));
+                  }
+                }}
                 aria-expanded="true"
                 aria-label="Collapse activity timeline"
                 title="Collapse activity timeline"
@@ -10441,6 +10561,12 @@ export function ResponseMessage({
   availableAgents,
   todoItems,
   hideFileChangesSection,
+  blockGroupKey,
+  isLastInBlock,
+  isBlockExpanded,
+  onSetBlockExpanded,
+  blockSize,
+  isHiddenByBlock,
 }: {
   message?: Message;
   streaming?: StreamingState;
@@ -10454,6 +10580,12 @@ export function ResponseMessage({
   subagentDetailsById?: AppState["subagentDetailsById"];
   availableAgents?: AppState["availableAgents"];
   todoItems?: AppState["todoItems"];
+  blockGroupKey?: string;
+  isLastInBlock?: boolean;
+  isBlockExpanded?: boolean;
+  onSetBlockExpanded?: (expanded: boolean) => void;
+  blockSize?: number;
+  isHiddenByBlock?: boolean;
 }) {
   return (
     <ResponseMessageInner
@@ -10469,6 +10601,12 @@ export function ResponseMessage({
       subagentDetailsById={subagentDetailsById}
       availableAgents={availableAgents}
       todoItems={todoItems}
+      blockGroupKey={blockGroupKey}
+      isLastInBlock={isLastInBlock}
+      isBlockExpanded={isBlockExpanded}
+      onSetBlockExpanded={onSetBlockExpanded}
+      blockSize={blockSize}
+      isHiddenByBlock={isHiddenByBlock}
     />
   );
 }

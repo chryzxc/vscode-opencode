@@ -83,6 +83,9 @@ const SERVER_OUTPUT_LOG_BUDGET_CHARS = 16_384;
 const SERVER_OUTPUT_RECENT_BUFFER_CHARS = 8_192;
 const MANAGED_PORT_STATE_KEY = "opencode.server.lastManagedPort";
 const LOOPBACK_HOST = "127.0.0.1";
+const NON_FATAL_SERVER_STDERR_PATTERNS = [
+  /MaxListenersExceededWarning/i,
+];
 
 /**
  * Manages the OpenCode CLI server lifecycle and connection.
@@ -180,6 +183,12 @@ export class OpencodeServerManager {
    * @param context - VSCode extension context (used for storage if needed in future)
    */
   constructor(private context: vscode.ExtensionContext) { }
+
+  private isNonFatalServerStderrSnippet(snippet: string): boolean {
+    return NON_FATAL_SERVER_STDERR_PATTERNS.some((pattern) =>
+      pattern.test(snippet),
+    );
+  }
 
   private logSdkCompatibilityOnce(): void {
     if (this.hasCheckedSdkCompatibility) {
@@ -702,6 +711,10 @@ export class OpencodeServerManager {
         state.loggedChars += snippet.length;
 
         if (channel === "stderr") {
+          if (this.isNonFatalServerStderrSnippet(snippet)) {
+            log.warn("Server stderr warning", { snippet });
+            return;
+          }
           log.error("Server stderr output", { snippet });
           this._lastServerErrorOutput = snippet;
           this._onServerErrorOutput.fire(snippet);

@@ -1561,6 +1561,19 @@ function ChatContent() {
   const [showSkillInstaller, setShowSkillInstaller] = useState(false);
   const [dismissedCompatibilityWarningSignature, setDismissedCompatibilityWarningSignature] =
     useState<string | null>(null);
+  // Shared collapse/expand state for contiguous assistant message blocks.
+  // Keyed by blockGroupKey (the parentID shared by all assistant messages in
+  // the same block). A missing key means "collapsed" (the default).
+  // The final assistant card in each block is exempt from collapsing and always
+  // shows its full content, so it is never wired to this map.
+  const [blockExpandedState, setBlockExpandedState] = useState<Map<string, boolean>>(new Map());
+  const handleSetBlockExpanded = useCallback((blockKey: string, expanded: boolean) => {
+    setBlockExpandedState((prev) => {
+      const next = new Map(prev);
+      next.set(blockKey, expanded);
+      return next;
+    });
+  }, []);
 
   // Track loading state timing to ensure minimum display duration
   const loadingStartTimeRef = useRef<number | null>(null);
@@ -2191,7 +2204,7 @@ function ChatContent() {
         {/* Message list */}
         <div
           ref={messagesScrollRef}
-          className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-2.5 py-2.5 sm:px-4"
+          className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-4 py-2.5 sm:px-5"
           style={{ background: "var(--oc-chat-bg)" }}
         >
           {isSwitchingSession ? (
@@ -2300,7 +2313,98 @@ function ChatContent() {
 
           {(() => {
             let messageCountSeen = 0;
-            const renderedEntries = visibleConversationEntries.map((entry) => {
+
+            // Step 1 — assign a blockGroupKey to every entry in a single pass.
+            // The key is the ID of the last user message seen before each entry,
+            // so all assistant cards that appear between the same two user
+            // messages share one key and collapse/expand as a single unit.
+            const entryBlockKeys: string[] = [];
+            let currentBlockKey = "initial";
+            // Also collect assistant entry positions for step 2.
+            const assistantBlockEntries: Array<{ index: number; key: string }> = [];
+            for (let i = 0; i < visibleConversationEntries.length; i++) {
+              const e = visibleConversationEntries[i];
+              if (e.kind === "message") {
+                const eRole = e.message.role ?? e.message.info?.role;
+                if (eRole === "user") {
+                  currentBlockKey =
+                    firstNonEmptyString(e.message.info?.id, e.message.id) ??
+                    `user:${i}`;
+                } else if (eRole === "assistant") {
+                  // Record the position now, after currentBlockKey has been set
+                  // by the preceding user message.
+                  assistantBlockEntries.push({ index: i, key: currentBlockKey });
+                }
+              }
+              entryBlockKeys.push(currentBlockKey);
+            }
+
+            // Step 2 — compute block visibility roles for each assistant
+            // entry by looking ONLY at adjacent ASSISTANT entries.
+            // System messages, permission cards, and other non-assistant entries
+            // share the block key but must NOT count as siblings — otherwise a
+            // single AI card that follows a system message would be incorrectly
+            // tagged as "last in a multi-card block" and lose its collapse button.
+            const isFirstInBlockByIndex = new Map<number, boolean>();
+            const isAbsoluteLastInBlockByIndex = new Map<number, boolean>();
+            
+            // Track the last entry that has text for each block key.
+            // Why: In a multi-card block (e.g. multiple tool calls followed by a final response),
+            // collapsing the block hides all the intermediate "timeline-only" cards.
+            // If the absolute last card in the block has no text (e.g. just another tool call or a void completion),
+            // and we hid the previous card (which actually contained the final text), the user would see a collapsed
+            // block with NO textual response. To prevent this, we identify the LAST card in the block that ACTUALLY
+            // has text, and treat THAT card as the "visible" anchor when collapsed.
+            const lastTextIndexByKey = new Map<string, number>();
+            for (let pos = 0; pos < assistantBlockEntries.length; pos++) {
+              const { index, key } = assistantBlockEntries[pos];
+              const msg = visibleConversationEntries[index].message;
+              const hasText = Boolean(msg.content || msg.text || msg.info?.content || msg.info?.text);
+              if (hasText) {
+                lastTextIndexByKey.set(key, index);
+              }
+            }
+            const isLastTextInBlockByIndex = new Map<number, boolean>();
+
+            for (let pos = 0; pos < assistantBlockEntries.length; pos++) {
+              const { index, key } = assistantBlockEntries[pos];
+              const prevKey = pos > 0 ? assistantBlockEntries[pos - 1].key : null;
+              const nextKey =
+                pos < assistantBlockEntries.length - 1
+                  ? assistantBlockEntries[pos + 1].key
+                  : null;
+              
+              // First in block: no preceding assistant card with the same key.
+              const isFirst = prevKey !== key;
+              const isAbsoluteLast = nextKey !== key;
+              isFirstInBlockByIndex.set(index, isFirst);
+
+              // Only apply multi-card logic if the block has more than 1 card
+              const isMultiCardBlock = prevKey === key || nextKey === key;
+              isAbsoluteLastInBlockByIndex.set(index, isMultiCardBlock ? isAbsoluteLast : false);
+
+              // Find the logical last entry for this block when collapsed
+              const lastTextIndex = lastTextIndexByKey.get(key);
+              let isLastText = false;
+              if (isMultiCardBlock) {
+                if (lastTextIndex !== undefined) {
+                  isLastText = index === lastTextIndex;
+                } else {
+                  isLastText = isAbsoluteLast; // fallback to absolute last if no text
+                }
+              }
+              isLastTextInBlockByIndex.set(index, isLastText);
+            }
+
+            // Count assistant cards per block so components can distinguish
+            // single-card blocks (collapse individually) from multi-card blocks
+            // (collapse as a unified group).
+            const blockSizeByKey = new Map<string, number>();
+            for (const { key } of assistantBlockEntries) {
+              blockSizeByKey.set(key, (blockSizeByKey.get(key) ?? 0) + 1);
+            }
+
+            const renderedEntries = visibleConversationEntries.map((entry, entryIndex) => {
               const dividerHere = !isCompressed && compactionDividerIndex === messageCountSeen;
               if (entry.kind === "message") {
                 const msg = entry.message;
@@ -2347,6 +2451,33 @@ function ChatContent() {
                 } else if (entry.renderKind === "permission") {
                   messageNode = <PermissionCard perm={msg} />;
                 } else {
+                  // All assistant cards between the same two user messages
+                  // share a blockGroupKey (the preceding user message ID).
+                  const blockGroupKey = entryBlockKeys[entryIndex];
+
+                  // isFirstInBlock was pre-computed above
+                  const isFirstInBlock = isFirstInBlockByIndex.get(entryIndex) ?? true;
+                  const isAbsoluteLastInBlock = isAbsoluteLastInBlockByIndex.get(entryIndex) ?? false;
+                  const isLastTextInBlock = isLastTextInBlockByIndex.get(entryIndex) ?? false;
+
+                  // Total number of assistant cards in this block.
+                  const blockSize = blockSizeByKey.get(blockGroupKey) ?? 1;
+
+                  // The active block defaults to expanded while the AI is responding.
+                  // When the AI finishes responding, it defaults to false (collapsed).
+                  const isLiveBlock = hasLiveAssistantTurn && blockGroupKey === entryBlockKeys[entryBlockKeys.length - 1];
+                  const isBlockExpanded = blockExpandedState.get(blockGroupKey) ?? (isLiveBlock ? true : false);
+
+                  // The card that acts as the "last" card for UI purposes depends on whether the block is expanded!
+                  // If expanded, the absolute last card gets the "Collapse" button.
+                  // If collapsed, the last card WITH TEXT gets the "[X earlier steps collapsed]" pill (so it remains visible).
+                  const isLastInBlock = isBlockExpanded ? isAbsoluteLastInBlock : isLastTextInBlock;
+
+                  // Non-last cards in a multi-card block are hidden entirely
+                  // when the block is collapsed. Only the "last" card remains
+                  // visible as the "final AI response".
+                  const isHiddenByBlock = blockSize > 1 && !isLastInBlock && !isBlockExpanded;
+
                   messageNode = (
                     <ResponseMessage
                       message={msg}
@@ -2359,6 +2490,14 @@ function ChatContent() {
                       subagentDetailsById={state.subagentDetailsById}
                       availableAgents={state.availableAgents}
                       todoItems={state.todoItems}
+                      blockGroupKey={blockGroupKey}
+                      isLastInBlock={isLastInBlock}
+                      isBlockExpanded={isBlockExpanded}
+                      blockSize={blockSize}
+                      isHiddenByBlock={isHiddenByBlock}
+                      onSetBlockExpanded={(expanded: boolean) =>
+                        handleSetBlockExpanded(blockGroupKey, expanded)
+                      }
                     />
                   );
                 }

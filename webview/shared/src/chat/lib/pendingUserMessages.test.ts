@@ -152,4 +152,50 @@ describe("pendingUserMessages helpers", () => {
       ["pending-1"],
     );
   });
+
+  it("reconciles when the confirmed message id is present in coalesced ids", () => {
+    const pending: PendingUserMessage[] = [
+      {
+        id: "pending-1",
+        sessionId: "session-1",
+        clientRequestId: "req-1",
+        confirmedMessageId: "msg-original",
+        confirmedAt: 10_000,
+        createdAt: 10_000,
+        text: "Ship it",
+      },
+    ];
+    const centralized: Message[] = [
+      {
+        id: "msg-canonical",
+        role: "user",
+        content: "Ship it",
+        created: 10_100,
+        coalescedIds: ["msg-original"],
+      } as Message,
+    ];
+
+    assert.deepStrictEqual(getVisiblePendingUserMessages(pending, centralized), []);
+  });
+
+  it("reconciles against centralized user text after stripping an injected system prompt", () => {
+    const pending: PendingUserMessage[] = [
+      {
+        id: "pending-1",
+        sessionId: "session-1",
+        createdAt: 10_000,
+        text: "where is the summary?",
+      },
+    ];
+    const centralized: Message[] = [
+      {
+        role: "user",
+        content:
+          "[search-mode]\nMAXIMIZE SEARCH EFFORT.\n\n---\n\nwhere is the summary?",
+        created: 10_050,
+      },
+    ];
+
+    assert.deepStrictEqual(getVisiblePendingUserMessages(pending, centralized), []);
+  });
 });

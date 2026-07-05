@@ -8,6 +8,12 @@ const messageComponentsSource = readSource(
   "MessageComponents.tsx",
 );
 
+const chatShellSource = readSource(
+  [joinFromRoot("webview", "shared", "src", "chat", "ChatShell.tsx")],
+  "ChatShell.tsx",
+);
+
+
 test("activity timeline tracks an explicit expanded-vs-collapsed assistant turn state", () => {
   assert.match(
     messageComponentsSource,
@@ -39,12 +45,12 @@ test("activity timeline only collapses after the assistant turn is finished", ()
   );
   assert.match(
     messageComponentsSource,
-    /const canCollapseCompletedAssistantTurn =[\s\S]*!\(assistantTurnPending && isLatestAssistantMessage\)[\s\S]*hasStickyTimelineActivity;/,
+    /const canCollapseCompletedAssistantTurn =[\s\S]*!\(assistantTurnPending && isLatestAssistantMessage && isAfterLatestUserMessage\)[\s\S]*hasStickyTimelineActivity;/,
     "the newest assistant card should stay expanded while its turn is still pending, even before stream ids fully attach",
   );
   assert.match(
     messageComponentsSource,
-    /const isAssistantTurnCollapsed =[\s\S]*!viewState\.showExpandedActivityTimeline;/,
+    /const isAssistantTurnCollapsed =[\s\S]*!effectiveExpanded;/,
     "collapsed mode should be derived from the completed-turn gate plus local expansion state",
   );
 });
@@ -89,3 +95,30 @@ test("collapsed mode keeps only the last response chunk visible while earlier as
     "expanded completed turns should offer a way to collapse the non-final assistant context back to the summary row",
   );
 });
+
+test("multi-card block collapse maintains visibility of the final text-containing card", () => {
+  assert.match(
+    chatShellSource,
+    /lastTextIndexByKey\.set\(key, index\)/,
+    "block evaluation should track the last card that actually contains text",
+  );
+  assert.match(
+    chatShellSource,
+    /isLastTextInBlockByIndex\.set\(index, isLastText\)/,
+    "block evaluation should tag the text-bearing card as the logical last for collapse purposes",
+  );
+});
+
+test("multi-card block collapse controls render correctly in collapsed and expanded states", () => {
+  assert.match(
+    messageComponentsSource,
+    /data-assistant-section="block-collapse-control-collapsed"/,
+    "multi-card block should render a unified pill when collapsed",
+  );
+  assert.match(
+    messageComponentsSource,
+    /data-assistant-section="block-collapse-control-expanded"/,
+    "multi-card block should render a collapse link when expanded",
+  );
+});
+

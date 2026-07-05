@@ -12750,6 +12750,14 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                 // beat to catch up, and deleting the optimistic bubble here
                 // causes the visible gap where the user message disappears just
                 // as the assistant begins streaming.
+                //
+                // Why confirmation still matters before centralized ownership:
+                // - it upgrades the optimistic bubble with the host-confirmed
+                //   timestamp / images / interactive flag
+                // - it stores the host-side message identity as a first-class
+                //   ownership hint for later reconciliation
+                // - it lets the pending overlay survive the handoff without
+                //   having to rely purely on fuzzy text matching
                 dispatch({
                   type: "CONFIRM_PENDING_USER_MESSAGE",
                   payload: {
