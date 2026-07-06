@@ -32,95 +32,11 @@ export function extractSubagentsFromCentralizedEvents(
   summariesByParentMessageId: Record<string, SubagentSummary[]>;
   detailsById: Record<string, SubagentDetail>;
 } {
-  // PROMINENT LOG - Always visible
-  console.log('🚀 [SUBAGENT_EXTRACTION] Starting', {
-    hasEvents: Boolean(rawSdkEventPayloads),
-    eventCount: rawSdkEventPayloads?.length || 0,
-    parentMessageId,
-    mode: 'rehydration or streaming'
-  });
-
-  // Debug: Log sample events to understand the structure
-  if (Array.isArray(rawSdkEventPayloads) && rawSdkEventPayloads.length > 0) {
-    // Find any call_omo_agent events and log them specifically
-    const subagentEvents = rawSdkEventPayloads.filter(e => {
-      const evt = asRecord(e);
-      const props = asRecord(evt?.properties);
-      const part = asRecord(props?.part ?? evt?.part);
-      const toolName = asString(part?.tool)?.toLowerCase();
-      return toolName === 'call_omo_agent' || toolName === 'omo_agent';
-    });
-
-    if (subagentEvents.length > 0) {
-      console.log('🎯 [SUBAGENT_EXTRACTION] FOUND SUBAGENT EVENTS!', {
-        subagentCount: subagentEvents.length,
-        subagentEvents: subagentEvents.map(e => {
-          const evt = asRecord(e);
-          const props = asRecord(evt?.properties);
-          const part = asRecord(props?.part ?? evt?.part);
-          const syncEvent = asRecord(evt?.syncEvent);
-          const syncData = asRecord(syncEvent?.data);
-          const syncPart = asRecord(syncData?.part);
-
-          // Extract messageID with multiple fallbacks for different data shapes
-          const messageID = asString(
-            part?.messageID || part?.messageId ||                              // Direct part
-            props?.part?.messageID || props?.part?.messageId ||                 // Properties.part
-            syncPart?.messageID || syncPart?.messageId ||                        // SyncEvent.data.part
-            props?.info?.id || props?.info?.messageID || props?.info?.messageId ||   // Properties.info (legacy)
-            syncData?.info?.id || syncData?.info?.messageID                       // SyncEvent.data.info (legacy)
-          );
-
-          return {
-            eventType: evt?.type,
-            toolName: part?.tool || syncPart?.tool,
-            callID: asString(part?.callID || part?.id || syncPart?.callID || syncPart?.id),
-            messageID: messageID, // Use the correctly extracted messageID with fallbacks
-            allEventKeys: evt ? Object.keys(evt) : [],
-            allPropertiesKeys: props ? Object.keys(props) : [],
-            allPartKeys: part ? Object.keys(part) : [],
-            fullEventData: evt
-          };
-        })
-      });
-    } else {
-      console.log('🔍 [SUBAGENT_EXTRACTION] No subagent events found - event types present:', {
-        eventTypes: rawSdkEventPayloads.slice(0, 5).map(e => {
-          const evt = asRecord(e);
-          const props = asRecord(evt?.properties);
-          const part = asRecord(props?.part ?? evt?.part);
-          return {
-            type: evt?.type,
-            toolName: part?.tool || 'no-tool'
-          };
-        })
-      });
-    }
-  }
-
   const summariesByParentMessageId: Record<string, SubagentSummary[]> = {};
   const detailsById: Record<string, SubagentDetail> = {};
 
   if (!Array.isArray(rawSdkEventPayloads) || rawSdkEventPayloads.length === 0) {
-    console.warn('⚠️ [EXTRACTION_EMPTY] No centralized events to process!');
     return { summariesByParentMessageId, detailsById };
-  }
-
-  // Debug: Log input data (development only)
-  if (process.env.NODE_ENV === 'development') {
-    console.log('🔍 [SUBAGENT_EXTRACTION] Processing events', {
-      totalEvents: rawSdkEventPayloads.length,
-      subagentCallCount: rawSdkEventPayloads.filter(e => {
-        const evt = asRecord(e);
-        const props = asRecord(evt?.properties);
-        const part = asRecord(props?.part ?? evt?.part);
-        const syncEvent = asRecord(evt?.syncEvent);
-        const syncData = asRecord(syncEvent?.data);
-        const syncPart = asRecord(syncData?.part);
-        const toolName = part?.tool || syncPart?.tool;
-        return toolName === 'call_omo_agent' || toolName === 'omo_agent';
-      }).length
-    });
   }
 
   // Step 1: Normalize events and identify subagent calls
@@ -172,74 +88,29 @@ export function extractSubagentsFromCentralizedEvents(
     });
 
     if (!subagentEvent) {
-      console.warn('⚠️ [SUBAGENT_EXTRACTION] No subagent event found for callID:', callID);
       continue;
     }
-
-    console.log('🔧 [SUBAGENT_DETAIL_BUILD] Starting detail build for callID:', {
-      callID,
-      subagentEventsCount: subagentEvents.length
-    });
 
     // Use the unified logic to find the ultimate parent message ID
     // This handles: Tool Event → Assistant Message → User Message
     const parentMessageId = findUltimateParentMessageId(subagentEvent, rawSdkEventPayloads);
 
-    console.log('🔧 [SUBAGENT_DETAIL_BUILD] Parent message ID resolution:', {
-      callID,
-      extractedParentMessageId: parentMessageId,
-      requestedParentMessageId: parentMessageId
-    });
-
     if (!parentMessageId) {
-      console.warn('⚠️ [SUBAGENT_EXTRACTION] No parent message ID found for callID:', callID);
       continue;
     }
 
     // Filter by parent message if specified
     if (parentMessageId && parentMessageId !== parentMessageId) {
-      console.log('🔍 [FILTERING_OUT]', {
-        callID,
-        extractedParentMessageId: parentMessageId,
-        requestedParentMessageId: parentMessageId
-      });
       continue;
     }
 
     // Get ALL events for this message to capture all related tools
     const allRelatedEvents = eventsByMessageId.get(parentMessageId) || [];
 
-    console.log('🔧 [SUBAGENT_DETAIL_BUILD] Events for detail building:', {
-      callID,
-      parentMessageId,
-      eventsCount: allRelatedEvents.length,
-      eventsAvailable: eventsByMessageId.size
-    });
-
-    // Debug logging in development only
-    if (process.env.NODE_ENV === 'development') {
-      console.log('🔍 [SUBAGENT_BUILD]', {
-        callID,
-        parentMessageId,
-        eventsCount: allRelatedEvents.length,
-        toolCount: allRelatedEvents.filter(e => {
-          const norm = normalizeSubagentEvent(e);
-          return norm?.tool && norm.tool !== 'call_omo_agent';
-        }).length
-      });
-    }
-
     // Build the subagent detail including all tools (bash, glob, etc.)
     const detail = extractSubagentDetailFromCentralizedEvents(allRelatedEvents, callID, parentMessageId);
 
     if (detail) {
-      console.log('✅ [SUBAGENT_DETAIL_BUILD] Successfully built detail:', {
-        callID,
-        detailId: detail.id,
-        agentId: detail.agentId,
-        parentMessageId: detail.parentMessageId
-      });
-
       detailsById[detail.id] = detail;
 
       // Add to summaries
@@ -249,25 +120,7 @@ export function extractSubagentsFromCentralizedEvents(
       summariesByParentMessageId[parentMessageId].push(
         normalizeSubagentSummary(detail) as SubagentSummary
       );
-    } else {
-      console.warn('⚠️ [SUBAGENT_EXTRACTION] Failed to build detail for callID:', callID, {
-        callID,
-        parentMessageId,
-        eventsCount: allRelatedEvents.length
-      });
     }
-  }
-
-  // Debug logging in development only
-  if (process.env.NODE_ENV === 'development') {
-    console.log('🔍 [EXTRACTION_RESULTS]', {
-      totalSubagentsFound: Object.keys(detailsById).length,
-      totalParentMessages: Object.keys(summariesByParentMessageId).length
-    });
-  }
-
-  if (Object.keys(detailsById).length === 0) {
-    console.warn('⚠️ [EXTRACTION] No subagents found in centralized events');
   }
 
   return { summariesByParentMessageId, detailsById };

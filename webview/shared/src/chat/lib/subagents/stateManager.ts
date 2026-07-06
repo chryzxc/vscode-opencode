@@ -324,7 +324,7 @@ export function clearSubagentsForSession(
   const cleared: Record<string, SubagentSummary[]> = {};
 
   for (const [parentId, summaries] of Object.entries(existingByParentId)) {
-    const filtered = summaries.filter(s => s.parentSessionId !== sessionId);
+    const filtered = summaries.filter(s => s && typeof s.parentSessionId === 'string' && s.parentSessionId !== sessionId);
     if (filtered.length > 0) {
       cleared[parentId] = filtered;
     }

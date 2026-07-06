@@ -181,17 +181,6 @@ export function SubagentDetailModal({
 
 	// Debug logging for conversation events
 	useEffect(() => {
-		console.log('🔍 [MODAL_DEBUG] SubagentDetail received conversation events', {
-			subagentId: detail.id,
-			totalConversationEvents: detail.conversationEvents?.length || 0,
-			totalProgressEvents: detail.progressEvents?.length || 0,
-			totalTimelineEvents: detail.timelineEvents?.length || 0,
-			firstConversationEvent: detail.conversationEvents?.[0],
-			hasBashTools: detail.conversationEvents?.some(e =>
-				e.kind?.toLowerCase().includes('bash') ||
-				e.kind?.toLowerCase().includes('tool')
-			),
-		});
 	}, [detail.conversationEvents, detail.progressEvents, detail.timelineEvents]);
 
 	const shouldShowLoadingTimelineStep =

@@ -82,7 +82,7 @@ import {
   hasActiveAssistantReplyInCentralizedTape,
 } from "./lib/sessionProcessing";
 import { hasSystemMessagePatternInText } from "./lib/store";
-import logger, { getGlobalShowBrowserConsole } from "./lib/logger";
+import logger from "./lib/logger";
 import { FILE_MENTION_REGEX } from "./PanelComponents";
 
 import type {
@@ -568,200 +568,6 @@ function dedupeDebugArray<T extends Record<string, unknown>>(
   return deduped;
 }
 
-function valuesHaveSameDebugShape(left: unknown, right: unknown): boolean {
-  if (Object.is(left, right)) {
-    return true;
-  }
-  if (left === null || right === null) {
-    return false;
-  }
-  if (typeof left !== typeof right) {
-    return false;
-  }
-  if (typeof left !== "object") {
-    return false;
-  }
-
-  try {
-    return JSON.stringify(left) === JSON.stringify(right);
-  } catch {
-    return false;
-  }
-}
-
-const COMPACTABLE_DEBUG_INFO_FIELDS = new Set([
-  "parentID",
-  "parentId",
-  "role",
-  "mode",
-  "agent",
-  "variant",
-  "path",
-  "cost",
-  "tokens",
-  "modelID",
-  "providerID",
-  "time",
-  "finish",
-  "id",
-  "sessionID",
-  "sessionId",
-]);
-
-function objectHasMatchingSubset(
-  candidate: Record<string, unknown>,
-  source: Record<string, unknown>,
-): boolean {
-  return Object.entries(candidate).every(([key, candidateValue]) => {
-    if (!Object.prototype.hasOwnProperty.call(source, key)) {
-      return false;
-    }
-    return valuesHaveSameDebugShape(candidateValue, source[key]);
-  });
-}
-
-function compactDuplicateDebugFields(
-  value: unknown,
-  seen = new WeakSet<object>(),
-): unknown {
-  if (Array.isArray(value)) {
-    if (seen.has(value)) {
-      return value;
-    }
-    seen.add(value);
-    return value.map((item) => compactDuplicateDebugFields(item, seen));
-  }
-  if (!value || typeof value !== "object") {
-    return value;
-  }
-  if (seen.has(value as object)) {
-    return value;
-  }
-  seen.add(value as object);
-
-  const next: Record<string, unknown> = {};
-  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    next[key] = compactDuplicateDebugFields(child, seen);
-  }
-
-  const infoValue = next.info;
-  if (infoValue && typeof infoValue === "object" && !Array.isArray(infoValue)) {
-    const infoRecord = infoValue as Record<string, unknown>;
-    if (
-      Object.keys(infoRecord).every((infoKey) =>
-        COMPACTABLE_DEBUG_INFO_FIELDS.has(infoKey),
-      ) &&
-      objectHasMatchingSubset(infoRecord, next)
-    ) {
-      delete next.info;
-    }
-  }
-
-  return next;
-}
-
-function normalizeToastTitle(title: string): string {
-  return title
-    .replace(/^[\s\u2022\u00b7\u25cf\u25cb\u25a1\u25aa\u25ab]+/u, "")
-    .trim();
-}
-
-function compactCentralizedRawSdkEventPayloadsForDebug(
-  rawSdkEventPayloads?: unknown[],
-): unknown[] | undefined {
-  if (!Array.isArray(rawSdkEventPayloads) || rawSdkEventPayloads.length === 0) {
-    return undefined;
-  }
-
-  const seen = new Set<string>();
-  const compacted: unknown[] = [];
-
-  for (const entry of rawSdkEventPayloads) {
-    const rec = asRecord(entry);
-    if (!rec) {
-      compacted.push(entry);
-      continue;
-    }
-
-    const eventType = asString(rec.type) ?? "";
-    const source = asString(rec.source) ?? "";
-
-    let key = "";
-    if (eventType === "tui.toast.show") {
-      const properties = asRecord(rec.properties);
-      key = [
-        eventType,
-        normalizeToastTitle(asString(properties?.title) ?? ""),
-        asString(properties?.message) ?? "",
-        asString(properties?.variant) ?? "",
-        asString(rec.sessionId) ?? "",
-      ].join("|");
-    } else if (eventType === "sync") {
-      const syncEvent = asRecord(rec.syncEvent);
-      const data = asRecord(syncEvent?.data);
-      const info = asRecord(data?.info);
-      const structured = asRecord(info?.structured);
-      const tokens = asRecord(info?.tokens);
-      key = [
-        eventType,
-        asString(syncEvent?.type) ?? "",
-        asString(syncEvent?.aggregateID) ?? "",
-        asString(data?.sessionID) ?? "",
-        asString(info?.id) ?? "",
-        asString(info?.parentID) ?? "",
-        asString(info?.role) ?? "",
-        asString(info?.mode) ?? "",
-        asString(info?.agent) ?? "",
-        asString(info?.modelID) ?? "",
-        asString(info?.providerID) ?? "",
-        asString(info?.finish) ?? "",
-        asString(structured?.type ?? structured?.responseType) ?? "",
-        asString(structured?.text ?? structured?.message) ?? "",
-        typeof tokens?.total === "number" ? String(tokens.total) : "",
-        typeof tokens?.input === "number" ? String(tokens.input) : "",
-        typeof tokens?.output === "number" ? String(tokens.output) : "",
-      ].join("|");
-    } else {
-      key = [
-        eventType,
-        source,
-        asString(rec.id) ?? "",
-        asString(rec.sessionId) ?? "",
-        asString(rec.type) ?? "",
-      ].join("|");
-    }
-
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    compacted.push(entry);
-  }
-
-  return compacted;
-}
-
-function sanitizeStructuredOutputForDebug(
-  value: unknown,
-  depth = 0,
-): unknown {
-  if (Array.isArray(value)) {
-    return value.map((item) => sanitizeStructuredOutputForDebug(item, depth));
-  }
-  if (!value || typeof value !== "object") {
-    return value;
-  }
-
-  const next: Record<string, unknown> = {};
-  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    if (key === "raw" && depth >= 1) {
-      continue;
-    }
-    next[key] = sanitizeStructuredOutputForDebug(child, key === "raw" ? depth + 1 : depth);
-  }
-
-  return next;
-}
 
 function arraysHaveSameDebugKeys(
   left: unknown[],
@@ -778,6 +584,11 @@ function arraysHaveSameDebugKeys(
     return leftKey === rightKey;
   });
 }
+
+const DEFERRED_CHAT_CARD_STYLE: CSSProperties = {
+  contentVisibility: "auto",
+  containIntrinsicSize: "320px",
+};
 
 function compactDebugSubagent(subagent: Record<string, unknown>): Record<string, unknown> {
   const next: Record<string, unknown> = { ...subagent };
@@ -2039,91 +1850,24 @@ function stringifyDebugValue(value: unknown): string {
   };
 
   try {
-    const normalized =
-      typeof value === "string" ? normalizeDebugStringForDisplay(value) : value;
+    // Inline the normalizeDebugStringForDisplay logic
+    let normalized = value;
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (trimmed && /^[{\[]/.test(trimmed)) {
+        try {
+          normalized = JSON.parse(trimmed);
+        } catch {
+          // Keep original value if parsing fails
+        }
+      }
+    }
     return JSON.stringify(normalized, replacer, 2) ?? "";
   } catch {
     return String(value);
   }
 }
 
-function normalizeDebugStringForDisplay(value: string): unknown {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return value;
-  }
-  if (!/^[{\[]/.test(trimmed)) {
-    return value;
-  }
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    return value;
-  }
-}
-
-type DebugObjectViewProps = {
-  value: unknown;
-};
-
-// Keep debug output in object-literal form so the payload stays readable and
-// visually matches the raw SDK shape instead of a JSON string dump.
-function formatDebugObjectLiteral(value: unknown, depth = 0, seen = new WeakSet<object>()): string {
-  const indent = "  ".repeat(depth);
-  const nextIndent = "  ".repeat(depth + 1);
-
-  if (value === null) return "null";
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    if (/^[{\[]/.test(trimmed)) {
-      try {
-        return formatDebugObjectLiteral(JSON.parse(trimmed), depth, seen);
-      } catch {
-        // Fall through to a quoted string when the payload only looks like JSON.
-      }
-    }
-    return JSON.stringify(value);
-  }
-  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
-    return String(value);
-  }
-  if (typeof value === "undefined") return "undefined";
-  if (typeof value === "symbol") return value.toString();
-  if (typeof value === "function") return "[Function]";
-  if (value instanceof Date) return JSON.stringify(value.toISOString());
-  if (value instanceof Error) {
-    return `{\n${nextIndent}name: ${JSON.stringify(value.name)},\n${nextIndent}message: ${JSON.stringify(value.message)}\n${indent}}`;
-  }
-
-  if (Array.isArray(value)) {
-    if (value.length === 0) return "[]";
-    const items = value.map((item) => `${nextIndent}${formatDebugObjectLiteral(item, depth + 1, seen)}`);
-    return `[\n${items.join(",\n")}\n${indent}]`;
-  }
-
-  if (typeof value === "object") {
-    if (seen.has(value)) return "[Circular]";
-    seen.add(value);
-
-    const entries = Object.entries(value);
-    if (entries.length === 0) return "{}";
-
-    const body = entries
-      .map(([key, nextValue]) => `${nextIndent}${key}: ${formatDebugObjectLiteral(nextValue, depth + 1, seen)}`)
-      .join(",\n");
-    return `{\n${body}\n${indent}}`;
-  }
-
-  return String(value);
-}
-
-function DebugObjectView({ value }: DebugObjectViewProps) {
-  return (
-    <pre className="overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-oc-text-soft">
-      {formatDebugObjectLiteral(value)}
-    </pre>
-  );
-}
 
 type MarkdownPreviewModalProps = {
   isOpen: boolean;
@@ -3478,35 +3222,7 @@ function progressItemsFromRawEventPayloads(
     rememberPushed(event, index);
   }
 
-  const rawStepFilterPreview = rawSteps.slice(0, 12).map((step, index) => {
-    const stepRec = step as StreamingStep;
-    return {
-      index,
-      id: "id" in step ? step.id : undefined,
-      callID: "callID" in step ? step.callID : undefined,
-      messageID: "messageID" in step ? step.messageID : undefined,
-      title: step.title,
-      type: step.type,
-      partType: "partType" in step ? step.partType : undefined,
-      status: step.status,
-      tool: stepRec.activityDetail?.tool,
-      kind: stepRec.activityDetail?.kind,
-      hasActivityDetail: !!stepRec.activityDetail,
-      wouldRender: isActionProgressStep(step),
-    };
-  });
   const projectedItems = progressItemsFromSteps(rawSteps, "raw-event");
-  logger.info(`${ACTIVITY_TIMELINE_DIAGNOSTIC_LOG} progress_projection`, {
-    diagnostics,
-    rawSteps: rawSteps.length,
-    projectedItems: projectedItems.length,
-    rawStepFilterPreview,
-    skippedSamples,
-    pushedSamples,
-    projectedSamples: projectedItems
-      .slice(0, 8)
-      .map((item, index) => summarizeProgressItemForTimelineDiagnostics(item, index)),
-  });
 
   return projectedItems;
 }
@@ -5244,7 +4960,7 @@ function subagentModelLabel(
   subagent: SubagentSummary,
   detail?: SubagentDetail,
 ): string {
-  if (getGlobalShowBrowserConsole()) {
+  if (config.debug.showBrowserConsole) {
     console.log('[SUBAGENT][RENDER] subagentModelLabel called with data', {
     subagentId: subagent.id,
     providerID: subagent.providerID,
@@ -5428,7 +5144,7 @@ function SubagentsInlineCard({
                 | SubagentDetail
                 | undefined;
 
-              if (getGlobalShowBrowserConsole()) {
+              if (config.debug.showBrowserConsole) {
                 console.log('===SUBAGENT_SPAWN=== [UI_RENDER] Rendering subagent card', {
                 subagentId: subagent.id,
                 hasDetail: !!detail,
@@ -6357,7 +6073,7 @@ export const SystemMessage = memo(function SystemMessage({
   );
 
   return (
-    <div className="oc-message-enter mb-4">
+    <div className="oc-message-enter mb-4" style={DEFERRED_CHAT_CARD_STYLE}>
       <section className="oc-system-message" style={systemMessageStyle}>
         <button
           type="button"
@@ -6436,40 +6152,41 @@ export const BackgroundTaskReminderMessage = memo(function BackgroundTaskReminde
   const reminderMessageId =
     firstNonEmptyString(message?.info?.id, message?.id, message?.messageId) ?? null;
 
-  useEffect(() => {
-    logger.info("[TRACE][BG_TASK_REMINDER][CARD]", {
-      reminderMessageId,
-      backgroundTaskId: presentation.backgroundTaskId,
-      assistantConversationEventCount: assistantConversationEvents.length,
-      assistantUpdateTextLength: assistantUpdateText.length,
-      hasReminderActivityDetail: !!reminderActivityDetail,
-      reminderActivityTool: reminderActivityDetail?.tool ?? null,
-      reminderActivityBackgroundTaskId: reminderActivityDetail?.backgroundTaskId ?? null,
-      reminderTextPreview: reminderText.slice(0, 200),
-    });
-    if (process.env.NODE_ENV === "development") {
-      console.info("[TRACE][BG_TASK_REMINDER][CARD]", {
-        reminderMessageId,
-        backgroundTaskId: presentation.backgroundTaskId,
-        assistantConversationEventCount: assistantConversationEvents.length,
-        assistantUpdateTextLength: assistantUpdateText.length,
-        hasReminderActivityDetail: !!reminderActivityDetail,
-        reminderActivityTool: reminderActivityDetail?.tool ?? null,
-        reminderActivityBackgroundTaskId: reminderActivityDetail?.backgroundTaskId ?? null,
-        reminderTextPreview: reminderText.slice(0, 200),
-      });
-    }
-  }, [
-    assistantConversationEvents.length,
-    assistantUpdateText.length,
-    presentation.backgroundTaskId,
-    reminderActivityDetail,
-    reminderMessageId,
-    reminderText,
-  ]);
+  // TRACE logging disabled for performance
+  // useEffect(() => {
+  //   logger.info("[TRACE][BG_TASK_REMINDER][CARD]", {
+  //     reminderMessageId,
+  //     backgroundTaskId: presentation.backgroundTaskId,
+  //     assistantConversationEventCount: assistantConversationEvents.length,
+  //     assistantUpdateTextLength: assistantUpdateText.length,
+  //     hasReminderActivityDetail: !!reminderActivityDetail,
+  //     reminderActivityTool: reminderActivityDetail?.tool ?? null,
+  //     reminderActivityBackgroundTaskId: reminderActivityDetail?.backgroundTaskId ?? null,
+  //     reminderTextPreview: reminderText.slice(0, 200),
+  //   });
+  //   if (process.env.NODE_ENV === "development") {
+  //     console.info("[TRACE][BG_TASK_REMINDER][CARD]", {
+  //       reminderMessageId,
+  //       backgroundTaskId: presentation.backgroundTaskId,
+  //       assistantConversationEventCount: assistantConversationEvents.length,
+  //       assistantUpdateTextLength: assistantUpdateText.length,
+  //       hasReminderActivityDetail: !!reminderActivityDetail,
+  //       reminderActivityTool: reminderActivityDetail?.tool ?? null,
+  //       reminderActivityBackgroundTaskId: reminderActivityDetail?.backgroundTaskId ?? null,
+  //       reminderTextPreview: reminderText.slice(0, 200),
+  //     });
+  //   }
+  // }, [
+  //   assistantConversationEvents.length,
+  //   assistantUpdateText.length,
+  //   presentation.backgroundTaskId,
+  //   reminderActivityDetail,
+  //   reminderMessageId,
+  //   reminderText,
+  // ]);
 
   return (
-    <div className="oc-message-enter mb-4">
+    <div className="oc-message-enter mb-4" style={DEFERRED_CHAT_CARD_STYLE}>
       <BackgroundOutputStep
         sessionID={firstNonEmptyString(
           message?.info?.sessionID,
@@ -6550,7 +6267,7 @@ export const UserMessage = memo(function UserMessage({ message }: { message?: Me
 
   if (isPlanProceedMessageContent(content)) {
     return (
-    <div className="oc-message-enter mb-3.5 flex justify-end">
+    <div className="oc-message-enter mb-3.5 flex justify-end" style={DEFERRED_CHAT_CARD_STYLE}>
         <div className="flex w-fit max-w-[78%] flex-col items-end gap-2">
           <div className="oc-plan-approved-badge flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-oc-xs">
             <Check className="h-3.5 w-3.5" />
@@ -6567,7 +6284,7 @@ export const UserMessage = memo(function UserMessage({ message }: { message?: Me
   }
 
   return (
-      <div className="oc-message-enter mb-3.5 flex flex-col gap-1.5">
+      <div className="oc-message-enter mb-3.5 flex flex-col gap-1.5" style={DEFERRED_CHAT_CARD_STYLE}>
       {(content || hasImages) ? (
         <div className="flex items-end justify-end gap-1.5">
           <div className="w-fit max-w-[78%]">
@@ -7095,53 +6812,17 @@ function getThinkingVariant(
   return undefined;
 }
 
-function messageModelSupportsThinking(
-  message: Message | undefined,
-  streaming: StreamingState | undefined,
-  availableModels: Model[],
-): boolean {
-  let providerID: string | undefined;
-  let modelID: string | undefined;
-
-  if (streaming?.isActive) {
-    providerID = streaming.providerID;
-    modelID = streaming.modelID;
-  }
-
-  if (!providerID || !modelID) {
-    if (message?.info) {
-      const info = message.info as Record<string, unknown>;
-      const infoModel = info.model as Record<string, string> | undefined;
-      providerID = providerID ?? infoModel?.providerID ?? info.providerID as string;
-      modelID = modelID ?? infoModel?.modelID ?? info.modelID as string;
-    }
-  }
-
-  if (!providerID || !modelID) {
-    providerID = providerID ?? message?.providerID;
-    modelID = modelID ?? message?.modelID;
-  }
-
-  if (!providerID || !modelID) {
-    const msgModel = message?.model;
-    if (msgModel) {
-      providerID = providerID ?? msgModel.providerID;
-      modelID = modelID ?? msgModel.modelID;
-    }
-  }
-
-  if (!providerID || !modelID) return false;
-
-  const match = availableModels.find(
-    (m) => m.providerID === providerID && m.modelID === modelID,
-  );
-  return Boolean(match && (match.reasoning || (match.variants && match.variants.length > 0)));
-}
-
 function formatThinkingVariantLabel(variant: string): string {
   const trimmed = variant.trim();
   if (!trimmed) return "";
   return trimmed.charAt(0).toUpperCase() + trimmed.slice(1).toLowerCase();
+}
+
+function getStableAgentAccentColor(agentName?: string): string | undefined {
+  if (!agentName || agentName === "assistant") {
+    return undefined;
+  }
+  return `hsl(${getSubagentHue(agentName)}, 72%, 68%)`;
 }
 
 type AssistantTurnMetadata = {
@@ -7284,7 +6965,6 @@ function ResponseMessageInner({
   hideFileChangesSection,
   subagentsByParentMessageId,
   subagentDetailsById,
-  availableAgents,
   todoItems = [],
   blockGroupKey,
   isLastInBlock,
@@ -7303,7 +6983,6 @@ function ResponseMessageInner({
   hideFileChangesSection?: boolean;
   subagentsByParentMessageId?: AppState["subagentsByParentMessageId"];
   subagentDetailsById?: AppState["subagentDetailsById"];
-  availableAgents?: AppState["availableAgents"];
   todoItems?: AppState["todoItems"];
   // Block-level collapse/expand props (lifted from ChatShell).
   // Non-last assistant cards in a contiguous block share a single expanded state
@@ -7324,14 +7003,12 @@ function ResponseMessageInner({
   const {
     assistantTurnPending,
     assistantTurnMessageId,
-    availableModels,
     streamingBySessionId,
     rawSdkEventPayloadsBySessionId,
   } = useAppState(
     (state) => ({
       assistantTurnPending: state.assistantTurnPending,
       assistantTurnMessageId: state.assistantTurnMessageId,
-      availableModels: state.availableModels,
       streamingBySessionId: state.streamingBySessionId,
       rawSdkEventPayloadsBySessionId: state.rawSdkEventPayloadsBySessionId,
     }),
@@ -7347,7 +7024,6 @@ function ResponseMessageInner({
   const [showTodoChecklist, setShowTodoChecklist] = useState(true);
   const [selectedSubagentId, setSelectedSubagentId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [copiedDebugPanel, setCopiedDebugPanel] = useState<"sdk" | "centralized" | null>(null);
   const [previewImageSrc, setPreviewImageSrc] = useState<string | null>(null);
   const messageBodyRef = useRef<HTMLDivElement>(null);
   const progressTimelineRef = useRef<HTMLDivElement>(null);
@@ -7361,19 +7037,7 @@ function ResponseMessageInner({
     assistantTurnMessageId ||
     activityTimelineStreaming?.messageId ||
     null;
-  const sdkDebugData = useMemo(() => {
-    if (!config.debug.showSdkDebug) return null;
-    const sdkPayloads =
-      message?.rawSdkEventPayloads ??
-      activityTimelineStreaming?.rawSdkEventPayloads ??
-      [];
-    return {
-      streamEventPayloads: sdkPayloads.length > 0 ? sdkPayloads : undefined,
-      rawResponse: message?.rawResponse,
-      payloadCount: sdkPayloads.length,
-    };
-  }, [message, activityTimelineStreaming, config.debug.showSdkDebug]);
-  const centralizedRawResponse = message?.rawResponse;
+const centralizedRawResponse = message?.rawResponse;
   const centralizedMessageRec = asRecord(activityTimelineMessage);
   const centralizedMessageInfoRec = asRecord(centralizedMessageRec?.info);
   const centralizedSessionId =
@@ -7855,48 +7519,49 @@ function ResponseMessageInner({
         )
       : [];
 
-    logger.info(`${ACTIVITY_TIMELINE_DIAGNOSTIC_LOG} render_flow`, {
-      currentMessageId: messageId,
-      assistantMessageId,
-      rawEventCount: rawEvents.length,
-      rawSamples,
-      progressItemCount: progressItems.length,
-      progressSamples: progressItems
-        .slice(0, 12)
-        .map((item, index) => summarizeProgressItemForTimelineDiagnostics(item, index)),
-      progressItemsForOtherMessages: progressItemsForOtherMessages
-        .slice(0, 8)
-        .map((item, index) => summarizeProgressItemForTimelineDiagnostics(item, index)),
-      thoughtItemCount: thoughtItems.length,
-      commentaryItemCount: commentaryItems.length,
-      thoughtSamples: thoughtItems.slice(0, 12).map((item, index) => ({
-        index,
-        key: item.key,
-        textLength: item.text.length,
-        source: item.source,
-        status: item.status,
-        messageID: item.messageID,
-        partID: item.partID,
-        streamSeq: item.streamSeq,
-      })),
-      commentarySamples: commentaryItems.slice(0, 12).map((item, index) => ({
-        index,
-        id: item.id,
-        textLength: item.text.length,
-        kind: item.kind,
-        status: item.status,
-        messageID: item.messageID,
-        partID: item.partID,
-        streamSeq: item.streamSeq,
-      })),
-      displayEventCount: displayEvents.length,
-      displaySamples: displayEvents
-        .slice(0, 12)
-        .map((event, index) => summarizeDisplayEventForTimelineDiagnostics(event, index)),
-      displayEventsForOtherMessages: displayEventsForOtherMessages
-        .slice(0, 8)
-        .map((event, index) => summarizeDisplayEventForTimelineDiagnostics(event, index)),
-    });
+    // DIAGNOSTIC logging disabled for performance
+    // logger.info(`${ACTIVITY_TIMELINE_DIAGNOSTIC_LOG} render_flow`, {
+    //   currentMessageId: messageId,
+    //   assistantMessageId,
+    //   rawEventCount: rawEvents.length,
+    //   rawSamples,
+    //   progressItemCount: progressItems.length,
+    //   progressSamples: progressItems
+    //     .slice(0, 12)
+    //     .map((item, index) => summarizeProgressItemForTimelineDiagnostics(item, index)),
+    //   progressItemsForOtherMessages: progressItemsForOtherMessages
+    //     .slice(0, 8)
+    //     .map((item, index) => summarizeProgressItemForTimelineDiagnostics(item, index)),
+    //   thoughtItemCount: thoughtItems.length,
+    //   commentaryItemCount: commentaryItems.length,
+    //   thoughtSamples: thoughtItems.slice(0, 12).map((item, index) => ({
+    //     index,
+    //     key: item.key,
+    //     textLength: item.text.length,
+    //     source: item.source,
+    //     status: item.status,
+    //     messageID: item.messageID,
+    //     partID: item.partID,
+    //     streamSeq: item.streamSeq,
+    //   })),
+    //   commentarySamples: commentaryItems.slice(0, 12).map((item, index) => ({
+    //     index,
+    //     id: item.id,
+    //     textLength: item.text.length,
+    //     kind: item.kind,
+    //     status: item.status,
+    //     messageID: item.messageID,
+    //     partID: item.partID,
+    //     streamSeq: item.streamSeq,
+    //   })),
+    //   displayEventCount: displayEvents.length,
+    //   displaySamples: displayEvents
+    //     .slice(0, 12)
+    //     .map((event, index) => summarizeDisplayEventForTimelineDiagnostics(event, index)),
+    //   displayEventsForOtherMessages: displayEventsForOtherMessages
+    //     .slice(0, 8)
+    //     .map((event, index) => summarizeDisplayEventForTimelineDiagnostics(event, index)),
+    // });
   }, [
     assistantMessageId,
     commentaryItems,
@@ -8517,13 +8182,8 @@ function ResponseMessageInner({
   // Use type-safe helpers instead of type assertions
   const agentName = turnMetadata.agent || getAgentName(message, streaming);
   const agentColor = useMemo(() => {
-    if (!agentName || agentName === "assistant") return undefined;
-    const match = availableAgents?.find(
-      (a) =>
-        a.id === agentName || a.name.toLowerCase() === agentName.toLowerCase(),
-    );
-    return match?.color ?? undefined;
-  }, [agentName, availableAgents]);
+    return getStableAgentAccentColor(agentName);
+  }, [agentName]);
   const modelName = useMemo(() => {
     if (turnMetadata.providerID && turnMetadata.modelID) {
       return `${turnMetadata.providerID}/${turnMetadata.modelID}`;
@@ -8546,10 +8206,8 @@ function ResponseMessageInner({
   const thinkingVariant =
     turnMetadata.variant || getThinkingVariant(message, streaming);
   const showMessageThinking = useMemo(
-    () =>
-      !!thinkingVariant &&
-      messageModelSupportsThinking(message, streaming, availableModels),
-    [thinkingVariant, message, streaming, availableModels],
+    () => !!thinkingVariant,
+    [thinkingVariant],
   );
   const headerSegments = useMemo(() => {
     const segments: AssistantHeaderSegment[] = [];
@@ -8676,62 +8334,63 @@ function ResponseMessageInner({
   const hasActiveTimelineWork = timelineDisplayEvents.some(
     (event) => event.status === "pending",
   );
-  useEffect(() => {
-    logger.info("[CENTRALIZED_METRICS_CARD] response-card-data", {
-      messageId,
-      assistantMessageId,
-      assistantScopeMessageIds: Array.from(assistantScopeMessageIds),
-      extractedMetrics: {
-        tokens: centralizedMetrics?.tokens ?? null,
-        duration: centralizedMetrics?.duration ?? null,
-        sourceEventType: centralizedMetrics?.sourceEventType ?? null,
-        sourcePayloadIndex: centralizedMetrics?.sourcePayloadIndex ?? null,
-      },
-      sourcePayload: centralizedMetrics?.sourcePayload ?? null,
-      matchingPayloadCount: centralizedMetrics?.matchingPayloads.length ?? 0,
-      matchingPayloads: centralizedMetrics?.matchingPayloads ?? [],
-    });
-  }, [
-    assistantMessageId,
-    assistantScopeMessageIds,
-    centralizedMetrics,
-    messageId,
-  ]);
-  useEffect(() => {
-    logger.info("[LEGACY_METRICS_CARD] pre-centralized-data-sources", {
-      messageId,
-      assistantMessageId,
-      legacyTokenSource: legacyMetricsDiagnostics.tokenSource,
-      legacyDurationSource: legacyMetricsDiagnostics.durationSource,
-      legacyExtractedMetrics: {
-        tokens: legacyMetricsDiagnostics.tokens ?? null,
-        duration: legacyMetricsDiagnostics.duration ?? null,
-      },
-      messageInfoTokens: message?.info?.tokens ?? null,
-      messageInfoDuration:
-        typeof message?.info?.duration === "number" ? message.info.duration : null,
-      messageTopLevelTokens:
-        message && "tokens" in message
-          ? (message as Record<string, unknown>).tokens ?? null
-          : null,
-      messageTopLevelDuration:
-        typeof message?.duration === "number" ? message.duration : null,
-      messageTimingDuration:
-        typeof message?.timing?.duration === "number"
-          ? message.timing.duration
-          : null,
-      streamingUsage: streaming?.usage ?? null,
-      rawResponseInfo: legacyMetricsDiagnostics.rawResponseInfo ?? null,
-      rawResponseParsed: legacyMetricsDiagnostics.rawResponseParsed ?? null,
-      rawResponse: message?.rawResponse ?? null,
-    });
-  }, [
-    assistantMessageId,
-    legacyMetricsDiagnostics,
-    message,
-    messageId,
-    streaming,
-  ]);
+  // METRICS logging disabled for performance
+  // useEffect(() => {
+  //   logger.info("[CENTRALIZED_METRICS_CARD] response-card-data", {
+  //     messageId,
+  //     assistantMessageId,
+  //     assistantScopeMessageIds: Array.from(assistantScopeMessageIds),
+  //     extractedMetrics: {
+  //       tokens: centralizedMetrics?.tokens ?? null,
+  //       duration: centralizedMetrics?.duration ?? null,
+  //       sourceEventType: centralizedMetrics?.sourceEventType ?? null,
+  //       sourcePayloadIndex: centralizedMetrics?.sourcePayloadIndex ?? null,
+  //     },
+  //     sourcePayload: centralizedMetrics?.sourcePayload ?? null,
+  //     matchingPayloadCount: centralizedMetrics?.matchingPayloads.length ?? 0,
+  //     matchingPayloads: centralizedMetrics?.matchingPayloads ?? [],
+  //   });
+  // }, [
+  //   assistantMessageId,
+  //   assistantScopeMessageIds,
+  //   centralizedMetrics,
+  //   messageId,
+  // ]);
+  // useEffect(() => {
+  //   logger.info("[LEGACY_METRICS_CARD] pre-centralized-data-sources", {
+  //     messageId,
+  //     assistantMessageId,
+  //     legacyTokenSource: legacyMetricsDiagnostics.tokenSource,
+  //     legacyDurationSource: legacyMetricsDiagnostics.durationSource,
+  //     legacyExtractedMetrics: {
+  //       tokens: legacyMetricsDiagnostics.tokens ?? null,
+  //       duration: legacyMetricsDiagnostics.duration ?? null,
+  //     },
+  //     messageInfoTokens: message?.info?.tokens ?? null,
+  //     messageInfoDuration:
+  //       typeof message?.info?.duration === "number" ? message.info.duration : null,
+  //     messageTopLevelTokens:
+  //       message && "tokens" in message
+  //         ? (message as Record<string, unknown>).tokens ?? null
+  //         : null,
+  //     messageTopLevelDuration:
+  //       typeof message?.duration === "number" ? message.duration : null,
+  //     messageTimingDuration:
+  //       typeof message?.timing?.duration === "number"
+  //         ? message.timing.duration
+  //         : null,
+  //     streamingUsage: streaming?.usage ?? null,
+  //     rawResponseInfo: legacyMetricsDiagnostics.rawResponseInfo ?? null,
+  //     rawResponseParsed: legacyMetricsDiagnostics.rawResponseParsed ?? null,
+  //     rawResponse: message?.rawResponse ?? null,
+  //   });
+  // }, [
+  //   assistantMessageId,
+  //   legacyMetricsDiagnostics,
+  //   message,
+  //   messageId,
+  //   streaming,
+  // ]);
   const { rawResponseText } = useMemo(() => {
     const maxRawDebugChars = 30000;
     const withCap = (value: string): string =>
@@ -8751,12 +8410,7 @@ function ResponseMessageInner({
       rawResponseText: withCap(rawResponseText),
     };
   }, [centralizedRawResponse]);
-  const showRawResponseDebug = config.debug.showRawResponse;
-  const visibleRawResponseText =
-    rawResponseText.trim().length > 0
-      ? rawResponseText
-      : "(rawResponse is missing on this message)";
-  const responseBodyChunks = useMemo(() => {
+const responseBodyChunks = useMemo(() => {
     const orderedChunks = orderedAssistantResponseChunksFromCentralizedData(
       responseBodyRawSdkEventPayloads,
       assistantScopeMessageIds,
@@ -8916,83 +8570,9 @@ function ResponseMessageInner({
       hasVisibleResponseBody ||
       hasStickyTimelineActivity ||
       (isLiveStream && hasLiveTimelineActivity));
-  const preRenderDebug = useMemo(() => {
-    if (!config.debug.showPreRenderDebug) return null;
-    const streamingContent = streaming?.content || '';
-    const streamingReasoning = streaming?.reasoning || '';
-    const reasoningEvents = streaming?.reasoningEvents || [];
-    const reasoningEventSummaries = reasoningEvents.map((e: ReasoningEvent) =>
-      typeof e?.text === 'string' ? e.text.slice(0, 120) : ''
-    );
-    const displayReasoningSummaries = displayEvents
-      .filter((e) => e.kind === 'reasoning')
-      .map((e) => (e.summary || '').slice(0, 120));
-    const streamReasoningInContent = streamingContent && streamingReasoning
-      ? streamingContent.includes(streamingReasoning) || streamingReasoning.includes(streamingContent)
-      : false;
-    const effectiveContentHasReasoning = effectiveResponseContent && streamingReasoning
-      ? effectiveResponseContent.includes(streamingReasoning) || streamingReasoning.includes(effectiveResponseContent)
-      : false;
-    return {
-      messageId: messageId || '(none)',
-      isLiveStream,
-      streaming: {
-        isActive: streaming?.isActive || false,
-        content: streamingContent.slice(0, 500),
-        contentLen: streamingContent.length,
-        reasoning: streamingReasoning.slice(0, 500),
-        reasoningLen: streamingReasoning.length,
-        reasoningEventsCount: reasoningEvents.length,
-        reasoningEventSummaries,
-        inReasoningPart: streaming?.inReasoningPart || false,
-        hasRenderableContent: streaming?.hasRenderableContent || false,
-        hasAssistantFinishSignal: String(hasAssistantFinishSignal),
-        hasTerminalStepSignal: String(hasTerminalStepSignal),
-      },
-      filtered: {
-        rawContent: rawContent.slice(0, 500),
-        rawContentLen: rawContent.length,
-        content: content.slice(0, 500),
-        contentLen: content.length,
-        effectiveResponseContent: effectiveResponseContent.slice(0, 500),
-        effectiveResponseContentLen: effectiveResponseContent.length,
-      },
-      display: {
-        displayEventsCount: displayEvents.length,
-        displayReasoningSummaries,
-        thoughtItemsCount: thoughtItems.length,
-        hasActiveTimelineWork: String(hasActiveTimelineWork),
-        hasActiveReasoningPart: String(hasActiveReasoningPart),
-        hasPendingReasoningDisplayEvent: String(hasPendingReasoningDisplayEvent),
-      },
-      leakDetection: {
-        streamReasoningInContent: String(streamReasoningInContent),
-        effectiveContentHasReasoning: String(effectiveContentHasReasoning),
-      },
-      rendering: {
-        showResponseSection: String(showResponseSection),
-        hasVisibleResponseBody: String(hasVisibleResponseBody),
-        hasPrimaryResponseBody: String(hasPrimaryResponseBody),
-        showAssistantResponseHeader: String(showAssistantResponseHeader),
-        showResponseBody: String(showResponseBody),
-        isAborted: String(isAborted),
-      },
-    };
-  }, [
-    messageId, isLiveStream, streaming, rawContent, content,
-    effectiveResponseContent, hasAssistantFinishSignal, hasTerminalStepSignal,
-    hasActiveTimelineWork, hasActiveReasoningPart, hasPendingReasoningDisplayEvent,
-    showResponseSection, hasVisibleResponseBody,
-    showAssistantResponseHeader,
-    hasPrimaryResponseBody, isAborted, displayEvents, thoughtItems,
-    config.debug.showPreRenderDebug,
-  ]);
-  const hasVisibleResponseSectionContent =
+const hasVisibleResponseSectionContent =
     showResponseBody ||
-    (shouldShowPlanCard && !!plan) ||
-    showRawResponseDebug ||
-    config.debug.showInteractiveEventsDebug ||
-    (config.debug.showPreRenderDebug && !!preRenderDebug);
+    (shouldShowPlanCard && !!plan);
   const responseChunksVisibleInCurrentView =
     isAssistantTurnCollapsed && responseChunksToRender.length > 0
       ? responseChunksToRender.slice(-1)
@@ -9019,24 +8599,7 @@ function ResponseMessageInner({
       setTimeout(() => setCopied(false), 1200);
     }
   };
-  const copyDebugObject = async (panel: "sdk" | "centralized", value: unknown) => {
-    const textToCopy = formatDebugObjectLiteral(value);
-    if (!textToCopy) return;
-
-    try {
-      await navigator.clipboard.writeText(textToCopy);
-      setCopiedDebugPanel(panel);
-      setTimeout(() => setCopiedDebugPanel((current) => (current === panel ? null : current)), 1200);
-      return;
-    } catch {
-      // VS Code webviews can block navigator clipboard in some contexts;
-      // fallback to extension-host clipboard API.
-      vscode.postMessage({ type: "copyToClipboard", text: textToCopy });
-      setCopiedDebugPanel(panel);
-      setTimeout(() => setCopiedDebugPanel((current) => (current === panel ? null : current)), 1200);
-    }
-  };
-  const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
+const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
     dispatch({ type: "SET_PROCESSING", payload: true });
     const targetMessageIndex = (messages || []).findIndex((candidate) => {
       if (messageId) {
@@ -9119,6 +8682,7 @@ function ResponseMessageInner({
       id={messageId ? `msg-${messageId}` : undefined}
       data-message-id={messageId || undefined}
       className={`oc-message-enter ${responseEnterClass} ${isContiguous ? "mb-2.5 mt-2" : "mb-3.5"}${isHiddenByBlock ? " hidden" : ""}`}
+      style={DEFERRED_CHAT_CARD_STYLE}
     >
       <div
         className={cn(
@@ -9126,36 +8690,6 @@ function ResponseMessageInner({
         )}
         ref={messageBodyRef}
       >
-        {config.debug.showSdkDebug && sdkDebugData && (
-          <div
-            data-assistant-section="sdk-debug"
-            className="mb-3"
-          >
-            <div className="mb-1.5 flex items-center justify-between gap-2">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-oc-text-soft">
-                SDK Debug
-              </div>
-              <button
-                type="button"
-                onClick={() => copyDebugObject("sdk", sdkDebugData)}
-                className="inline-flex items-center gap-1 rounded border border-oc-border-soft bg-oc-panel-soft/40 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-oc-text-soft transition-colors hover:border-oc-border hover:bg-oc-panel-soft/70 hover:text-oc-text"
-                title="Copy SDK debug object"
-              >
-                {copiedDebugPanel === "sdk" ? (
-                  <Check className="h-3 w-3" />
-                ) : (
-                  <Copy className="h-3 w-3" />
-                )}
-                <span>{copiedDebugPanel === "sdk" ? "Copied" : "Copy"}</span>
-              </button>
-            </div>
-            {/* Keep this as an object literal view so the raw SDK payload is easy to inspect. */}
-            <div className="max-h-[320px] overflow-auto rounded border border-oc-border-soft bg-oc-panel-soft/60 p-2 text-[11px] leading-relaxed text-oc-text-soft break-words font-medium">
-              <DebugObjectView value={sdkDebugData} />
-            </div>
-          </div>
-        )}
-
         <div className="space-y-2">
           {showAssistantResponseHeader && (
             <div
@@ -9857,79 +9391,6 @@ function ResponseMessageInner({
                 </div>
               )}
 
-              {showRawResponseDebug && (
-                <div
-                  data-assistant-section="raw-response-debug"
-                  className={
-                    hasPrimaryResponseBody
-                      ? "mt-1.5 pt-1.5 border-t border-oc-border-soft/30"
-                      : undefined
-                  }
-                >
-                  <div className="mb-1.5 flex items-center justify-between gap-2">
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-oc-text-soft">
-                      Raw Response (Debug)
-                    </div>
-                  </div>
-                  <pre className="max-h-[260px] overflow-auto rounded border border-oc-border-soft bg-oc-panel-soft/60 p-2 text-[11px] leading-relaxed text-oc-text-soft whitespace-pre-wrap break-words font-medium">
-                    {visibleRawResponseText}
-                  </pre>
-                </div>
-              )}
-
-              {config.debug.showInteractiveEventsDebug && (
-                <div
-                  data-assistant-section="interactive-events-debug"
-                  className={
-                    hasPrimaryResponseBody
-                      ? "mt-1.5 pt-1.5 border-t border-oc-border-soft/30"
-                      : undefined
-                  }
-                >
-                  <div className="mb-1.5 flex items-center justify-between gap-2">
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-oc-text-soft">
-                      Interactive Events (Debug)
-                    </div>
-                  </div>
-                  <pre className="max-h-[320px] overflow-auto rounded border border-oc-border-soft bg-oc-panel-soft/60 p-2 text-[11px] leading-relaxed text-oc-text-soft whitespace-pre-wrap break-words font-medium">
-                    {(() => {
-                      const parts: Record<string, unknown>[] = [];
-                      if (Array.isArray(message?.interactiveEvents) && message.interactiveEvents.length > 0) {
-                        parts.push({ source: "message.interactiveEvents", data: message.interactiveEvents });
-                      }
-                      const streamEvents = streaming?.interactiveEvents;
-                      if (Array.isArray(streamEvents) && streamEvents.length > 0) {
-                        parts.push({ source: "streaming.interactiveEvents", data: streamEvents });
-                      }
-                      if (parts.length === 0) {
-                        return "(no interactive events on this message)";
-                      }
-                      return JSON.stringify(parts, null, 2);
-                    })()}
-                  </pre>
-                </div>
-              )}
-
-              {config.debug.showPreRenderDebug && preRenderDebug && (
-                <div
-                  data-assistant-section="pre-render-debug"
-                  className={
-                    hasPrimaryResponseBody
-                      ? "mt-1.5 pt-1.5 border-t border-oc-border-soft/30"
-                      : undefined
-                  }
-                >
-                  <div className="mb-1.5 flex items-center justify-between gap-2">
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-oc-text-soft">
-                      Pre-Render Data (Debug)
-                    </div>
-                  </div>
-                  <pre className="max-h-[320px] overflow-auto rounded border border-oc-border-soft bg-oc-panel-soft/60 p-2 text-[11px] leading-relaxed text-oc-text-soft whitespace-pre-wrap break-words font-medium">
-                    {JSON.stringify(preRenderDebug, null, 2)}
-                  </pre>
-                </div>
-              )}
-
             </section>
           )}
 
@@ -10546,7 +10007,29 @@ export const FileChangesSection = memo(function FileChangesSection({
   );
 });
 
-export function ResponseMessage({
+function areResponseMessagePropsEqual(
+  prevProps: Readonly<Parameters<typeof ResponseMessageInner>[0]>,
+  nextProps: Readonly<Parameters<typeof ResponseMessageInner>[0]>,
+): boolean {
+  return (
+    prevProps.message === nextProps.message &&
+    prevProps.streaming === nextProps.streaming &&
+    prevProps.hideLoadingText === nextProps.hideLoadingText &&
+    prevProps.isContiguous === nextProps.isContiguous &&
+    prevProps.interactiveEvents === nextProps.interactiveEvents &&
+    prevProps.messages === nextProps.messages &&
+    prevProps.currentSessionId === nextProps.currentSessionId &&
+    prevProps.hideFileChangesSection === nextProps.hideFileChangesSection &&
+    prevProps.todoItems === nextProps.todoItems &&
+    prevProps.blockGroupKey === nextProps.blockGroupKey &&
+    prevProps.isLastInBlock === nextProps.isLastInBlock &&
+    prevProps.isBlockExpanded === nextProps.isBlockExpanded &&
+    prevProps.blockSize === nextProps.blockSize &&
+    prevProps.isHiddenByBlock === nextProps.isHiddenByBlock
+  );
+}
+
+export const ResponseMessage = memo(function ResponseMessage({
   message,
   streaming,
   hideLoadingText,
@@ -10558,7 +10041,6 @@ export function ResponseMessage({
   // but the component now uses custom hooks internally
   subagentsByParentMessageId,
   subagentDetailsById,
-  availableAgents,
   todoItems,
   hideFileChangesSection,
   blockGroupKey,
@@ -10578,7 +10060,6 @@ export function ResponseMessage({
   hideFileChangesSection?: boolean;
   subagentsByParentMessageId?: AppState["subagentsByParentMessageId"];
   subagentDetailsById?: AppState["subagentDetailsById"];
-  availableAgents?: AppState["availableAgents"];
   todoItems?: AppState["todoItems"];
   blockGroupKey?: string;
   isLastInBlock?: boolean;
@@ -10599,7 +10080,6 @@ export function ResponseMessage({
       hideFileChangesSection={hideFileChangesSection}
       subagentsByParentMessageId={subagentsByParentMessageId}
       subagentDetailsById={subagentDetailsById}
-      availableAgents={availableAgents}
       todoItems={todoItems}
       blockGroupKey={blockGroupKey}
       isLastInBlock={isLastInBlock}
@@ -10609,7 +10089,7 @@ export function ResponseMessage({
       isHiddenByBlock={isHiddenByBlock}
     />
   );
-}
+}, areResponseMessagePropsEqual);
 export const PermissionCard = memo(function PermissionCard({ perm }: { perm: unknown }) {
   const label = typeof perm === "string" ? perm : JSON.stringify(perm);
   return (

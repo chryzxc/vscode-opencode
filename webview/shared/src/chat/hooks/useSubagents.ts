@@ -25,11 +25,16 @@ const EMPTY_SUBAGENT_SUMMARIES: SubagentSummary[] = [];
  * Hook to access subagent summaries for a specific parent message
  */
 export function useSubagentSummaries(parentMessageId: string | undefined) {
-  return useAppState((state) =>
-    parentMessageId
-      ? state.subagentsByParentMessageId[parentMessageId] || EMPTY_SUBAGENT_SUMMARIES
-      : EMPTY_SUBAGENT_SUMMARIES,
-  );
+  return useAppState((state) => {
+    if (!parentMessageId) {
+      return EMPTY_SUBAGENT_SUMMARIES;
+    }
+    const summaries = state.subagentsByParentMessageId[parentMessageId];
+    if (!Array.isArray(summaries)) {
+      return EMPTY_SUBAGENT_SUMMARIES;
+    }
+    return summaries;
+  });
 }
 
 /**
@@ -48,8 +53,10 @@ export function useSubagentsForParentMessage(parentMessageId: string | undefined
   const summaries = useSubagentSummaries(parentMessageId);
   const detailsById = useAppState((state) => state.subagentDetailsById);
 
-  return summaries.map(summary => {
-    const detail = detailsById[summary.id];
+  return summaries
+    .filter((summary): summary is SubagentSummary => summary != null && typeof summary === 'object')
+    .map(summary => {
+      const detail = detailsById[summary.id];
     const displayStatus = detail ? resolveDisplayStatus(detail) : summary.status;
     const resolvedStatus = detail ? resolveDisplayStatus(detail) : summary.status;
 
@@ -155,7 +162,13 @@ export function useAllActiveSubagents() {
   }> = [];
 
   Object.entries(subagentsByParentMessageId).forEach(([parentMessageId, summaries]) => {
+    if (!Array.isArray(summaries)) {
+      return;
+    }
     summaries.forEach(summary => {
+      if (!summary) {
+        return;
+      }
       const detail = subagentDetailsById[summary.id];
       const displayStatus = detail ? resolveDisplayStatus(detail) : summary.status;
 

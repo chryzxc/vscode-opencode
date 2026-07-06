@@ -9,7 +9,7 @@ import vscode from "./vscode";
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 class WebviewLogger {
-  private logLevel: LogLevel = 'info';
+  private logLevel: LogLevel = 'warn';
   private sessionId: string | null = null;
   private showLogger: boolean = true;
   private showBrowserConsoleOverride: boolean | null = null;
@@ -93,10 +93,6 @@ class WebviewLogger {
   error(message: string, context?: Record<string, unknown>): void {
     this.log('error', message, context);
   }
-}
-
-export function getGlobalShowBrowserConsole(): boolean {
-  return config.debug.showBrowserConsole;
 }
 
 // Singleton instance

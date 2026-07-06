@@ -144,7 +144,6 @@ type StreamingCardProps = {
   currentSessionId?: AppState["currentSessionId"];
   subagentsByParentMessageId?: AppState["subagentsByParentMessageId"];
   subagentDetailsById?: AppState["subagentDetailsById"];
-  availableAgents?: AppState["availableAgents"];
   todoItems?: AppState["todoItems"];
 };
 
@@ -223,7 +222,6 @@ export const StreamingCard = memo(function StreamingCard({
   currentSessionId,
   subagentsByParentMessageId,
   subagentDetailsById,
-  availableAgents,
   todoItems,
 }: StreamingCardProps) {
   // The live streaming card exists only for the in-flight assistant turn.
@@ -263,7 +261,6 @@ export const StreamingCard = memo(function StreamingCard({
       currentSessionId={currentSessionId}
       subagentsByParentMessageId={subagentsByParentMessageId}
       subagentDetailsById={subagentDetailsById}
-      availableAgents={availableAgents}
       todoItems={todoItems}
     />
   );

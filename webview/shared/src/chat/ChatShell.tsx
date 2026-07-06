@@ -36,7 +36,8 @@ import {
   countCanonicalMessagesAtOrBeforeRawIndex,
 } from "./lib/conversationProjection";
 import vscode from "./lib/vscode";
-import logger, { getGlobalShowBrowserConsole } from "./lib/logger";
+import logger from "./lib/logger";
+import { config } from "../config";
 
 import {
   StickyHeader,
@@ -113,15 +114,20 @@ function getCanonicalMessageId(message: Message): string | undefined {
   return firstNonEmptyString(message.info?.id, message.id, message.messageId);
 }
 
-function logBackgroundTaskReminderTrace(
-  stage: string,
-  payload: Record<string, unknown>,
-): void {
-  logger.info(`[TRACE][BG_TASK_REMINDER][${stage}]`, payload);
-  if (process.env.NODE_ENV === "development") {
-    console.info(`[TRACE][BG_TASK_REMINDER][${stage}]`, payload);
-  }
-}
+// TRACE logging disabled for performance
+// function logBackgroundTaskReminderTrace(
+//   stage: string,
+//   payload: Record<string, unknown>,
+// ): void {
+//   logger.info(`[TRACE][BG_TASK_REMINDER][${stage}]`, payload);
+//   if (process.env.NODE_ENV === "development") {
+//     console.info(`[TRACE][BG_TASK_REMINDER][${stage}]`, payload);
+//   }
+// }
+// NOOP placeholder to prevent breaking calls
+const logBackgroundTaskReminderTrace = (_stage: string, _payload: Record<string, unknown>) => {
+  // NOOP - logging disabled for performance
+};
 
 type ConversationMessageRenderKind =
   | "user"
@@ -1535,7 +1541,6 @@ function ChatContent() {
       isProcessing: appState.isProcessing,
       isSessionModalOpen: appState.isSessionModalOpen,
       lastCompactedAt: appState.lastCompactedAt,
-      messages: appState.messages,
       pendingDeferredPromptsBySessionId: appState.pendingDeferredPromptsBySessionId,
       pendingUserMessagesBySessionId: appState.pendingUserMessagesBySessionId,
       processingSessionIds: appState.processingSessionIds,
@@ -2082,7 +2087,7 @@ function ChatContent() {
   const errorToasts = state.errorMessages;
 
   useEffect(() => {
-    if (errorToasts.length > 0 && getGlobalShowBrowserConsole()) {
+    if (errorToasts.length > 0 && config.debug.showBrowserConsole) {
       console.log("ERROR_FLOW: Error messages in ChatShell", {
         timestamp: new Date().toISOString(),
         errorCount: errorToasts.length,
@@ -2488,7 +2493,6 @@ function ChatContent() {
                       hideFileChangesSection={hasCentralizedSessionDiffEntries}
                       subagentsByParentMessageId={state.subagentsByParentMessageId}
                       subagentDetailsById={state.subagentDetailsById}
-                      availableAgents={state.availableAgents}
                       todoItems={state.todoItems}
                       blockGroupKey={blockGroupKey}
                       isLastInBlock={isLastInBlock}
@@ -2577,7 +2581,6 @@ function ChatContent() {
               currentSessionId={state.currentSessionId}
               subagentsByParentMessageId={state.subagentsByParentMessageId}
               subagentDetailsById={state.subagentDetailsById}
-              availableAgents={state.availableAgents}
               todoItems={state.todoItems}
             />
           ) : null}

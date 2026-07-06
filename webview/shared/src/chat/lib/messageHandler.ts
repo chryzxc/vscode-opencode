@@ -6313,8 +6313,6 @@ function handleSubagentUpdatesFromCentralizedEvents(
 ): void {
   const currentState = getState();
 
-  console.log('🟢 [MODULAR_EXTRACTION] Using modular extraction system');
-
   // NOTE: AppState does not have a top-level rawSdkEventPayloads field.
   // The centralized tape is stored in rawSdkEventPayloadsBySessionId keyed by
   // session ID. Reading the wrong field would silently return undefined and
@@ -8319,29 +8317,6 @@ function handleStreamEvent(
   const isHeartbeatEvent = isHeartbeatEventType(eventType);
   const state = getState();
   const current = state.streaming;
-  console.info("[TRACE][HANDLER][RAW_EVENT_INGRESS]", {
-    eventType,
-    messageId:
-      asString(payload.messageId) ||
-      asString((payload as UnknownRecord).messageID) ||
-      asString(payload.id) ||
-      asString(asRecord(payload.properties)?.messageId) ||
-      asString(asRecord(payload.properties)?.messageID) ||
-      null,
-    sessionId:
-      asString(payload.sessionId) ||
-      asString((payload as UnknownRecord).sessionID) ||
-      asString(asRecord(payload.properties)?.sessionId) ||
-      asString(asRecord(payload.properties)?.sessionID) ||
-      null,
-    streamingMessageId: current?.messageId ?? null,
-    streamingActive: !!current?.isActive,
-    streamingInteractiveCount: Array.isArray(current?.interactiveEvents)
-      ? current.interactiveEvents.length
-      : 0,
-    payloadKeys: Object.keys(payload),
-    propertyKeys: Object.keys(asRecord(payload.properties) || {}),
-  });
   const properties = asRecord(payload.properties);
   const partRecord = asRecord(properties?.part);
   const infoRecord = asRecord(payload.info) ?? asRecord(properties?.info);
@@ -8765,24 +8740,9 @@ function handleStreamEvent(
           streamingExists: !!getState().streaming,
           streamingInteractiveCount: getState().streaming?.interactiveEvents?.length ?? 0,
         });
-        console.info("[TRACE][HANDLER][PART_INTERACTIVE_EVENTS]", {
-          eventType: normalizedEventType,
-          messageId,
-          structuredKind: currentStructuredKind || null,
-          interactiveCount: interactiveEvents.length,
-          blockingInteractive: hasBlockingInteractive,
-          streamingExists: !!getState().streaming,
-          streamingInteractiveCount: getState().streaming?.interactiveEvents?.length ?? 0,
-        });
       }
 
       if (structuredOutput?.subagents || structuredOutput?.subagentsDelta) {
-        logger.info('[SUBAGENT-DEBUG] stream message.part.updated dispatching subagents', {
-          messageId,
-          subagentsCount: structuredOutput.subagents?.length ?? 0,
-          subagentsDeltaItemCount: structuredOutput.subagentsDelta?.items?.length ?? 0,
-          responseType: structuredOutput.type || structuredOutput.responseType,
-        });
         applyStructuredSubagentPayload(dispatch, getState, structuredOutput, messageId || '');
         bindStreamingToParentMessageIdFromSubagents(
           dispatch,
@@ -9467,16 +9427,6 @@ function handleStreamEvent(
         currentStreamingInteractiveCount: getState().streaming?.interactiveEvents?.length ?? 0,
         streamingExists: !!getState().streaming,
       });
-      console.info("[TRACE][HANDLER][MESSAGE_UPDATED_STATE]", {
-        messageId,
-        finish,
-        structuredKind: structuredKind || null,
-        hasRenderableLiveStructuredUpdate,
-        liveInteractiveCount: liveStructuredInteractiveEvents.length,
-        currentStreamingMessageId: getState().streaming?.messageId ?? null,
-        currentStreamingInteractiveCount: getState().streaming?.interactiveEvents?.length ?? 0,
-        streamingExists: !!getState().streaming,
-      });
 
       if (finish && structuredOutput) {
         const structuredMessage =
@@ -10055,26 +10005,10 @@ function handleStreamEvent(
           streamingExists: !!getState().streaming,
           streamingInteractiveCount: getState().streaming?.interactiveEvents?.length ?? 0,
         });
-        console.info("[TRACE][HANDLER][STRUCTURED_INTERACTIVE_EVENTS]", {
-          eventType: normalizedEventType,
-          messageId,
-          structuredKind: structuredKind || null,
-          interactiveCount: interactiveEvents.length,
-          blockingInteractive: hasBlockingInteractive,
-          streamingExists: !!getState().streaming,
-          streamingInteractiveCount: getState().streaming?.interactiveEvents?.length ?? 0,
-        });
         consumed = true;
       }
 
       if (structuredOutput?.subagents || structuredOutput?.subagentsDelta) {
-        logger.info('[SUBAGENT-DEBUG] stream default case dispatching subagents', {
-          messageId,
-          eventType: normalizedEventType,
-          subagentsCount: structuredOutput.subagents?.length ?? 0,
-          subagentsDeltaItemCount: structuredOutput.subagentsDelta?.items?.length ?? 0,
-          responseType: structuredOutput.type || structuredOutput.responseType,
-        });
         applyStructuredSubagentPayload(dispatch, getState, structuredOutput, messageId || '');
         bindStreamingToParentMessageIdFromSubagents(
           dispatch,
@@ -11523,20 +11457,10 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
 
           const postHydrationState = getState();
           const rawSdkEventPayloads = postHydrationState.rawSdkEventPayloadsBySessionId?.[chatHistorySessionId] ?? [];
-          console.log('===SUBAGENT_REHYDRATION_START===', {
-            hasRawSdkEventPayloads: rawSdkEventPayloads.length > 0,
-            payloadCount: rawSdkEventPayloads.length,
-            samplePayload: rawSdkEventPayloads[0]
-          });
 
           const extractedHydratedSubagents =
             extractSubagentsFromCentralizedEvents(rawSdkEventPayloads);
 
-          console.log('===SUBAGENT_REHYDRATION_RESULT===', {
-            summariesCount: Object.keys(extractedHydratedSubagents.summariesByParentMessageId).length,
-            detailsCount: Object.keys(extractedHydratedSubagents.detailsById).length,
-            sampleDetail: Object.values(extractedHydratedSubagents.detailsById)[0]
-          });
           const normalizedHydratedSubagents = normalizeHydratedSubagentMaps(
             extractedHydratedSubagents.summariesByParentMessageId,
             extractedHydratedSubagents.detailsById,
@@ -11568,17 +11492,8 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           break;
         }
         case "subagentSnapshot": {
-          console.log('🔴 [LEGACY_SNAPSHOT] SubagentSnapshot from backend', {
-            hasSummaries: Boolean(data.summariesByParentMessageId || data.subagentsByParentMessageId),
-            hasDetails: Boolean(data.detailsById || data.subagentDetailsById),
-            summaryKeys: Object.keys(data.summariesByParentMessageId || data.subagentsByParentMessageId || {}),
-            detailKeys: Object.keys(data.detailsById || data.subagentDetailsById || {}),
-            sampleData: data,
-          });
-
           // DISABLED: Using centralized events as single source of truth
           // Backend should not send pre-processed subagent data
-          console.warn('⚠️ [DISABLED] Ignoring legacy subagentSnapshot - using centralized events instead');
           break;
         }
         /* ORIGINAL CODE - DISABLED (commented out to prevent syntax errors)
@@ -12042,14 +11957,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         }
         */ // END OF DISABLED subagentSnapshot CODE
         case "subagentUpdate": {
-          console.log('🔴 [LEGACY_BACKEND] SubagentUpdate from backend SubagentTracker', {
-            hasSummaries: Boolean(data.summariesByParentMessageId || data.subagentsByParentMessageId),
-            hasDetails: Boolean(data.detailsById || data.subagentDetailsById),
-            summaryKeys: Object.keys(data.summariesByParentMessageId || data.subagentsByParentMessageId || {}),
-            detailKeys: Object.keys(data.detailsById || data.subagentDetailsById || {}),
-            sampleData: data,
-          });
-
           const streamPolicy: SubagentPresentationPolicy = {
             mode: "stream",
             sessionProcessing: getState().processing,
@@ -12868,12 +12775,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                 streamingActive: currentStreaming.isActive,
                 hasVisibleStreamingSnapshot: hasVisibleStreamingSnapshot(currentStreaming),
               });
-              console.info("[TRACE][HANDLER][PRESERVE_EMPTY_STREAMING_PLACEHOLDER]", {
-                currentSessionId: currentState.currentSessionId,
-                streamingMessageId: currentStreaming.messageId ?? null,
-                streamingActive: currentStreaming.isActive,
-                hasVisibleStreamingSnapshot: hasVisibleStreamingSnapshot(currentStreaming),
-              });
             }
             const persistedAssistantMessageIds = new Set(
               currentMessages
@@ -13118,10 +13019,14 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           const css = asString(data.css);
           if (css) {
             let styleTag = document.getElementById("vscode-theme-icons");
+            const previousCss = styleTag?.textContent ?? "";
             if (!styleTag) {
               styleTag = document.createElement("style");
               styleTag.id = "vscode-theme-icons";
               document.head.appendChild(styleTag);
+            }
+            if (previousCss === css) {
+              break;
             }
             styleTag.textContent = css;
             // Force re-render of FileIcon components to check for theme icons

@@ -398,6 +398,56 @@ function areSessionsListsEqual(a: Session[] | undefined, b: Session[] | undefine
   return true;
 }
 
+function areTodoItemsEqual(a: TodoItem[] | undefined, b: TodoItem[] | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    const left = a[i];
+    const right = b[i];
+    if (
+      left.id !== right.id ||
+      left.text !== right.text ||
+      left.content !== right.content ||
+      left.status !== right.status ||
+      left.sessionId !== right.sessionId ||
+      left.parentMessageId !== right.parentMessageId ||
+      left.description !== right.description ||
+      left.priority !== right.priority ||
+      left.source !== right.source
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function areCentralizedEventListsEquivalent(
+  a: unknown[] | undefined,
+  b: unknown[] | undefined,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    const left = asRecordLocal(a[i]);
+    const right = asRecordLocal(b[i]);
+    if (!left || !right) {
+      if (a[i] !== b[i]) {
+        return false;
+      }
+      continue;
+    }
+    if (
+      normalizedCentralizedEventIdentity(left) !==
+      normalizedCentralizedEventIdentity(right)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function asRecordLocal(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
@@ -1186,6 +1236,58 @@ export function extractMessageTextForCanonical(message: Message): string {
     }
   }
   return textParts.join("\n").trim();
+}
+
+function messagePlanKeyForCanonical(message: Message): string {
+  const planRec = asRecordLocal(message.plan);
+  return asStringLocal(planRec?.file, planRec?.content);
+}
+
+function messageEditsKeyForCanonical(message: Message): string {
+  const edits = Array.isArray(message.edits) ? message.edits : [];
+  return edits
+    .map((edit) => asStringLocal(asRecordLocal(edit)?.file, asRecordLocal(edit)?.path))
+    .filter(Boolean)
+    .join("|");
+}
+
+function messageInteractiveKeyForCanonical(message: Message): string {
+  const events = Array.isArray(message.interactiveEvents) ? message.interactiveEvents : [];
+  return events
+    .map((event) => interactiveEventContentKeyLocal(event))
+    .join("|");
+}
+
+function canonicalMessageFingerprint(message: Message): string {
+  const info = asRecordLocal(message.info);
+  const structured = getStructuredRecordLocal(message);
+  return [
+    getMessageRoleForCanonical(message),
+    getMessageIdForCanonical(message),
+    String(getMessageCreatedAtForCanonical(message) ?? ""),
+    extractMessageTextForCanonical(message),
+    asStringLocal(message.responseType, structured?.responseType),
+    messagePlanKeyForCanonical(message),
+    messageEditsKeyForCanonical(message),
+    messageInteractiveKeyForCanonical(message),
+    message.aborted === true || info?.aborted === true ? "aborted" : "",
+    asStringLocal(message.error),
+  ].join("::");
+}
+
+function areCanonicalMessagesEquivalent(
+  a: Message[] | undefined,
+  b: Message[] | undefined,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (canonicalMessageFingerprint(a[i]) !== canonicalMessageFingerprint(b[i])) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function isReasoningPartForCanonical(part: Record<string, unknown>): boolean {
@@ -2637,6 +2739,9 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         preserveEvtAssistantMessages:
           !!state.streaming?.isActive || state.assistantTurnPending,
       });
+      if (areCanonicalMessagesEquivalent(state.messages, canonicalMessages)) {
+        return state;
+      }
       const attachedRawSdkEventPayloads = canonicalMessages.reduce<unknown[]>(
         (collected, message) => {
           const payloads = Array.isArray(
@@ -2735,6 +2840,10 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           .filter(shouldIncludeCentralizedDebugPayload)
           .map((event) => sanitizeCentralizedDebugPayload(event))
       );
+      const existingEvents = state.rawSdkEventPayloadsBySessionId?.[action.payload.sessionId];
+      if (areCentralizedEventListsEquivalent(existingEvents, events)) {
+        return state;
+      }
       logger.info("[CENTRALIZED-TAPE][WEBVIEW_STORE] set_raw_sdk_event_payloads", {
         sessionId: action.payload.sessionId,
         incomingCount: rawEvents.length,
@@ -3786,6 +3895,9 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, modelCapability: action.payload };
     }
     case "SET_TODO_ITEMS": {
+      if (areTodoItemsEqual(state.todoItems, action.payload)) {
+        return state;
+      }
       return { ...state, todoItems: action.payload };
     }
     case "UPDATE_TODO_ITEM": {
