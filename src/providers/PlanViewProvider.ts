@@ -165,9 +165,20 @@ export class PlanViewProvider {
     context: vscode.ExtensionContext,
     payload: string | { content?: string; title?: string; sourceFile?: string },
   ) {
-    const content = typeof payload === 'string' ? payload : payload?.content ?? '';
-    const title = typeof payload === 'string' ? undefined : payload?.title;
+    void this.showResolved(context, payload);
+  }
+
+  private static async showResolved(
+    context: vscode.ExtensionContext,
+    payload: string | { content?: string; title?: string; sourceFile?: string },
+  ) {
     const sourceFile = typeof payload === 'string' ? undefined : payload?.sourceFile;
+    const content = await this.resolvePlanContent(
+      context,
+      sourceFile,
+      typeof payload === 'string' ? payload : payload?.content ?? '',
+    );
+    const title = typeof payload === 'string' ? undefined : payload?.title;
     const column = vscode.window.activeTextEditor
       ? vscode.window.activeTextEditor.viewColumn
       : undefined;
@@ -201,6 +212,45 @@ export class PlanViewProvider {
       title,
       sourceFile,
     );
+  }
+
+  private static async resolvePlanContent(
+    context: vscode.ExtensionContext,
+    sourceFile?: string,
+    content: string = "",
+  ): Promise<string> {
+    const normalizedSourceFile = sourceFile?.trim();
+    if (!normalizedSourceFile) {
+      return content;
+    }
+
+    const candidatePaths = new Set<string>([normalizedSourceFile]);
+    if (!path.isAbsolute(normalizedSourceFile)) {
+      for (const folder of vscode.workspace.workspaceFolders ?? []) {
+        if (folder.uri.scheme !== "file") {
+          continue;
+        }
+        candidatePaths.add(
+          path.join(folder.uri.fsPath, normalizedSourceFile),
+        );
+      }
+    }
+
+    for (const candidatePath of candidatePaths) {
+      try {
+        const fileBytes = await vscode.workspace.fs.readFile(
+          vscode.Uri.file(path.normalize(candidatePath)),
+        );
+        const fileText = Buffer.from(fileBytes).toString("utf-8");
+        if (fileText.trim()) {
+          return fileText;
+        }
+      } catch {
+        // Try the next candidate path.
+      }
+    }
+
+    return "";
   }
 
   public static closeCurrentPanel() {

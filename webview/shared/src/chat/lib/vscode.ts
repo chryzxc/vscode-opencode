@@ -6,17 +6,40 @@ declare function acquireVsCodeApi(): {
 
 import logger from './logger';
 
+type VsCodeApi = {
+  postMessage(msg: unknown): void;
+  getState(): unknown;
+  setState(state: unknown): void;
+};
+
+function createFallbackVsCodeApi(): VsCodeApi {
+  return {
+    postMessage: () => {},
+    getState: () => undefined,
+    setState: () => {},
+  };
+}
+
 function getVsCodeApi() {
+  const globalWindow =
+    typeof window !== 'undefined'
+      ? (window as any)
+      : typeof globalThis !== 'undefined'
+        ? (globalThis as any)
+        : undefined;
+  if (!globalWindow) {
+    return createFallbackVsCodeApi();
+  }
   // Reuse on window to avoid multiple acquisitions which throw in VS Code
   // @ts-expect-error - augmenting global for webview runtime
-  if ((window as any).__vscode_api) return (window as any).__vscode_api;
+  if (globalWindow.__vscode_api) return globalWindow.__vscode_api;
   try {
     // @ts-expect-error - acquireVsCodeApi provided by VS Code
-    (window as any).__vscode_api = acquireVsCodeApi();
+    globalWindow.__vscode_api = acquireVsCodeApi();
   } catch (e) {
     // ignore - if already acquired, it should be on window.__vscode_api
   }
-  return (window as any).__vscode_api;
+  return globalWindow.__vscode_api ?? createFallbackVsCodeApi();
 }
 
 const rawVscodeApi = getVsCodeApi();

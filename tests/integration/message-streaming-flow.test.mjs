@@ -252,7 +252,7 @@ test("callback errors are caught and logged without breaking delivery", () => {
 test("stopListening aborts active stream connection", () => {
   const stopBody = extractFunctionBody(
     streamServiceSource,
-    "stopListening",
+    "stopListening(): void",
   );
   assert.ok(stopBody, "stopListening method must exist");
   assert.match(

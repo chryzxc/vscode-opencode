@@ -136,8 +136,8 @@ export function normalizeSdkAssistantMessage(value: unknown): UnknownRecord | un
     createLogger("OpenCodeSdkCompat").debug("[CLIENT FACING] normalizeSdkAssistantMessage", {
       hasInfo: !!info,
       hasStructured: !!info?.structured,
-      structuredMessage: (info as any)?.structured?.message?.slice(0, 200),
-      responseType: (info as any)?.structured?.responseType,
+      structuredMessage: (info as any)?.structured?.text?.slice(0, 200) ?? (info as any)?.structured?.message?.slice(0, 200),
+      responseType: (info as any)?.structured?.type ?? (info as any)?.structured?.responseType,
       partsCount: parts.length,
       partTypes: parts.map((p: any) => p?.type),
       hasContent: !!(info as any)?.content,

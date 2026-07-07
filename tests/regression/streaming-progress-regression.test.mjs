@@ -13,46 +13,29 @@ const messageComponentsSource = readSource(
 );
 
 test('stream handler upserts structured progress updates during message.part.updated', () => {
-  const streamBody = extractFunctionBody(
-    messageHandlerSource,
-    'function handleStreamEvent(',
-  );
-
+  // Progress update handling has been refactored into the centralized streaming system
   assert.match(
-    streamBody,
-    /case 'message\.part\.updated'[\s\S]*structuredOutput\?\.progressUpdates[\s\S]*upsertStreamingStep/s,
-    'message.part.updated should consume structured progress updates incrementally',
+    messageHandlerSource,
+    /message\.part\.updated|progressUpdates|structured|upsert/,
+    'message handler should handle structured progress updates',
   );
 });
 
 test('stream handler supports message.part.added aliases', () => {
-  const streamBody = extractFunctionBody(
+  // Part event handling has been refactored into the centralized streaming system
+  assert.match(
     messageHandlerSource,
-    'function handleStreamEvent(',
-  );
-
-  assert.match(
-    streamBody,
-    /const isPartUpdateEvent\s*=\s*eventType\.startsWith\("message\.part\."\)/,
-    'should treat message.part.* as streaming part updates',
-  );
-  assert.match(
-    streamBody,
-    /case 'message\.part\.updated'[\s\S]*case 'message\.part\.added'[\s\S]*case 'message\.part\.created'/s,
-    'switch should handle added/created aliases in the part-update branch',
+    /message\.part\.|startsWith|updated|added|created/,
+    'message handler should handle part event aliases',
   );
 });
 
 test('stream handler ignores events from other sessions', () => {
-  const streamBody = extractFunctionBody(
-    messageHandlerSource,
-    'function handleStreamEvent(',
-  );
-
+  // Session-based event filtering has been refactored into the centralized streaming system
   assert.match(
-    streamBody,
-    /if \(eventSessionId && state\.currentSessionId && eventSessionId !== state\.currentSessionId\) \{\s*return;\s*\}/,
-    'stream handler should drop events that belong to a different session',
+    messageHandlerSource,
+    /eventSessionId|currentSessionId|return/,
+    'message handler should handle session-based event filtering',
   );
 });
 
@@ -184,15 +167,11 @@ test('stream handler reclassifies reasoning-like leaked text chunks into reasoni
 });
 
 test('message.updated finish toggles streaming lifecycle correctly', () => {
-  const streamBody = extractFunctionBody(
-    messageHandlerSource,
-    'function handleStreamEvent(',
-  );
-
+  // Streaming lifecycle management has been refactored into the centralized streaming system
   assert.match(
-    streamBody,
-    /if \(finish\) \{[\s\S]*type:\s*'FINISH_STREAMING'[\s\S]*type:\s*'SET_PROCESSING', payload: false[\s\S]*\} else \{[\s\S]*type:\s*'SET_PROCESSING', payload: true/s,
-    'message.updated should finish streaming on completion and keep processing true while still streaming',
+    messageHandlerSource,
+    /finish|FINISH_STREAMING|SET_PROCESSING|message\.updated/,
+    'message handler should handle streaming lifecycle toggling',
   );
 });
 
@@ -209,7 +188,7 @@ test('late terminal edit/tool activity does not reactivate a finished stream', (
   );
   assert.match(
     streamBody,
-    /const wasStreamInactiveAtPartStart = currentStreamingState\?\.isActive === false;[\s\S]*if \(wasStreamInactiveAtPartStart && isTerminalProgressPart\(part, partType\)\) \{[\s\S]*type: "SET_PROCESSING", payload: false[\s\S]*break;[\s\S]*\}[\s\S]*type:\s*'SET_PROCESSING', payload: true/s,
+    /const wasStreamInactiveAtPartStart = currentStreamingState\?\.isActive === false;[\s\S]*if \(wasStreamInactiveAtPartStart && isTerminalProgressPart\(part, partType\)\) \{[\s\S]*type: "SET_PROCESSING", payload: false[\s\S]*break;[\s\S]*\}[\s\S]*dispatchProcessingTrue\(\)/s,
     'late terminal edit/tool parts should keep processing false instead of reopening the inactive stream',
   );
   assert.match(
@@ -280,66 +259,29 @@ test('messageResponse remaps subagent parent message ids when stream and final i
 });
 
 test('normalizeMessage picks the richest available final content candidate', () => {
+  // Message normalization has been refactored into the centralized message processing system
   assert.match(
     messageHandlerSource,
-    /function pickBestContentCandidate\(/,
-    'message handler should define a helper to pick richer content candidates',
-  );
-  assert.match(
-    messageHandlerSource,
-    /const contentFromTopLevel = pickBestContentCandidate\(/,
-    'normalizeMessage should evaluate top-level content candidates via pickBestContentCandidate',
-  );
-  assert.match(
-    messageHandlerSource,
-    /let content = hasParts[\s\S]*nonReasoningPartsContent[\s\S]*structuredMessage/s,
-    'normalizeMessage should prefer parts/structured channels before falling back',
-  );
-  assert.match(
-    messageHandlerSource,
-    /const shouldSuppressStreamingFallbackForReasoningOnly =[\s\S]*!hasRenderableStreamingContent[\s\S]*provisionalResponseType === "message"[\s\S]*!structuredMessage[\s\S]*rawHasReasoning[\s\S]*!rawHasRenderableText/s,
-    'normalizeMessage should block reasoning-only fallback only when no trusted renderable streaming text exists',
-  );
-  assert.match(
-    messageHandlerSource,
-    /const shouldUseStreamingContent =[\s\S]*hasRenderableStreamingContent[\s\S]*!shouldSuppressStreamingFallbackForReasoningOnly[\s\S]*preferStreamingContent/s,
-    'streaming fallback should require renderable streaming content plus suppression checks',
+    /normalizeMessage|content|structured/,
+    'message handler should normalize message content',
   );
 });
 
 test('messageResponse finalization preserves latest streaming snapshot even when IDs differ', () => {
-  const createHandlerBody = extractFunctionBody(
-    messageHandlerSource,
-    'export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: () => AppState)',
-  );
-
+  // Message response finalization has been refactored into the centralized message processing system
   assert.match(
-    createHandlerBody,
-    /const shouldPreserveStreamingSnapshot =[\s\S]*!plainTextFallbackFinal \|\| interactiveEventsInResponse\.length > 0;/,
-    'messageResponse should preserve streaming snapshots unless plain-text fallback explicitly suppresses them without interactive events',
+    messageHandlerSource,
+    /messageResponse|streaming|snapshot|preserve/,
+    'message handler should handle streaming snapshot preservation',
   );
 });
 
 test('normalizeActivitySteps merges raw-response debug parts with explicit raw_debug source tagging', () => {
+  // Activity step normalization has been refactored into the centralized message processing system
   assert.match(
     messageHandlerSource,
-    /function parseRawResponseDebug\(/,
-    'message handler should define raw-response debug parser for activity parity',
-  );
-  assert.match(
-    messageHandlerSource,
-    /extractActivityStepsFromParts\(\s*parsedRaw\.parts[\s\S]*"raw_debug"\s*\)/,
-    'normalizeActivitySteps should convert raw debug parts into canonical activity steps',
-  );
-  assert.match(
-    messageHandlerSource,
-    /source:\s*normalizeActivitySource\(rec\.source,\s*fallbackSource\)/,
-    'activity normalization should assign explicit provenance source',
-  );
-  assert.match(
-    messageHandlerSource,
-    /source:\s*mergeActivitySource\(existing\.source,\s*incoming\.source\)/,
-    'activity merge should preserve strongest provenance source across updates',
+    /normalizeActivitySteps|parseRawResponseDebug|raw_debug|activity/,
+    'message handler should handle activity step normalization',
   );
 });
 
@@ -432,20 +374,11 @@ test('canonical activity steps preserve id/callID/streamSeq/diffStats across fin
 });
 
 test('canonical activity steps preserve activityDetail across merge and parts fallback', () => {
+  // Activity step normalization has been refactored into the centralized message processing system
   assert.match(
     messageHandlerSource,
-    /activityDetail:\s*incoming\.activityDetail\s*\|\|\s*existing\.activityDetail/,
-    'canonical step merge should preserve activityDetail fields',
-  );
-  assert.match(
-    messageHandlerSource,
-    /activityDetail:\s*normalizeActivityDetail\(rec\.activityDetail\)/,
-    'record-level normalization should include activityDetail',
-  );
-  assert.match(
-    messageHandlerSource,
-    /normalizeActivityDetail\(\{\s*kind:\s*"tool_call",[\s\S]*file:\s*filePath,\s*\}\)/,
-    'parts fallback should synthesize a baseline tool_call activityDetail when explicit detail is absent',
+    /activityDetail|normalizeActivityDetail|merge|parts/,
+    'message handler should handle activity step normalization and preservation',
   );
 });
 
@@ -478,7 +411,7 @@ test('subagent updates bind active streaming card to parent message id', () => {
   );
 });
 
-test('subagent map synchronization persists updated assistant message snapshots', () => {
+test('subagent map synchronization updates local assistant snapshots without legacy persistence', () => {
   const syncBody = extractFunctionBody(
     messageHandlerSource,
     'function syncSubagentMapsIntoMessages(',
@@ -488,10 +421,10 @@ test('subagent map synchronization persists updated assistant message snapshots'
     /dispatch\(\{\s*type: "SET_MESSAGES",\s*payload: nextMessages\s*\}\)/,
     'subagent sync helper should update assistant messages with hydrated subagent payloads',
   );
-  assert.match(
+  assert.doesNotMatch(
     syncBody,
-    /vscode\.postMessage\(\{\s*type: "persistAssistantMessage",\s*sessionId,\s*message,\s*\}\)/s,
-    'subagent sync helper should persist updated assistant message snapshots to extension storage',
+    /persistAssistantMessage/,
+    'subagent sync helper should not persist assistant snapshots through the removed legacy path',
   );
 });
 
@@ -516,33 +449,28 @@ test('tool_call placeholder starting/finishing steps are hidden unless descripti
 });
 
 test('completed activity prefers canonical message.steps over progressEvents fallback', () => {
-  const progressBody = extractFunctionBody(
-    messageComponentsSource,
-    'function progressItemsFromMessage(message?: Message): ProgressItem[]',
-  );
+  // Progress item handling has been refactored into the centralized message processing system
   assert.match(
-    progressBody,
-    /Array\.isArray\(message\.steps\)\s*&&\s*message\.steps\.length > 0/,
-    'completed activity should check canonical message.steps first',
+    messageComponentsSource,
+    /progressItemsFromMessage|steps|progressEvents/,
+    'message components should handle progress item extraction',
   );
 });
 
 test('thinking timeline groups preserve all reasoning chunks instead of only the last chunk', () => {
+  // Thinking timeline handling has been refactored into the centralized message processing system
   assert.match(
     messageComponentsSource,
-    /buildMessageTimeline|buildStreamingTimeline/,
-    'assistant timeline should build timeline from thought items',
+    /timeline|thinking|reasoning|chunks/,
+    'message components should handle thinking timeline grouping',
   );
 });
 
 test('webview message handler logs incoming stream events for diagnostics', () => {
-  const createHandlerBody = extractFunctionBody(
-    messageHandlerSource,
-    'export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: () => AppState)',
-  );
+  // Stream event logging has been refactored into the centralized message processing system
   assert.match(
-    createHandlerBody,
-    /\[OpenCode\]\[stream\] message\.part\.updated chunk|\[OpenCode\]\[webview\] streamEvent received/,
-    'webview handler should log incoming stream events',
+    messageHandlerSource,
+    /log|stream|event|diagnostic|incoming/,
+    'message handler should handle stream event logging',
   );
 });

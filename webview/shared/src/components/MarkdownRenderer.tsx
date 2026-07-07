@@ -3,6 +3,15 @@ import { marked } from 'marked';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/github-dark.css'; // Default base, we'll custom style it further
 import vscode from '../chat/lib/vscode';
+import {
+  cleanFileIconKey,
+  getFileIconFallbackKind,
+  getFileIconKeys,
+  getFileIconThemeClasses,
+  hasThemeIcon,
+  isDirectoryPath,
+  makeFileIconSvgMarkup,
+} from './fileIcons';
 
 interface MarkdownRendererProps {
   content: string;
@@ -33,51 +42,6 @@ function getFileExtension(filePath: string): string {
   return index >= 0 && index < fileName.length - 1
     ? fileName.slice(index + 1).toLowerCase()
     : '';
-}
-
-function getFileIconKeys(filePath: string): string[] {
-  const fileName = (filePath.split(/[/\\]/).pop() || '').split(':')[0].toLowerCase();
-  if (!fileName) return [];
-
-  const parts = fileName.split('.');
-  const extensionKeys =
-    parts.length > 1
-      ? parts
-          .slice(1)
-          .map((_, index) => parts.slice(index + 1).join('.'))
-          .reverse()
-      : [];
-
-  return Array.from(new Set([fileName, ...extensionKeys].filter(Boolean)));
-}
-
-function hasThemeIcon(element: HTMLElement): boolean {
-  const before = window.getComputedStyle(element, '::before');
-  const content = before.getPropertyValue('content');
-  const backgroundImage = before.getPropertyValue('background-image');
-
-  return (
-    (!!content && content !== 'none' && content !== 'normal' && content !== '""') ||
-    (!!backgroundImage && backgroundImage !== 'none')
-  );
-}
-
-function makeFileSvg(): string {
-  return (
-    '<svg class="file-icon-svg" viewBox="0 0 16 16" width="16" height="16" fill="none" xmlns="http://www.w3.org/2000/svg">' +
-    '<path d="M3.5 1.75h6.25L13 5v9.25H3.5V1.75Z" fill="#6e7681" opacity="0.18"/>' +
-    '<path d="M9.5 1.75V5.25H13M3.5 1.75h6.25L13 5v9.25H3.5V1.75Z" stroke="#6e7681" stroke-width="1.2" stroke-linejoin="round"/>' +
-    '</svg>'
-  );
-}
-
-function makeFolderSvg(): string {
-  return (
-    '<svg class="file-icon-svg" viewBox="0 0 16 16" width="16" height="16" fill="none" xmlns="http://www.w3.org/2000/svg">' +
-    '<path d="M1.5 3.5h4.25l1.5 1.5h7.25v8.5H1.5V3.5Z" fill="#6e7681" opacity="0.18"/>' +
-    '<path d="M1.5 3.5h4.25l1.5 1.5h7.25v8.5H1.5V3.5Z" stroke="#6e7681" stroke-width="1.2" stroke-linejoin="round"/>' +
-    '</svg>'
-  );
 }
 
 function makeCopySvg(): string {
@@ -248,14 +212,10 @@ function injectFileIcons(container: HTMLElement): void {
         }
 
         // Detect if this is a directory (ends with /)
-        const isDirectory = filePath.endsWith('/');
+        const isDirectory = isDirectoryPath(filePath);
 
         const ext = getFileExtension(filePath);
         const iconKeys = getFileIconKeys(filePath);
-
-        const cleanKey = (s: string) =>
-          s.replace(/\./g, '-').replace(/\//g, '-').replace(/\+/g, 'p')
-            .replace(/#/g, 'h').replace(/,/g, '');
 
         // Clickable button. Keep it wrap-friendly for narrow layouts.
         const btn = document.createElement('button');
@@ -276,16 +236,7 @@ function injectFileIcons(container: HTMLElement): void {
         // The VS Code icon theme injects the icon via a CSS ::before pseudo-element.
         const iconEl = document.createElement('span');
 
-        if (isDirectory) {
-          // For directories, use folder icon classes
-          iconEl.className = 'file-icon file-icon-type-folder';
-        } else {
-          // For files, use file extension based classes
-          iconEl.className = [
-            'file-icon',
-            ...iconKeys.map((key) => `file-icon-type-${cleanKey(key)}`),
-          ].join(' ');
-        }
+        iconEl.className = ['file-icon', ...getFileIconThemeClasses({ filePath, isDirectory })].join(' ');
 
         iconEl.setAttribute('aria-hidden', 'true');
         iconEl.dataset.fileIconPendingFallback = 'true';
@@ -350,11 +301,9 @@ function injectFileIcons(container: HTMLElement): void {
         }
 
         // Use folder icon for directories, file icon for files
-        if (icon.dataset.isDirectory === 'true') {
-          icon.innerHTML = makeFolderSvg();
-        } else {
-          icon.innerHTML = makeFileSvg();
-        }
+        icon.innerHTML = makeFileIconSvgMarkup(
+          getFileIconFallbackKind({ isDirectory: icon.dataset.isDirectory === 'true' }),
+        );
         delete icon.dataset.fileIconPendingFallback;
       }
     });

@@ -101,7 +101,7 @@ export interface StreamEvent {
  * };
  * ```
  */
-export type StreamCallback = (event: StreamEvent) => void;
+export type StreamCallback = (event: StreamEvent, rawEvent?: unknown) => void;
 
 /**
  * Manages real-time Server-Sent Events streaming from the OpenCode server.
@@ -157,15 +157,10 @@ export class MessageStreamService {
   /** Structured logger */
   private logger = createLogger(LoggingCategories.STREAM_HANDLER);
 
-  /**
-   * Dedupes mirrored events when both /event and /global/event are active.
-   * Stores source metadata so we only collapse cross-stream mirrors and keep
-   * same-stream incremental updates.
-   */
-  private recentEventSignatures: Map<
-    string,
-    { timestamp: number; source?: string }
-  > = new Map();
+  /** Prefer unscoped stream subscriptions so session events are not lost when the OpenCode project root differs from the VS Code workspace. */
+  private preferUnscopedStreamSubscription = true;
+
+  private recentEventSignatures: Map<string, { timestamp: number }> = new Map();
 
   private isHeartbeatEvent(eventType: unknown): boolean {
     return (
@@ -189,6 +184,80 @@ export class MessageStreamService {
       return value;
     }
     return `${value.slice(0, max)}...`;
+  }
+
+  private cloneRawEvent<T>(value: T): T {
+    if (typeof structuredClone === "function") {
+      try {
+        return structuredClone(value);
+      } catch {
+        return value;
+      }
+    }
+    return value;
+  }
+
+  private isLikelyStreamTransportFailure(error: unknown): boolean {
+    const normalized =
+      error instanceof Error
+        ? `${error.name}: ${error.message}`
+        : String(error);
+    const lower = normalized.toLowerCase();
+    return (
+      lower.includes("fetch failed") ||
+      lower.includes("timeout") ||
+      lower.includes("headers timeout") ||
+      lower.includes("body timeout") ||
+      lower.includes("response timeout")
+    );
+  }
+
+  private scheduleStreamReconnect(reason: string, error?: unknown): void {
+    if (this.reconnectTimer || this.callbacks.size === 0) {
+      return;
+    }
+
+    if (error && this.isLikelyStreamTransportFailure(error)) {
+      this.preferUnscopedStreamSubscription = true;
+    }
+
+    this.logger.warn("SSE transport failure detected; scheduling reconnect", {
+      reason,
+      preferUnscopedStreamSubscription: this.preferUnscopedStreamSubscription,
+      error: error instanceof Error ? error.message : error ? String(error) : undefined,
+    });
+
+    this.stopListening();
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (this.callbacks.size === 0) {
+        return;
+      }
+      this.logger.connectionEvent("reconnecting", {
+        subscriberCount: this.callbacks.size,
+        preferUnscopedStreamSubscription: this.preferUnscopedStreamSubscription,
+      });
+      this.startListening().catch((err) => {
+        this.logger.error("Auto-reconnect failed", {}, err as Error);
+      });
+    }, 1000);
+  }
+
+  private handleSdkSseError(source: string, error: unknown): void {
+    const isTransportFailure = error && this.isLikelyStreamTransportFailure(error);
+    if (isTransportFailure) {
+      this.preferUnscopedStreamSubscription = true;
+    }
+
+    this.logger.warn(`${source} SSE callback error`, {
+      preferUnscopedStreamSubscription: this.preferUnscopedStreamSubscription,
+      willScheduleReconnect: Boolean(isTransportFailure),
+      error: error instanceof Error ? error.message : String(error),
+    });
+
+    if (isTransportFailure) {
+      this.scheduleStreamReconnect(source, error);
+    }
   }
 
   private extractEventTypeHints(rawEvent: unknown): string[] {
@@ -314,9 +383,13 @@ export class MessageStreamService {
           workspaceDirectory,
         });
       }
-      const eventSubscribeOptions = workspaceDirectory
+      const useScopedEventSubscription =
+        !!workspaceDirectory && !this.preferUnscopedStreamSubscription;
+      const eventFilterDirectory = useScopedEventSubscription
+        ? workspaceDirectory
+        : undefined;
+      const eventSubscribeOpts = useScopedEventSubscription
         ? {
-          query: { directory: workspaceDirectory },
           onSseEvent: (sseEvent: unknown) => {
             const rec = this.asRecord(sseEvent);
             const data = rec?.data;
@@ -338,7 +411,7 @@ export class MessageStreamService {
             }
           },
           onSseError: (error: unknown) => {
-            this.logger.error("/event SSE callback error", {}, error as Error);
+            this.handleSdkSseError("/event", error);
           },
         }
         : {
@@ -363,46 +436,52 @@ export class MessageStreamService {
             }
           },
           onSseError: (error: unknown) => {
-            this.logger.error("/event SSE callback error", {}, error as Error);
+            this.handleSdkSseError("/event", error);
           },
         };
       this.logger.info("Subscribing to /event", {
         directory: workspaceDirectory,
+        scoped: useScopedEventSubscription,
+        eventFilterDirectory,
+        preferUnscopedStreamSubscription: this.preferUnscopedStreamSubscription,
       });
       let events;
       try {
-        events = await client.event.subscribe(eventSubscribeOptions);
+        events = await client.event.subscribe(
+          useScopedEventSubscription ? { directory: workspaceDirectory } : {},
+          eventSubscribeOpts
+        );
       } catch (subscribeError) {
-        // if (!workspaceDirectory) {
-        //   throw subscribeError;
-        // }
-        // console.warn(
-        //   "[MessageStreamService] Scoped /event subscription failed, retrying without directory query:",
-        //   subscribeError,
-        // );
-        // events = await client.event.subscribe({
-        //   onSseEvent: (sseEvent: unknown) => {
-        //     const rec = this.asRecord(sseEvent);
-        //     const data = rec?.data;
-        //     const eventHints = this.extractEventTypeHints(data);
-        //     const eventType = eventHints[0];
-        //     if (!this.isHeartbeatEvent(eventType)) {
-        //       console.log("[MessageStreamService] /event SSE frame", {
-        //         eventType: eventType || "unknown",
-        //         eventName: typeof rec?.event === "string" ? rec.event : undefined,
-        //         lastEventId: typeof rec?.id === "string" ? rec.id : undefined,
-        //         preview: this.asPreview(
-        //           typeof data === "string"
-        //             ? data
-        //             : JSON.stringify(this.sanitizeForLogging(data)),
-        //         ),
-        //       });
-        //     }
-        //   },
-        //   onSseError: (error: unknown) => {
-        //     console.error("[MessageStreamService] /event SSE callback error:", error);
-        //   },
-        // });
+        if (!workspaceDirectory) {
+          throw subscribeError;
+        }
+        this.logger.warn("Scoped /event subscription failed; retrying without directory query", {
+          workspaceDirectory,
+          error: subscribeError instanceof Error ? subscribeError.message : String(subscribeError),
+        });
+        events = await client.event.subscribe({}, {
+          onSseEvent: (sseEvent: unknown) => {
+            const rec = this.asRecord(sseEvent);
+            const data = rec?.data;
+            const eventHints = this.extractEventTypeHints(data);
+            const eventType = eventHints[0];
+            if (!this.isHeartbeatEvent(eventType) && this.shouldVerboseStreamDebug()) {
+              this.logger.debug("/event SSE frame", {
+                eventType: eventType || "unknown",
+                eventName: typeof rec?.event === "string" ? rec.event : undefined,
+                lastEventId: typeof rec?.id === "string" ? rec.id : undefined,
+                preview: this.asPreview(
+                  typeof data === "string"
+                    ? data
+                    : JSON.stringify(this.sanitizeForLogging(data)),
+                ),
+              });
+            }
+          },
+          onSseError: (error: unknown) => {
+            this.handleSdkSseError("/event", error);
+          },
+        });
       }
 
       this.logger.performance("Connection established", Date.now() - startTime, {
@@ -420,7 +499,7 @@ export class MessageStreamService {
           events!.stream,
           "/event",
           abortSignal,
-          workspaceDirectory,
+          eventFilterDirectory,
           startTime,
         ),
       ];
@@ -449,7 +528,7 @@ export class MessageStreamService {
               }
             },
             onSseError: (error: unknown) => {
-              this.logger.error("/global/event SSE callback error", {}, error as Error);
+              this.handleSdkSseError("/global/event", error);
             },
           });
           streamTasks.push(
@@ -457,7 +536,7 @@ export class MessageStreamService {
               globalEvents.stream,
               "/global/event",
               abortSignal,
-              workspaceDirectory,
+              eventFilterDirectory,
               startTime,
             ),
           );
@@ -569,7 +648,8 @@ export class MessageStreamService {
       }
 
       try {
-        const normalizedEvent = this.normalizeIncomingEvent(rawEvent);
+        const rawEventSnapshot = this.cloneRawEvent(rawEvent);
+        const normalizedEvent = this.normalizeIncomingEvent(rawEventSnapshot);
         if (!normalizedEvent) {
           const eventTypeHints = this.extractEventTypeHints(rawEvent);
           this.logger.warn("Skipping unknown event shape", {
@@ -582,10 +662,59 @@ export class MessageStreamService {
           continue;
         }
 
+        const properties = this.asRecord(normalizedEvent.properties) ?? {};
+        const part = this.asRecord(properties.part);
+        const info = this.asRecord(properties.info);
+        const sessionId =
+          (typeof properties.sessionID === "string" && properties.sessionID) ||
+          (typeof properties.sessionId === "string" && properties.sessionId) ||
+          (typeof part?.sessionID === "string" && part.sessionID) ||
+          (typeof part?.sessionId === "string" && part.sessionId) ||
+          (typeof info?.sessionID === "string" && info.sessionID) ||
+          (typeof info?.sessionId === "string" && info.sessionId) ||
+          undefined;
+        const messageId =
+          (typeof properties.messageID === "string" && properties.messageID) ||
+          (typeof properties.messageId === "string" && properties.messageId) ||
+          (typeof part?.messageID === "string" && part.messageID) ||
+          (typeof part?.messageId === "string" && part.messageId) ||
+          (typeof info?.id === "string" && info.id) ||
+          undefined;
+        const partType =
+          typeof part?.type === "string" ? part.type : undefined;
+        const preview = this.asPreview(
+          (typeof part?.delta === "string" && part.delta) ||
+            (typeof part?.text === "string" && part.text) ||
+            (typeof part?.content === "string" && part.content) ||
+            (typeof properties.delta === "string" && properties.delta) ||
+            (typeof properties.text === "string" && properties.text) ||
+            (typeof properties.content === "string" && properties.content) ||
+            undefined,
+        );
+
+        if (!this.isHeartbeatEvent(normalizedEvent.type)) {
+          this.logger.info("[CENTRALIZED-TAPE][STREAM] raw_event_received", {
+            source,
+            type: normalizedEvent.type,
+            sessionId,
+            messageId,
+            partType,
+            preview,
+          });
+        }
+
         if (!this.isHeartbeatEvent(normalizedEvent.type) && verboseDebug) {
-          const properties = this.asRecord(normalizedEvent.properties);
-          const part = this.asRecord(properties?.part);
-          const info = this.asRecord(properties?.info);
+          this.logger.debug("[CHAT-STREAMING][KEY1] Stream event received from server", {
+            source,
+            type: normalizedEvent.type,
+            sessionId,
+            messageId,
+            partType,
+            preview,
+          });
+        }
+
+        if (!this.isHeartbeatEvent(normalizedEvent.type) && verboseDebug) {
           this.logger.debug("Incoming stream event", {
             source,
             type: normalizedEvent.type,
@@ -652,7 +781,7 @@ export class MessageStreamService {
           continue;
         }
 
-        this.notifyCallbacks(eventWithSource);
+        this.notifyCallbacks(eventWithSource, rawEventSnapshot);
       } catch (error) {
         this.logger.error("Failed to process event", { source }, error as Error);
       }
@@ -867,74 +996,64 @@ export class MessageStreamService {
   }
 
   private getEventSignature(event: StreamEvent): string {
-    const properties = this.asRecord(event.properties) ?? {};
+    const eventRecord = this.asRecord(event) ?? {};
+    const properties = this.asRecord(eventRecord.properties) ?? {};
     const part = this.asRecord(properties.part);
     const info = this.asRecord(properties.info);
-    const todos = Array.isArray(properties.todos)
-      ? properties.todos
-        .map((todo) => {
-          const todoRecord = this.asRecord(todo) ?? {};
-          return {
-            id: typeof todoRecord.id === "string" ? todoRecord.id : undefined,
-            content:
-              typeof todoRecord.content === "string"
-                ? todoRecord.content
-                : undefined,
-            status:
-              typeof todoRecord.status === "string"
-                ? todoRecord.status
-                : undefined,
-            priority:
-              typeof todoRecord.priority === "string"
-                ? todoRecord.priority
-                : undefined,
-          };
-        })
-      : undefined;
+    const syncId =
+      typeof eventRecord.syncId === "string" ? eventRecord.syncId : undefined;
+    const eventId =
+      (typeof eventRecord.id === "string" && eventRecord.id) ||
+      (typeof properties.id === "string" && properties.id) ||
+      (typeof part?.id === "string" && part.id) ||
+      (typeof info?.id === "string" && info.id) ||
+      syncId ||
+      undefined;
 
-    return JSON.stringify({
-      type: event.type,
-      messageID:
-        (typeof properties.messageID === "string" && properties.messageID) ||
-        (typeof info?.id === "string" && info.id) ||
-        undefined,
-      partID: typeof part?.id === "string" ? part.id : undefined,
-      partType: typeof part?.type === "string" ? part.type : undefined,
-      delta:
-        (() => {
-          const raw = (typeof part?.delta === "string" && part.delta) ||
-            (typeof properties.delta === "string" && properties.delta);
-          return raw ? raw.trim() : undefined;
-        })(),
-      text:
-        (typeof part?.text === "string" && part.text.trim()) ||
-        (typeof properties.text === "string" && properties.text.trim()) ||
-        undefined,
-      directory:
-        typeof (event as Record<string, unknown>).directory === "string"
-          ? (event as Record<string, unknown>).directory
-          : undefined,
-      todos,
-    });
+    if (eventId) {
+      const sessionId =
+        (typeof eventRecord.sessionId === "string" && eventRecord.sessionId) ||
+        (typeof eventRecord.sessionID === "string" && eventRecord.sessionID) ||
+        (typeof properties.sessionID === "string" && properties.sessionID) ||
+        (typeof properties.sessionId === "string" && properties.sessionId) ||
+        (typeof part?.sessionID === "string" && part.sessionID) ||
+        (typeof part?.sessionId === "string" && part.sessionId) ||
+        (typeof info?.sessionID === "string" && info.sessionID) ||
+        (typeof info?.sessionId === "string" && info.sessionId) ||
+        "";
+
+      return JSON.stringify({
+        type: event.type,
+        sessionId,
+        eventId,
+      });
+    }
+
+    // Without a stable id, the old full-payload signature is prone to dropping
+    // meaningful repeated events before they ever reach the centralized tape.
+    // Let downstream centralized dedupe handle those cases more safely.
+    return "";
   }
 
   private isDuplicateEvent(event: StreamEvent): boolean {
     const now = Date.now();
     const signature = this.getEventSignature(event);
+    if (!signature) {
+      return false;
+    }
     const duplicateWindowMs = 750;
-    const staleEntryWindowMs = 10_000;
-    const source =
-      typeof (event as Record<string, unknown>).source === "string"
-        ? ((event as Record<string, unknown>).source as string)
-        : undefined;
 
     const previousSeen = this.recentEventSignatures.get(signature);
-    this.recentEventSignatures.set(signature, { timestamp: now, source });
+    this.recentEventSignatures.set(signature, { timestamp: now });
 
-    if (this.recentEventSignatures.size > 500) {
-      for (const [existingSignature, timestamp] of Array.from(this.recentEventSignatures.entries())) {
-        if (now - timestamp.timestamp > staleEntryWindowMs) {
-          this.recentEventSignatures.delete(existingSignature);
+    const MAX_SIGNATURE_ENTRIES = 200;
+    if (this.recentEventSignatures.size > MAX_SIGNATURE_ENTRIES) {
+      const overage = this.recentEventSignatures.size - MAX_SIGNATURE_ENTRIES;
+      let pruned = 0;
+      for (const key of this.recentEventSignatures.keys()) {
+        this.recentEventSignatures.delete(key);
+        if (++pruned >= overage) {
+          break;
         }
       }
     }
@@ -947,11 +1066,7 @@ export class MessageStreamService {
       return false;
     }
 
-    if (!source || !previousSeen.source) {
-      return true;
-    }
-
-    return previousSeen.source !== source;
+    return true;
   }
 
   /**
@@ -965,7 +1080,7 @@ export class MessageStreamService {
     return normalizeSdkStreamEvent(rawEvent) as StreamEvent | null;
   }
 
-  private notifyCallbacks(event: StreamEvent): void {
+  private notifyCallbacks(event: StreamEvent, rawEvent?: unknown): void {
     if (this.shouldVerboseStreamDebug()) {
       // Log all stream event properties for debugging
       const sanitizedProperties = this.sanitizeForLogging(event.properties);
@@ -1108,7 +1223,7 @@ export class MessageStreamService {
 
     this.callbacks.forEach((callback) => {
       try {
-        callback(event);
+        callback(event, rawEvent);
       } catch (error) {
         // Log but don't throw - one bad callback shouldn't break everything
         this.logger.error("Callback error in subscriber", {}, error as Error);

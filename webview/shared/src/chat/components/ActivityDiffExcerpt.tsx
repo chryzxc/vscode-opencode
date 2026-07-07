@@ -64,7 +64,7 @@ function DiffLine({
   return (
     <div
       className={cn(
-        "group relative flex min-w-0 font-medium text-[11px] leading-relaxed",
+        "group relative flex min-w-0 font-medium text-[10px] leading-snug",
         isAdded && "oc-diff-line-added",
         isRemoved && "oc-diff-line-removed",
         isHeader && "oc-diff-line-header",
@@ -75,11 +75,11 @@ function DiffLine({
         className={cn(
           "flex select-none flex-shrink-0 items-center gap-0 border-r border-oc-border-soft",
         )}
-        style={{ minWidth: 64 }}
+        style={{ minWidth: 56 }}
       >
         <span
           className={cn(
-            "inline-block w-8 py-0.5 pr-1.5 text-right",
+            "inline-block w-7 py-0.5 pr-1 text-right",
             isRemoved ? "text-oc-red/80" : "text-oc-text-soft opacity-80",
           )}
         >
@@ -87,7 +87,7 @@ function DiffLine({
         </span>
         <span
           className={cn(
-            "inline-block w-8 py-0.5 pr-1.5 text-right",
+            "inline-block w-7 py-0.5 pr-1 text-right",
             isAdded ? "text-oc-green/80" : "text-oc-text-soft opacity-80",
           )}
         >
@@ -97,7 +97,7 @@ function DiffLine({
 
       <div
         className={cn(
-          "flex w-5 flex-shrink-0 select-none items-center justify-center border-r border-oc-border-soft py-0.5 font-semibold",
+          "flex w-4 flex-shrink-0 select-none items-center justify-center border-r border-oc-border-soft py-0.5 font-semibold",
           isAdded && "text-oc-green",
           isRemoved && "text-oc-red",
           isHeader && "text-oc-accent",
@@ -109,7 +109,7 @@ function DiffLine({
 
       <div
         className={cn(
-          "flex-1 overflow-x-auto whitespace-pre px-2.5 py-0.5",
+          "flex-1 overflow-x-auto whitespace-pre px-2 py-0.5",
           isAdded && "text-oc-green",
           isRemoved && "text-oc-red",
           isHeader && "font-semibold text-oc-accent",
@@ -119,24 +119,6 @@ function DiffLine({
         {isHeader ? line : line.slice(1)}
       </div>
 
-      {!isHeader && (
-        <button
-          type="button"
-          title="Copy line"
-          onClick={handleCopy}
-          className={cn(
-            "absolute right-1 top-0.5 flex h-4 w-4 items-center justify-center rounded",
-            "opacity-0 transition-opacity group-hover:opacity-100",
-            "oc-text-secondary hover:bg-oc-bg hover:text-oc-text",
-          )}
-        >
-          {copied ? (
-            <Check className="h-2.5 w-2.5 text-oc-green" />
-          ) : (
-            <Copy className="h-2.5 w-2.5" />
-          )}
-        </button>
-      )}
     </div>
   );
 }

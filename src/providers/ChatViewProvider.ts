@@ -216,6 +216,7 @@ export class ChatViewProvider
     "opencode.session.subagents.";
   private static readonly COMPACTION_VIEW_STATE_PREFIX =
     "opencode.session.compaction-view.";
+  private isDisposed = false;
   /** The webview instance (undefined before initialization) */
   private view?: vscode.WebviewView;
 
@@ -224,6 +225,12 @@ export class ChatViewProvider
 
   /** Unsubscribe function for stream service cleanup */
   private unsubscribe?: () => void;
+  /** Disposable for the webview message listener. */
+  private webviewMessageListener?: vscode.Disposable;
+  private readonly handleQuotaUpdate = (data: unknown) => {
+    this.view?.webview.postMessage({ type: "quotaData", data });
+  };
+  private activeViewCleanup?: () => void;
 
   /** Service for monitoring AI platform quota usage */
   private quotaService: QuotaService;
@@ -326,6 +333,26 @@ export class ChatViewProvider
     return `sdk-todo:${sessionId}:${index}:${Math.abs(hash)}`;
   }
 
+  /**
+   * Create a stable optimistic message identifier for the local conversation
+   * cache.
+   *
+   * The centralized chat renderer only keeps locally appended messages when
+   * they have an identifier. Rehydrated sessions can therefore "lose" the
+   * just-sent user bubble unless the optimistic message is tagged with a
+   * message ID immediately. We use a namespaced id so the webview and persisted
+   * history can treat the message as a first-class turn until the server tape
+   * catches up.
+   */
+  private createOptimisticMessageId(
+    sessionId: string,
+    role: "user" | "assistant" | "system" = "user",
+  ): string {
+    return `${role}-${sessionId}-${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2, 8)}`;
+  }
+
   private normalizeSdkTodoItems(sessionId: string, rawTodos: unknown[]): unknown[] {
     return rawTodos
       .map((rawTodo, index) => {
@@ -393,7 +420,7 @@ export class ChatViewProvider
     try {
       const client = await this.serverManager.ensureRunning();
       const response = await client.session.todo({
-        path: { id: sessionId },
+        sessionID: sessionId,
       });
       const items = this.normalizeSdkTodoItems(
         sessionId,
@@ -470,7 +497,7 @@ export class ChatViewProvider
     for (const delay of [3000, 6000, 12000]) {
       await new Promise((r) => setTimeout(r, delay));
       try {
-        const resp = await client.session.get({ path: { id: sessionId } });
+        const resp = await client.session.get({ sessionID: sessionId });
         const title = resp.data?.title;
         if (title && title !== "Untitled chat" && title !== "New Session") {
           this.handleServerSessionTitleUpdate(sessionId, title);
@@ -493,7 +520,13 @@ export class ChatViewProvider
   private executingQueueSessionIds: Set<string> = new Set();
 
   private processingSessionIds: Set<string> = new Set();
-  private recentlyAbortedSessionIds: Set<string> = new Set();
+  private recentPromptDispatch?:
+    | {
+      signature: string;
+      at: number;
+    }
+    | undefined;
+  private readonly seenClientRequestIds = new Map<string, number>();
   private get isProcessingRequest(): boolean {
     return this.getEffectiveProcessingSessionIds().length > 0;
   }
@@ -523,6 +556,7 @@ export class ChatViewProvider
   private readonly COMMAND_CATALOG_TTL_MS = 30 * 60 * 1000;
   private readonly compactingSessions = new Set<string>();
   private readonly sessionsWithFileChangeEvidence = new Set<string>();
+  private readonly sessionDiffFromStream = new Map<string, Array<{ file: string; added: number; deleted: number; patch?: string }>>();
   private readonly recentUiErrorToastTimestamps = new Map<string, number>();
   private readonly UI_ERROR_TOAST_DEDUPE_WINDOW_MS = 15_000;
   private lastCompatibilityWarningSignature: string | undefined;
@@ -577,9 +611,7 @@ export class ChatViewProvider
     // Use injected service or create local instance as fallback
     this.modelCapabilitiesService = modelCapabilitiesService ?? new ModelCapabilitiesService();
     this.geminiTokenTracker = GeminiTokenUsageTracker.getInstance();
-    this.quotaService.on("quotaUpdate", (data) => {
-      this.view?.webview.postMessage({ type: "quotaData", data });
-    });
+    this.quotaService.on("quotaUpdate", this.handleQuotaUpdate);
 
     // Initialize file theme processor
     this.fileThemeProcessor = new FileThemeProcessor(context);
@@ -729,6 +761,7 @@ export class ChatViewProvider
       this.compactionManager,
       this.diagnosticsLogger,
       this.geminiTokenTracker,
+      this.sessionService,
       this.subagentTracker,
       logger,
     );
@@ -787,6 +820,7 @@ export class ChatViewProvider
     mode: PromptDispatchMode,
     payload: {
       sessionId?: string;
+      clientRequestId?: string;
       text?: string;
       files?: string[];
       contexts?: any[];
@@ -796,6 +830,7 @@ export class ChatViewProvider
       interactiveSubmit?: boolean;
       avoidAbortIfProcessing?: boolean;
       forceSendNow?: boolean;
+      delivery?: "immediate" | "deferred";
     },
   ): Promise<void> {
     const text = typeof payload.text === "string" ? payload.text.trim() : "";
@@ -813,27 +848,100 @@ export class ChatViewProvider
       return;
     }
 
+    const clientRequestId =
+      typeof payload.clientRequestId === "string"
+        ? payload.clientRequestId.trim()
+        : "";
+    if (clientRequestId && this.hasSeenClientRequest(sessionId, clientRequestId)) {
+      this.logger.warn("[MessageFlow] Ignoring duplicate client request dispatch", {
+        mode,
+        sessionId,
+        clientRequestId,
+        textPreview: text.slice(0, 160),
+      });
+      return;
+    }
+
     this.logger.debug('[MessageFlow] Prompt dispatch initiated', {
       mode,
       sessionId,
+      clientRequestId: clientRequestId || undefined,
       textLength: text.length,
       hasFiles: (payload.files?.length ?? 0) > 0,
       hasContexts: (payload.contexts?.length ?? 0) > 0,
       hasImages: (payload.images?.length ?? 0) > 0
     });
 
-    const effectiveMode =
-      mode === "send-now" &&
-      !payload.forceSendNow &&
-      this.getEffectiveProcessingSessionIds().includes(sessionId)
-        ? "steer"
-        : mode;
+    if (mode === "send-now") {
+      const dedupeWindowMs = 1500;
+      const dedupeSignature = JSON.stringify({
+        sessionId,
+        text,
+        files: Array.isArray(payload.files) ? [...payload.files].sort() : [],
+        contexts: Array.isArray(payload.contexts)
+          ? payload.contexts.map((ctx) =>
+            JSON.stringify({
+              file: ctx?.file ?? null,
+              lineInfo: ctx?.lineInfo ?? null,
+              languageId: ctx?.languageId ?? null,
+              content: ctx?.content ?? null,
+            }),
+          )
+          : [],
+        images: Array.isArray(payload.images)
+          ? payload.images.map((image) =>
+            typeof image === "string"
+              ? image
+              : JSON.stringify({
+                filename: image?.filename ?? null,
+                dataUrl: image?.dataUrl ?? null,
+              }),
+          )
+          : [],
+        agent: payload.agent ?? null,
+        interactiveSubmit: payload.interactiveSubmit === true,
+        delivery: payload.delivery ?? null,
+      });
+      const now = Date.now();
+      if (
+        this.recentPromptDispatch &&
+        this.recentPromptDispatch.signature === dedupeSignature &&
+        now - this.recentPromptDispatch.at <= dedupeWindowMs
+      ) {
+        this.logger.warn("[MessageFlow] Ignoring duplicate send-now prompt dispatch", {
+          sessionId,
+          dedupeWindowMs,
+          interactiveSubmit: payload.interactiveSubmit === true,
+          textPreview: text.slice(0, 160),
+        });
+        return;
+      }
+      this.recentPromptDispatch = {
+        signature: dedupeSignature,
+        at: now,
+      };
+    }
+
+    if (clientRequestId) {
+      this.rememberClientRequest(sessionId, clientRequestId);
+    }
+
+    const isMainTurnProcessing = this.isSessionMainTurnProcessing(sessionId);
+    // Keep mode ownership explicit. The webview marks active-assistant composer
+    // sends with payload.delivery="deferred" so OpenCode's agent loop can enqueue
+    // them server-side. Do not auto-convert a normal send-now request into steer
+    // or the extension QueueManager from processing flags; those flags can include
+    // stale or child/subagent work after the top-level assistant block is already
+    // complete, which makes the next user message appear in the wrong queue path.
+    const effectiveMode = mode;
 
     this.logger.debug('[MessageFlow] Mode resolution', {
       requestedMode: mode,
       effectiveMode,
       sessionId,
-      isProcessing: this.getEffectiveProcessingSessionIds().includes(sessionId),
+      isProcessing: isMainTurnProcessing,
+      effectiveProcessing: this.getEffectiveProcessingSessionIds().includes(sessionId),
+      delivery: payload.delivery,
       forceSendNow: payload.forceSendNow
     });
 
@@ -845,7 +953,7 @@ export class ChatViewProvider
       mode === "send-now" &&
       payload.forceSendNow &&
       !payload.avoidAbortIfProcessing &&
-      this.getEffectiveProcessingSessionIds().includes(sessionId)
+      isMainTurnProcessing
     ) {
       this.logger.debug('[MessageFlow] Aborting active request before new message', {
         sessionId,
@@ -855,11 +963,36 @@ export class ChatViewProvider
         suppressWebviewNotification: true,
         skipQueueDrain: true,
       });
-      this.recentlyAbortedSessionIds.add(sessionId);
     }
 
     // For normal sends, bypass queue persistence entirely so the queue panel
     // does not show transient "queued" items when there is no active backlog.
+    if (
+      effectiveMode === "send-now" &&
+      payload.delivery === "deferred"
+    ) {
+      const acceptedPrompt = await this.sendDeferredPromptToAgentLoop(sessionId, {
+        text,
+        files: payload.files,
+        contexts: payload.contexts,
+        images: payload.images,
+        agent: payload.agent,
+        clientRequestId: clientRequestId || undefined,
+      });
+      this.view?.webview.postMessage({
+        type: "deferredPromptAccepted",
+        sessionId,
+        clientRequestId: clientRequestId || undefined,
+        text,
+        files: payload.files,
+        contexts: payload.contexts,
+        images: payload.images,
+        agent: payload.agent,
+        message: acceptedPrompt,
+      });
+      return;
+    }
+
     if (effectiveMode === "send-now") {
       this.logger.debug('[MessageFlow] Queue bypass - sending directly', {
         sessionId,
@@ -877,6 +1010,7 @@ export class ChatViewProvider
         undefined,
         payload.userFacingText,
         {
+          clientRequestId: clientRequestId || undefined,
           interactiveSubmit: payload.interactiveSubmit === true,
         },
       );
@@ -887,6 +1021,7 @@ export class ChatViewProvider
     this.queueItemSequence += 1;
     const prompt: QueuedPrompt = {
       id: promptId,
+      clientRequestId: clientRequestId || undefined,
       sessionId,
       createdAt: Date.now(),
       text,
@@ -921,7 +1056,6 @@ export class ChatViewProvider
       }
       if (sessionId === this.currentSessionId) {
         await this.handleStopRequest(sessionId);
-        this.recentlyAbortedSessionIds.add(sessionId);
       }
       return;
     }
@@ -929,13 +1063,42 @@ export class ChatViewProvider
     await this.handleExecuteQueue(sessionId);
   }
 
+  private clientRequestKey(sessionId: string, clientRequestId: string): string {
+    return `${sessionId}::${clientRequestId}`;
+  }
+
+  private pruneSeenClientRequests(now = Date.now()): void {
+    const ttlMs = 10 * 60 * 1000;
+    for (const [key, seenAt] of this.seenClientRequestIds.entries()) {
+      if (now - seenAt > ttlMs) {
+        this.seenClientRequestIds.delete(key);
+      }
+    }
+  }
+
+  private hasSeenClientRequest(sessionId: string, clientRequestId: string): boolean {
+    this.pruneSeenClientRequests();
+    return this.seenClientRequestIds.has(
+      this.clientRequestKey(sessionId, clientRequestId),
+    );
+  }
+
+  private rememberClientRequest(sessionId: string, clientRequestId: string): void {
+    const now = Date.now();
+    this.pruneSeenClientRequests(now);
+    this.seenClientRequestIds.set(
+      this.clientRequestKey(sessionId, clientRequestId),
+      now,
+    );
+  }
+
   private async handleDispatchQueuedItem(
     dispatchMode: "queue" | "send-now" | "steer",
     sessionId: string,
     id: string,
     index?: number,
-  ): Promise<void> {
-    await this.queueManager.handleDispatchQueuedItem(
+  ): Promise<unknown> {
+    return await this.queueManager.handleDispatchQueuedItem(
       dispatchMode,
       sessionId,
       id,
@@ -1294,19 +1457,12 @@ export class ChatViewProvider
       // ============================================================================
 
       // Step 1: Load and process messages for the new session
-      const rawMessages = await this.sessionService.getMessages(sessionId);
-
-      this.logger.info('[handleLoadSession] Fetched raw messages', {
+      const sessionHistory = await this.loadCentralizedRenderableHistory(
         sessionId,
-        rawCount: rawMessages?.length || 0,
-        isRawMessagesArray: Array.isArray(rawMessages)
-      });
+      );
+      const messages = sessionHistory.messages;
 
-      const messages = Array.isArray(rawMessages)
-        ? await this.processHistoryMessages(rawMessages, sessionId)
-        : [];
-
-      this.logger.info('[handleLoadSession] Processed messages', {
+      this.logger.debug('[handleLoadSession] Processed messages', {
         sessionId,
         processedCount: messages.length,
         willSendToWebview: true
@@ -1337,6 +1493,8 @@ export class ChatViewProvider
         type: "chatHistory",
         sessionId: sessionId,
         messages: messages,
+        
+        rawSdkEventPayloads: sessionHistory.rawSdkEventPayloads,
         processingSessionIds: this.getEffectiveProcessingSessionIds(),
       });
       await this.compactionManager.sendCompactionViewStateForMessages(
@@ -1554,10 +1712,8 @@ export class ChatViewProvider
       });
 
       const toolsResponse = await client.tool.list({
-        query: {
-          provider: currentModel.provider,
-          model: currentModel.model
-        }
+        provider: currentModel.provider,
+        model: currentModel.model
       });
 
       if (!toolsResponse.data) {
@@ -2090,14 +2246,39 @@ export class ChatViewProvider
     if (this.activeStreamSessionId && this.processingSessionIds.size > 0) {
       ids.add(this.activeStreamSessionId);
     }
-    for (const sessionId of this.subagentTracker.getActiveProcessingSessionIds()) {
-      ids.add(sessionId);
+    // Only propagate subagent-owned sessions when the parent session is still
+    // actively processing. If the main turn has already finished (not in
+    // processingSessionIds), dangling "pending"/"running" subagents from the
+    // previous turn must NOT re-inflate the effective list — otherwise the
+    // webview sees the session as processing and marks the next user message
+    // as delivery="deferred", causing it to be silently swallowed by the
+    // agent loop instead of starting a new turn.
+    if (this.processingSessionIds.size > 0) {
+      for (const sessionId of this.subagentTracker.getActiveProcessingSessionIds()) {
+        // Only include if the parent session is itself still processing
+        if (this.processingSessionIds.has(sessionId)) {
+          ids.add(sessionId);
+        }
+      }
     }
     return Array.from(ids);
   }
 
   private isSessionEffectivelyProcessing(sessionId: string | undefined): boolean {
     return !!sessionId && this.getEffectiveProcessingSessionIds().includes(sessionId);
+  }
+
+  private isSessionMainTurnProcessing(sessionId: string | undefined): boolean {
+    if (!sessionId) {
+      return false;
+    }
+    // This intentionally excludes getEffectiveProcessingSessionIds(), because that
+    // helper folds in active subagent/child work for UI badges. Composer dispatch
+    // decisions must only care about the main assistant turn for this exact
+    // session. Otherwise a completed top-level response can look "busy" because a
+    // child activity is still present, and a normal user send gets routed into the
+    // visible QueueManager/steer path even though the Stop button is gone.
+    return this.processingSessionIds.has(sessionId);
   }
 
   private sendProcessingSessionsUpdate(): void {
@@ -2210,8 +2391,14 @@ export class ChatViewProvider
     const part = (properties?.part as Record<string, unknown>) || {};
     const partType = String(part?.type || "").toLowerCase();
     const toolName = String(part?.tool || "").toLowerCase();
-    const structured = (enrichedEvent?.structured as Record<string, unknown>) || {};
-    const fileChanges = Array.isArray(structured?.fileChanges) ? structured.fileChanges : [];
+    const structuredOutput =
+      (enrichedEvent?.structuredOutput as Record<string, unknown>) ||
+      (eventRec?.structuredOutput as Record<string, unknown>) ||
+      (properties?.structuredOutput as Record<string, unknown>) ||
+      {};
+    const fileChanges = Array.isArray(structuredOutput?.fileChanges)
+      ? structuredOutput.fileChanges
+      : [];
     const editFileChanges = fileChanges.filter((change: any) =>
       change?.kind === "file_edit" || change?.kind === "file_create" || change?.kind === "file_delete"
     );
@@ -2385,6 +2572,12 @@ export class ChatViewProvider
     if (!message) {
       return;
     }
+    if (this.shouldSuppressErrorToast(message)) {
+      this.logger.warn("Suppressing non-fatal error toast", {
+        message,
+      });
+      return;
+    }
 
     const now = Date.now();
     for (const [key, timestamp] of this.recentUiErrorToastTimestamps.entries()) {
@@ -2409,12 +2602,20 @@ export class ChatViewProvider
     });
   }
 
+  private shouldSuppressErrorToast(message: string): boolean {
+    return /MaxListenersExceededWarning/i.test(message);
+  }
+
   resolveWebviewView(
     webviewView: vscode.WebviewView,
     _context: vscode.WebviewViewResolveContext,
     _token: vscode.CancellationToken,
   ): void | Thenable<void> {
     this.logger.info("[ChatViewProvider] resolving webview view");
+    // A provider can be resolved again before the previous view fully tears
+    // down. Dispose the prior view-scoped listeners first so subscriptions do
+    // not stack across reloads/reopens.
+    this.activeViewCleanup?.();
     this.view = webviewView;
     this.isBootstrappingWebview = false;
     this.hasInitializedWebview = false;
@@ -2428,8 +2629,11 @@ export class ChatViewProvider
     };
     webviewView.webview.options = webviewOptions;
 
-    // Handle messages from webview
-    webviewView.webview.onDidReceiveMessage(async (message) => {
+    // Handle messages from webview.
+    // We dispose any previous listener first so a re-resolved webview does not
+    // accumulate duplicate handlers that retain this provider instance.
+    this.webviewMessageListener?.dispose();
+    this.webviewMessageListener = webviewView.webview.onDidReceiveMessage(async (message) => {
       const { type } = message;
 
       // Log all UI interactions for debugging
@@ -2610,37 +2814,22 @@ export class ChatViewProvider
             // Fetch and send chat history and sessions list
             if (currentSession) {
               this.subagentTracker.setActiveSession(currentSession.id);
-              const rawMessages = await this.sessionService.getMessages(
+              const sessionHistory = await this.loadCentralizedRenderableHistory(
                 currentSession.id,
               );
-              const messages = await this.processHistoryMessages(
-                rawMessages,
-                currentSession.id,
-              );
+              const messages = sessionHistory.messages;
               this.logHistoryRenderDiagnostics(
                 "webview.ready.current-session",
                 currentSession.id,
-                rawMessages,
+                sessionHistory.rawSdkEventPayloads,
                 messages,
               );
-              const assistantMessages = messages.filter((m: any) => {
-                const role = this.firstNonEmptyString(m?.role, m?.info?.role);
-                return role?.toLowerCase() === "assistant";
-              });
-              this.logger.debug("[CLIENT FACING] SENDING chatHistory", {
-                sessionId: currentSession.id,
-                totalMessages: messages.length,
-                assistantMessages: assistantMessages.map((m: any) => ({
-                  id: m?.id || m?.info?.id,
-                  content: String(m?.content).slice(0, 150),
-                  structOutMsg: String(m?.structuredOutput?.message).slice(0, 150),
-                  hasRawResponse: !!m?.rawResponse,
-                })),
-              });
               this.view?.webview.postMessage({
                 type: "chatHistory",
                 sessionId: currentSession.id,
                 messages: messages,
+                
+                rawSdkEventPayloads: sessionHistory.rawSdkEventPayloads,
                 processingSessionIds: this.getEffectiveProcessingSessionIds(),
               });
               await this.sendPersistedCompactionViewState(currentSession.id);
@@ -2688,6 +2877,7 @@ export class ChatViewProvider
         }
         case "sendMessage":
         case "sendPrompt": {
+          this.logger.error(`[DEBUG][HOST] Received ${message.type} instead of questionReply!`, { message });
           const correlationId = this.logger.startFeatureFlow('send-message', {
             hasFiles: message.files?.length > 0,
             hasImages: message.images?.length > 0,
@@ -2704,12 +2894,14 @@ export class ChatViewProvider
           try {
             const isInteractiveSubmit = message?.interactiveSubmit === true;
             await this.schedulePromptDispatch("send-now", {
+              clientRequestId: message.clientRequestId,
               sessionId: message.sessionId,
               text: message.text,
               files: message.files,
               contexts: message.contexts,
               images: message.images,
               agent: message.agent,
+              delivery: message.delivery === "deferred" ? "deferred" : undefined,
               // Interactive popover submits should behave like a normal direct
               // user send, even if stale processing flags briefly linger from
               // the preceding question turn.
@@ -2728,6 +2920,7 @@ export class ChatViewProvider
           break;
         }
         case "questionReply": {
+          this.logger.error("[DEBUG][HOST] Entered questionReply handler", { message });
           const requestID = this.firstNonEmptyString(message.requestID);
           const replySessionId = this.firstNonEmptyString(
             message.sessionId,
@@ -2744,8 +2937,8 @@ export class ChatViewProvider
               )
               .filter((entry: string[]) => entry.length > 0)
             : [];
-          if (!requestID || answers.length === 0) {
-            this.logger.warn("Ignoring malformed question reply", {
+          if (answers.length === 0) {
+            this.logger.error("[DEBUG][HOST] Ignoring malformed question reply", {
               hasRequestID: !!requestID,
               answersLength: answers.length,
             });
@@ -2761,12 +2954,15 @@ export class ChatViewProvider
               this.activeStreamSessionId = replySessionId;
               this.sendProcessingSessionsUpdate();
             }
+            let answerMessageId: string | undefined;
             if (replySessionId && displayText) {
               const answerMessage = {
+                id: this.createOptimisticMessageId(replySessionId, "user"),
                 role: "user" as const,
                 content: displayText,
                 text: displayText,
                 interactiveSubmit: true,
+                sessionID: replySessionId,
                 parts: [
                   {
                     type: "text",
@@ -2777,7 +2973,13 @@ export class ChatViewProvider
                   created: Date.now(),
                 },
               };
+              answerMessageId = answerMessage.id;
               await this.sessionService.appendMessage(replySessionId, answerMessage);
+              this.logger.error("[DEBUG][HOST] [CENTRALIZED-TAPE] persisted_raw_user_reply", {
+                sessionId: replySessionId,
+                messageId: answerMessage.id,
+                textLength: displayText.length,
+              });
               this.view?.webview.postMessage({
                 type: "userMessageAppended",
                 message: answerMessage,
@@ -2785,18 +2987,122 @@ export class ChatViewProvider
               });
             }
             const client = await this.serverManager.ensureRunning();
-            await (client as any).question.reply({
-              requestID,
-              answers,
-              directory: this.getWorkspaceDirectory(),
-            });
-            // Keep the session in processingSessionIds so the SSE handler
-            // continues to forward stream events from the server's response.
-            // Removing it here causes the SSE processing gate to skip
-            // continuation events, leaving the webview stuck with no loading
-            // state and no response. The stream lifecycle (messageResponse /
-            // session.completed / error) will clean up processing naturally.
+            
+            // Check if the question is actively pending on the server in a running agent loop
+            let isAnswerable = true;
+            if (!requestID) {
+              isAnswerable = false;
+              this.logger.error("[DEBUG][HOST] Question has no requestID, marking as stale");
+            } else {
+              try {
+                this.logger.error("[DEBUG][HOST] Checking if question is answerable using question.list", { replySessionId });
+                // We MUST check question.list. If the session is rehydrated (server restarted), 
+                // question.reply() succeeds but the agent loop doesn't wake up!
+                // question.list() will only return the question if the agent loop is actively waiting for it.
+                const pendingQuestionsResult = await (client as any).question.list({
+                  sessionID: replySessionId,
+                  directory: this.getWorkspaceDirectory(),
+                });
+                const questionsArray = Array.isArray(pendingQuestionsResult) 
+                  ? pendingQuestionsResult 
+                  : (pendingQuestionsResult?.questions || pendingQuestionsResult?.data || []);
+                const isPending = questionsArray.some((q: any) => q.requestID === requestID);
+                
+                if (!isPending) {
+                  this.logger.error("[DEBUG][HOST] Question not found in active loop, marking as stale", { requestID });
+                  isAnswerable = false;
+                } else {
+                  this.logger.error("[DEBUG][HOST] Question is actively pending. Executing question.reply", {
+                    requestID,
+                    answers,
+                    directory: this.getWorkspaceDirectory()
+                  });
+                  
+                  await (client as any).question.reply({
+                    requestID,
+                    answers,
+                    directory: this.getWorkspaceDirectory(),
+                  });
+                  
+                  this.logger.error("[DEBUG][HOST] Successfully executed question.reply");
+                }
+              } catch (err) {
+                this.logger.error("[DEBUG][HOST] Failed to check pending questions or reply (likely stale), falling back", { err: String(err) });
+                isAnswerable = false;
+              }
+            }
+
+
+            if (!isAnswerable) {
+              this.logger.error("[DEBUG][HOST] Question not in active loop (server rehydrated). Pre-answering in DB then kicking agent loop via promptAsync.", { requestID });
+              if (replySessionId && requestID && displayText) {
+                // STEP 1: Pre-answer the question in the OpenCode DB.
+                // The agent loop will replay history, find this answer, and continue processing.
+                try {
+                  this.logger.error("[DEBUG][HOST] Pre-answering question in DB via question.reply", { requestID, answers });
+                  await (client as any).question.reply({
+                    requestID,
+                    answers,
+                    directory: this.getWorkspaceDirectory(),
+                  });
+                  this.logger.error("[DEBUG][HOST] question.reply to pre-answer DB succeeded", { requestID });
+                } catch (replyErr) {
+                  // Non-fatal: if it fails (e.g. already answered), we still try to kick the loop.
+                  this.logger.error("[DEBUG][HOST] question.reply pre-answer failed (non-fatal)", { error: String(replyErr) });
+                }
+
+                // STEP 2: Set up our streaming state BEFORE starting the agent loop
+                // so SSE events are properly forwarded to the webview.
+                this.processingSessionIds.add(replySessionId);
+                this.activeStreamSessionId = replySessionId;
+                this.sendProcessingSessionsUpdate();
+                this.logger.error("[DEBUG][HOST] Processing state set, kicking agent loop via promptAsync", { replySessionId });
+
+                // STEP 3: Use client.session.promptAsync (fire-and-forget, returns 202 immediately).
+                // We MUST NOT use client.session.prompt() here — that endpoint blocks the HTTP
+                // connection for the entire agent turn (timeout: false) and deadlocks the extension.
+                // promptAsync returns immediately and streams events via SSE.
+                // NOTE: client.session is Session2 in the v2 SDK — promptAsync is defined on Session2.
+                // The path is client.session.promptAsync, NOT client.v2.session.promptAsync.
+                try {
+                  const promptAsyncFn = (client as any)?.session?.promptAsync;
+                  if (typeof promptAsyncFn === "function") {
+                    await promptAsyncFn.call((client as any).session, {
+                      sessionID: replySessionId,
+                      directory: this.getWorkspaceDirectory(),
+                      // Include parts so the agent knows what the user answered
+                      parts: [{ type: "text", text: displayText }],
+                    });
+                    this.logger.error("[DEBUG][HOST] promptAsync succeeded - agent loop kicked", { replySessionId });
+                  } else {
+                    // promptAsync unavailable (old server). This is a hard blocker — we cannot
+                    // safely fall back to the blocking prompt() since it deadlocks the extension
+                    // and breaks the stop button. Report error and clean up processing state.
+                    this.logger.error("[DEBUG][HOST] promptAsync not found on client.session — cannot safely kick agent loop without deadlocking");
+                    this.processingSessionIds.delete(replySessionId);
+                    if (this.activeStreamSessionId === replySessionId) {
+                      this.activeStreamSessionId = undefined;
+                    }
+                    this.sendProcessingSessionsUpdate();
+                    this.view?.webview.postMessage({
+                      type: "error",
+                      message: "This question is from a previous session and the server does not support async resume. Please start a new message.",
+                    });
+                  }
+                } catch (kickErr) {
+                  this.logger.error("[DEBUG][HOST] Failed to kick agent loop via promptAsync", { error: String(kickErr) });
+                  // Clean up processing state since we failed to start the loop
+                  this.processingSessionIds.delete(replySessionId);
+                  if (this.activeStreamSessionId === replySessionId) {
+                    this.activeStreamSessionId = undefined;
+                  }
+                  this.sendProcessingSessionsUpdate();
+                }
+              }
+            }
+
           } catch (err) {
+            this.logger.error("[DEBUG][HOST] Error in questionReply handler", { error: String(err) });
             if (replySessionId) {
               this.processingSessionIds.delete(replySessionId);
               if (this.activeStreamSessionId === replySessionId) {
@@ -2816,38 +3122,27 @@ export class ChatViewProvider
           }
           break;
         }
-        case "persistAssistantMessage": {
+        case "persistRawSdkEventPayload": {
           const sessionId = this.firstNonEmptyString(
             message.sessionId,
             this.currentSessionId,
           );
-          if (!sessionId || !message.message) {
+          if (!sessionId || typeof message.event === "undefined") {
             break;
           }
-          const persistedMessage =
-            message.message && typeof message.message === "object"
-              ? {
-                ...message.message,
-                sessionID: this.firstNonEmptyString(
-                  message.message?.sessionID,
-                  message.message?.sessionId,
-                  message.message?.info?.sessionID,
-                  message.message?.info?.sessionId,
-                  sessionId,
-                ),
-                createdAt:
-                  this.historyMessageCreatedAt(message.message) ?? Date.now(),
-              }
-              : message.message;
-          await this.sessionService.upsertMessage(sessionId, persistedMessage);
-          await this.persistSessionMessageOverride(sessionId, persistedMessage);
-          const snapshotFromMessage = this.buildSubagentPayloadFromMessage(
-            persistedMessage,
+          this.logger.info("[CENTRALIZED-TAPE][HOST] persist_raw_sdk_event_requested", {
             sessionId,
+            eventType: typeof (message.event as Record<string, unknown>)?.type === "string"
+              ? (message.event as Record<string, unknown>).type
+              : undefined,
+          });
+          const eventRecord = this.asRecord(message.event);
+          await this.sessionService.appendRawSdkEventPayload(
+            sessionId,
+            eventRecord
+              ? { ...eventRecord, sessionId }
+              : message.event,
           );
-          if (snapshotFromMessage) {
-            await this.persistSubagentLiveState(sessionId, snapshotFromMessage);
-          }
           break;
         }
         case "newSession":
@@ -2883,7 +3178,10 @@ export class ChatViewProvider
             // Clear webview messages
             this.view?.webview.postMessage({
               type: "chatHistory",
+              sessionId: createdSession.id,
               messages: [],
+              rawMessages: [],
+              rawSdkEventPayloads: [],
             });
             this.view?.webview.postMessage({
               type: "subagentSnapshot",
@@ -3211,6 +3509,10 @@ export class ChatViewProvider
           await this.handleStopRequest(message.sessionId);
           break;
         }
+        case "abortResponse": {
+          await this.handleStopRequest(message.sessionId);
+          break;
+        }
         case "compactSession": {
           await this.handleCompactSession(
             message.sessionId,
@@ -3224,6 +3526,7 @@ export class ChatViewProvider
         }
         case "addToQueue": {
           await this.schedulePromptDispatch("queue", {
+            clientRequestId: message.clientRequestId,
             sessionId: message.sessionId,
             text: message.text,
             files: message.files,
@@ -3407,23 +3710,22 @@ export class ChatViewProvider
             message.retryWithoutStructuredOutput === true;
           // Reload chat history to show clean state before retry
           try {
-            const rawMessages = await this.sessionService.getMessages(
+            const sessionHistory = await this.loadCentralizedRenderableHistory(
               retrySessionId,
             );
-            const messages = await this.processHistoryMessages(
-              rawMessages,
-              retrySessionId,
-            );
+            const messages = sessionHistory.messages;
             this.logHistoryRenderDiagnostics(
               "retryLastMessage.reload",
               retrySessionId,
-              rawMessages,
+              sessionHistory.rawSdkEventPayloads,
               messages,
             );
             this.view?.webview.postMessage({
               type: "chatHistory",
               sessionId: retrySessionId,
               messages: messages,
+              
+              rawSdkEventPayloads: sessionHistory.rawSdkEventPayloads,
               processingSessionIds: this.getEffectiveProcessingSessionIds(),
             });
           } catch (err) {
@@ -3567,13 +3869,24 @@ export class ChatViewProvider
     });
 
     // Subscribe to stream events
-    this.unsubscribe = this.streamService.subscribe(async (event) => {
+    this.unsubscribe = this.streamService.subscribe(async (event, rawEvent) => {
       // Log stream events for debugging
       const eventRec = event as Record<string, unknown>;
       const eventType = eventRec?.type || "unknown";
-      const structuredRec = eventRec?.structured as Record<string, unknown> | undefined;
-      const eventKind = structuredRec?.kind || "unknown";
+      const properties = (eventRec?.properties as Record<string, unknown> | undefined) || {};
+      const part = (properties?.part as Record<string, unknown> | undefined) || {};
+      const eventKind = (part?.type as string | undefined) || "unknown";
       const streamEventSessionId = this.extractEventSessionId(event);
+      this.logger.error("[DEBUG][HOST] [CENTRALIZED-TAPE] stream_callback_received", {
+        eventType,
+        eventSessionId: streamEventSessionId,
+        activeStreamSessionId: this.activeStreamSessionId,
+        currentSessionId: this.currentSessionId,
+        processingSessionIds: Array.from(this.processingSessionIds),
+        source: typeof eventRec?.source === "string" ? eventRec.source : undefined,
+        partType: typeof part?.type === "string" ? part.type : undefined,
+        hasRawEvent: typeof rawEvent !== "undefined",
+      });
 
       const isTerminalLifecycleEvent =
         eventType === "session.completed" ||
@@ -3582,7 +3895,7 @@ export class ChatViewProvider
       if (eventType === "message.updated" || isTerminalLifecycleEvent) {
         const props = (eventRec?.properties as Record<string, unknown> | undefined) || {};
         const info = (props?.info as Record<string, unknown> | undefined) || {};
-        this.logger.info("[OPENCOD GO MODEL] Stream lifecycle event", {
+        this.logger.debug("[OPENCOD GO MODEL] Stream lifecycle event", {
           eventType,
           sessionId: streamEventSessionId,
           providerID: info?.providerID,
@@ -3676,6 +3989,13 @@ export class ChatViewProvider
       // with that resolved id lets the webview update the inactive session's
       // streaming cache instead of losing activity events.
       if (await this.handleSdkTodoUpdatedEvent(event, eventSessionId)) {
+        this.logger.info("[CENTRALIZED-TAPE][HOST] stream_event_consumed_before_persist", {
+          reason: "todo-updated",
+          eventType,
+          eventSessionId,
+          activeStreamSessionId: this.activeStreamSessionId,
+          currentSessionId: this.currentSessionId,
+        });
         return;
       }
       if (
@@ -3684,24 +4004,34 @@ export class ChatViewProvider
           this.sessionService,
         )
       ) {
+        this.logger.info("[CENTRALIZED-TAPE][HOST] stream_event_consumed_before_persist", {
+          reason: "compaction",
+          eventType,
+          eventSessionId,
+          activeStreamSessionId: this.activeStreamSessionId,
+          currentSessionId: this.currentSessionId,
+        });
         return;
       }
-      // Skip forwarding events for sessions that were stopped by the user.
-      // After abort() is called, in-flight stream events may still arrive from
-      // the server, but we should not forward them to the webview.
-      // Also skip events for recently-aborted sessions to prevent stale question
-      // tool events from reaching the webview and causing stuck loading state.
-      const shouldBypassProcessingGateForInteractiveQuestion =
-        eventType === "question.asked";
+
+
+      const shouldBypassProcessingGate =
+        eventType === "question.asked" ||
+        eventType === "message.updated" ||
+        eventType === "message.completed" ||
+        eventType === "session.diff";
       if (
         eventSessionId &&
-        !shouldBypassProcessingGateForInteractiveQuestion &&
-        !this.isSessionEffectivelyProcessing(eventSessionId) &&
-        !this.recentlyAbortedSessionIds.has(eventSessionId)
+        !shouldBypassProcessingGate &&
+        !this.isSessionEffectivelyProcessing(eventSessionId)
       ) {
-        this.logger.debug("Skipping stream event for non-processing session", {
+        this.logger.warn("[CENTRALIZED-TAPE][HOST] stream_event_skipped_before_persist", {
+          reason: "non-processing-session",
           sessionId: eventSessionId,
           eventType: event.type,
+          activeStreamSessionId: this.activeStreamSessionId,
+          currentSessionId: this.currentSessionId,
+          processingSessionIds: Array.from(this.processingSessionIds),
         });
         return;
       }
@@ -3710,13 +4040,15 @@ export class ChatViewProvider
       if (
         !eventSessionId &&
         this.activeStreamSessionId &&
-        !shouldBypassProcessingGateForInteractiveQuestion &&
-        !this.isSessionEffectivelyProcessing(this.activeStreamSessionId) &&
-        !this.recentlyAbortedSessionIds.has(this.activeStreamSessionId)
+        !shouldBypassProcessingGate &&
+        !this.isSessionEffectivelyProcessing(this.activeStreamSessionId)
       ) {
-        this.logger.debug("Skipping stream event for stopped active stream session", {
+        this.logger.warn("[CENTRALIZED-TAPE][HOST] stream_event_skipped_before_persist", {
+          reason: "stopped-active-stream-session",
           activeStreamSessionId: this.activeStreamSessionId,
           eventType: event.type,
+          currentSessionId: this.currentSessionId,
+          processingSessionIds: Array.from(this.processingSessionIds),
         });
         return;
       }
@@ -3735,6 +4067,23 @@ export class ChatViewProvider
           // Track only if there's actual token usage
           if (tokens.input > 0 || tokens.output > 0 || tokens.reasoning > 0) {
             this.geminiTokenTracker.recordUsage(info.modelID, tokens);
+          }
+        }
+        // Capture file-change diffs from message.updated summary for changeSummary
+        if (eventSessionId && info?.summary?.diffs && Array.isArray(info.summary.diffs)) {
+          const diffs: Array<{ file: string; added: number; deleted: number; patch?: string }> = [];
+          for (const d of info.summary.diffs) {
+            const file = typeof (d as any)?.file === "string" ? (d as any).file : "";
+            if (!file) continue;
+            diffs.push({
+              file,
+              added: Math.max(0, Number((d as any)?.additions) || 0),
+              deleted: Math.max(0, Number((d as any)?.deletions) || 0),
+              patch: typeof (d as any)?.patch === "string" ? (d as any).patch : undefined,
+            });
+          }
+          if (diffs.length > 0) {
+            this.sessionDiffFromStream.set(eventSessionId, diffs);
           }
         }
       }
@@ -3764,33 +4113,38 @@ export class ChatViewProvider
         });
       }
       this.logStreamEventDiagnostics(event, enrichedEvent);
+      const partType = typeof part?.type === "string" ? part.type.toLowerCase() : "";
 
       // Log stream event for debugging response types (with error handling)
       try {
-        const structured = enrichedEvent?.structured || {};
         const responseContext: Record<string, unknown> = {
           eventType: event.type || "unknown",
-          kind: structured?.kind || "unknown",
+          kind: typeof part?.type === "string" ? part.type : "unknown",
         };
 
-        if (structured?.text) {
-          responseContext.textLength = structured.text.length;
-          responseContext.textPreview = structured.text.substring(0, 100);
-        }
+        const responseText =
+          (typeof part?.reasoning === "string" && part.reasoning) ||
+          (typeof part?.thought === "string" && part.thought) ||
+          (typeof part?.thinking === "string" && part.thinking) ||
+          (typeof part?.text === "string" && part.text) ||
+          (typeof part?.content === "string" && part.content) ||
+          undefined;
 
-        if (structured?.responseType) {
-          responseContext.responseType = structured.responseType;
+        if (responseText) {
+          responseContext.textLength = responseText.length;
+          responseContext.textPreview = responseText.substring(0, 100);
         }
 
         if (enrichedEvent?.structuredOutput) {
           responseContext.hasStructuredOutput = true;
           responseContext.outputType =
+            enrichedEvent.structuredOutput.type ||
             enrichedEvent.structuredOutput.responseType;
         }
 
         this.logger.aiStreamEvent(
           "stream", // sessionId - using placeholder since stream events don't have a sessionId
-          structured?.kind || "unknown", // eventType
+          partType || "unknown", // eventType
           responseContext, // context
         );
       } catch (error) {
@@ -3800,35 +4154,97 @@ export class ChatViewProvider
 
       const resolvedSessionId = eventSessionId || this.activeStreamSessionId || this.currentSessionId;
 
-      // Only forward stream events that belong to the currently active session.
-      // Events from other sessions (e.g. a session that is still streaming after
-      // the user switched away) must not leak into the current webview surface.
-      if (
-        resolvedSessionId &&
-        this.currentSessionId &&
-        resolvedSessionId !== this.currentSessionId
-      ) {
-        return;
-      }
+      const info = (properties?.info as Record<string, unknown> | undefined) || {};
+      const preRenderPreview =
+        (typeof part?.delta === "string" && part.delta) ||
+        (typeof part?.text === "string" && part.text) ||
+        (typeof part?.content === "string" && part.content) ||
+        (typeof properties?.delta === "string" && properties.delta) ||
+        (typeof properties?.text === "string" && properties.text) ||
+        (typeof properties?.content === "string" && properties.content) ||
+        undefined;
+
+      this.logger.info("[CHAT-STREAMING][KEY2] Forwarding stream event to webview", {
+        eventType: event.type || "unknown",
+        sessionId: resolvedSessionId,
+        activeStreamSessionId: this.activeStreamSessionId,
+        currentSessionId: this.currentSessionId,
+        messageId:
+          typeof info?.id === "string"
+            ? info.id
+            : typeof properties?.messageId === "string"
+              ? properties.messageId
+              : typeof properties?.messageID === "string"
+                ? properties.messageID
+                : undefined,
+        partType: typeof part?.type === "string" ? part.type : undefined,
+        hasStructuredOutput: Boolean((enrichedEvent as any)?.structuredOutput),
+        preview:
+          typeof preRenderPreview === "string"
+            ? preRenderPreview.slice(0, 160)
+            : undefined,
+      });
 
       this.view?.webview.postMessage({
         type: "streamEvent",
         event: { ...enrichedEvent, sessionId: resolvedSessionId },
       });
-      if (hasBlockingInteractive && resolvedSessionId) {
-        this.processingSessionIds.delete(resolvedSessionId);
-        if (this.activeStreamSessionId === resolvedSessionId) {
-          this.activeStreamSessionId = undefined;
-        }
-        this.sendProcessingSessionsUpdate();
-      } else if (resolvedSessionId && (
+      if (resolvedSessionId) {
+        const centralizedEventPayload = {
+          ...enrichedEvent,
+          sessionId: resolvedSessionId,
+        };
+        this.logger.info("[CENTRALIZED-TAPE][HOST] raw_event_before_store", {
+          sessionId: resolvedSessionId,
+          eventType: typeof (centralizedEventPayload as Record<string, unknown>)?.type === "string"
+            ? (centralizedEventPayload as Record<string, unknown>).type
+            : event.type || "unknown",
+          partType: typeof part?.type === "string" ? part.type : undefined,
+          rawSource: typeof rawEvent === "object" && rawEvent !== null
+            ? typeof (rawEvent as Record<string, unknown>).source === "string"
+              ? (rawEvent as Record<string, unknown>).source
+              : undefined
+            : undefined,
+        });
+        void this.sessionService.appendRawSdkEventPayload(
+          resolvedSessionId,
+          centralizedEventPayload,
+        ).then(() => {
+          this.logger.info("[CENTRALIZED-TAPE][HOST] raw_event_store_append_completed", {
+            sessionId: resolvedSessionId,
+            eventType: typeof centralizedEventPayload.type === "string"
+              ? centralizedEventPayload.type
+              : event.type || "unknown",
+            partType: typeof part?.type === "string" ? part.type : undefined,
+          });
+        }).catch((error) => {
+          this.logger.error("[CENTRALIZED-TAPE][HOST] raw_event_store_append_failed", {
+            sessionId: resolvedSessionId,
+            eventType: typeof centralizedEventPayload.type === "string"
+              ? centralizedEventPayload.type
+              : event.type || "unknown",
+            partType: typeof part?.type === "string" ? part.type : undefined,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      } else {
+        this.logger.warn("[CENTRALIZED-TAPE][HOST] skipped_raw_event_without_session", {
+          eventType: typeof (enrichedEvent as Record<string, unknown>)?.type === "string"
+            ? (enrichedEvent as Record<string, unknown>).type
+            : event.type || "unknown",
+          activeStreamSessionId: this.activeStreamSessionId,
+          currentSessionId: this.currentSessionId,
+          hasRawEvent: typeof rawEvent !== "undefined",
+        });
+      }
+      if (resolvedSessionId && (
         isTerminalLifecycleEvent || (
           eventType === "message.updated" && (
             (() => {
               const props = (eventRec?.properties as Record<string, unknown> | undefined) || {};
               const info = (props?.info as Record<string, unknown> | undefined) || {};
               const fin = info?.finish;
-              return fin === true || (typeof fin === "string" && ["true","done","stop","complete","completed","success","finished","tool-calls","error"].includes(fin.trim().toLowerCase()));
+              return fin === true || (typeof fin === "string" && ["true","done","stop","complete","completed","success","finished","error"].includes(fin.trim().toLowerCase()));
             })()
           )
         )
@@ -3837,27 +4253,42 @@ export class ChatViewProvider
         if (this.activeStreamSessionId === resolvedSessionId) {
           this.activeStreamSessionId = undefined;
         }
-        this.recentlyAbortedSessionIds.delete(resolvedSessionId);
-        this.sendProcessingSessionsUpdate();
+        
+        const client = this.serverManager.getClient();
+        const assistantMessageId = this.subagentTracker.getLatestParentMessageId(resolvedSessionId);
+        
+        if (client && assistantMessageId) {
+          // Fire-and-forget finalize to freeze incomplete subagents, then update UI state
+          void this.subagentTracker.finalizeParentMessage({
+            client,
+            parentSessionId: resolvedSessionId,
+            parentMessageId: assistantMessageId,
+          }).then(() => {
+            this.sendProcessingSessionsUpdate();
+          });
+        } else {
+          this.sendProcessingSessionsUpdate();
+        }
       }
+
       if (this.shouldVerboseStreamDebug()) {
         this.logger.debug("streamEvent forwarded", {
           type: (enrichedEvent as any)?.type || event.type,
-          kind: (enrichedEvent as any)?.structured?.kind || "unknown",
-          finalizedForInteractive: hasBlockingInteractive,
+          kind: partType || "unknown",
+          hasBlockingInteractive,
         });
       }
 
       // If this is a step-finish or tool completion for an edit, calculate diff stats asynchronously
       // Fire-and-forget follow-up message so we don't block the stream rendering
-      if (enrichedEvent?.structured?.kind === "progress") {
+      if (partType === "tool" || partType === "step-finish") {
         const props = (event.properties || {}) as any;
         const part = props.part || {};
-        const partType = (part.type || "").toLowerCase();
+        const currentPartType = (part.type || "").toLowerCase();
 
         // Check if it's a tool that modified a file or a step-finish for an edit
-        const isToolDone = partType === "tool" && part.state?.status === "done";
-        const isStepFinish = partType === "step-finish";
+        const isToolDone = currentPartType === "tool" && part.state?.status === "done";
+        const isStepFinish = currentPartType === "step-finish";
 
         if (isToolDone || isStepFinish) {
           const toolName = (part.tool || "").toLowerCase();
@@ -3877,7 +4308,6 @@ export class ChatViewProvider
             const callID =
               part.callId ||
               part.callID ||
-              enrichedEvent?.structured?.callID ||
               enrichedEvent.id;
             if (callID) {
               const toolNameRaw =
@@ -3945,8 +4375,11 @@ export class ChatViewProvider
     );
     this.postErrorToast(this.serverManager.getLastServerErrorOutput());
 
-    // Cleanup on dispose
-    webviewView.onDidDispose(() => {
+    const cleanupCurrentViewResources = () => {
+      if (this.webviewMessageListener) {
+        this.webviewMessageListener.dispose();
+        this.webviewMessageListener = undefined;
+      }
       if (this.unsubscribe) {
         this.unsubscribe();
         this.unsubscribe = undefined;
@@ -3957,9 +4390,21 @@ export class ChatViewProvider
       this.lastSessionsPayloadFingerprint = undefined;
       statusSubscription.dispose();
       serverErrorOutputSubscription.dispose();
-      this.quotaService.dispose();
       // Don't dispose the singleton tracker - it's shared
-      this.view = undefined;
+      if (this.view === webviewView) {
+        this.view = undefined;
+      }
+      if (this.activeViewCleanup === cleanupCurrentViewResources) {
+        this.activeViewCleanup = undefined;
+      }
+    };
+    this.activeViewCleanup = cleanupCurrentViewResources;
+
+    // Cleanup on dispose
+    webviewView.onDidDispose(() => {
+      if (this.activeViewCleanup === cleanupCurrentViewResources) {
+        cleanupCurrentViewResources();
+      }
     });
   }
 
@@ -4016,6 +4461,32 @@ export class ChatViewProvider
       // Return original messages as fallback
       return messages;
     }
+  }
+
+  private async loadCentralizedRenderableHistory(sessionId: string): Promise<{
+    rawSdkEventPayloads: unknown[];
+    messages: any[];
+  }> {
+    const rawSessionPayloads = await this.sessionService.loadCentralizedSessionData(
+      sessionId,
+    );
+    const messages = await this.processHistoryMessages(
+      Array.isArray(rawSessionPayloads.rawSdkEventPayloads)
+        ? (rawSessionPayloads.rawSdkEventPayloads as any[])
+        : [],
+      sessionId,
+    );
+
+    this.logger.info("[CENTRALIZED-TAPE][HOST] loaded_renderable_history", {
+      sessionId,
+      rawSdkEventCount: rawSessionPayloads.rawSdkEventPayloads.length,
+      renderableMessageCount: messages.length,
+    });
+
+    return {
+      rawSdkEventPayloads: rawSessionPayloads.rawSdkEventPayloads,
+      messages,
+    };
   }
 
   private isAssistantHistoryMessage(message: any): boolean {
@@ -4239,206 +4710,6 @@ export class ChatViewProvider
     });
   }
 
-  private async withTimeout<T>(
-    promise: Promise<T>,
-    timeoutMs: number,
-    label: string,
-  ): Promise<T> {
-    let timeoutHandle: NodeJS.Timeout | undefined;
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      timeoutHandle = setTimeout(() => {
-        reject(new Error(`${label} timeout after ${timeoutMs}ms`));
-      }, timeoutMs);
-    });
-
-    try {
-      return await Promise.race([promise, timeoutPromise]);
-    } finally {
-      if (timeoutHandle) {
-        clearTimeout(timeoutHandle);
-      }
-    }
-  }
-
-  private isPromptAwaitHangError(message: string): boolean {
-    const normalized = message.trim().toLowerCase();
-    return normalized.includes("sdk prompt await timeout");
-  }
-
-  private getTimeoutRecoveryPollDelays(failureMessage?: string): number[] {
-    if (this.isPromptAwaitHangError(this.firstNonEmptyString(failureMessage) || "")) {
-      return [500, 1000, 2000, 4000, 6000];
-    }
-    const timeoutLikeFailure = this.isLikelyInteractiveAwaitTimeoutError(
-      this.firstNonEmptyString(failureMessage) || "",
-    );
-    if (!timeoutLikeFailure) {
-      return [500, 1000, 1800, 2800, 4000];
-    }
-
-    // Timeout-like transport failures are often transient while the model is
-    // still working. Keep polling longer before surfacing a hard error.
-    return [500, 1000, 1800, 2800, 4000, 5500, 7000, 9000, 12000, 15000, 20000, 25000, 30000];
-  }
-
-  private async getSessionStatusType(
-    sessionId: string,
-  ): Promise<"idle" | "busy" | "retry" | undefined> {
-    const client = this.serverManager.getClient();
-    if (!client) {
-      return undefined;
-    }
-
-    try {
-      const workspaceDirectory = this.getWorkspaceDirectory();
-      const response = workspaceDirectory
-        ? await client.session.status({
-            query: { directory: workspaceDirectory },
-          })
-        : await client.session.status({});
-      const statusMap =
-        (response?.data as Record<string, { type?: unknown }>) || {};
-      const status = statusMap[sessionId];
-      const type = this.firstNonEmptyString(status?.type)?.toLowerCase();
-      if (type === "idle" || type === "busy" || type === "retry") {
-        return type;
-      }
-      return undefined;
-    } catch (error) {
-      this.logger.debug("Failed to fetch session status during timeout recovery", {
-        sessionId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return undefined;
-    }
-  }
-
-  private async tryRecoverTimedOutResponse(
-    sessionId: string,
-    baselineAssistantMarker?: AssistantHistoryMarker,
-    failureMessage?: string,
-  ): Promise<boolean> {
-    const pollDelaysMs = this.getTimeoutRecoveryPollDelays(failureMessage);
-    const promptAwaitHang = this.isPromptAwaitHangError(
-      this.firstNonEmptyString(failureMessage) || "",
-    );
-    const timeoutLikeFailure = this.isLikelyInteractiveAwaitTimeoutError(
-      this.firstNonEmptyString(failureMessage) || "",
-    );
-    const startedAt = Date.now();
-    const maxWaitMs = promptAwaitHang
-      ? 15 * 1000
-      : timeoutLikeFailure
-        ? 30 * 60 * 1000
-        : 60 * 1000;
-    this.logger.info("Attempting timeout recovery from session history", {
-      sessionId,
-      timeoutLikeFailure,
-      pollAttempts: pollDelaysMs.length,
-      maxWaitMs,
-    });
-
-    for (let attemptIndex = 0; ; attemptIndex += 1) {
-      const delayMs =
-        pollDelaysMs[Math.min(attemptIndex, pollDelaysMs.length - 1)];
-      await this.sleep(delayMs);
-      let rawMessages: any[] | undefined;
-      try {
-        rawMessages = await this.sessionService.getMessages(sessionId);
-      } catch (error) {
-        this.logger.warn("Timeout recovery poll failed to fetch session messages", {
-          sessionId,
-          attempt: attemptIndex + 1,
-          delayMs,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-
-      if (Array.isArray(rawMessages)) {
-        const latestAssistantMarker =
-          this.getLatestAssistantHistoryMarker(rawMessages);
-        if (
-          this.hasAssistantHistoryAdvanced(
-            latestAssistantMarker,
-            baselineAssistantMarker,
-          )
-        ) {
-          const processedMessages = await this.processHistoryMessages(
-            rawMessages,
-            sessionId,
-          );
-          this.logHistoryRenderDiagnostics(
-            "timeout-recovery",
-            sessionId,
-            rawMessages,
-            processedMessages,
-          );
-          this.view?.webview.postMessage({
-            type: "chatHistory",
-            sessionId,
-            messages: processedMessages,
-            processingSessionIds: this.getEffectiveProcessingSessionIds(),
-          });
-          this.logger.info("Timeout recovery succeeded from session history", {
-            sessionId,
-            attempt: attemptIndex + 1,
-            delayMs,
-          });
-          try {
-            await this.sendPersistedCompactionViewState(sessionId);
-          } catch {
-            // best effort only
-          }
-          return true;
-        }
-      }
-
-      const elapsedMs = Date.now() - startedAt;
-      if (elapsedMs >= maxWaitMs) {
-        break;
-      }
-
-      if (!timeoutLikeFailure) {
-        if (attemptIndex >= pollDelaysMs.length - 1) {
-          break;
-        }
-        continue;
-      }
-
-      // User stopped/cancelled or session switched away from active processing.
-      if (!this.processingSessionIds.has(sessionId)) {
-        this.logger.info("Ending timeout recovery because session is no longer processing", {
-          sessionId,
-          attempt: attemptIndex + 1,
-          elapsedMs,
-        });
-        return false;
-      }
-
-      const statusType = await this.getSessionStatusType(sessionId);
-      if (statusType === "idle") {
-        // Server reports idle and still no assistant message advance.
-        break;
-      }
-
-      if (attemptIndex > 0 && attemptIndex % 4 === 0) {
-        this.logger.info("Still waiting for final assistant response after timeout-like transport error", {
-          sessionId,
-          attempt: attemptIndex + 1,
-          elapsedMs,
-          statusType: statusType || "unknown",
-        });
-      }
-    }
-
-    this.logger.warn("Timeout recovery exhausted without assistant history advance", {
-      sessionId,
-      timeoutLikeFailure,
-      pollAttempts: pollDelaysMs.length,
-      elapsedMs: Date.now() - startedAt,
-    });
-    return false;
-  }
 
   private getWorkspaceDirectory(): string | undefined {
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
@@ -4555,13 +4826,11 @@ export class ChatViewProvider
   ) {
     const workspaceDirectory = this.getWorkspaceDirectory();
     return client.session.command({
-      path: { id: sessionID },
-      query: workspaceDirectory ? { directory: workspaceDirectory } : undefined,
-      body: {
-        command: slashInvocation.command,
-        arguments: slashInvocation.arguments,
-        agent: agent || this.selectedAgent,
-      },
+      sessionID: sessionID,
+      ...(workspaceDirectory ? { directory: workspaceDirectory } : {}),
+      command: slashInvocation.command,
+      arguments: slashInvocation.arguments,
+      agent: agent || this.selectedAgent,
     });
   }
 
@@ -4584,31 +4853,121 @@ export class ChatViewProvider
     return lines.join("\n");
   }
 
-  private getRequestTimeout(): number {
-    const config = vscode.workspace.getConfiguration('opencode');
-    const timeout = config.get<number>('requestTimeout', 120000);
-    if (timeout < 10000 || timeout > 600000) {
-      this.logger.warn(`Invalid requestTimeout configured: ${timeout}ms, using default 120000ms`);
-      return 120000;
+
+  private buildDeferredSdkPrompt(options: {
+    text: string;
+    files?: string[];
+    contexts?: any[];
+    images?: any[];
+    agent?: string;
+  }): { text: string; files?: any[]; agents?: any[] } {
+    const promptFiles: any[] = [];
+    for (const filePath of options.files ?? []) {
+      if (typeof filePath !== "string" || !filePath.trim()) {
+        continue;
+      }
+      promptFiles.push({
+        uri: path.isAbsolute(filePath) ? vscode.Uri.file(filePath).toString() : filePath,
+        mime: "text/plain",
+        name: path.basename(filePath),
+      });
     }
-    return timeout;
+    for (const context of options.contexts ?? []) {
+      const filePath = typeof context?.file === "string" ? context.file : "";
+      if (!filePath || filePath.startsWith("resource:")) {
+        continue;
+      }
+      const content = typeof context?.content === "string" ? context.content : "";
+      promptFiles.push({
+        uri: filePath,
+        mime: typeof context?.languageId === "string" ? context.languageId : "text/plain",
+        name: path.basename(filePath),
+        ...(content
+          ? {
+              source: {
+                start: 0,
+                end: content.length,
+                text: content,
+              },
+            }
+          : {}),
+      });
+    }
+    for (const image of options.images ?? []) {
+      const dataUrl =
+        typeof image === "string"
+          ? image
+          : typeof image?.dataUrl === "string"
+            ? image.dataUrl
+            : "";
+      if (!dataUrl) {
+        continue;
+      }
+      promptFiles.push({
+        uri: dataUrl,
+        mime: dataUrl.match(/^data:([^;]+);/)?.[1] ?? "image/png",
+        name:
+          typeof image === "object" && typeof image?.filename === "string"
+            ? image.filename
+            : "image",
+      });
+    }
+
+    return {
+      text: options.text,
+      ...(promptFiles.length > 0 ? { files: promptFiles } : {}),
+      ...(options.agent ? { agents: [{ name: options.agent }] } : {}),
+    };
   }
 
-  private calculateTimeoutForQuery(
-    baseTimeout: number,
-    hasFiles: boolean,
-    hasContexts: boolean,
-    hasImages: boolean,
-  ): number {
-    const config = vscode.workspace.getConfiguration('opencode');
-    const multiplier = config.get<number>('complexQueryMultiplier', 1.5);
-    const complexityScore = (hasFiles ? 1 : 0) + (hasContexts ? 1 : 0) + (hasImages ? 1 : 0);
-    if (complexityScore >= 2) {
-      const adjustedTimeout = Math.floor(baseTimeout * multiplier);
-      this.logger.debug(`Using extended timeout for complex query: ${adjustedTimeout}ms (base: ${baseTimeout}ms, complexity: ${complexityScore})`);
-      return adjustedTimeout;
+  private async sendDeferredPromptToAgentLoop(
+    sessionId: string,
+    options: {
+      text: string;
+      files?: string[];
+      contexts?: any[];
+      images?: any[];
+      agent?: string;
+      clientRequestId?: string;
+    },
+  ): Promise<void> {
+    const client = await this.serverManager.ensureRunning();
+    const promptFn = (client as any)?.v2?.session?.prompt;
+    if (typeof promptFn !== "function") {
+      this.logger.warn("[MessageFlow] SDK v2 deferred prompt unavailable; falling back to direct send", {
+        sessionId,
+        clientRequestId: options.clientRequestId,
+      });
+      await this.handleSendMessage(
+        options.text,
+        options.files,
+        options.contexts,
+        options.images,
+        options.agent,
+        false,
+        undefined,
+        false,
+        undefined,
+        undefined,
+        { clientRequestId: options.clientRequestId },
+      );
+      return undefined;
     }
-    return baseTimeout;
+
+    const workspaceDirectory = this.getWorkspaceDirectory();
+    const prompt = this.buildDeferredSdkPrompt(options);
+    // This is OpenCode's server-side prompt delivery, not the extension's
+    // visible QueueManager. While the assistant is responding, `delivery:
+    // "deferred"` appends the user's next prompt to the agent loop so OpenCode
+    // runs it after the current turn instead of us showing a local queue item or
+    // aborting the current response.
+    const response = await promptFn.call((client as any).v2.session, {
+      sessionID: sessionId,
+      ...(workspaceDirectory ? { directory: workspaceDirectory } : {}),
+      prompt,
+      delivery: "deferred",
+    });
+    return getSdkResponseData(response) ?? (response as any)?.data ?? response;
   }
 
   // PROMPT-OWNERSHIP: do not modify — transport-only path
@@ -4625,19 +4984,10 @@ export class ChatViewProvider
   ) {
     const workspaceDirectory = this.getWorkspaceDirectory();
 
-    const baseTimeout = this.getRequestTimeout();
-    const timeout = this.calculateTimeoutForQuery(
-      baseTimeout,
-      options?.hasFiles ?? false,
-      options?.hasContexts ?? false,
-      options?.hasImages ?? false,
-    );
-
     const callPrompt = (requestBody: Record<string, unknown>) => {
       const sdkStartTime = Date.now();
       this.logger.debug("Initiating SDK prompt call", {
         sessionID,
-        timeout,
         useStructuredOutput,
         hasFiles: options?.hasFiles,
         hasContexts: options?.hasContexts,
@@ -4653,14 +5003,12 @@ export class ChatViewProvider
         hasContexts: options?.hasContexts,
         hasImages: options?.hasImages,
         useStructuredOutput,
-        timeout,
       });
 
       const promise = client.session.prompt({
-        path: { id: sessionID },
-        query: workspaceDirectory ? { directory: workspaceDirectory } : undefined,
-        body: requestBody as SessionPromptData["body"],
-        timeout,
+        sessionID: sessionID,
+        ...(workspaceDirectory ? { directory: workspaceDirectory } : {}),
+        ...(requestBody as Record<string, unknown>),
       });
 
       // Add timing tracking
@@ -4741,7 +5089,7 @@ export class ChatViewProvider
 
   /**
    * Extracts the session ID from an SSE event by checking all locations where
-   * the OpenCode server may embed it (properties, part, info sub-objects).
+   * the OpenCode server may embed it (properties, part, info sub-objects, syncEvent wrappers, etc).
    */
   private extractEventSessionId(event: unknown): string | undefined {
     const ev = this.asRecord(event);
@@ -4749,7 +5097,17 @@ export class ChatViewProvider
     const props = this.asRecord(ev.properties) ?? {};
     const part = this.asRecord(props.part) ?? {};
     const info = this.asRecord(props.info) ?? {};
+    const syncEvent = this.asRecord(ev.syncEvent) ?? {};
+    const syncData = this.asRecord(syncEvent.data) ?? {};
+    
     return (
+      (typeof ev.sessionID === 'string' && ev.sessionID) ||
+      (typeof ev.sessionId === 'string' && ev.sessionId) ||
+      (typeof syncEvent.aggregateID === 'string' && syncEvent.aggregateID) ||
+      (typeof syncEvent.sessionId === 'string' && syncEvent.sessionId) ||
+      (typeof syncEvent.sessionID === 'string' && syncEvent.sessionID) ||
+      (typeof syncData.sessionID === 'string' && syncData.sessionID) ||
+      (typeof syncData.sessionId === 'string' && syncData.sessionId) ||
       (typeof props.sessionID === 'string' && props.sessionID) ||
       (typeof props.sessionId === 'string' && props.sessionId) ||
       (typeof part.sessionID === 'string' && part.sessionID) ||
@@ -4801,27 +5159,6 @@ export class ChatViewProvider
     return typeof level === "string" && level.toLowerCase() === "debug";
   }
 
-  private isLikelyInteractiveAwaitTimeoutError(message: string): boolean {
-    const normalized = message.trim().toLowerCase();
-    if (!normalized) {
-      return false;
-    }
-    if (this.isPromptAwaitHangError(normalized)) {
-      return true;
-    }
-    if (!normalized.includes("timeout")) {
-      return false;
-    }
-    return (
-      normalized.includes("headers timeout") ||
-      normalized.includes("header timeout") ||
-      normalized.includes("und_err_headers_timeout") ||
-      normalized.includes("request timed out") ||
-      normalized.includes("response timeout") ||
-      normalized.includes("body timeout")
-    );
-  }
-
   private isGenericErrorMessage(message: string): boolean {
     const normalized = message.trim().toLowerCase();
     return (
@@ -4858,13 +5195,6 @@ export class ChatViewProvider
       normalized.includes("empty structured payload") ||
       normalized.includes("valid structured response") ||
       normalized.includes("couldn't produce a valid structured response")
-    );
-  }
-
-  private isLikelyInteractiveTransportFailure(message: string): boolean {
-    return (
-      this.isLikelyInteractiveAwaitTimeoutError(message) ||
-      this.isGenericErrorMessage(message)
     );
   }
 
@@ -5029,6 +5359,20 @@ export class ChatViewProvider
       toolName.includes("request-user-input");
 
     const state = this.asRecord(part.state);
+    const questionToolStatus = this.firstNonEmptyString(
+      state?.status,
+      part.status,
+    )?.toLowerCase();
+    const questionToolMetadata = this.asRecord(state?.metadata);
+    const questionToolAnswers = Array.isArray(questionToolMetadata?.answers)
+      ? questionToolMetadata.answers
+      : [];
+    const questionToolOutput = this.firstNonEmptyString(state?.output, part.output);
+    const completedQuestionToolHasAnswer =
+      questionToolStatus === "completed" &&
+      (questionToolAnswers.length > 0 ||
+        !!questionToolOutput ||
+        questionToolMetadata?.truncated === false);
     const input =
       this.asRecord(state?.input) ||
       this.asRecord(part.input) ||
@@ -5039,6 +5383,9 @@ export class ChatViewProvider
     }
 
     if (isQuestionTool) {
+      if (completedQuestionToolHasAnswer) {
+        return false;
+      }
       const inputCollections = [
         input.questions,
         input.items,
@@ -5178,44 +5525,32 @@ export class ChatViewProvider
     return `${primary}\n\nDetails:\n${detailLines.join("\n")}`;
   }
 
+  private isLikelyInteractiveTransportFailure(errorMessage: string): boolean {
+    const isTimeout = ["timeout", "timed out", "expired", "took too long", "exceeded time limit"]
+      .some(pattern => errorMessage.toLowerCase().includes(pattern));
+    return isTimeout;
+  }
+
+  private async cleanupTimedOutSession(sessionId: string, errorMessage?: string): Promise<void> {
+    this.logger.warn("Cleaning up timed out session", { sessionId, errorMessage });
+    await this.handleStopRequest(sessionId, { skipQueueDrain: true });
+  }
+
   private getUserFacingSendErrorMessage(errorMessage: string): string {
     const normalized = errorMessage.trim().toLowerCase();
     if (!normalized) {
       return "Something went wrong while sending the message. Please try again.";
     }
-    if (this.isPromptAwaitHangError(normalized)) {
+    
+    // Use the timeout checking logic that used to be here
+    const isTimeout = ["timeout", "timed out", "expired", "took too long", "exceeded time limit"]
+      .some(pattern => normalized.includes(pattern));
+      
+    if (isTimeout) {
       return "The model did not respond in time. Please retry.";
     }
-    if (this.isLikelyInteractiveAwaitTimeoutError(normalized)) {
-      return "The request timed out while waiting for a response. Please retry.";
-    }
+    
     return errorMessage.trim();
-  }
-
-  private async cleanupTimedOutSession(
-    sessionId: string | undefined,
-    errorMessage: string,
-    options?: { suppressWebviewNotification?: boolean; skipQueueDrain?: boolean },
-  ): Promise<void> {
-    if (!sessionId || !this.isLikelyInteractiveTransportFailure(errorMessage)) {
-      return;
-    }
-
-    if (!this.processingSessionIds.has(sessionId) && this.activeStreamSessionId !== sessionId) {
-      return;
-    }
-
-    this.logger.warn("Cleaning up timed out session via stop flow", {
-      sessionId,
-      errorMessage,
-      suppressWebviewNotification: options?.suppressWebviewNotification === true,
-      skipQueueDrain: options?.skipQueueDrain === true,
-    });
-
-    await this.handleStopRequest(sessionId, {
-      suppressWebviewNotification: options?.suppressWebviewNotification,
-      skipQueueDrain: options?.skipQueueDrain ?? true,
-    });
   }
 
   private enrichStreamEvent(event: any): any {
@@ -5224,75 +5559,7 @@ export class ChatViewProvider
     }
 
     const properties = this.asRecord(event.properties) || {};
-    const isMessagePartEvent =
-      typeof event.type === "string" && event.type.startsWith("message.part.");
-    const part =
-      this.asRecord(properties.part) ||
-      this.asRecord(event.part) ||
-      (isMessagePartEvent ? this.asRecord(properties) : null);
     const enriched: Record<string, unknown> = { ...event };
-    let kind:
-      | "thinking"
-      | "progress"
-      | "message"
-      | "lifecycle"
-      | "error"
-      | "other" = "other";
-    let text: string | undefined;
-
-    if (isMessagePartEvent && part) {
-      const rawPartType =
-        this.firstNonEmptyString(part.type)?.toLowerCase() || "";
-      const partType =
-        rawPartType === "thinking" || rawPartType === "thought"
-          ? "reasoning"
-          : rawPartType;
-      if (
-        partType === "reasoning" ||
-        typeof part.reasoning !== "undefined" ||
-        typeof part.thought !== "undefined" ||
-        typeof part.thinking !== "undefined"
-      ) {
-        kind = "thinking";
-        text = this.firstNonEmptyString(
-          properties.delta,
-          part.reasoning,
-          part.thought,
-          part.thinking,
-          properties.reasoning,
-          properties.thought,
-          properties.thinking,
-          part.delta,
-          part.text,
-        );
-      } else if (
-        partType === "tool" ||
-        partType === "step-start" ||
-        partType === "step-finish" ||
-        partType === "patch"
-      ) {
-        const toolName = (part.tool || "").toString().toLowerCase();
-        if (
-          toolName.includes("structuredoutput") ||
-          toolName.includes("structured_output")
-        ) {
-          kind = "other";
-        } else {
-          kind = "progress";
-        }
-      } else if (partType === "text" || !partType) {
-        kind = "message";
-        text = this.firstNonEmptyString(
-          properties.delta,
-          part.text,
-          part.content,
-        );
-      }
-    } else if (event.type === "message.updated") {
-      kind = "lifecycle";
-    } else if (event.type === "session.error" || event.type === "error") {
-      kind = "error";
-    }
 
     const structuredOutput = this.extractStructuredOutput({
       ...properties,
@@ -5301,17 +5568,7 @@ export class ChatViewProvider
     if (structuredOutput) {
       enriched.structuredOutput = structuredOutput;
       enriched.hasStructuredOutput = true;
-      if (kind === "other") {
-        kind = "message";
-      }
     }
-
-    enriched.structured = {
-      kind,
-      text,
-      eventType: event.type,
-      responseType: structuredOutput?.responseType,
-    };
 
     return enriched;
   }
@@ -5674,7 +5931,43 @@ export class ChatViewProvider
         .trim();
     }
 
-    if (!rawText && typeof message.structuredOutput?.message === "string") {
+    if (!rawText && message?.rawResponse) {
+      const rawResponseRec = (() => {
+        const direct = this.asRecord(message.rawResponse);
+        if (direct) {
+          return direct;
+        }
+        if (typeof message.rawResponse !== "string") {
+          return undefined;
+        }
+        const trimmed = message.rawResponse.trim();
+        if (!trimmed) {
+          return undefined;
+        }
+        try {
+          return this.asRecord(JSON.parse(trimmed));
+        } catch {
+          return undefined;
+        }
+      })();
+      const rawResponseParts = Array.isArray(rawResponseRec?.parts)
+        ? rawResponseRec.parts
+        : [];
+      rawText = rawResponseParts
+        .map((part: any) => {
+          if (!part || typeof part !== "object") return "";
+          if (!this.isRenderableTextPart(part)) {
+            return "";
+          }
+          return (part.text || part.content || part.message || "").toString();
+        })
+        .join(" ")
+        .trim();
+    }
+
+    if (!rawText && typeof message.structuredOutput?.text === "string") {
+      rawText = message.structuredOutput.text.trim();
+    } else if (!rawText && typeof message.structuredOutput?.message === "string") {
       rawText = message.structuredOutput.message.trim();
     }
 
@@ -5934,10 +6227,13 @@ export class ChatViewProvider
         const next: any = {
           ...message,
           structuredOutput: {
+            type: "message",
+            text: bodyText,
             responseType: "message",
             message: bodyText,
           },
           content: bodyText,
+          text: bodyText,
         };
         if (Array.isArray(next.parts)) {
           next.parts = next.parts.filter((part: any) => {
@@ -5979,7 +6275,7 @@ export class ChatViewProvider
         // Use ErrorBuilder to extract actual error message
         const errorBuilder = new ErrorBuilder(
           this.logger,
-          this.isLikelyInteractiveAwaitTimeoutError.bind(this)
+          () => false // No timeout detection
         );
         const displayError = errorBuilder.extractError(message);
 
@@ -6089,8 +6385,8 @@ export class ChatViewProvider
         messageId: message?.id || message?.info?.id,
         oldContent: String(message?.content).slice(0, 200),
         newContent: String(messageContent).slice(0, 200),
-        structMessage: String(structured?.message).slice(0, 200),
-        from: "structured.message",
+        structMessage: String(structured?.text ?? structured?.message).slice(0, 200),
+        from: "structured.text",
       });
       next.content = messageContent;
       const parts = Array.isArray(next.parts) ? [...next.parts] : [];
@@ -6154,7 +6450,7 @@ export class ChatViewProvider
     ) {
       next.interactiveEvents = structured.interactiveEvents;
       const questionPrompt = this.deriveQuestionPromptFromInteractivePayload({
-        question: (structured.question as string) ?? '',
+        question: ((structured as any).question as string) ?? '',
         options: structured.interactiveEvents as any[],
       });
       const currentBodyText = this.extractMessageBodyText(next).trim();
@@ -6411,7 +6707,7 @@ export class ChatViewProvider
     retryWithoutStructuredOutput = false,
     structuredFallbackReason?: string,
     userFacingText?: string,
-    sendMeta?: { interactiveSubmit?: boolean },
+    sendMeta?: { interactiveSubmit?: boolean; clientRequestId?: string },
   ): Promise<void> {
     // Start feature flow tracking
     const flow = log.startFeatureFlow('SendMessage', {
@@ -6424,6 +6720,7 @@ export class ChatViewProvider
       hasImages: !!images?.length,
       imageCount: images?.length || 0,
       agent,
+      clientRequestId: sendMeta?.clientRequestId,
     });
 
     // Cache for retry
@@ -6488,9 +6785,9 @@ export class ChatViewProvider
       this.currentSessionId = session.id;
       this.activeStreamSessionId = session.id;
       this.sessionsWithFileChangeEvidence.delete(session.id);
+      this.sessionDiffFromStream.delete(session.id);
       this.subagentTracker.setActiveSession(session.id);
       // New user turns are independent from any previous question popover.
-      this.recentlyAbortedSessionIds.delete(session.id);
 
       const messagesStartTime = Date.now();
       const existingMessages = await this.sessionService.getMessages(
@@ -6521,7 +6818,6 @@ export class ChatViewProvider
       const modelInputText = slashSkillSystemReminder
         ? `${slashSkillSystemReminder}\n\n${slashSkillInvocation?.request || text}`
         : text;
-
       // Save user message to local history immediately, unless this is a retry
       if (!isRetry) {
         const persistedUserText =
@@ -6543,16 +6839,23 @@ export class ChatViewProvider
             },
           };
           await this.sessionService.appendMessage(session.id, systemMessage);
+          this.logger.info("[CENTRALIZED-TAPE][HOST] persisted_raw_system_message", {
+            sessionId: session.id,
+            textLength: slashSkillSystemReminder.length,
+          });
           this.view?.webview.postMessage({
             type: "userMessageAppended",
+            sessionId: session.id,
             message: systemMessage,
           });
         }
         const userMessage = {
+          id: this.createOptimisticMessageId(session.id, "user"),
           role: "user" as const,
           content: persistedUserText,
           text: persistedUserText,
           interactiveSubmit: sendMeta?.interactiveSubmit === true,
+          sessionID: session.id,
           parts: [
             {
               type: "text",
@@ -6565,9 +6868,17 @@ export class ChatViewProvider
           },
         };
         await this.sessionService.appendMessage(session.id, userMessage);
+        this.logger.info("[CENTRALIZED-TAPE][HOST] persisted_raw_user_message", {
+          sessionId: session.id,
+          messageId: userMessage.id,
+          textLength: persistedUserText.length,
+          hasImages: imageUrls.length > 0,
+        });
 
         this.view?.webview.postMessage({
           type: "userMessageAppended",
+          sessionId: session.id,
+          clientRequestId: sendMeta?.clientRequestId,
           message: userMessage,
         });
 
@@ -6904,24 +7215,6 @@ export class ChatViewProvider
           responseError,
           "Failed to send message",
         );
-        if (this.isLikelyInteractiveTransportFailure(errorMessage)) {
-          const recovered = await this.tryRecoverTimedOutResponse(
-            session.id,
-            baselineAssistantMarker,
-            errorMessage,
-          );
-          if (recovered) {
-            this.logger.info(
-              "Recovered timed out prompt from session history without user retry",
-              {
-                sessionId: session.id,
-                errorMessage,
-              },
-            );
-            return;
-          }
-          await this.cleanupTimedOutSession(session.id, errorMessage);
-        }
 
         // Handle Session Not Found error (likely server restart)
         if (
@@ -7065,6 +7358,11 @@ export class ChatViewProvider
           message: userFacingErrorMessage,
           sessionId: session.id,
         });
+
+        if (this.isLikelyInteractiveTransportFailure(errorMessage)) {
+          await this.cleanupTimedOutSession(session.id, errorMessage);
+        }
+
         return;
       }
 
@@ -7102,7 +7400,7 @@ export class ChatViewProvider
           if (!rawResponse) return undefined;
           try {
             const parsed = JSON.parse(rawResponse);
-            const msg = parsed?.info?.structured?.message;
+            const msg = parsed?.info?.structured?.text ?? parsed?.info?.structured?.message;
             return typeof msg === "string" && msg.trim() ? msg.trim() : undefined;
           } catch { return undefined; }
         })();
@@ -7120,9 +7418,18 @@ export class ChatViewProvider
           enrichedMessage.content = safeCorrectMessageFromRawResponse;
           enrichedMessage.text = safeCorrectMessageFromRawResponse;
           if (!enrichedMessage.structuredOutput) {
-            enrichedMessage.structuredOutput = { responseType: "message", message: safeCorrectMessageFromRawResponse };
-          } else if (enrichedMessage.structuredOutput.message !== safeCorrectMessageFromRawResponse) {
-            enrichedMessage.structuredOutput = { ...enrichedMessage.structuredOutput, message: safeCorrectMessageFromRawResponse };
+            enrichedMessage.structuredOutput = {
+              type: "message",
+              text: safeCorrectMessageFromRawResponse,
+              responseType: "message",
+              message: safeCorrectMessageFromRawResponse,
+            };
+          } else if (enrichedMessage.structuredOutput.text !== safeCorrectMessageFromRawResponse) {
+            enrichedMessage.structuredOutput = {
+              ...enrichedMessage.structuredOutput,
+              text: safeCorrectMessageFromRawResponse,
+              message: safeCorrectMessageFromRawResponse,
+            };
           }
         }
         const structuredFailureText = this.firstNonEmptyString(
@@ -7302,7 +7609,8 @@ export class ChatViewProvider
         const shouldAttachChangeSummary =
           !!finalAssistantMessageId &&
           (this.sessionsWithFileChangeEvidence.has(session.id) ||
-            this.messageHasFileChangeEvidence(finalMessage));
+            this.messageHasFileChangeEvidence(finalMessage) ||
+            this.sessionDiffFromStream.has(session.id));
         if (finalAssistantMessageId && shouldAttachChangeSummary) {
           const changeSummary = await this.summarizeSessionDiffForMessage(
             client,
@@ -7314,6 +7622,30 @@ export class ChatViewProvider
               ...finalMessage,
               changeSummary,
             };
+          } else {
+            // Fallback: use diffs captured from message.updated SSE events
+            const streamDiffs = this.sessionDiffFromStream.get(session.id);
+            if (streamDiffs && streamDiffs.length > 0) {
+              const files = streamDiffs.map((d) => ({
+                file: d.file,
+                added: d.added,
+                deleted: d.deleted,
+                diffExcerpt: d.patch
+                  ? {
+                      lines: d.patch.split(/\r?\n/).filter(
+                        (line: string) => line.trim().length > 0,
+                      ),
+                    }
+                  : undefined,
+              }));
+              finalMessage = {
+                ...finalMessage,
+                changeSummary: {
+                  files,
+                  messageId: finalAssistantMessageId,
+                },
+              };
+            }
           }
         }
 
@@ -7410,42 +7742,6 @@ export class ChatViewProvider
         error,
         "Failed to send message",
       );
-      if (
-        drainSessionId &&
-        this.isLikelyInteractiveTransportFailure(errorMessage)
-      ) {
-        if (
-          this.subagentTracker
-            .getActiveProcessingSessionIds()
-            .includes(drainSessionId)
-        ) {
-          this.logger.info(
-            "Suppressing timeout while background subagents are still active",
-            {
-              sessionId: drainSessionId,
-              errorMessage,
-            },
-          );
-          this.sendProcessingSessionsUpdate();
-          return;
-        }
-        const recovered = await this.tryRecoverTimedOutResponse(
-          drainSessionId,
-          baselineAssistantMarker,
-          errorMessage,
-        );
-        if (recovered) {
-          this.logger.info(
-            "Recovered thrown timeout from session history without user retry",
-            {
-              sessionId: drainSessionId,
-              errorMessage,
-            },
-          );
-          return;
-        }
-        await this.cleanupTimedOutSession(drainSessionId, errorMessage);
-      }
       const userFacingErrorMessage =
         this.getUserFacingSendErrorMessage(errorMessage);
       vscode.window.showErrorMessage(`Failed to send message: ${userFacingErrorMessage}`);
@@ -7460,6 +7756,10 @@ export class ChatViewProvider
         type: "error",
         message: userFacingErrorMessage,
       });
+
+      if (this.isLikelyInteractiveTransportFailure(errorMessage) && drainSessionId) {
+        await this.cleanupTimedOutSession(drainSessionId, errorMessage);
+      }
     } finally {
       const totalDuration = Date.now() - overallStartTime;
       log.featureStep(flow, 'message_processing_completed', {
@@ -7476,17 +7776,32 @@ export class ChatViewProvider
         this.promptDebugBySession.delete(debugSessionId);
       }
       if (drainSessionId) {
-        this.processingSessionIds.delete(drainSessionId);
-        this.sessionsWithFileChangeEvidence.delete(drainSessionId);
-        if (this.activeStreamSessionId === drainSessionId) {
-          this.activeStreamSessionId = undefined;
+        const shouldPreserveInteractiveContinuation =
+          sendMeta?.interactiveSubmit === true &&
+          this.activeStreamSessionId === drainSessionId &&
+          this.processingSessionIds.has(drainSessionId);
+        if (shouldPreserveInteractiveContinuation) {
+          this.logger.info(
+            "[OPENCOD GO MODEL] Preserving processing state for interactive continuation",
+            {
+              sessionId: drainSessionId,
+              providerID: this.selectedModel.providerID,
+              modelID: this.selectedModel.modelID,
+            },
+          );
+        } else {
+          this.processingSessionIds.delete(drainSessionId);
+          this.sessionsWithFileChangeEvidence.delete(drainSessionId);
+          if (this.activeStreamSessionId === drainSessionId) {
+            this.activeStreamSessionId = undefined;
+          }
+          this.sendProcessingSessionsUpdate();
+          this.logger.info("[OPENCOD GO MODEL] Processing ended (loading state OFF)", {
+            sessionId: drainSessionId,
+            providerID: this.selectedModel.providerID,
+            modelID: this.selectedModel.modelID,
+          });
         }
-        this.sendProcessingSessionsUpdate();
-        this.logger.info("[OPENCOD GO MODEL] Processing ended (loading state OFF)", {
-          sessionId: drainSessionId,
-          providerID: this.selectedModel.providerID,
-          modelID: this.selectedModel.modelID,
-        });
 
         if (this.sessionsNeedingTitle?.has(drainSessionId)) {
           this.sessionsNeedingTitle.delete(drainSessionId);
@@ -7514,6 +7829,18 @@ export class ChatViewProvider
     requestedSessionId?: string,
   ): Promise<string | undefined> {
     const explicitSessionId = this.firstNonEmptyString(requestedSessionId);
+    if (explicitSessionId && this.isSessionEffectivelyProcessing(explicitSessionId)) {
+      return explicitSessionId;
+    }
+
+    const activeStreamSessionId = this.firstNonEmptyString(this.activeStreamSessionId);
+    if (
+      activeStreamSessionId &&
+      this.isSessionEffectivelyProcessing(activeStreamSessionId)
+    ) {
+      return activeStreamSessionId;
+    }
+
     if (explicitSessionId) {
       return explicitSessionId;
     }
@@ -7567,32 +7894,31 @@ export class ChatViewProvider
       });
 
       const workspaceDirectory = this.getWorkspaceDirectory();
-      await client.session.abort({
-        path: { id: resolvedSessionId },
-        query: workspaceDirectory ? { directory: workspaceDirectory } : undefined,
-      });
-    } catch (error) {
-      log.error("Failed to abort active request", {
-        sessionId: resolvedSessionId,
-        error: error instanceof Error ? error.message : String(error),
-      }, error as Error);
-    } finally {
-      if (resolvedSessionId) {
-        this.processingSessionIds.delete(resolvedSessionId);
-        if (this.activeStreamSessionId === resolvedSessionId) {
-          this.activeStreamSessionId = undefined;
-        }
-        this.sendProcessingSessionsUpdate();
-      }
-      if (!options?.suppressWebviewNotification) {
-        this.view?.webview.postMessage({
-          type: "stopRequestHandled",
+      
+      // Send the abort signal to the backend. We do NOT clear the local
+      // processingSessionIds or send a synthetic stopRequestHandled payload.
+      //
+      // ARCHITECTURE (Single Source of Truth):
+      // The UI shouldn't manually synthetically end the AI's turn. Instead, 
+      // we fire this abort and let the Centralized Tape (event stream) handle it natively.
+      // When the server successfully kills its process, it will emit a final 
+      // terminal lifecycle event (`message.updated` with aborted state, or 
+      // `session.status: idle`) over the stream.
+      // The stream handler catches this terminal event, updates the data layer, 
+      // removes the session from processingSessionIds, and React will 
+      // sync the UI correctly.
+      client.session.abort({
+        sessionID: resolvedSessionId,
+        ...(workspaceDirectory ? { directory: workspaceDirectory } : {}),
+      }).catch((error: unknown) => {
+        log.error("Failed to abort active request", {
           sessionId: resolvedSessionId,
-        });
-      }
-      if (resolvedSessionId && !options?.skipQueueDrain) {
-        void this.handleExecuteQueue(resolvedSessionId);
-      }
+          error: error instanceof Error ? error.message : String(error),
+        }, error as Error);
+      });
+    } finally {
+      // Intentionally empty. 
+      // Turn ending is handled reactively by the data stream, not here.
     }
   }
 
@@ -8310,9 +8636,7 @@ export class ChatViewProvider
       const client = await this.serverManager.ensureRunning();
 
       const response = await client.find.files({
-        query: {
-          query: query || "",
-        },
+        query: query || "",
       });
 
       if (response.data && Array.isArray(response.data)) {
@@ -8764,12 +9088,12 @@ export class ChatViewProvider
       const workspaceDir = this.getWorkspaceDirectory();
       const diffResponse = workspaceDir
         ? await client.session.diff({
-            path: { id: sessionId },
-            query: { directory: workspaceDir, messageID: messageId },
+            sessionID: sessionId,
+            directory: workspaceDir, messageID: messageId,
           })
         : await client.session.diff({
-            path: { id: sessionId },
-            query: { messageID: messageId },
+            sessionID: sessionId,
+            messageID: messageId,
           });
 
       const diffData = Array.isArray(diffResponse?.data)
@@ -8965,9 +9289,9 @@ export class ChatViewProvider
       const client = await this.serverManager.ensureRunning();
       const workspaceDir = this.getWorkspaceDirectory();
       await client.session.revert({
-        path: { id: targetSessionId },
-        query: workspaceDir ? { directory: workspaceDir } : undefined,
-        body: { messageID: targetMessageId },
+        sessionID: targetSessionId,
+        messageID: targetMessageId,
+        ...(workspaceDir ? { directory: workspaceDir } : {}),
       });
 
       await this.handleLoadSession(targetSessionId);
@@ -9007,12 +9331,12 @@ export class ChatViewProvider
       const workspaceDir = this.getWorkspaceDirectory();
       const diffResponse = workspaceDir
         ? await client.session.diff({
-            path: { id: targetSessionId },
-            query: { directory: workspaceDir, messageID: targetMessageId },
+            sessionID: targetSessionId,
+            directory: workspaceDir, messageID: targetMessageId,
           })
         : await client.session.diff({
-            path: { id: targetSessionId },
-            query: { messageID: targetMessageId },
+            sessionID: targetSessionId,
+            messageID: targetMessageId,
           });
       const rows = Array.isArray(diffResponse?.data)
         ? (diffResponse.data as Array<Record<string, unknown>>)
@@ -9382,18 +9706,41 @@ export class ChatViewProvider
    * Sends the current queue state to the webview
    */
   public dispose(): void {
+    // Mark disposed first so any in-flight async chains (e.g. title generation)
+    // bail out early and don't hold closure references to this instance.
+    this.isDisposed = true;
+    this.activeViewCleanup?.();
     if (this.unsubscribe) {
       this.unsubscribe();
       this.unsubscribe = undefined;
     }
+    this.quotaService.off("quotaUpdate", this.handleQuotaUpdate);
+    if (this.webviewMessageListener) {
+      this.webviewMessageListener.dispose();
+      this.webviewMessageListener = undefined;
+    }
     this.streamService.dispose();
     this.quotaService.dispose();
+    void this.sessionService.dispose();
     this.fileThemeProcessor.unsubscribe(this);
     this.isBootstrappingWebview = false;
     this.hasInitializedWebview = false;
     this.sessionsListRequestVersion = 0;
     this.lastSessionsPayloadFingerprint = undefined;
+    // Memory fix: explicitly clear all session-keyed Maps and Sets so they
+    // don't retain historical data if the provider is re-opened in the same
+    // VS Code session (webview re-mount without full extension deactivation).
     this.queueBySessionId.clear();
+    this.promptDebugBySession.clear();
+    this.structuredValidationFailureCounters.clear();
+    this.recentUiErrorToastTimestamps.clear();
+    this.compactingSessions.clear();
+    this.sessionsWithFileChangeEvidence.clear();
+    this.sessionDiffFromStream.clear();
+    this.processingSessionIds.clear();
+    this.seenClientRequestIds.clear();
+    this.executingQueueSessionIds.clear();
+    this.sessionsNeedingTitle?.clear();
     this.view = undefined;
   }
 

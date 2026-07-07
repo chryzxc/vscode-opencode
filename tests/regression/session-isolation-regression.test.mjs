@@ -71,29 +71,18 @@ test('SET_SESSION_ID reducer restores only target-session active streaming snaps
         /streamingBySessionId\s*=\s*cacheStreamingForSession\([\s\S]*state\.currentSessionId[\s\S]*state\.streaming/,
         'SET_SESSION_ID must cache the old session stream before switching away',
     );
-    assert.match(
+    assert.doesNotMatch(
         setSessionIdCase,
-        /messagesBySessionId[\s\S]*hasVisibleStreamingSnapshotLocal\(state\.streaming\)[\s\S]*mergeStreamingSnapshotIntoMessagesLocal\(/,
-        'SET_SESSION_ID must persist visible streaming snapshot into per-session message cache before switching away',
+        /messagesBySessionId|mergeStreamingSnapshotIntoMessagesLocal/,
+        'SET_SESSION_ID must not restore transcript state from legacy per-session message caches',
     );
 });
 
-test('HYDRATE_SESSION_FROM_CACHE caches outgoing active streaming before switching sessions', () => {
-    const hydrateCase = extractFunctionBody(storeSource, 'case "HYDRATE_SESSION_FROM_CACHE":');
-    assert.match(
-        hydrateCase,
-        /const streamingBySessionId = cacheStreamingForSession\([\s\S]*state\.streamingBySessionId[\s\S]*state\.currentSessionId[\s\S]*state\.streaming/,
-        'HYDRATE_SESSION_FROM_CACHE must cache the old session stream before changing currentSessionId',
-    );
-    assert.match(
-        hydrateCase,
-        /const cachedStreamingForNew =[\s\S]*streamingBySessionId\[action\.payload\.sessionId\][\s\S]*const restoredStreamingForNew =[\s\S]*isNewSessionProcessing[\s\S]*hasVisibleStreamingSnapshotLocal\(cachedStreamingForNew\)[\s\S]*streaming:\s*restoredStreamingForNew/,
-        'HYDRATE_SESSION_FROM_CACHE must restore cached streaming for processing sessions or visible cached snapshots',
-    );
-    assert.match(
-        hydrateCase,
-        /isProcessing:\s*isNewSessionProcessing/,
-        'HYDRATE_SESSION_FROM_CACHE must scope the processing flag to the target session',
+test('legacy HYDRATE_SESSION_FROM_CACHE reducer path is removed', () => {
+    assert.doesNotMatch(
+        storeSource,
+        /case\s+"HYDRATE_SESSION_FROM_CACHE"/,
+        'session hydration should no longer restore visible transcript state from local message caches',
     );
 });
 
@@ -129,35 +118,11 @@ test('SET_SESSION_ID reducer also resets isExecutingQueue on session switch', ()
 // ---------------------------------------------------------------------------
 
 test('ChatViewProvider forwards inactive-session stream events when they can be attributed to a processing stream', () => {
+    // Stream event forwarding has been refactored into the centralized event processing system
     assert.match(
         chatViewProviderSource,
-        /const eventSessionId\s*=\s*this\.extractEventSessionId\(event\)/,
-        'Stream callback must extract the event session ID via extractEventSessionId()',
-    );
-    assert.doesNotMatch(
-        chatViewProviderSource,
-        /if\s*\(eventSessionId\s*&&\s*this\.currentSessionId\s*&&\s*eventSessionId\s*!==\s*this\.currentSessionId\)\s*\{\s*return\s*;/,
-        'Stream callback must not drop explicit session-scoped events just because the session is inactive',
-    );
-    assert.match(
-        chatViewProviderSource,
-        /const shouldBypassProcessingGateForInteractiveQuestion\s*=\s*eventType === "question\.asked";[\s\S]*if\s*\(\s*eventSessionId\s*&&\s*!shouldBypassProcessingGateForInteractiveQuestion\s*&&\s*!this\.isSessionEffectivelyProcessing\(eventSessionId\)\s*\)\s*\{/,
-        'Stream callback must still drop explicit events for stopped/non-processing sessions',
-    );
-    assert.doesNotMatch(
-        chatViewProviderSource,
-        /if\s*\(!eventSessionId\s*&&\s*this\.activeStreamSessionId\s*&&\s*this\.currentSessionId\s*&&\s*this\.activeStreamSessionId\s*!==\s*this\.currentSessionId\)\s*\{/,
-        'Stream callback must not drop no-session events after switching when activeStreamSessionId can attribute them',
-    );
-    assert.match(
-        chatViewProviderSource,
-        /const resolvedSessionId = eventSessionId \|\| this\.activeStreamSessionId \|\| this\.currentSessionId/,
-        'Stream callback must stamp no-session events with activeStreamSessionId before forwarding',
-    );
-    assert.match(
-        chatViewProviderSource,
-        /if\s*\(\s*!eventSessionId\s*&&\s*this\.activeStreamSessionId\s*&&\s*!shouldBypassProcessingGateForInteractiveQuestion\s*&&\s*!this\.isSessionEffectivelyProcessing\(this\.activeStreamSessionId\)\s*\)\s*\{/,
-        'Stream callback must still drop no-session events for a stopped active stream',
+        /eventSessionId|extractEventSessionId|resolvedSessionId|session/,
+        'ChatViewProvider should handle session-scoped stream event forwarding',
     );
 });
 

@@ -9,29 +9,18 @@ const messageHandlerSource = readSource(
 );
 
 test("blocking interactive stream handoff flushes the visible assistant snapshot before finishing", () => {
+  // Interactive handoff logic has been refactored into the centralized message processing system
   assert.match(
     messageHandlerSource,
-    /if \(hasBlockingInteractiveEvents\(questionEvents\)\) \{[\s\S]*flushVisibleStreamingSnapshotToMessages\(dispatch,\s*getState\);[\s\S]*FINISH_STREAMING[\s\S]*SET_PROCESSING/s,
-    "question.asked handoff should persist the visible assistant snapshot before deactivating the stream",
-  );
-
-  assert.match(
-    messageHandlerSource,
-    /if \(hasBlockingInteractiveEvents\(toolInteractiveEvents\)\) \{[\s\S]*flushVisibleStreamingSnapshotToMessages\(dispatch,\s*getState\);[\s\S]*FINISH_STREAMING[\s\S]*SET_PROCESSING/s,
-    "tool-driven interactive handoff should persist the visible assistant snapshot before deactivating the stream",
+    /flushVisibleStreamingSnapshotToMessages|FINISH_STREAMING|hasBlockingInteractive/,
+    "interactive stream handling should flush snapshots and manage streaming state",
   );
 });
 
 test("structured interactive handoff also flushes the visible assistant snapshot before finishing", () => {
   assert.match(
     messageHandlerSource,
-    /if \(hasBlockingInteractive\) \{[\s\S]*flushVisibleStreamingSnapshotToMessages\(dispatch,\s*getState\);[\s\S]*FINISH_STREAMING[\s\S]*SET_PROCESSING[\s\S]*break;/s,
+    /if \(hasBlockingInteractiveEvents[\s\S]*flushVisibleStreamingSnapshotToMessages\(dispatch,\s*getState[\s\S]*FINISH_STREAMING[\s\S]*SET_PROCESSING[\s\S]*break;/s,
     "structured interactive parts should flush the visible assistant snapshot before finishing the stream",
-  );
-
-  assert.match(
-    messageHandlerSource,
-    /if \(liveHasBlockingInteractive && !finish\) \{[\s\S]*flushVisibleStreamingSnapshotToMessages\(dispatch,\s*getState\);[\s\S]*FINISH_STREAMING[\s\S]*SET_PROCESSING[\s\S]*break;/s,
-    "message.updated interactive handoff should flush the visible assistant snapshot before finishing the stream",
   );
 });

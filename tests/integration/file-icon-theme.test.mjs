@@ -28,6 +28,14 @@ const messageComponentsSource = readSource(
   [joinFromRoot('webview', 'shared', 'src', 'chat', 'MessageComponents.tsx')],
   'MessageComponents.tsx',
 );
+const markdownRendererSource = readSource(
+  [joinFromRoot('webview', 'shared', 'src', 'components', 'MarkdownRenderer.tsx')],
+  'MarkdownRenderer.tsx',
+);
+const fileIconsSource = readSource(
+  [joinFromRoot('webview', 'shared', 'src', 'components', 'fileIcons.ts')],
+  'fileIcons.ts',
+);
 
 test('chat provider initializes and subscribes to file theme changes', () => {
   // Verify theme processor initialization in constructor
@@ -64,19 +72,21 @@ test('message handler injects theme CSS into webview DOM', () => {
 });
 
 test('FileIcon component applies correct theme CSS classes', () => {
-  // Verify component rendering logic in MessageComponents.tsx
-  // We check the source directly since extractFunctionBody can be finicky with React components
   assert.match(messageComponentsSource, /export function FileIcon/, 'FileIcon component should be exported');
   assert.match(messageComponentsSource, /className=\{cn\(/, 'FileIcon should use cn for combining classes');
   assert.match(messageComponentsSource, /"file-icon"/, 'FileIcon should always have base file-icon class');
-  assert.match(messageComponentsSource, /getFileIconKeys/, 'FileIcon should build a candidate list for theme matching');
-  assert.match(messageComponentsSource, /fileName,\s*\.\.\.extensionKeys/, 'FileIcon should match both file names and extension suffixes');
-  assert.match(messageComponentsSource, /iconKeys\.map\(\(key\)\s*=>\s*`file-icon-type-\$\{cleanKey\(key\)\}`\)/, 'FileIcon should apply theme CSS classes for each candidate key');
-  assert.match(messageComponentsSource, /setUseGenericFileIcon\(true\)/, 'FileIcon should fall back to the current theme generic file icon');
-  // Verify cleanKey uses dashes for dots (must match library cleanFileIconKey)
-  assert.match(messageComponentsSource, /\.replace\(\/\\\.\/g,\s*['"-]-['"-]\)/, 'FileIcon cleanKey should replace dots with dashes (not underscores) to match library CSS class names');
-  // Verify there is an SVG fallback for missing theme icons
+  assert.match(messageComponentsSource, /getFileIconThemeClasses/, 'FileIcon should reuse the shared icon class helper');
+  assert.match(fileIconsSource, /fileName,\s*baseName,\s*\.\.\.extensionKeys/, 'shared file icon helper should match filename, base name, and extension suffixes');
+  assert.match(fileIconsSource, /typescriptreact|javascriptreact|markdown/, 'shared file icon helper should include common theme alias keys');
+  assert.match(fileIconsSource, /getFileIconKeys\(filePath\)\.map\(\(key\)\s*=>\s*`file-icon-type-\$\{cleanFileIconKey\(key\)\}`\)/, 'shared file icon helper should apply theme CSS classes for each candidate key');
+  assert.match(fileIconsSource, /\.replace\(\/\\\.\/g,\s*['"-]-['"-]\)/, 'shared cleanFileIconKey should replace dots with dashes to match library CSS class names');
   assert.match(messageComponentsSource, /file-icon-svg/, 'FileIcon should have an SVG fallback for when theme CSS provides no icon');
+});
+
+test('MarkdownRenderer reuses the shared file icon helpers', () => {
+  assert.match(markdownRendererSource, /from '\.\/fileIcons'/, 'MarkdownRenderer should import the shared file icon helpers');
+  assert.match(markdownRendererSource, /getFileIconThemeClasses/, 'MarkdownRenderer should use shared theme class logic');
+  assert.match(markdownRendererSource, /makeFileIconSvgMarkup/, 'MarkdownRenderer should use the shared SVG fallback logic');
 });
 
 test('chat webview CSP allows icon theme font files', () => {

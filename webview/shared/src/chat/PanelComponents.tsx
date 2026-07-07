@@ -47,7 +47,8 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-import { useAppDispatch, useAppState } from "./lib/store";
+import { shallowEqual, useAppDispatch, useAppState } from "./lib/store";
+import { PENDING_CURRENT_SESSION_KEY } from "./lib/pendingUserMessages";
 import vscode from "./lib/vscode";
 import type {
   InteractiveEvent,
@@ -61,7 +62,10 @@ import type {
   ContextItem,
   Model,
 } from "./lib/types";
-import { isProcessingInCurrentSession } from "./lib/sessionProcessing";
+import {
+  isProcessingInCurrentSession,
+  shouldDeferComposerSendInCurrentSession,
+} from "./lib/sessionProcessing";
 
 import { FileIcon } from "./MessageComponents";
 
@@ -173,6 +177,11 @@ function getSlashTrigger(input: string, cursor: number): SlashTrigger | null {
     return null;
   }
 
+  // If the slash is too far away, it's not a slash command.
+  if (cursor - slashIndex > 100) {
+    return null;
+  }
+
   // Trigger slash commands only when "/" starts a token (start or whitespace).
   if (slashIndex > 0 && !/\s/.test(beforeCursor[slashIndex - 1])) {
     return null;
@@ -204,6 +213,11 @@ export function getMentionTrigger(input: string, cursor: number): MentionTrigger
   const beforeCursor = input.slice(0, cursor);
   const mentionIndex = beforeCursor.lastIndexOf("@");
   if (mentionIndex < 0) {
+    return null;
+  }
+
+  // If the @ is too far away, it's not a mention.
+  if (cursor - mentionIndex > 100) {
     return null;
   }
 
@@ -301,23 +315,21 @@ export function StickyHeader() {
     isExtendedPanelOpen,
     isProcessing: globalIsProcessing,
     processingSessionIds,
-    streaming,
-    promptQueue,
     sessionsList,
     contextUsagePct,
-    assistantTurnPending,
-  } = useAppState();
-  const dispatch = useAppDispatch();
-  const isProcessing = isProcessingInCurrentSession(
-    globalIsProcessing,
-    currentSessionId,
-    processingSessionIds,
+  } = useAppState(
+    (state) => ({
+      currentSessionId: state.currentSessionId,
+      isSessionModalOpen: state.isSessionModalOpen,
+      isExtendedPanelOpen: state.isExtendedPanelOpen,
+      isProcessing: state.isProcessing,
+      processingSessionIds: state.processingSessionIds,
+      sessionsList: state.sessionsList,
+      contextUsagePct: state.contextUsagePct,
+    }),
+    shallowEqual,
   );
-  const isAiResponding =
-    isProcessing &&
-    (streaming?.isActive ||
-      assistantTurnPending ||
-      (streaming?.reasoningEvents?.length ?? 0) > 0);
+  const dispatch = useAppDispatch();
 
   const currentSession = currentSessionId
     ? sessionsList.find((s) => s.id === currentSessionId)
@@ -334,11 +346,6 @@ export function StickyHeader() {
           <CircularProgress pct={contextUsagePct} size={18} strokeWidth={2.5} />
         ) : null}
         <span className="oc-title text-sm font-medium truncate">{sessionTitle}</span>
-        {isAiResponding && (
-          <span className="ml-2 shrink-0 text-[11px] font-medium text-oc-accent animate-pulse">
-            Thinking...
-          </span>
-        )}
       </div>
 
       {/* Right side: Action buttons */}
@@ -392,7 +399,10 @@ export function StickyHeader() {
 export function HistorySidebar() {
   const {
     isSidebarOpen,
-  } = useAppState();
+  } = useAppState(
+    (state) => ({ isSidebarOpen: state.isSidebarOpen }),
+    shallowEqual,
+  );
   const dispatch = useAppDispatch();
 
   useEffect(() => {
@@ -593,7 +603,30 @@ export function ActiveTaskPanel() {
     compactionDividerIndex,
     sdkVersion,
     serverVersion,
-  } = useAppState();
+  } = useAppState(
+    (state) => ({
+      sessionStats: state.sessionStats,
+      streaming: state.streaming,
+      todoItems: state.todoItems,
+      messages: state.messages,
+      currentSessionId: state.currentSessionId,
+      sessionsList: state.sessionsList,
+      availableModels: state.availableModels,
+      selectedModel: state.selectedModel,
+      isProcessing: state.isProcessing,
+      processingSessionIds: state.processingSessionIds,
+      executingQueueSessionIds: state.executingQueueSessionIds,
+      isCompacting: state.isCompacting,
+      lastCompactedAt: state.lastCompactedAt,
+      compactionError: state.compactionError,
+      compactionNotice: state.compactionNotice,
+      compactionBaselineStats: state.compactionBaselineStats,
+      compactionDividerIndex: state.compactionDividerIndex,
+      sdkVersion: state.sdkVersion,
+      serverVersion: state.serverVersion,
+    }),
+    shallowEqual,
+  );
 
   const isProcessing = isProcessingInCurrentSession(
     isProcessingGlobal,
@@ -818,7 +851,7 @@ export function ActiveTaskPanel() {
                             : "text-[var(--oc-text-soft)]"
                           }`}
                       >
-                        {todo.description ?? todo.text ?? "Untitled task"}
+                        {todo.description ?? todo.content ?? todo.text ?? "Untitled task"}
                       </div>
                       <div className="mt-1 flex flex-wrap items-center gap-1.5">
                         <span className="rounded border border-oc-border bg-oc-panel-soft px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--oc-text-soft)]">
@@ -896,11 +929,11 @@ export function ActiveTaskPanel() {
         {(
           <MiniSection title="Context">
             {/* Token usage bar */}
-            <div className="mb-3">
-              <div className="mb-1.5 flex flex-col gap-1.5">
+            <div className="mb-2 rounded-md border border-oc-border-soft bg-oc-panel-soft p-2 transition-colors hover:border-oc-border">
+              <div className="mb-1.5 flex flex-col gap-1">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-1.5">
-                    <span className="text-xs font-semibold text-[var(--oc-text-soft)] uppercase tracking-wider">
+                    <span className="text-xs font-semibold text-[var(--oc-text-soft)] uppercase tracking-wider opacity-90">
                       Tokens Used
                     </span>
                     {hasCompactionBaseline && (
@@ -920,8 +953,8 @@ export function ActiveTaskPanel() {
                     {pct}%
                   </div>
                 </div>
-                <div className="flex items-center gap-1.5 opacity-70">
-                  <span className="font-medium tabular-nums text-[11px] text-[var(--oc-text-soft)]">
+                <div className="flex items-center gap-1.5 opacity-80">
+                  <span className="font-medium tabular-nums text-[10px] text-[var(--oc-text-soft)]">
                     {contextUsedTokens.toLocaleString()} /{" "}
                     <span
                       title={
@@ -943,9 +976,9 @@ export function ActiveTaskPanel() {
                   )}
                 </div>
               </div>
-              <div className="h-1 w-full overflow-hidden rounded-full bg-oc-border">
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-oc-border shadow-inner">
                 <div
-                  className="h-full rounded-full transition-all duration-300"
+                  className="h-full rounded-full transition-all duration-500 ease-out"
                   style={{
                     width: `${pct}%`,
                     background:
@@ -953,18 +986,18 @@ export function ActiveTaskPanel() {
                         ? "linear-gradient(90deg, #f0883e, #f85149)"
                         : pct > 50
                           ? "linear-gradient(90deg, #d29922, #f0883e)"
-                          : "linear-gradient(90deg, #a1a1aa, #c4c4c8)",
+                          : "linear-gradient(90deg, var(--oc-accent-soft), var(--oc-accent))",
                   }}
                 />
               </div>
             </div>
 
             {/* Compaction Controls */}
-            <div className="mb-4">
+            <div className="mb-2 rounded-md border border-oc-border-soft bg-oc-panel-soft px-2.5 py-1.5 transition-colors hover:border-oc-border">
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
-                  <span className="text-xs text-[var(--oc-text-soft)] opacity-80">
-                    Session compaction
+                  <span className="text-[10px] uppercase tracking-wider font-medium text-[var(--oc-text-soft)] opacity-90">
+                    Session Compaction
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
@@ -1006,55 +1039,54 @@ export function ActiveTaskPanel() {
                 </div>
               </div>
               {!isCompacting && compactionError ? (
-                <div className="mt-1.5 text-[10px] text-oc-red">
+                <div className="mt-1 text-[10px] text-oc-red font-medium">
                   {compactionError}
                 </div>
               ) : null}
               {!isCompacting && !compactionError && compactionNotice ? (
-                <div className="mt-1.5 text-[10px] oc-text-secondary">
+                <div className="mt-1 text-[10px] oc-text-secondary">
                   {compactionNotice}
                 </div>
               ) : null}
             </div>
 
-            <div className="mb-2 h-px w-full bg-oc-border opacity-50" />
 
             {/* Detailed Token Stats */}
-            <div className="space-y-1.5 text-xs">
-              <div className="flex items-center justify-between">
-                <span className="text-[var(--oc-text-soft)] opacity-80">Input</span>
-                <span className="font-medium tabular-nums text-[var(--oc-text-soft)]">
+            <div className="grid grid-cols-2 gap-1.5 text-xs">
+              <div className="flex flex-col gap-0.5 rounded-md border border-oc-border-soft bg-oc-panel-soft p-1.5 transition-colors hover:border-oc-border">
+                <span className="text-[9px] uppercase tracking-wider text-[var(--oc-text-soft)] opacity-70">Input</span>
+                <span className="font-semibold tabular-nums text-[var(--oc-text-soft)]">
                   {contextStats.input.toLocaleString()}
                 </span>
               </div>
-              <div className="flex items-center justify-between">
-                <span className="text-[var(--oc-text-soft)] opacity-80">Output</span>
-                <span className="font-medium tabular-nums text-[var(--oc-text-soft)]">
+              <div className="flex flex-col gap-0.5 rounded-md border border-oc-border-soft bg-oc-panel-soft p-1.5 transition-colors hover:border-oc-border">
+                <span className="text-[9px] uppercase tracking-wider text-[var(--oc-text-soft)] opacity-70">Output</span>
+                <span className="font-semibold tabular-nums text-[var(--oc-text-soft)]">
                   {contextStats.output.toLocaleString()}
                 </span>
               </div>
-              <div className="flex items-center justify-between">
-                <span className="text-[var(--oc-text-soft)] opacity-80">Cache hits</span>
+              <div className="flex flex-col gap-0.5 rounded-md border border-oc-border-soft bg-oc-panel-soft p-1.5 transition-colors hover:border-oc-border">
+                <span className="text-[9px] uppercase tracking-wider text-[var(--oc-text-soft)] opacity-70">Cache hits</span>
                 <span
-                  className={`font-medium tabular-nums transition-colors duration-300 ${contextStats.read > 0
-                      ? "text-oc-green font-semibold"
+                  className={`font-semibold tabular-nums transition-colors duration-300 ${contextStats.read > 0
+                      ? "text-oc-green"
                       : "text-[var(--oc-text-soft)]"
                     }`}
                 >
                   {contextStats.read.toLocaleString()}
                 </span>
               </div>
-              <div className="flex items-center justify-between">
-                <span className="text-[var(--oc-text-soft)] opacity-80">
+              <div className="flex flex-col gap-0.5 rounded-md border border-oc-border-soft bg-oc-panel-soft p-1.5 transition-colors hover:border-oc-border">
+                <span className="text-[9px] uppercase tracking-wider text-[var(--oc-text-soft)] opacity-70">
                   Cache writes
                 </span>
-                <span className="font-medium tabular-nums text-[var(--oc-text-soft)]">
+                <span className="font-semibold tabular-nums text-[var(--oc-text-soft)]">
                   {contextStats.write.toLocaleString()}
                 </span>
               </div>
-              <div className="flex items-center justify-between pt-1 border-t border-oc-border mt-2">
-                <span className="text-[var(--oc-text-soft)] opacity-80">Duration</span>
-                <span className="font-medium tabular-nums text-[var(--oc-text-soft)]">
+              <div className="col-span-2 flex items-center justify-between rounded-md border border-oc-border-soft bg-oc-panel-soft px-2 py-1.5 transition-colors hover:border-oc-border">
+                <span className="text-[9px] uppercase tracking-wider text-[var(--oc-text-soft)] opacity-70">Duration</span>
+                <span className="font-semibold tabular-nums text-[var(--oc-text-soft)]">
                   {formatDuration(sessionStats.duration)}
                 </span>
               </div>
@@ -1063,20 +1095,20 @@ export function ActiveTaskPanel() {
         )}
 
         <MiniSection title="Runtime">
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
-            <div className="flex items-center justify-between col-span-2">
-              <span className="text-[var(--oc-text-soft)] opacity-80">
+          <div className="flex flex-col gap-1.5 text-xs">
+            <div className="flex items-center justify-between rounded-md border border-oc-border-soft bg-oc-panel-soft px-2 py-1.5 transition-colors hover:border-oc-border">
+              <span className="text-[10px] uppercase tracking-wider font-medium text-[var(--oc-text-soft)] opacity-90">
                 OpenCode TUI
               </span>
-              <span className="font-medium text-xs text-[var(--oc-text-soft)] opacity-70">
+              <span className="font-mono text-[10px] font-medium text-[var(--oc-text-soft)] opacity-70">
                 {runtimeTuiVersion}
               </span>
             </div>
-            <div className="flex items-center justify-between col-span-2">
-              <span className="text-[var(--oc-text-soft)] opacity-80">
+            <div className="flex items-center justify-between rounded-md border border-oc-border-soft bg-oc-panel-soft px-2 py-1.5 transition-colors hover:border-oc-border">
+              <span className="text-[10px] uppercase tracking-wider font-medium text-[var(--oc-text-soft)] opacity-90">
                 OpenCode SDK
               </span>
-              <span className="font-medium text-xs text-[var(--oc-text-soft)] opacity-70">
+              <span className="font-mono text-[10px] font-medium text-[var(--oc-text-soft)] opacity-70">
                 {runtimeSdkVersion}
               </span>
             </div>
@@ -1084,43 +1116,43 @@ export function ActiveTaskPanel() {
         </MiniSection>
 
         <MiniSection title="Session">
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
-            <div className="flex items-center justify-between col-span-2">
-              <span className="text-[var(--oc-text-soft)] opacity-80">ID</span>
-              <span className="font-medium text-xs text-[var(--oc-text-soft)] opacity-70">
+          <div className="grid grid-cols-2 gap-1.5 text-xs">
+            <div className="col-span-2 flex items-center justify-between rounded-md border border-oc-border-soft bg-oc-panel-soft px-2 py-1.5 transition-colors hover:border-oc-border">
+              <span className="text-[10px] uppercase tracking-wider font-medium text-[var(--oc-text-soft)] opacity-90">ID</span>
+              <span className="font-mono text-[10px] font-medium text-[var(--oc-text-soft)] opacity-70">
                 {currentSessionId ? currentSessionId.slice(0, 16) : "—"}
               </span>
             </div>
-            <div className="flex items-center justify-between">
-              <span className="text-[var(--oc-text-soft)] opacity-80">
+            <div className="flex flex-col gap-0.5 rounded-md border border-oc-border-soft bg-oc-panel-soft p-1.5 transition-colors hover:border-oc-border">
+              <span className="text-[9px] uppercase tracking-wider text-[var(--oc-text-soft)] opacity-70">
                 Messages
               </span>
-              <span className="font-medium tabular-nums text-[var(--oc-text-soft)]">
+              <span className="font-semibold tabular-nums text-[var(--oc-text-soft)]">
                 {messageCount}
               </span>
             </div>
-            <div className="flex items-center justify-between">
-              <span className="text-[var(--oc-text-soft)] opacity-80">
-                Date started
-              </span>
-              <span
-                className={`font-medium tabular-nums ${isActive ? "text-oc-accent" : "text-[var(--oc-text-soft)]"
-                  }`}
-              >
-                {startedLabel}
-              </span>
-            </div>
-            <div className="flex items-center justify-between col-span-2">
-              <span className="text-[var(--oc-text-soft)] opacity-80">
+            <div className="flex flex-col gap-0.5 rounded-md border border-oc-border-soft bg-oc-panel-soft p-1.5 transition-colors hover:border-oc-border">
+              <span className="text-[9px] uppercase tracking-wider text-[var(--oc-text-soft)] opacity-70">
                 Status
               </span>
               <span
-                className={`font-medium text-xs uppercase tracking-wider font-semibold ${isActive
-                    ? "text-oc-accent"
+                className={`font-semibold text-[10px] uppercase tracking-wider ${isActive
+                    ? "text-oc-accent animate-pulse"
                     : "text-[var(--oc-text-soft)] opacity-70"
                   }`}
               >
                 {isActive ? "ACTIVE" : "IDLE"}
+              </span>
+            </div>
+            <div className="col-span-2 flex items-center justify-between rounded-md border border-oc-border-soft bg-oc-panel-soft px-2 py-1.5 transition-colors hover:border-oc-border">
+              <span className="text-[10px] uppercase tracking-wider font-medium text-[var(--oc-text-soft)] opacity-90">
+                Date started
+              </span>
+              <span
+                className={`font-medium tabular-nums ${isActive ? "text-oc-accent" : "text-[var(--oc-text-soft)] opacity-80"
+                  }`}
+              >
+                {startedLabel}
               </span>
             </div>
           </div>
@@ -1136,7 +1168,15 @@ export function MobileRightSummary() {
     currentSessionId,
     processingSessionIds,
     isExtendedPanelOpen,
-  } = useAppState();
+  } = useAppState(
+    (state) => ({
+      isProcessing: state.isProcessing,
+      currentSessionId: state.currentSessionId,
+      processingSessionIds: state.processingSessionIds,
+      isExtendedPanelOpen: state.isExtendedPanelOpen,
+    }),
+    shallowEqual,
+  );
   const dispatch = useAppDispatch();
   const [activeTab, setActiveTab] = useState<"task" | "quota" | "integrations" | "tools">(
     "task",
@@ -1270,7 +1310,17 @@ export function ModelDropdown() {
     modelDropdownOpen,
     quotaData,
     configuredProviders,
-  } = useAppState();
+  } = useAppState(
+    (state) => ({
+      availableModels: state.availableModels,
+      selectedModel: state.selectedModel,
+      modelSearchQuery: state.modelSearchQuery,
+      modelDropdownOpen: state.modelDropdownOpen,
+      quotaData: state.quotaData,
+      configuredProviders: state.configuredProviders,
+    }),
+    shallowEqual,
+  );
   const dispatch = useAppDispatch();
   const containerRef = useRef<HTMLDivElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -1590,7 +1640,15 @@ export function AgentDropdown() {
     selectedAgent,
     agentSearchQuery,
     agentDropdownOpen,
-  } = useAppState();
+  } = useAppState(
+    (state) => ({
+      availableAgents: state.availableAgents,
+      selectedAgent: state.selectedAgent,
+      agentSearchQuery: state.agentSearchQuery,
+      agentDropdownOpen: state.agentDropdownOpen,
+    }),
+    shallowEqual,
+  );
   const dispatch = useAppDispatch();
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -1712,7 +1770,16 @@ export function QueueContainer() {
     isProcessing: globalIsProcessing,
     isSteering,
     currentSessionId,
-  } = useAppState();
+  } = useAppState(
+    (state) => ({
+      promptQueue: state.promptQueue,
+      processingSessionIds: state.processingSessionIds,
+      isProcessing: state.isProcessing,
+      isSteering: state.isSteering,
+      currentSessionId: state.currentSessionId,
+    }),
+    shallowEqual,
+  );
   const dispatch = useAppDispatch();
 
   const isProcessing = isProcessingInCurrentSession(
@@ -1819,7 +1886,7 @@ export function InputWrapper() {
     currentSessionId,
     processingSessionIds,
     executingQueueSessionIds,
-    messages,
+    rawSdkEventPayloadsBySessionId,
     promptQueue,
     selectedFiles,
     selectedContexts,
@@ -1839,7 +1906,41 @@ export function InputWrapper() {
     dismissedInteractiveEventKeys,
     contextUsagePct,
     assistantTurnPending,
-  } = useAppState();
+    messages,
+  } = useAppState(
+    (state) => ({
+      inputValue: state.inputValue,
+      isProcessing: state.isProcessing,
+      isExecutingQueue: state.isExecutingQueue,
+      isSteering: state.isSteering,
+      streaming: state.streaming,
+      messages: state.messages,
+      currentSessionId: state.currentSessionId,
+      processingSessionIds: state.processingSessionIds,
+      executingQueueSessionIds: state.executingQueueSessionIds,
+      rawSdkEventPayloadsBySessionId: state.rawSdkEventPayloadsBySessionId,
+      promptQueue: state.promptQueue,
+      selectedFiles: state.selectedFiles,
+      selectedContexts: state.selectedContexts,
+      fileMentionPaths: state.fileMentionPaths,
+      selectedAgent: state.selectedAgent,
+      showFileSuggestions: state.showFileSuggestions,
+      fileSuggestions: state.fileSuggestions,
+      selectedSuggestionIndex: state.selectedSuggestionIndex,
+      mentionSuggestions: state.mentionSuggestions,
+      showMentionSuggestions: state.showMentionSuggestions,
+      selectedMentionIndex: state.selectedMentionIndex,
+      availableCommands: state.availableCommands,
+      availableSkills: state.availableSkills,
+      commandsLoaded: state.commandsLoaded,
+      attachments: state.attachments,
+      interactiveEvents: state.interactiveEvents,
+      dismissedInteractiveEventKeys: state.dismissedInteractiveEventKeys,
+      contextUsagePct: state.contextUsagePct,
+      assistantTurnPending: state.assistantTurnPending,
+    }),
+    shallowEqual,
+  );
   const dispatch = useAppDispatch();
   const isProcessing = isProcessingInCurrentSession(
     globalIsProcessing,
@@ -1851,43 +1952,14 @@ export function InputWrapper() {
     currentSessionId,
     executingQueueSessionIds,
   );
+  const hasLiveAssistantTurn = shouldDeferComposerSendInCurrentSession(
+    currentSessionId,
+    processingSessionIds,
+    Boolean(streaming?.isActive),
+    assistantTurnPending,
+  );
 
-  const hasCompletedAssistantReplyForLatestTurn = (() => {
-    if (messages.length === 0) {
-      return false;
-    }
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-      const message = messages[i];
-      if (message.role === "assistant") {
-        const text =
-          typeof message.content === "string" ? message.content.trim() : "";
-        const structuredText =
-          typeof message.structuredOutput?.message === "string"
-            ? message.structuredOutput.message.trim()
-            : "";
-        if (text.length > 0 || structuredText.length > 0) {
-          return true;
-        }
-        continue;
-      }
-      if (message.role === "user") {
-        return false;
-      }
-    }
-    return false;
-  })();
-
-  // Stop button only visible when AI is responding AND input is empty
-  // Send button icon reflects: Send icon when idle/input has value, AlertCircle when responding with input.
-  // Centralized check: the AI is responding when the session is processing
-  // and either streaming is active, the assistant turn is still pending,
-  // or active streaming reasoning events are still flowing.
-  const isAiResponding =
-    isProcessing &&
-    (streaming?.isActive ||
-      assistantTurnPending ||
-      (streaming?.reasoningEvents?.length ?? 0) > 0);
-
+  const prevInputLengthRef = useRef(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const textareaHasValue = inputValue.length > 0;
   const textareaMinRows = 2;
@@ -1899,6 +1971,16 @@ export function InputWrapper() {
       return;
     }
 
+    // We do NOT want to shrink the text area while executing a queue items
+    if (!textareaHasValue && textarea.scrollHeight <= textareaMinRows * 20) {
+      textarea.style.height = "auto";
+      textarea.style.maxHeight = "none";
+      textarea.style.minHeight = "44px";
+      textarea.style.overflowY = "hidden";
+      prevInputLengthRef.current = inputValue.length;
+      return;
+    }
+
     const computed = window.getComputedStyle(textarea);
     const lineHeight = Number.parseFloat(computed.lineHeight) || 20;
     const paddingTop = Number.parseFloat(computed.paddingTop) || 0;
@@ -1906,83 +1988,88 @@ export function InputWrapper() {
     const borderTop = Number.parseFloat(computed.borderTopWidth) || 0;
     const borderBottom = Number.parseFloat(computed.borderBottomWidth) || 0;
     const chrome = paddingTop + paddingBottom + borderTop + borderBottom;
+
     const minHeight = lineHeight * textareaMinRows + chrome;
     const maxHeight = lineHeight * textareaMaxRows + chrome;
 
     textarea.style.maxHeight = `${maxHeight}px`;
     textarea.style.minHeight = `${minHeight}px`;
-    textarea.style.height = "auto";
-    textarea.style.height = `${Math.min(textarea.scrollHeight + borderTop + borderBottom, maxHeight)}px`;
-    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
+
+    // Fast path for large text to avoid expensive scrollHeight calculation
+    // and layout thrashing (setting height="auto" causes a full reflow)
+    if (inputValue.length > 2000) {
+      textarea.style.height = `${maxHeight}px`;
+      textarea.style.overflowY = "auto";
+      prevInputLengthRef.current = inputValue.length;
+      return;
+    }
+
+    const isShrinking = inputValue.length < prevInputLengthRef.current;
+    prevInputLengthRef.current = inputValue.length;
+
+    // Setting height to "auto" forces a synchronous layout reflow which causes lag during rapid typing.
+    // We only need to reset it to "auto" if the content might have shrunk.
+    // If it's growing, just setting height to scrollHeight works fine because scrollHeight naturally expands.
+    if (isShrinking || inputValue === "") {
+      textarea.style.height = "auto";
+    }
+
+    const newHeight = Math.min(textarea.scrollHeight + borderTop + borderBottom, maxHeight);
+    const newHeightPx = `${newHeight}px`;
+    
+    // Only write to DOM if it actually changed to prevent style invalidation
+    if (textarea.style.height !== newHeightPx) {
+      textarea.style.height = newHeightPx;
+    }
+    
+    const newOverflow = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
+    if (textarea.style.overflowY !== newOverflow) {
+      textarea.style.overflowY = newOverflow;
+    }
   }, [inputValue, textareaHasValue, textareaMaxRows]);
 
   const [currentInteractiveIndex, setCurrentInteractiveIndex] = useState(0);
   const [isCustomMode, setIsCustomMode] = useState(false);
   const [customValue, setCustomValue] = useState("");
+  const [pendingAnswers, setPendingAnswers] = useState<
+    Record<string, { text: string | string[]; eventType: string }>
+  >({});
+  const [multiSelectValues, setMultiSelectValues] = useState<Set<string>>(new Set());
   const customInputRef = useRef<HTMLInputElement>(null);
   const [previewAttachmentSrc, setPreviewAttachmentSrc] = useState<
     string | null
   >(null);
-  const [pendingAnswers, setPendingAnswers] = useState<
-    Record<string, { text: string; eventType: string }>
-  >({});
+
   const [slashTrigger, setSlashTrigger] = useState<SlashTrigger | null>(null);
   const [mentionTrigger, setMentionTrigger] = useState<MentionTrigger | null>(null);
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
   const commandsRequestedRef = useRef(false);
   const suggestionsContainerRef = useRef<HTMLDivElement>(null);
   const composerInteractiveEvents = useMemo(() => {
-    if (Array.isArray(interactiveEvents) && interactiveEvents.length > 0) {
-      return filterDismissedInteractiveEvents(
-        interactiveEvents,
-        dismissedInteractiveEventKeys,
-      );
+    let events: InteractiveEvent[] = [];
+
+    // 1. Top-level interactive events (out-of-band questions, etc.)
+    if (Array.isArray(interactiveEvents)) {
+      events = [...events, ...interactiveEvents];
     }
 
-    if (
-      streaming &&
-      Array.isArray(streaming.interactiveEvents) &&
-      streaming.interactiveEvents.length > 0
-    ) {
-      return filterDismissedInteractiveEvents(
-        streaming.interactiveEvents,
-        dismissedInteractiveEventKeys,
-      );
-    }
-
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const candidate = messages[index];
-      const role = (candidate.role ?? candidate.info?.role ?? "").toLowerCase();
-      if (role !== "assistant") {
-        continue;
-      }
-
-      if (
-        Array.isArray(candidate.interactiveEvents) &&
-        candidate.interactiveEvents.length > 0
-      ) {
-        return filterDismissedInteractiveEvents(
-          candidate.interactiveEvents,
-          dismissedInteractiveEventKeys,
-        );
-      }
-
-      const structured = candidate.structuredOutput ?? candidate.structured ?? (candidate.info as Record<string, unknown> | undefined)?.structuredOutput ?? (candidate.info as Record<string, unknown> | undefined)?.structured;
-      const structuredInteractiveEvents = structured &&
-        typeof structured === "object" &&
-        Array.isArray((structured as { interactiveEvents?: InteractiveEvent[] }).interactiveEvents)
-          ? ((structured as { interactiveEvents?: InteractiveEvent[] }).interactiveEvents as InteractiveEvent[])
-          : [];
-      if (structuredInteractiveEvents.length > 0) {
-        return filterDismissedInteractiveEvents(
-          structuredInteractiveEvents,
-          dismissedInteractiveEventKeys,
-        );
+    // 2. Interactive events from currently streaming response
+    if (streaming?.isActive && Array.isArray(streaming.interactiveEvents)) {
+      events = [...events, ...streaming.interactiveEvents];
+    } else {
+      // 3. If not streaming, fallback to interactive events from the latest assistant message,
+      // but ONLY if the assistant is the absolute last speaker in the conversation.
+      const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null;
+      if (lastMsg?.role === "assistant" && Array.isArray(lastMsg.interactiveEvents)) {
+        events = [...events, ...lastMsg.interactiveEvents];
       }
     }
 
-    return [];
-  }, [interactiveEvents, streaming, messages, dismissedInteractiveEventKeys]);
+    return filterDismissedInteractiveEvents(
+      events,
+      dismissedInteractiveEventKeys,
+    );
+  }, [messages, streaming, interactiveEvents, dismissedInteractiveEventKeys]);
 
   const filteredCommands = useMemo(() => {
     if (!slashTrigger) {
@@ -2079,7 +2166,8 @@ export function InputWrapper() {
     const candidates = composerInteractiveEvents.filter(isQuickInputInteractiveEvent);
     const seen = new Set<string>();
     return candidates.filter((event) => {
-      const key = `${event.type}::${(event.question || event.title || event.message || "").trim().toLowerCase().replace(/\s+/g, " ")}`;
+      const eventAny = event as any;
+      const key = `${event.type}::${(eventAny.question || eventAny.title || eventAny.message || "").trim().toLowerCase().replace(/\s+/g, " ")}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -2130,21 +2218,43 @@ export function InputWrapper() {
   const currentInteractiveAnswered = Boolean(
     event?.id && pendingAnswers[event.id]?.text.trim(),
   );
+  const eventTitleText = event?.title?.trim() || "";
   const eventBodyText =
     event?.type === "quick_actions"
-      ? event.title || "Select an action"
+      ? eventTitleText || "Select an action"
       : event?.type === "message"
         ? event.message || ""
         : event?.question || "";
   const eventContextMessage = event?.contextMessage?.trim() || "";
-  const showContextMessage =
+  const normalizePopoverText = (value: string): string =>
+    value
+      .toLowerCase()
+      .replace(/[`"'()[\]{}<>]/g, " ")
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  const normalizedBodyText = normalizePopoverText(eventBodyText);
+  const normalizedTitleText = normalizePopoverText(eventTitleText);
+  const normalizedContextText = normalizePopoverText(eventContextMessage);
+  const hasDistinctTitle =
+    !!eventTitleText &&
+    normalizedTitleText !== normalizedBodyText;
+  const hasDistinctContextMessage =
     !!eventContextMessage &&
-    eventContextMessage.toLowerCase() !== eventBodyText.toLowerCase().trim();
-  const showPromptInHeader = !event?.title && !!eventBodyText;
+    normalizedContextText !== normalizedBodyText &&
+    normalizedContextText !== normalizedTitleText;
+  const showPromptInHeader = !!eventTitleText;
+  const showContextMessage = hasDistinctContextMessage;
+  const showPromptInBody = !!eventBodyText && normalizedBodyText !== normalizedTitleText;
 
   const capitalizeFirst = (str: string) => {
     if (!str) return str;
     return str.charAt(0).toUpperCase() + str.slice(1);
+  };
+
+  const renderInteractiveOptionLabel = (label: string, recommended?: boolean) => {
+    const displayLabel = capitalizeFirst(label);
+    return recommended ? `Recommended: ${displayLabel}` : displayLabel;
   };
 
   const applyCommandSuggestion = (command: SlashCommand) => {
@@ -2296,46 +2406,12 @@ export function InputWrapper() {
     const text = inputValue.trim();
     if (!text) return;
 
-    // Parse @filenames from the input text using shared regex
-    const fileMentions = text.match(FILE_MENTION_REGEX) || [];
-    const extractedFiles = fileMentions.map(mention => {
-      const filename = mention.slice(1); // Remove @ prefix
-      // Use the full path from the mapping if available, otherwise fall back to filename
-      const fullPath = fileMentionPaths[filename] || filename;
-      return {
-        type: "file" as const,
-        filename: fullPath, // Use full path for the SDK
-        source: { path: fullPath }
-      };
-    });
-
     // Capture values before clearing state
     const currentFiles = selectedFiles.length > 0 ? [...selectedFiles] : undefined;
     const currentContexts = selectedContexts.length > 0 ? [...selectedContexts] : undefined;
     const currentAttachments = attachments || [];
     const currentAgent = selectedAgent || null;
     const sessionId = currentSessionId;
-
-    // Build message parts including file contexts from @mentions
-    const messageParts: Array<{ type: string; text?: string; filename?: string; source?: { path: string } }> = [
-      { type: "text", text },
-    ];
-
-    // Add files from @mentions in the text
-    extractedFiles.forEach(fileRef => {
-      messageParts.push(fileRef);
-    });
-
-    // Also add any files from selectedContexts (for backwards compatibility)
-    currentContexts?.forEach((context) => {
-      if (!context.file.startsWith("resource:")) {
-        messageParts.push({
-          type: "file",
-          filename: context.file,
-          source: { path: context.file },
-        });
-      }
-    });
 
     // Clear UI state immediately for better UX
     dispatch({ type: "SET_INPUT_VALUE", payload: "" });
@@ -2345,32 +2421,10 @@ export function InputWrapper() {
     dispatch({ type: "SET_FILE_MENTION_PATHS", payload: {} }); // Clear file mention paths
     setSlashTrigger(null);
 
-    if (isProcessing) {
-      const optimisticId = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      vscode.postMessage({
-        type: "addToQueue",
-        ...(sessionId ? { sessionId } : {}),
-        text,
-        files: currentFiles,
-        contexts: currentContexts,
-        agent: currentAgent,
-        images: currentAttachments,
-      });
-      dispatch({
-        type: "ADD_TO_LOCAL_QUEUE",
-        payload: {
-          id: optimisticId,
-          sessionId: sessionId || "",
-          createdAt: Date.now(),
-          text,
-          files: currentFiles,
-          contexts: currentContexts,
-          agent: currentAgent || undefined,
-          parts: messageParts,
-        },
-      });
-      return;
-    }
+    const clientRequestId =
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `req-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
     const hasPendingQuestion =
       interactiveEvents.length > 0 &&
@@ -2380,31 +2434,39 @@ export function InputWrapper() {
           e.type === "confirm" ||
           e.type === "quick_input",
       );
+    // Only paint an optimistic transcript bubble when this prompt is actually
+    // being sent now. Deferred prompts already have their own queue UI, and
+    // rendering them as transcript messages can move them ahead of the turn
+    // that is still in progress.
+    const pendingSessionId = sessionId ?? PENDING_CURRENT_SESSION_KEY;
+    if (!hasLiveAssistantTurn) {
+      dispatch({
+        type: "ADD_PENDING_USER_MESSAGE",
+        payload: {
+          id: clientRequestId,
+          clientRequestId,
+          sessionId: pendingSessionId,
+          createdAt: Date.now(),
+          text,
+          images: currentAttachments.map((attachment) => attachment.dataUrl),
+          interactiveSubmit: hasPendingQuestion,
+        },
+      });
+    }
 
     vscode.postMessage({
       type: "sendMessage",
+      clientRequestId,
       ...(sessionId ? { sessionId } : {}),
       text,
       files: currentFiles,
       contexts: currentContexts,
       agent: currentAgent,
       images: currentAttachments,
+      ...(hasLiveAssistantTurn ? { delivery: "deferred" } : {}),
       ...(hasPendingQuestion ? { interactiveSubmit: true } : {}),
     });
 
-    dispatch({
-      type: "SET_MESSAGES",
-      payload: [
-        ...messages,
-        {
-          role: "user",
-          created: Date.now(),
-          content: text,
-          parts: messageParts,
-          images: currentAttachments.map((a) => a.dataUrl),
-        },
-      ],
-    });
     dispatch({ type: "SET_PROCESSING", payload: true });
     logger.info("[LOADING][INPUT] User sent message, dispatching SET_PROCESSING(true)", {
       sessionId: sessionId || null,
@@ -2418,7 +2480,7 @@ export function InputWrapper() {
 
   const steerPrompt = () => {
     const text = inputValue.trim();
-    if (!text || !isAiResponding || isSteering) return;
+    if (!text || !hasLiveAssistantTurn || isSteering) return;
 
     dispatch({ type: "SET_STEERING", payload: true });
     vscode.postMessage({
@@ -2477,27 +2539,55 @@ export function InputWrapper() {
     }
   };
 
+  const initStatesForEvent = (eventIndex: number, currentAnswers: Record<string, { text: string | string[]; eventType: string }>) => {
+    const nextEvent = displayInteractiveEvents[eventIndex];
+    if (nextEvent && nextEvent.type === "question") {
+      const ans = currentAnswers[nextEvent.id];
+      if (ans) {
+        if (nextEvent.multiSelect) {
+          setMultiSelectValues(new Set(Array.isArray(ans.text) ? ans.text : [ans.text]));
+          setIsCustomMode(false);
+          setCustomValue("");
+        } else {
+          setMultiSelectValues(new Set());
+          const textAns = Array.isArray(ans.text) ? ans.text[0] : ans.text;
+          const isOption = nextEvent.options.some(o => (o.value || o.label) === textAns);
+          if (!isOption && nextEvent.allowCustomInput) {
+            setIsCustomMode(true);
+            setCustomValue(textAns);
+          } else {
+            setIsCustomMode(false);
+            setCustomValue("");
+          }
+        }
+      } else {
+        setMultiSelectValues(new Set());
+        setIsCustomMode(false);
+        setCustomValue("");
+      }
+    } else {
+      setMultiSelectValues(new Set());
+      setIsCustomMode(false);
+      setCustomValue("");
+    }
+  };
+
   const submitInteractiveResponse = (
-    text: string,
+    text: string | string[],
     eventId: string,
     eventType: string,
   ) => {
-    const trimmed = text.trim();
-    if (!trimmed) {
-      return;
-    }
-
+    console.error(`[DEBUG-UI] submitInteractiveResponse clicked:`, { text, eventId, eventType });
     const nextAnswers = {
       ...pendingAnswers,
-      [eventId]: { text: trimmed, eventType },
+      [eventId]: { text, eventType },
     };
     setPendingAnswers(nextAnswers);
 
     // If there are more questions, go to the next one
     if (currentInteractiveIndex < displayInteractiveEvents.length - 1) {
       setCurrentInteractiveIndex((prev) => prev + 1);
-      setIsCustomMode(false);
-      setCustomValue("");
+      initStatesForEvent(currentInteractiveIndex + 1, nextAnswers);
     } else {
       // All questions are answered, submit batch
       submitBatchResponses(nextAnswers);
@@ -2505,10 +2595,14 @@ export function InputWrapper() {
   };
 
   const submitBatchResponses = (
-    answers: Record<string, { text: string; eventType: string }>,
+    answers: Record<string, { text: string | string[]; eventType: string }>,
   ) => {
+    console.error("[DEBUG] submitBatchResponses starting. input answers:", answers);
+    console.error("[DEBUG] submitBatchResponses displayInteractiveEvents:", displayInteractiveEvents);
+    
     const batch = Object.entries(answers).map(([eventId, data]) => {
       const event = displayInteractiveEvents.find((e) => e.id === eventId);
+      console.error(`[DEBUG] event lookup for id ${eventId}:`, event);
       const questionText =
         event?.type === "question" || event?.type === "confirm"
           ? event.question
@@ -2527,6 +2621,10 @@ export function InputWrapper() {
         questionIndex:
           event?.type === "question" ? event.questionIndex : undefined,
       };
+    }).sort((a, b) => {
+      const idxA = typeof a.questionIndex === "number" ? a.questionIndex : 0;
+      const idxB = typeof b.questionIndex === "number" ? b.questionIndex : 0;
+      return idxA - idxB;
     });
 
     const hasMultipleInteractivePrompts = batch.length > 1;
@@ -2535,7 +2633,7 @@ export function InputWrapper() {
     // context is only needed when a batched prompt carries multiple questions.
     const composedPrompt = batch
       .map((resp, index) => {
-        const answer = (resp.text || "").trim();
+        const answer = Array.isArray(resp.text) ? resp.text.join(", ") : (resp.text || "").trim();
         const question = (resp.questionText || "").trim();
         if (!answer) {
           return "";
@@ -2570,7 +2668,7 @@ export function InputWrapper() {
 
     dispatch({
       type: "SET_INTERACTIVE_EVENTS",
-      payload: interactiveEvents,
+      payload: [],
     });
 
     // Don't show processing state immediately - let extension confirm when actually processing
@@ -2579,10 +2677,29 @@ export function InputWrapper() {
 
     // Route question answers through questionReply and non-question events
     // (confirm, quick_actions, message) through the normal sendMessage path.
-    const hasQuestionEvents = batch.some((resp) => resp.requestID);
-    if (hasQuestionEvents) {
-      const answers = batch.map((resp) => [resp.text]);
+    const canReplyToSdkQuestion = batch.some((resp) => resp.eventType === "question" || resp.eventType === "confirm");
+      
+    console.error("[DEBUG-UI] canReplyToSdkQuestion evaluated:", {
+      canReplyToSdkQuestion,
+      eventTypes: batch.map(b => b.eventType),
+      batchRequestIDs: batch.map(b => b.requestID)
+    });
+    
+    if (canReplyToSdkQuestion) {
+      console.error("[DEBUG-UI] Dispatching questionReply message to host");
+      dispatch({ type: "SET_PROCESSING", payload: false });
+      dispatch({ type: "SET_STEERING", payload: false });
+      dispatch({ type: "SET_STREAMING", payload: null });
+      const answers = batch.map((resp) =>
+        Array.isArray(resp.text) ? resp.text : [resp.text],
+      );
       const requestID = batch.find((resp) => resp.requestID)?.requestID;
+      logger.info("[QUESTION DEBUG] submitting SDK question reply", {
+        requestID,
+        answerCount: answers.length,
+        answers,
+        sessionId: currentSessionId ?? null,
+      });
       vscode.postMessage({
         type: "questionReply",
         ...(currentSessionId ? { sessionId: currentSessionId } : {}),
@@ -2591,8 +2708,14 @@ export function InputWrapper() {
         text: displayText,
       });
     } else {
+      console.error("[DEBUG-UI] Dispatching normal sendMessage message to host");
+      const clientRequestId =
+        typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+          ? crypto.randomUUID()
+          : `req-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
       vscode.postMessage({
         type: "sendMessage",
+        clientRequestId,
         ...(currentSessionId ? { sessionId: currentSessionId } : {}),
         text: displayText,
         agent: selectedAgent || null,
@@ -2612,6 +2735,25 @@ export function InputWrapper() {
       type: "stopRequest",
       ...(currentSessionId ? { sessionId: currentSessionId } : {}),
     });
+
+  const abortActiveResponse = () =>
+    vscode.postMessage({
+      type: "abortResponse",
+      ...(currentSessionId ? { sessionId: currentSessionId } : {}),
+    });
+
+  const dismissInteractivePopover = (interactiveEvent: InteractiveEvent) => {
+    const shouldAbortActiveResponse = interactiveEvent.type === "question";
+
+    if (shouldAbortActiveResponse) {
+      abortActiveResponse();
+    }
+
+    dispatch({
+      type: "DISMISS_INTERACTIVE_EVENT",
+      payload: interactiveEvent.id,
+    });
+  };
 
   const isImageAttachment = (mimeType?: string, dataUrl?: string) => {
     if (typeof mimeType === "string" && mimeType.startsWith("image/")) {
@@ -2635,20 +2777,20 @@ export function InputWrapper() {
                <div className="flex items-start justify-between gap-2">
                  <div className="flex min-w-0 flex-1 flex-col gap-1">
                    <div className="flex items-center gap-2">
-                     {event.title ? (
-                       <div className="text-[11px] font-semibold uppercase tracking-wider oc-text-secondary">
-                         {event.title}
-                       </div>
-                     ) : null}
-                     {displayInteractiveEvents.length > 1 && (
-                       <div className={`flex items-center gap-1.5 ${event.title ? "ml-2 border-l border-oc-border-soft pl-3" : ""}`}>
+                    {showPromptInHeader ? (
+                      <div className="text-[11px] font-semibold uppercase tracking-wider oc-text-secondary">
+                        {eventTitleText}
+                      </div>
+                    ) : null}
+                    {displayInteractiveEvents.length > 1 && (
+                      <div className={`flex items-center gap-1.5 ${showPromptInHeader ? "ml-2 border-l border-oc-border-soft pl-3" : ""}`}>
                     <button
                       type="button"
                       disabled={currentInteractiveIndex === 0}
                       onClick={() => {
-                        setCurrentInteractiveIndex((i) => i - 1);
-                        setIsCustomMode(false);
-                        setCustomValue("");
+                        const newIndex = currentInteractiveIndex - 1;
+                        setCurrentInteractiveIndex(newIndex);
+                        initStatesForEvent(newIndex, pendingAnswers);
                       }}
                       className="oc-quick-input-icon-btn disabled:opacity-30 transition-colors"
                       title="Previous"
@@ -2670,9 +2812,9 @@ export function InputWrapper() {
                         if (!currentInteractiveAnswered) {
                           return;
                         }
-                        setCurrentInteractiveIndex((i) => i + 1);
-                        setIsCustomMode(false);
-                        setCustomValue("");
+                        const newIndex = currentInteractiveIndex + 1;
+                        setCurrentInteractiveIndex(newIndex);
+                        initStatesForEvent(newIndex, pendingAnswers);
                       }}
                       className="oc-quick-input-icon-btn disabled:opacity-30 transition-colors"
                       title="Next"
@@ -2687,23 +2829,13 @@ export function InputWrapper() {
                       </div>
                     )}
                   </div>
-                  {showPromptInHeader ? (
-                    <div className="text-[12px] leading-relaxed text-[var(--oc-text-soft)]">
-                      <MarkdownRenderer content={eventBodyText} />
-                    </div>
-                  ) : null}
                 </div>
                 <div className="flex items-center gap-1">
                   <button
                     type="button"
                     className="oc-quick-input-icon-btn rounded p-1 transition-colors"
                     title="Dismiss This"
-                    onClick={() => {
-                      dispatch({
-                        type: "DISMISS_INTERACTIVE_EVENT",
-                        payload: event.id,
-                      });
-                    }}
+                    onClick={() => dismissInteractivePopover(event)}
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>
@@ -2712,23 +2844,14 @@ export function InputWrapper() {
             </div>
 
             <div className="relative">
-              {Object.keys(pendingAnswers).length > 0 && (
-                <div className="mb-3 flex flex-wrap gap-1.5 p-2 bg-[var(--oc-panel)] rounded-md border border-dashed border-[var(--oc-border)]">
-                  {Object.entries(pendingAnswers).map(([eventId, data], idx) => (
-                    <span key={eventId} className="oc-quick-input-answer-chip rounded px-1.5 py-0.5 text-[10px]" title={data.text}>
-                      Q{idx + 1}: <span className="font-medium text-[var(--oc-text-soft)] truncate max-w-[120px] inline-block align-bottom">{data.text}</span>
-                    </span>
-                  ))}
-                </div>
-              )}
-              {(showContextMessage || !showPromptInHeader) && (
+              {(showContextMessage || showPromptInBody) && (
                 <div className="mb-3 text-[12px] text-[var(--oc-text-soft)]">
                   {showContextMessage ? (
                     <div className="mb-2 rounded bg-[var(--oc-panel)] border border-[var(--oc-border-soft)] px-2.5 py-2 text-[11px] oc-text-secondary leading-relaxed">
                       <MarkdownRenderer content={eventContextMessage} />
                     </div>
                   ) : null}
-                  {!showPromptInHeader ? (
+                  {showPromptInBody && !hasDistinctContextMessage ? (
                     <MarkdownRenderer content={eventBodyText} />
                   ) : null}
                 </div>
@@ -2788,31 +2911,78 @@ export function InputWrapper() {
               ) : (
                 <>
                   {event.type === "question" ? (
-                    <div className="flex flex-wrap gap-2">
-                      {event.options.map((option, index) => (
-                        <button
-                          key={`${event.id}-q-${option.id || option.value || index}`}
-                          type="button"
-                          className="oc-quick-input-option rounded-md border px-2.5 py-1.5 text-[11px] font-medium transition-all"
-                          title={option.description || option.label}
-                          onClick={() =>
-                            submitInteractiveResponse(
-                              option.value || option.label,
-                              event.id,
-                              event.type,
-                            )
+                    <div className="flex flex-col gap-2">
+                      <div className="flex flex-wrap gap-2">
+                        {event.options.map((option, index) => {
+                          const val = option.value || option.label;
+                          let isSelected = false;
+                          const ans = pendingAnswers[event.id];
+                          if (event.multiSelect) {
+                            isSelected = multiSelectValues.has(val);
+                          } else if (ans) {
+                            isSelected = ans.text === val || (Array.isArray(ans.text) && ans.text.includes(val));
                           }
-                        >
-                          {capitalizeFirst(option.label)}
-                        </button>
-                      ))}
-                      <button
-                        type="button"
-                        className="oc-quick-input-option-muted rounded-md border border-dashed bg-transparent px-2.5 py-1.5 text-[11px] font-medium transition-all"
-                        onClick={() => setIsCustomMode(true)}
-                      >
-                        Custom Answer...
-                      </button>
+                          return (
+                            <button
+                              key={`${event.id}-q-${option.id || val || index}`}
+                              type="button"
+                              className={`oc-quick-input-option rounded-md border px-2.5 py-1.5 text-[11px] font-medium transition-all ${
+                                isSelected ? "!bg-oc-accent !text-white !border-oc-accent shadow-[0_0_0_1px_var(--oc-accent)]" : ""
+                              }`}
+                              title={option.description || option.label}
+                              onClick={() => {
+                                const val = option.value || option.label;
+                                if (event.multiSelect) {
+                                  setMultiSelectValues((prev) => {
+                                    const next = new Set(prev);
+                                    if (next.has(val)) next.delete(val);
+                                    else next.add(val);
+                                    return next;
+                                  });
+                                } else {
+                                  submitInteractiveResponse(
+                                    val,
+                                    event.id,
+                                    event.type,
+                                  );
+                                }
+                              }}
+                            >
+                              {renderInteractiveOptionLabel(option.label, option.recommended)}
+                            </button>
+                          );
+                        })}
+                        {event.allowCustomInput ? (
+                          <button
+                            type="button"
+                            className={`oc-quick-input-option-muted rounded-md border border-dashed px-2.5 py-1.5 text-[11px] font-medium transition-all ${
+                              isCustomMode && !event.multiSelect ? "!bg-oc-accent !text-white !border-oc-accent border-solid shadow-[0_0_0_1px_var(--oc-accent)]" : "bg-transparent"
+                            }`}
+                            onClick={() => setIsCustomMode(true)}
+                          >
+                            Custom Answer...
+                          </button>
+                        ) : null}
+                      </div>
+                      {event.multiSelect ? (
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            className="rounded-md bg-oc-accent px-3 py-1.5 text-xs font-semibold text-white hover:bg-oc-accent/90 transition-colors disabled:opacity-50"
+                            disabled={multiSelectValues.size === 0}
+                            onClick={() => {
+                              submitInteractiveResponse(
+                                Array.from(multiSelectValues),
+                                event.id,
+                                event.type,
+                              );
+                              setMultiSelectValues(new Set());
+                            }}
+                          >
+                            Submit Selection
+                          </button>
+                        </div>
+                      ) : null}
                     </div>
                   ) : null}
 
@@ -3250,7 +3420,7 @@ export function InputWrapper() {
 
             {/* Right: action buttons */}
             <div className="oc-toolbar-right">
-              {isAiResponding && inputValue.trim().length === 0 ? (
+              {hasLiveAssistantTurn ? (
                 <Button
                   variant="send"
                   size="icon"
@@ -3263,17 +3433,17 @@ export function InputWrapper() {
                   <Square className="h-3 w-3" />
                 </Button>
               ) : null}
-              {!isAiResponding || inputValue.trim().length > 0 ? (
+              {!hasLiveAssistantTurn || inputValue.trim().length > 0 ? (
                 <Button
                   variant="send"
                   size="icon"
                   className="oc-toolbar-action-icon"
                   onClick={sendPrompt}
                   disabled={isSteering}
-                  aria-label={isAiResponding ? "Send steering message" : "Send"}
-                  title={isAiResponding ? "Send steering message" : "Send"}
+                  aria-label={hasLiveAssistantTurn ? "Send steering message" : "Send"}
+                  title={hasLiveAssistantTurn ? "Send steering message" : "Send"}
                 >
-                  {!isAiResponding ? (
+                  {!hasLiveAssistantTurn ? (
                     <Send className="h-3 w-3" />
                   ) : inputValue.trim().length > 0 ? (
                     <AlertCircle className="h-3 w-3" />
@@ -3300,7 +3470,14 @@ export function InputWrapper() {
 }
 
 export function ThinkingLevelControl() {
-  const { thinkingLevel, thinkingDropdownOpen, modelCapability } = useAppState();
+  const { thinkingLevel, thinkingDropdownOpen, modelCapability } = useAppState(
+    (state) => ({
+      thinkingLevel: state.thinkingLevel,
+      thinkingDropdownOpen: state.thinkingDropdownOpen,
+      modelCapability: state.modelCapability,
+    }),
+    shallowEqual,
+  );
   const dispatch = useAppDispatch();
   const containerRef = useRef<HTMLDivElement>(null);
   const variantDescriptions: Record<string, string> = {
@@ -3435,7 +3612,13 @@ export function ThinkingLevelControl() {
 }
 
 export function QuotaMonitor() {
-  const { quotaData, quotaIsRefreshing } = useAppState();
+  const { quotaData, quotaIsRefreshing } = useAppState(
+    (state) => ({
+      quotaData: state.quotaData,
+      quotaIsRefreshing: state.quotaIsRefreshing,
+    }),
+    shallowEqual,
+  );
   const dispatch = useAppDispatch();
 
   const [open, setOpen] = useState(true);
@@ -3668,7 +3851,7 @@ export function QuotaMonitor() {
 
 // TodoPanel - displays todo items in right panel
 export function TodoPanel() {
-  const { todoItems } = useAppState();
+  const todoItems = useAppState((s) => s.todoItems);
   const [open, setOpen] = useState(true);
 
   const sortedTodoItems = useMemo(() => {
@@ -3831,7 +4014,10 @@ export function McpPanel() {
   const [expandedServers, setExpandedServers] = useState<Set<string>>(
     new Set(),
   );
-  const { mcpServers } = useAppState();
+  const { mcpServers } = useAppState(
+    (state) => ({ mcpServers: state.mcpServers }),
+    shallowEqual,
+  );
   const dispatch = useAppDispatch();
 
   function toggleServer(name: string) {
@@ -4021,7 +4207,10 @@ export function McpPanel() {
 // LspPanel - displays Language Server Protocol status with live data from OpenCode SDK
 export function LspPanel() {
   const [open, setOpen] = useState(true);
-  const { lspServers } = useAppState();
+  const { lspServers } = useAppState(
+    (state) => ({ lspServers: state.lspServers }),
+    shallowEqual,
+  );
 
   const activeCount = lspServers.filter((s) => s.status === "connected").length;
   const hasServers = lspServers.length > 0;
@@ -4122,7 +4311,13 @@ export function SkillsPanel() {
   const [open, setOpen] = useState(true);
   const [expandedSkills, setExpandedSkills] = useState<Set<string>>(new Set());
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const { availableSkills, serverStatus } = useAppState();
+  const { availableSkills, serverStatus } = useAppState(
+    (state) => ({
+      availableSkills: state.availableSkills,
+      serverStatus: state.serverStatus,
+    }),
+    shallowEqual,
+  );
   const dispatch = useAppDispatch();
 
   const hasSkills = availableSkills.length > 0;
@@ -4283,7 +4478,10 @@ export function AgentsPanel() {
   const [open, setOpen] = useState(true);
   const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set());
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const { availableAgents } = useAppState();
+  const { availableAgents } = useAppState(
+    (state) => ({ availableAgents: state.availableAgents }),
+    shallowEqual,
+  );
   const dispatch = useAppDispatch();
 
   const hasAgents = availableAgents.length > 0;
@@ -4970,7 +5168,14 @@ export function SettingsModal({
 }
 
 export function SettingsPanel() {
-  const { opencodeConfig, opencodeConfigSaveStatus, availableModels } = useAppState();
+  const { opencodeConfig, opencodeConfigSaveStatus, availableModels } = useAppState(
+    (state) => ({
+      opencodeConfig: state.opencodeConfig,
+      opencodeConfigSaveStatus: state.opencodeConfigSaveStatus,
+      availableModels: state.availableModels,
+    }),
+    shallowEqual,
+  );
   const [modalOpen, setModalOpen] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
 

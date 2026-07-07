@@ -118,7 +118,7 @@ test("startServer creates SDK client on successful readiness", () => {
 test("connectToServer creates SDK client with localhost URL and port", () => {
   assert.match(
     serverManagerSource,
-    /this\.client\s*=\s*createOpencodeClient\(\s*\{[^}]*baseUrl:\s*`http:\/\/localhost:\$\{this\.port\}`/,
+    /this\.client\s*=\s*createOpencodeClient\(\s*\{[^}]*baseUrl:\s*`http:\/\/localhost:\$\{(configuredPort|persistedPort)\}`/,
     "connectToServer must create client with http://localhost:<port>",
   );
 });

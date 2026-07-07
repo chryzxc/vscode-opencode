@@ -49,7 +49,7 @@ test.skip("system message deduplication includes system role in text-based dedup
 test.skip("system message deduplication prevents duplicate <auto-slash-command> messages", () => {
   const canonicalizeBody = extractFunctionBody(
     storeSource,
-    "function canonicalizeMessagesForRender(messages: Message[]): Message[]",
+    "export function canonicalizeMessagesForRender(",
   );
 
   // Verify that internal transport messages are converted to system role

@@ -79,19 +79,22 @@ const StepperItem = React.forwardRef<
   }
 >(({ className, isLast, indicator, children, ...props }, ref) => (
   <div ref={ref} className={cn("flex items-start", className)} {...props}>
-    {/* Left column: dot + line below */}
+    {/* Left column: dot + line below.
+        self-stretch makes the column fill full row height so the connector line
+        can grow to fill the space between this item and the next one. */}
     <div className="flex flex-col items-center shrink-0 mr-1.5 self-stretch">
-      {/* Dot wrapper — keeps indicator centred in a fixed-size box */}
-      <div className="flex h-5 w-5 shrink-0 items-center justify-center mt-[3px]">
+      {/* Dot wrapper — fixed-size box keeps indicator centred. 
+          No top margin so it aligns exactly with the top 20px of the right column. */}
+      <div className="flex h-5 w-5 shrink-0 items-center justify-center">
         {indicator}
       </div>
-      {/* Vertical connecting line — grows to fill remaining height */}
+      {/* Vertical connecting line — grows to fill remaining column height */}
       {!isLast && (
         <div className="w-px flex-1 bg-neutral-500/30 mt-1 min-h-[6px]" />
       )}
     </div>
 
-    {/* Right: main content */}
+    {/* Right: main content — grows to fill available width */}
     <div className={cn("flex-1 min-w-0 pb-0.5")}>
       {children}
     </div>

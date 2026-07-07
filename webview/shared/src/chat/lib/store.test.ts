@@ -25,6 +25,151 @@ import {
 } from './store';
 import type { Message, Session, TodoItem } from './types';
 
+describe('pending user messages', () => {
+  it('adds a pending user message keyed by session', () => {
+    const next = appReducer(initialState, {
+      type: 'ADD_PENDING_USER_MESSAGE',
+      payload: {
+        id: 'pending-1',
+        clientRequestId: 'req-1',
+        sessionId: 'session-a',
+        createdAt: 1000,
+        text: 'hello',
+      },
+    });
+
+    assert.deepStrictEqual(
+      next.pendingUserMessagesBySessionId?.['session-a']?.map((message) => message.id),
+      ['pending-1'],
+    );
+  });
+
+  it('deduplicates optimistic pending user messages by client request id', () => {
+    const seededState = appReducer(initialState, {
+      type: 'ADD_PENDING_USER_MESSAGE',
+      payload: {
+        id: 'pending-1',
+        clientRequestId: 'req-1',
+        sessionId: 'session-a',
+        createdAt: 1000,
+        text: 'hello',
+      },
+    });
+
+    const next = appReducer(seededState, {
+      type: 'ADD_PENDING_USER_MESSAGE',
+      payload: {
+        id: 'pending-2',
+        clientRequestId: 'req-1',
+        sessionId: 'session-a',
+        createdAt: 1001,
+        text: 'hello again',
+      },
+    });
+
+    assert.deepStrictEqual(
+      next.pendingUserMessagesBySessionId?.['session-a']?.map((message) => message.id),
+      ['pending-1'],
+    );
+  });
+
+  it('confirms an optimistic pending user message without removing it before transcript handoff', () => {
+    const seededState = appReducer(initialState, {
+      type: 'ADD_PENDING_USER_MESSAGE',
+      payload: {
+        id: 'pending-1',
+        clientRequestId: 'req-1',
+        sessionId: 'session-a',
+        createdAt: 1000,
+        text: 'hello',
+      },
+    });
+
+    const next = appReducer(seededState, {
+      type: 'CONFIRM_PENDING_USER_MESSAGE',
+      payload: {
+        sessionId: 'session-a',
+        clientRequestId: 'req-1',
+        messageId: 'msg-1',
+        createdAt: 1005,
+        text: 'hello',
+      },
+    });
+
+    assert.deepStrictEqual(
+      next.pendingUserMessagesBySessionId?.['session-a']?.map((message) => ({
+        id: message.id,
+        confirmedMessageId: message.confirmedMessageId,
+        confirmedAt: message.confirmedAt,
+      })),
+      [{ id: 'msg-1', confirmedMessageId: 'msg-1', confirmedAt: 1005 }],
+    );
+  });
+
+  it('removes reconciled pending user messages by id', () => {
+    const seededState = {
+      ...initialState,
+      currentSessionId: 'session-a',
+      pendingUserMessagesBySessionId: {
+        'session-a': [
+          {
+            id: 'pending-1',
+            sessionId: 'session-a',
+            createdAt: 1000,
+            text: 'hello',
+          },
+          {
+            id: 'pending-2',
+            sessionId: 'session-a',
+            createdAt: 1001,
+            text: 'world',
+          },
+        ],
+      },
+    };
+
+    const next = appReducer(seededState, {
+      type: 'REMOVE_PENDING_USER_MESSAGES',
+      payload: { sessionId: 'session-a', ids: ['pending-1'] },
+    });
+
+    assert.deepStrictEqual(
+      next.pendingUserMessagesBySessionId?.['session-a']?.map((message) => message.id),
+      ['pending-2'],
+    );
+  });
+
+  it('moves draft-session pending messages onto the real session id during session hydration', () => {
+    const seededState = {
+      ...initialState,
+      pendingUserMessagesBySessionId: {
+        '__pending__:current': [
+          {
+            id: 'pending-1',
+            sessionId: '__pending__:current',
+            createdAt: 1000,
+            text: 'hello',
+          },
+        ],
+      },
+    };
+
+    const next = appReducer(seededState, {
+      type: 'SET_SESSION_ID',
+      payload: 'session-a',
+    });
+
+    assert.deepStrictEqual(
+      next.pendingUserMessagesBySessionId?.['session-a']?.map((message) => message.id),
+      ['pending-1'],
+    );
+    assert.strictEqual(
+      next.pendingUserMessagesBySessionId?.['__pending__:current'],
+      undefined,
+    );
+  });
+});
+
 describe('isInternalTransportReminderMessage', () => {
   it('should detect square-bracketed system messages', () => {
     const message: Message = {
@@ -175,6 +320,392 @@ describe('error message reducer state', () => {
     });
 
     assert.deepStrictEqual(nextState.errorMessages, ['Provider list timeout']);
+  });
+
+  it('stores live toast notifications separately from centralized raw events', () => {
+    const nextState = appReducer(
+      {
+        ...initialState,
+        currentSessionId: 'ses-live-toast',
+      },
+      {
+        type: 'APPEND_LIVE_TOAST_NOTIFICATION',
+        payload: {
+          sessionId: 'ses-live-toast',
+          notification: {
+            key: 'toast-1',
+            type: 'tui.toast.show',
+            title: 'Heads up',
+            message: 'Toast stays live-only',
+            variant: 'info',
+            durationMs: 1500,
+          },
+        },
+      },
+    );
+
+    assert.deepStrictEqual(
+      nextState.liveToastNotificationsBySessionId?.['ses-live-toast'],
+      [
+        {
+          key: 'toast-1',
+          type: 'tui.toast.show',
+          title: 'Heads up',
+          message: 'Toast stays live-only',
+          variant: 'info',
+          durationMs: 1500,
+        },
+      ],
+    );
+    assert.deepStrictEqual(
+      nextState.rawSdkEventPayloadsBySessionId?.['ses-live-toast'],
+      undefined,
+    );
+  });
+
+  it('deduplicates live toast notifications by key', () => {
+    const seededState = appReducer(
+      {
+        ...initialState,
+        currentSessionId: 'ses-live-toast',
+      },
+      {
+        type: 'APPEND_LIVE_TOAST_NOTIFICATION',
+        payload: {
+          sessionId: 'ses-live-toast',
+          notification: {
+            key: 'toast-1',
+            type: 'tui.toast.show',
+            title: 'Heads up',
+            message: 'Toast stays live-only',
+            variant: 'info',
+            durationMs: 1500,
+          },
+        },
+      },
+    );
+
+    const nextState = appReducer(seededState, {
+      type: 'APPEND_LIVE_TOAST_NOTIFICATION',
+      payload: {
+        sessionId: 'ses-live-toast',
+        notification: {
+          key: 'toast-1',
+          type: 'tui.toast.show',
+          title: 'Heads up',
+          message: 'Toast stays live-only',
+          variant: 'info',
+          durationMs: 1500,
+        },
+      },
+    });
+
+    assert.strictEqual(
+      nextState.liveToastNotificationsBySessionId?.['ses-live-toast']?.length,
+      1,
+    );
+  });
+});
+
+describe('streaming reasoning reducer state', () => {
+  it('groups interleaved delta reasoning chunks by part id for live updates', () => {
+    const seededState = appReducer(initialState, {
+      type: 'SET_STREAMING',
+      payload: {
+        messageId: 'msg-reasoning',
+        content: '',
+        hasRenderableContent: false,
+        reasoning: '',
+        reasoningEvents: [],
+        steps: [],
+        progressEvents: [],
+        edits: [],
+        isActive: true,
+      },
+    });
+
+    const firstChunk = appReducer(seededState, {
+      type: 'UPDATE_STREAMING_REASONING',
+      payload: {
+        reasoning: 'The',
+        append: true,
+        partID: 'part-1',
+        messageID: 'msg-reasoning',
+        delta: true,
+      },
+    });
+
+    const interleavedPart = appReducer(firstChunk, {
+      type: 'UPDATE_STREAMING_REASONING',
+      payload: {
+        reasoning: 'Plan',
+        append: true,
+        partID: 'part-2',
+        messageID: 'msg-reasoning',
+        delta: true,
+      },
+    });
+
+    const nextState = appReducer(interleavedPart, {
+      type: 'UPDATE_STREAMING_REASONING',
+      payload: {
+        reasoning: 'ory',
+        append: true,
+        partID: 'part-1',
+        messageID: 'msg-reasoning',
+        delta: true,
+      },
+    });
+
+    assert.deepStrictEqual(
+      nextState.streaming?.reasoningEvents.map((event) => ({
+        partID: event.partID,
+        messageID: event.messageID,
+        text: event.text,
+        delta: event.delta,
+      })),
+      [
+        {
+          partID: 'part-1',
+          messageID: 'msg-reasoning',
+          text: 'Theory',
+          delta: true,
+        },
+        {
+          partID: 'part-2',
+          messageID: 'msg-reasoning',
+          text: 'Plan',
+          delta: true,
+        },
+      ],
+    );
+  });
+});
+
+describe('assistant turn pending lifecycle', () => {
+  it('clears a stale inactive streaming snapshot when a new assistant turn starts', () => {
+    const seededState = {
+      ...initialState,
+      assistantTurnPending: false,
+      assistantTurnMessageId: 'msg-old-assistant',
+      streaming: {
+        messageId: 'msg-old-assistant',
+        content: 'previous assistant response',
+        reasoning: '',
+        reasoningEvents: [],
+        steps: [],
+        progressEvents: [],
+        edits: [],
+        isActive: false,
+      } as unknown as NonNullable<typeof initialState.streaming>,
+    };
+
+    const nextState = appReducer(seededState, {
+      type: 'SET_ASSISTANT_TURN_PENDING',
+      payload: {
+        pending: true,
+        messageId: 'msg-new-assistant',
+      },
+    });
+
+    assert.strictEqual(nextState.assistantTurnPending, true);
+    assert.strictEqual(nextState.assistantTurnMessageId, 'msg-new-assistant');
+    assert.strictEqual(nextState.streaming, null);
+  });
+
+  it('does not carry the previous assistant message id into a fresh pending turn without an id yet', () => {
+    const seededState = {
+      ...initialState,
+      assistantTurnPending: false,
+      assistantTurnMessageId: 'msg-old-assistant',
+    };
+
+    const nextState = appReducer(seededState, {
+      type: 'SET_ASSISTANT_TURN_PENDING',
+      payload: {
+        pending: true,
+      },
+    });
+
+    assert.strictEqual(nextState.assistantTurnPending, true);
+    assert.strictEqual(nextState.assistantTurnMessageId, null);
+  });
+
+  it('clears previous inactive streaming content when a fresh pending turn has no id yet', () => {
+    const seededState = {
+      ...initialState,
+      currentSessionId: 'ses-1',
+      assistantTurnPending: false,
+      assistantTurnMessageId: 'msg-old-assistant',
+      streaming: {
+        messageId: 'msg-old-assistant',
+        content: 'previous assistant response',
+        reasoning: '',
+        reasoningEvents: [],
+        steps: [],
+        progressEvents: [],
+        edits: [],
+        isActive: false,
+        hasRenderableContent: true,
+      } as unknown as NonNullable<typeof initialState.streaming>,
+      streamingBySessionId: {
+        'ses-1': {
+          messageId: 'msg-old-assistant',
+          content: 'previous assistant response',
+          reasoning: '',
+          reasoningEvents: [],
+          steps: [],
+          progressEvents: [],
+          edits: [],
+          isActive: false,
+          hasRenderableContent: true,
+        } as NonNullable<typeof initialState.streaming>,
+      },
+    };
+
+    const nextState = appReducer(seededState, {
+      type: 'SET_ASSISTANT_TURN_PENDING',
+      payload: {
+        pending: true,
+      },
+    });
+
+    assert.strictEqual(nextState.assistantTurnPending, true);
+    assert.strictEqual(nextState.assistantTurnMessageId, null);
+    assert.strictEqual(nextState.streaming, null);
+    assert.strictEqual(nextState.streamingBySessionId?.['ses-1'], undefined);
+  });
+
+  it('does not keep assistant turn pending when switching to a fresh idle session', () => {
+    const seededState = {
+      ...initialState,
+      currentSessionId: 'ses-old',
+      assistantTurnPending: true,
+      assistantTurnMessageId: 'msg-old-assistant',
+      isProcessing: true,
+    };
+
+    const nextState = appReducer(seededState, {
+      type: 'SET_SESSION_ID',
+      payload: 'ses-new',
+    });
+
+    assert.strictEqual(nextState.currentSessionId, 'ses-new');
+    assert.strictEqual(nextState.assistantTurnPending, false);
+    assert.strictEqual(nextState.assistantTurnMessageId, null);
+    assert.strictEqual(nextState.isProcessing, false);
+  });
+
+  it('does not restore loading state from a hydrated aborted assistant turn', () => {
+    const seededState = {
+      ...initialState,
+      currentSessionId: 'ses-old',
+      processingSessionIds: ['ses-new'],
+      messagesBySessionId: {
+        'ses-new': [
+          {
+            id: 'msg-assistant-final',
+            role: 'assistant',
+            aborted: true,
+            info: {
+              id: 'msg-assistant-final',
+              role: 'assistant',
+              aborted: true,
+              finish: 'stop',
+            },
+          } as Message,
+        ],
+      },
+      streamingBySessionId: {
+        'ses-new': {
+          isActive: true,
+          messageId: 'msg-assistant-final',
+          content: 'still streaming?',
+          reasoning: '',
+          reasoningEvents: [],
+          steps: [],
+          progressEvents: [],
+          edits: [],
+        } as NonNullable<typeof initialState.streaming>,
+      },
+    };
+
+    const nextState = appReducer(seededState, {
+      type: 'HYDRATE_SESSION_FROM_CACHE',
+      payload: {
+        sessionId: 'ses-new',
+      },
+    });
+
+    assert.strictEqual(nextState.currentSessionId, 'ses-new');
+    assert.strictEqual(nextState.assistantTurnPending, false);
+    assert.strictEqual(nextState.assistantTurnMessageId, null);
+    assert.strictEqual(nextState.isProcessing, false);
+    assert.strictEqual(nextState.streaming, null);
+  });
+});
+
+describe('raw event capture', () => {
+  it('stores the exact incoming SDK payload by session id', () => {
+    const rawEvent = {
+      type: 'message.part.updated',
+      sessionId: 'ses_123',
+      payload: {
+        nested: true,
+        text: 'raw text',
+      },
+    };
+
+    const nextState = appReducer(
+      {
+        ...initialState,
+        currentSessionId: 'ses_123',
+      },
+      {
+        type: 'APPEND_RAW_SDK_EVENT_PAYLOAD',
+        payload: {
+          sessionId: 'ses_123',
+          event: rawEvent,
+        },
+      },
+    );
+
+    assert.deepStrictEqual(
+      nextState.rawSdkEventPayloadsBySessionId?.['ses_123'],
+      [rawEvent],
+    );
+  });
+
+  it('deduplicates identical SDK payloads by session id', () => {
+    const rawEvent = {
+      id: 'evt_123',
+      type: 'message.part.updated',
+      sessionId: 'ses_123',
+      payload: {
+        nested: true,
+      },
+    };
+
+    const seededState = {
+      ...initialState,
+      currentSessionId: 'ses_123',
+      rawSdkEventPayloadsBySessionId: {
+        ses_123: [rawEvent],
+      },
+    };
+
+    const nextState = appReducer(seededState, {
+      type: 'APPEND_RAW_SDK_EVENT_PAYLOAD',
+      payload: {
+        sessionId: 'ses_123',
+        event: rawEvent,
+      },
+    });
+
+    assert.deepStrictEqual(
+      nextState.rawSdkEventPayloadsBySessionId?.['ses_123'],
+      [rawEvent],
+    );
   });
 });
 
@@ -405,6 +936,100 @@ describe("appReducer render-stability guards", () => {
     assert.strictEqual(next.interactiveEvents.length, 0);
   });
 
+  it("preserves rawSdkEventPayloads when caching session streaming state", () => {
+    const payloads = [
+      { type: "message.start", id: "evt-1" },
+      { type: "message.delta", text: "hello" },
+    ];
+    const next = appReducer(initialState, {
+      type: "SET_SESSION_STREAMING",
+      payload: {
+        sessionId: "session-a",
+        streaming: {
+          isActive: true,
+          content: "hello",
+          reasoning: "",
+          reasoningEvents: [],
+          progressEvents: [],
+          steps: [],
+          edits: [],
+          interactiveEvents: [],
+          rawSdkEventPayloads: payloads,
+        } as any,
+      },
+    });
+
+    assert.deepStrictEqual(
+      next.streamingBySessionId?.["session-a"]?.rawSdkEventPayloads,
+      payloads,
+    );
+  });
+
+  it("preserves empty streaming arrays when a partial snapshot is merged", () => {
+    const seededState = {
+      ...initialState,
+      streaming: {
+        messageId: "msg-1",
+        content: "",
+        reasoning: "",
+        reasoningEvents: [],
+        steps: [],
+        progressEvents: [],
+        edits: [],
+        interactiveEvents: [],
+        isActive: true,
+      } as any,
+    };
+
+    const nextState = appReducer(seededState, {
+      type: "SET_STREAMING",
+      payload: {
+        messageId: "msg-1",
+        content: "",
+        reasoning: "",
+        isActive: true,
+        hasRenderableContent: false,
+      } as any,
+    });
+
+    assert.deepStrictEqual(nextState.streaming?.steps, []);
+    assert.deepStrictEqual(nextState.streaming?.progressEvents, []);
+    assert.deepStrictEqual(nextState.streaming?.reasoningEvents, []);
+    assert.deepStrictEqual(nextState.streaming?.edits, []);
+    assert.deepStrictEqual(nextState.streaming?.interactiveEvents, []);
+  });
+
+  it("preserves rawSdkEventPayloads order when canonicalizing duplicate assistant turns", () => {
+    const messages: Message[] = [
+      {
+        role: "assistant",
+        id: "msg-1",
+        rawSdkEventPayloads: [
+          { id: "evt-1", type: "message.part.updated", properties: { time: 1 } },
+        ],
+        parts: [{ type: "text", text: "first" }],
+      } as Message,
+      {
+        role: "assistant",
+        id: "msg-1",
+        rawSdkEventPayloads: [
+          { id: "evt-2", type: "message.part.updated", properties: { time: 2 } },
+        ],
+        parts: [{ type: "text", text: "first again" }],
+      } as Message,
+    ];
+
+    const deduped = dedupeMirrorMessagesForCanonical(messages);
+
+    assert.strictEqual(deduped.length, 1);
+    assert.deepStrictEqual(
+      (deduped[0]?.rawSdkEventPayloads ?? []).map(
+        (event) => (event as Record<string, unknown>).id,
+      ),
+      ["evt-1", "evt-2"],
+    );
+  });
+
   it("switches visible messages immediately on SET_SESSION_ID", () => {
     const stateWithSessionCache = {
       ...initialState,
@@ -516,7 +1141,7 @@ describe('extractMessageTextForCanonical', () => {
         { type: 'text', text: 'world' },
       ],
     };
-    assert.strictEqual(extractMessageTextForCanonical(message), 'hello\nworld');
+    assert.strictEqual(extractMessageTextForCanonical(message), 'hello world');
   });
 
   it('should handle missing content and parts', () => {
@@ -711,6 +1336,36 @@ describe('canonicalizeMessagesForRender', () => {
     assert.strictEqual(result.length, 2);
     assert.strictEqual(result[1].content, 'reply!');
     assert.strictEqual(result[1].id, 'a2');
+  });
+
+  it('should collapse an immediately repeated user+assistant turn', () => {
+    const messages: Message[] = [
+      { role: 'user', content: 'hey there', id: 'u1', created: 10 },
+      { role: 'assistant', content: 'Hello!', id: 'a1', created: 11 },
+      { role: 'user', content: 'hey there', id: 'u2', created: 12 },
+      { role: 'assistant', content: 'Hello!', id: 'a2', created: 13 },
+    ];
+
+    const result = canonicalizeMessagesForRender(messages);
+
+    assert.strictEqual(result.length, 2);
+    assert.strictEqual(result[0].id, 'u1');
+    assert.strictEqual(result[1].id, 'a1');
+  });
+
+  it('should collapse an immediately repeated user+assistant turn even when IDs differ', () => {
+    const messages: Message[] = [
+      { role: 'user', content: 'hey there', id: 'u1', created: 10 },
+      { role: 'assistant', content: 'Hello!', id: 'a1', created: 11 },
+      { role: 'user', content: 'hey there', id: 'u2-different', created: 12 },
+      { role: 'assistant', content: 'Hello!', id: 'a2-different', created: 13 },
+    ];
+
+    const result = canonicalizeMessagesForRender(messages);
+
+    assert.strictEqual(result.length, 2);
+    assert.strictEqual(result[0].content, 'hey there');
+    assert.strictEqual(result[1].content, 'Hello!');
   });
 });
 
@@ -1029,6 +1684,25 @@ describe('mergeActivityArraysLocal', () => {
       // Step 3 should be merged with both details
       assert.strictEqual(result![2].id, '3');
       assert.strictEqual(result![2].detail, 'new detail', 'should preserve incoming details for same ID');
+    });
+
+    it('should ignore sparse-array holes and undefined entries without crashing', () => {
+      const existing = new Array(2) as Array<{ id: string; createdAt: number } | undefined>;
+      existing[1] = { id: 'step-2', createdAt: 2000 };
+
+      const incoming = [
+        undefined,
+        { id: 'step-1', createdAt: 1000 },
+      ] as Array<{ id: string; createdAt: number } | undefined>;
+
+      const result = mergeActivityArraysLocal(existing, incoming);
+
+      assert.ok(result, 'should still return defined merged activity items');
+      assert.deepStrictEqual(
+        result?.map((entry) => entry.id),
+        ['step-1', 'step-2'],
+        'undefined activity entries should be skipped while valid items remain chronologically ordered',
+      );
     });
   });
 });

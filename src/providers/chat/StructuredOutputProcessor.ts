@@ -75,7 +75,7 @@ export class StructuredOutputProcessor {
       ? (schemaRecord?.required as string[]).filter(
         (item) => typeof item === "string" && item.trim().length > 0,
       )
-      : ["responseType"];
+      : ["type"];
     const allOf = Array.isArray(schemaRecord?.allOf)
       ? schemaRecord.allOf
       : undefined;
@@ -371,7 +371,7 @@ export class StructuredOutputProcessor {
    */
   isInteractiveResponseType(value: unknown): boolean {
     const str = String(value).toLowerCase().trim();
-    return str === "question" || str === "interactive" || str === "confirm";
+    return str === "confirm" || str === "quick_actions";
   }
 
   /**
@@ -430,8 +430,7 @@ export class StructuredOutputProcessor {
     if (!rec) return false;
 
     const interactiveEvents =
-      (Array.isArray(rec.interactiveEvents) ? rec.interactiveEvents : undefined) ||
-      (Array.isArray(rec.question) ? [{ type: "question", question: rec.question }] : undefined);
+      Array.isArray(rec.interactiveEvents) ? rec.interactiveEvents : undefined;
 
     if (!interactiveEvents || interactiveEvents.length === 0) {
       return false;
@@ -616,7 +615,7 @@ export class StructuredOutputProcessor {
       modelID?: string;
     },
   ): void {
-    const responseType = this.firstNonEmptyString(canonicalRec.responseType);
+    const responseType = this.firstNonEmptyString(canonicalRec.type, canonicalRec.responseType);
     if (!responseType) return;
 
     const providerID = diagnostics?.providerID || "unknown";
@@ -661,7 +660,7 @@ export class StructuredOutputProcessor {
       preview,
       keys: rec ? Object.keys(rec) : undefined,
       responseType: rec
-        ? this.firstNonEmptyString(rec.responseType, rec.type, rec.kind, rec.category)
+        ? this.firstNonEmptyString(rec.type, rec.responseType, rec.kind, rec.category)
         : undefined,
       };
   }
@@ -701,13 +700,13 @@ export class StructuredOutputProcessor {
       (Array.isArray(rec.actions) ? rec.actions.length : 0);
 
     return {
-      responseType: this.firstNonEmptyString(
-        rec.responseType,
+      type: this.firstNonEmptyString(
         rec.type,
+        rec.responseType,
         rec.kind,
         rec.category,
       ),
-      message: this.firstNonEmptyString(rec.message, rec.content, rec.text),
+      text: this.firstNonEmptyString(rec.text, rec.message, rec.content),
       planFile: this.firstNonEmptyString(planRec?.file),
       planContent: this.firstNonEmptyString(planRec?.content),
       planFiles: Array.isArray(planRec?.files) ? planRec.files.length : 0,
@@ -756,6 +755,8 @@ export class StructuredOutputProcessor {
     const ignoredRawKeys = new Set([
       "raw",
       "type",
+      "responseType",
+      "message",
       "kind",
       "category",
       "content",
@@ -907,11 +908,11 @@ export class StructuredOutputProcessor {
       rec.kind,
     );
     const normalizedResponseType = rawResponseType
-      ? rawResponseType.toLowerCase() === "interactive"
-        ? "question"
-        : rawResponseType.toLowerCase() === "conversation"
+      ? rawResponseType.toLowerCase() === "conversation"
           ? "message"
-          : rawResponseType.toLowerCase()
+          : ["question", "interactive", "confirm", "quick_actions"].includes(rawResponseType.toLowerCase())
+            ? undefined
+            : rawResponseType.toLowerCase()
       : undefined;
 
     const message =
@@ -940,35 +941,9 @@ export class StructuredOutputProcessor {
       ),
     );
 
-    const questionRec = this.asRecord(rec.question);
-    const topLevelOptions = Array.isArray(rec.options) ? rec.options : undefined;
-    const topLevelChoices = Array.isArray(rec.choices) ? rec.choices : undefined;
-    const topLevelActions = Array.isArray(rec.actions) ? rec.actions : undefined;
     const rawInteractiveEvents = Array.isArray(rec.interactiveEvents)
       ? (rec.interactiveEvents as StructuredAssistantOutput["interactiveEvents"])
       : undefined;
-    const hasQuestionPayload =
-      Boolean(questionRec) ||
-      Array.isArray(topLevelOptions) ||
-      Array.isArray(topLevelChoices) ||
-      Array.isArray(topLevelActions) ||
-      Array.isArray(rawInteractiveEvents);
-    const normalizedQuestion =
-      questionRec || hasQuestionPayload
-        ? {
-          ...(questionRec ?? {}),
-          ...(typeof (questionRec ?? {}).type === "undefined" ? { type: "question" } : {}),
-          ...(typeof (questionRec ?? {}).options === "undefined" && topLevelOptions
-            ? { options: topLevelOptions }
-            : {}),
-          ...(typeof (questionRec ?? {}).choices === "undefined" && topLevelChoices
-            ? { choices: topLevelChoices }
-            : {}),
-          ...(typeof (questionRec ?? {}).actions === "undefined" && topLevelActions
-            ? { actions: topLevelActions }
-            : {}),
-        }
-        : undefined;
 
     const fileChanges = this.normalizeStructuredFileChangesForValidation(
       rec.fileChanges,
@@ -984,7 +959,6 @@ export class StructuredOutputProcessor {
     const effectiveResponseType =
       normalizedResponseType ||
       (hasPlan ? "implementation_plan" : undefined) ||
-      (hasQuestionPayload ? "question" : undefined) ||
       (message ? "message" : undefined);
 
     if (
@@ -992,7 +966,6 @@ export class StructuredOutputProcessor {
       !message &&
       !hasPlan &&
       fileChanges.length === 0 &&
-      !normalizedQuestion &&
       !rawInteractiveEvents &&
       !subagents &&
       !subagentsDelta
@@ -1001,12 +974,12 @@ export class StructuredOutputProcessor {
     }
 
     return this.preserveStructuredOutputRawFields(rec, {
+      type: effectiveResponseType,
+      text: message,
       responseType: effectiveResponseType,
       message,
       plan: hasPlan ? plan : undefined,
       fileChanges: fileChanges.length > 0 ? fileChanges : undefined,
-      question:
-        normalizedQuestion as StructuredAssistantOutput["question"] | undefined,
       interactiveEvents: rawInteractiveEvents,
       subagents: subagents as StructuredAssistantOutput["subagents"] | undefined,
       subagentsDelta:
@@ -1081,6 +1054,7 @@ export class StructuredOutputProcessor {
     }
 
     const responseTypeHintRaw = this.firstNonEmptyString(
+      sanitizedRec.type,
       sanitizedRec.responseType,
       rec.type,
       rec.kind,
@@ -1089,14 +1063,16 @@ export class StructuredOutputProcessor {
     const responseTypeHint = responseTypeHintRaw?.toLowerCase();
 
     const strictMessageCandidate =
-      this.firstNonEmptyString(sanitizedRec.message) ||
-      (typeof rec.message === "string" ? rec.message : undefined);
+      this.firstNonEmptyString(sanitizedRec.text, sanitizedRec.message) ||
+      (typeof rec.text === "string"
+        ? rec.text
+        : typeof rec.message === "string"
+          ? rec.message
+          : undefined);
     const aliasMessageCandidate = this.firstNonEmptyString(
       strictMessageCandidate,
       sanitizedRec.content,
       rec.content,
-      sanitizedRec.text,
-      rec.text,
       sanitizedRec.output,
       rec.output,
       sanitizedRec.detail,
@@ -1141,7 +1117,7 @@ export class StructuredOutputProcessor {
 
     let canonicalRec: Record<string, unknown> = {
       ...sanitizedRec,
-      responseType: responseTypeRaw,
+      type: responseTypeRaw,
     };
     // Normalize fileChanges before schema validation so malformed provider
     // values (ex: diffExcerpt.lines as string) don't cause the whole payload
@@ -1154,13 +1130,13 @@ export class StructuredOutputProcessor {
     }
     if (
       messageCandidate &&
-      !this.firstNonEmptyString(canonicalRec.message)
+      !this.firstNonEmptyString(canonicalRec.text)
     ) {
-      canonicalRec.message = messageCandidate;
+      canonicalRec.text = messageCandidate;
     }
 
     const canonicalResponseType = this.firstNonEmptyString(
-      canonicalRec.responseType,
+      canonicalRec.type,
     )?.toLowerCase();
     if (canonicalResponseType === "implementation_plan") {
       const existingPlan = this.asRecord(canonicalRec.plan) ?? this.asRecord(rec.plan);
@@ -1211,7 +1187,7 @@ export class StructuredOutputProcessor {
           : [];
         canonicalRec = {
           ...canonicalRec,
-          responseType: "implementation_plan",
+          type: "implementation_plan",
           plan: {
             ...candidatePlan,
             file: planFile,
@@ -1225,8 +1201,8 @@ export class StructuredOutputProcessor {
     }
     if (!validation.valid && messageCandidate) {
       canonicalRec = {
-        responseType: "message",
-        message: messageCandidate,
+        type: "message",
+        text: messageCandidate,
       };
       validation = validateStructuredOutput(canonicalRec);
     }
@@ -1380,12 +1356,13 @@ export class StructuredOutputProcessor {
   createFallbackMessage(
     structured: StructuredAssistantOutput,
   ): string | undefined {
-    if (!structured.responseType) return undefined;
+    if (!structured.type && !structured.responseType) return undefined;
 
-    const { responseType, progressUpdates, interactiveEvents, plan } =
+    const { type, responseType, progressUpdates, interactiveEvents, plan } =
       structured;
+    const responseKind = this.firstNonEmptyString(type, responseType);
 
-    switch (responseType) {
+    switch (responseKind) {
       case "implementation_plan":
         return this.firstNonEmptyString(
           plan?.intro,
@@ -1398,41 +1375,6 @@ export class StructuredOutputProcessor {
           return `Progress: ${titles}`;
         }
         return "📊 Working on tasks...";
-      case "question": {
-        const questionRecord = this.asRecord(structured.question);
-        const displayPrompt = this.firstNonEmptyString(
-          questionRecord?.displayPrompt,
-        );
-        if (displayPrompt) {
-          return displayPrompt;
-        }
-        const questionPrompt = this.firstNonEmptyString(
-          questionRecord?.question,
-          questionRecord?.message,
-          questionRecord?.content,
-        );
-        if (questionPrompt) {
-          return questionPrompt;
-        }
-        if (interactiveEvents && interactiveEvents.length > 0) {
-          const firstEvent = interactiveEvents[0];
-          const firstEventRecord = this.asRecord(firstEvent);
-          const eventDisplayPrompt = this.firstNonEmptyString(
-            firstEventRecord?.displayPrompt,
-          );
-          if (eventDisplayPrompt) {
-            return eventDisplayPrompt;
-          }
-          if (firstEvent.type === "question" && firstEvent.question) {
-            return firstEvent.question;
-          } else if (firstEvent.type === "confirm" && firstEvent.question) {
-            return firstEvent.question;
-          } else if (firstEvent.type === "message" && firstEvent.message) {
-            return firstEvent.message;
-          }
-        }
-        return "❓ Question for you";
-      }
       case "subagents":
         return "🤖 Subagents...";
       case "error":
@@ -1512,8 +1454,8 @@ export class StructuredOutputProcessor {
             messageId: message?.id || message?.info?.id,
             matchIndex: i,
             matchSource: sourceLabels[i] || `candidate-${i}`,
-            responseType: normalized.responseType,
-            messagePreview: String(normalized.message).slice(0, 200),
+            responseType: normalized.type || normalized.responseType,
+            messagePreview: String(normalized.text ?? normalized.message).slice(0, 200),
             totalCandidates: candidates.length,
           });
           return normalized;
@@ -1526,7 +1468,7 @@ export class StructuredOutputProcessor {
       hasStructOutput: !!message?.structuredOutput,
       hasStruct: !!message?.structured,
       hasInfo: !!message?.info,
-      structOutputMsg: String(message?.structuredOutput?.message).slice(0, 200),
+      structOutputMsg: String(message?.structuredOutput?.text ?? message?.structuredOutput?.message).slice(0, 200),
       rawResponsePreview: String(message?.rawResponse).slice(0, 200),
     });
 
@@ -1545,16 +1487,17 @@ export class StructuredOutputProcessor {
     const updated = { ...message };
     const fallbackMessage = this.createFallbackMessage(structured);
 
-    if (structured.message) {
+    const structuredText = this.firstNonEmptyString(structured.text, structured.message);
+    if (structuredText) {
       this.logger.debug("[CLIENT FACING] StructOutputProcessor.applyStructured SET_CONTENT", {
         messageId: message?.id || message?.info?.id,
         oldContent: String(message?.content).slice(0, 200),
-        structMessage: String(structured.message).slice(0, 200),
-        responseType: structured.responseType,
+        structMessage: String(structuredText).slice(0, 200),
+        responseType: structured.type || structured.responseType,
       });
-      updated.message = structured.message;
-      updated.content = structured.message;
-      updated.text = structured.message;
+      updated.message = structuredText;
+      updated.content = structuredText;
+      updated.text = structuredText;
     } else if (fallbackMessage && !updated.content) {
       // Structured response types like implementation_plan carry display text in
       // plan.summary/intro rather than in a top-level message field. Populate
@@ -1591,26 +1534,8 @@ export class StructuredOutputProcessor {
       updated.plan = structured.plan;
     }
 
-    if (structured.question && !updated.question) {
-      updated.question = structured.question;
-    }
-
     if (structured.reasoning && structured.reasoning.length > 0) {
       updated.reasoning = [...(updated.reasoning || []), ...structured.reasoning];
-    }
-
-    // Hydrated interactive/question turns should display the canonical prompt,
-    // not any leaked draft/reasoning body that a provider may have placed in
-    // content/text before the structured payload landed.
-    if (
-      structured.responseType === "question" &&
-      fallbackMessage
-    ) {
-      updated.content = fallbackMessage;
-      updated.text = fallbackMessage;
-      if (!updated.message) {
-        updated.message = fallbackMessage;
-      }
     }
 
     updated.structuredOutput = structured;
@@ -1661,7 +1586,9 @@ export class StructuredOutputProcessor {
     const structured = this.extractStructuredOutput(message);
 
     const structuredResponseType = this.firstNonEmptyString(
+      structured?.type,
       structured?.responseType,
+      message?.structuredOutput?.type,
       message?.structuredOutput?.responseType,
     );
     const hasInteractiveEvents =
@@ -1820,6 +1747,7 @@ export class StructuredOutputProcessor {
             title: resolvedPlanTitle,
             summary: this.firstNonEmptyString(structuredPlanRecord?.summary),
             messageText: this.firstNonEmptyString(
+              structured?.text,
               structured?.message,
               message?.content,
             ),

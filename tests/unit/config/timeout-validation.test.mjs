@@ -34,7 +34,7 @@ test("requestTimeout configuration has correct schema", () => {
   const requestTimeout = properties['opencode.requestTimeout'];
 
   assert.equal(requestTimeout?.type, 'number', 'requestTimeout should be number type');
-  assert.equal(requestTimeout?.default, 120000, 'requestTimeout should default to 120000ms');
+  assert.equal(requestTimeout?.default, 60000, 'requestTimeout should default to 60000ms');
   assert.ok(requestTimeout?.minimum, 'requestTimeout should have minimum value');
   assert.ok(requestTimeout?.maximum, 'requestTimeout should have maximum value');
 });

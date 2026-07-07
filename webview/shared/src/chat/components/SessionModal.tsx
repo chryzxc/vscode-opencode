@@ -3,7 +3,7 @@ import { X, Search, MessageSquare, Plus, Loader2, Edit, Trash2, Check, History }
 import { createPortal } from "react-dom";
 
 import { Button } from "@/components/ui/button";
-import { useAppState, useAppDispatch } from "../lib/store";
+import { useAppState, useAppDispatch, shallowEqual } from "../lib/store";
 import vscode from "../lib/vscode";
 
 type SessionModalProps = {
@@ -16,8 +16,13 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
     sessionsList,
     currentSessionId,
     processingSessionIds,
-    messagesBySessionId,
-  } = useAppState();
+    rawSdkEventPayloadsBySessionId,
+  } = useAppState((s) => ({
+    sessionsList: s.sessionsList,
+    currentSessionId: s.currentSessionId,
+    processingSessionIds: s.processingSessionIds,
+    rawSdkEventPayloadsBySessionId: s.rawSdkEventPayloadsBySessionId,
+  }), shallowEqual);
   const dispatch = useAppDispatch();
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [newTitle, setNewTitle] = useState("");
@@ -189,15 +194,15 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
     // Find the session to get its title
     const session = sessionsList.find(s => s.id === sessionId);
     const sessionTitle = session?.title || sessionId;
-    const hasCachedMessages =
-      (messagesBySessionId?.[sessionId]?.length ?? 0) > 0;
+    const hasCachedCentralizedData =
+      (rawSdkEventPayloadsBySessionId?.[sessionId]?.length ?? 0) > 0;
     // Switch local session context immediately so session-scoped UI (like
     // pending queue items above composer) does not bleed across sessions
     // while we wait for backend hydration.
     dispatch({ type: "SET_SESSION_ID", payload: sessionId });
 
     // Skip full loading state when we already have a local render cache.
-    if (!hasCachedMessages) {
+    if (!hasCachedCentralizedData) {
       dispatch({
         type: "START_SESSION_LOADING",
         payload: {

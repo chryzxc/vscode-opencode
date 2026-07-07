@@ -138,7 +138,7 @@ test('session service merges server/local messages and keeps richer duplicates',
   );
   assert.match(
     sessionServiceSource,
-    /function getAssistantContentAliasSignature\(message: unknown\): string \| undefined \{[\s\S]*getMessageRoleForSignature\(message\)[\s\S]*getMessageTextForSignature\(message\)[\s\S]*Math\.floor\(created \/ 15_000\)/,
+    /function getAssistantContentAliasSignatures\(message: unknown\): string\[\] \{[\s\S]*getMessageRoleForSignature\(message\)[\s\S]*getMessageTextForSignature\(message\)[\s\S]*Math\.floor\(created \/ 15_000\)/,
     'assistant alias signatures should use canonical role/text extraction and a time bucket to merge local assistant snapshots with SDK history',
   );
 });
@@ -196,20 +196,24 @@ test('session service compaction preserves rich assistant metadata used by histo
   );
 });
 
-test('chat provider stamps persisted assistant snapshots with session and created time before caching', () => {
-  const persistAssistantBody = extractFunctionBody(
+test('chat provider no longer accepts legacy assistant snapshot persistence from webview', () => {
+  assert.doesNotMatch(
     chatProviderSource,
-    'case "persistAssistantMessage":'
+    /case\s+"persistAssistantMessage"/,
+    'chat provider should not persist assistant snapshots through the legacy webview backchannel',
+  );
+});
+
+test('session service upgrades duplicate raw sdk event identities to the richer payload', () => {
+  assert.match(
+    sessionServiceSource,
+    /function rawSdkEventPersistenceRichness\(event: unknown\): number/,
+    'session raw SDK persistence should define a richness scorer for duplicate event upgrades',
   );
   assert.match(
-    persistAssistantBody,
-    /createdAt:\s*this\.historyMessageCreatedAt\(message\.message\)\s*\?\?\s*Date\.now\(\)/,
-    'persistAssistantMessage should stamp a createdAt on assistant snapshots that do not yet have canonical SDK timestamps',
-  );
-  assert.match(
-    persistAssistantBody,
-    /sessionID:\s*this\.firstNonEmptyString\([\s\S]*message\.message\?\.sessionID[\s\S]*sessionId[\s\S]*\)/,
-    'persistAssistantMessage should stamp the active session id onto assistant snapshots before local caching',
+    sessionServiceSource,
+    /const existingIndex = events\.findIndex\([\s\S]*getCentralizedDebugPayloadIdentity\(existing\) === eventIdentity[\s\S]*rawSdkEventPersistenceRichness\(snapshot\)\s*>=[\s\S]*rawSdkEventPersistenceRichness\(existingEvent\)/s,
+    'duplicate raw SDK events should keep the richer payload instead of dropping later updates',
   );
 });
 
@@ -225,8 +229,7 @@ test('chat provider routes session CRUD messages and handles delete edge cases',
   assert.match(chatProviderSource, /case\s+"newSession"[\s\S]*case\s+"createSession"/, 'chat provider should support create session message aliases');
   assert.match(chatProviderSource, /case\s+"loadSession"[\s\S]*case\s+"openSession"[\s\S]*case\s+"switchSession"/, 'chat provider should support switch session message aliases');
   assert.match(chatProviderSource, /case\s+"deleteSession"/, 'chat provider should support delete session message');
-  assert.match(chatProviderSource, /case\s+"persistAssistantMessage"/, 'chat provider should accept assistant snapshot persistence messages from webview');
-  assert.match(chatProviderSource, /this\.sessionService\.upsertMessage\(/, 'chat provider should upsert persisted assistant snapshots into local session cache');
+  assert.doesNotMatch(chatProviderSource, /case\s+"persistAssistantMessage"/, 'chat provider should not accept legacy assistant snapshot persistence messages from webview');
 
   const deleteBody = extractFunctionBody(chatProviderSource, 'private async handleDeleteSession(sessionId: string): Promise<void>');
   assert.match(deleteBody, /await\s+this\.sessionService\.deleteSession\(sessionId\)/, 'delete handler should call SessionService.deleteSession');

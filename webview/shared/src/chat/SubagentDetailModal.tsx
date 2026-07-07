@@ -8,7 +8,7 @@ import { MarkdownRenderer } from "../components/MarkdownRenderer";
 import { Stepper, StepperItem } from "@/components/ui/stepper";
 import { StepIndicator } from "@/components/ui/StepIndicator";
 
-import type { SubagentDetail } from "./lib/types";
+import type { SubagentDetail } from "./lib/subagents/types";
 
 function isOpaqueIdLike(value: string): boolean {
 	const text = value.trim();
@@ -179,6 +179,10 @@ export function SubagentDetailModal({
 		return deduped;
 	}, [detail.conversationEvents]);
 
+	// Debug logging for conversation events
+	useEffect(() => {
+	}, [detail.conversationEvents, detail.progressEvents, detail.timelineEvents]);
+
 	const shouldShowLoadingTimelineStep =
 		!isError &&
 		!hasTerminalStopMarker &&
@@ -292,7 +296,7 @@ export function SubagentDetailModal({
 
 					{renderedConversation.length > 0 || shouldShowLoadingTimelineStep ? (
 						<Stepper
-							className="oc-refined-stepper max-h-[600px] overflow-y-auto pl-2"
+							className="oc-refined-stepper oc-activity-timeline-compact max-h-[600px] overflow-y-auto pl-2"
 							autoScrollToBottom={false}
 						>
 							{shouldShowLoadingTimelineStep && (
@@ -360,4 +364,3 @@ export function SubagentDetailModal({
 
 	return createPortal(modalContent, document.body);
 }
-

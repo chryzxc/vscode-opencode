@@ -184,17 +184,44 @@ export interface QueueItem {
   agent?: string;
 }
 
+export interface PendingDeferredPrompt {
+  id: string;
+  sessionId: string;
+  createdAt: number;
+  text: string;
+  files?: string[];
+  contexts?: ContextItem[];
+  images?: unknown[];
+  agent?: string;
+  clientRequestId?: string;
+}
+
+export interface PendingUserMessage {
+  id: string;
+  sessionId: string;
+  createdAt: number;
+  text: string;
+  clientRequestId?: string;
+  images?: string[];
+  interactiveSubmit?: boolean;
+  confirmedMessageId?: string;
+  confirmedAt?: number;
+}
+
 export interface StreamingStep {
   id?: string;
   callID?: string;
+  sessionID?: string;
   title: string;
   type: "step" | "tool" | "reasoning";
-  status: "pending" | "done" | "error";
+  status: "pending" | "running" | "done" | "completed" | "error";
   source?: "stream" | "final" | "raw_debug";
   partType?: string;
   internal?: boolean;
   meta?: string;
   filePath?: string;
+  startedAt?: number;
+  endedAt?: number;
   startTime?: number;
   /** Monotonic sequence stamp (Date.now()) set by the store when the step first arrives. */
   streamSeq?: number;
@@ -207,11 +234,15 @@ export interface StreamingStep {
   };
   diffStats?: { added: number; deleted: number };
   activityDetail?: ActivityDetail;
+  showLogger?: boolean;
 }
 
 export interface ReasoningEvent {
   text: string;
   createdAt: number;
+  partID?: string;
+  messageID?: string;
+  delta?: boolean;
 }
 
 export interface StreamingState {
@@ -238,6 +269,7 @@ export interface StreamingState {
   providerID?: string;
   variant?: string;
   responseType?: StructuredResponseType;
+  type?: StructuredResponseType;
   plan?: {
     file?: string;
     files?: unknown[];
@@ -248,7 +280,11 @@ export interface StreamingState {
     fileCount?: number;
   };
   structuredOutput?: {
+    type?: StructuredResponseType;
+    text?: string;
+    /** @deprecated legacy alias kept for compatibility while the schema migrates to `type`. */
     responseType?: StructuredResponseType;
+    /** @deprecated legacy alias kept for compatibility while the schema migrates to `text`. */
     message?: string;
     plan?: {
       file?: string;
@@ -259,6 +295,20 @@ export interface StreamingState {
       summary?: string;
       fileCount?: number;
     };
+    progressUpdates?: Array<{
+      title?: string;
+      status?: "pending" | "done" | "error";
+      kind?: "tool_call" | "file_edit" | "command" | "read" | "search" | "other";
+      command?: string;
+      output?: string;
+      file?: string;
+      diffStats?: {
+        added?: number;
+        deleted?: number;
+      };
+      diffExcerpt?: ActivityDiffExcerpt;
+    }>;
+    interactiveEvents?: InteractiveEvent[];
   };
   interactiveEvents?: InteractiveEvent[];
   rawStructuredOutputs?: unknown[];
@@ -294,6 +344,8 @@ export interface MessageInfo {
   structuredOutput?: {
     fileChanges?: StructuredFileChange[];
   } & Record<string, unknown>;
+  terminalRawIndex?: number;
+  interruptedPresentation?: "inline" | "detached";
 }
 
 export interface MessagePart {
@@ -309,6 +361,81 @@ export interface MessagePart {
   files?: string[];
   hash?: string;
   source?: { path?: string };
+}
+
+export interface OpenCodeRawResponsePart {
+  type?: string;
+  text?: string;
+  content?: string;
+  message?: string;
+  reasoning?: string;
+  thought?: string;
+  thinking?: string;
+  reason?: string;
+  snapshot?: string;
+  id?: string;
+  sessionID?: string;
+  messageID?: string;
+  time?: {
+    start?: number;
+    end?: number;
+    [key: string]: unknown;
+  };
+  state?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface OpenCodeRawResponseInfo {
+  parentID?: string;
+  role?: string;
+  mode?: string;
+  agent?: string;
+  variant?: string;
+  path?: {
+    cwd?: string;
+    root?: string;
+    [key: string]: unknown;
+  };
+  cost?: number;
+  tokens?: {
+    total?: number;
+    input?: number;
+    output?: number;
+    reasoning?: number;
+    cache?: {
+      read?: number;
+      write?: number;
+      [key: string]: unknown;
+    };
+    [key: string]: unknown;
+  };
+  modelID?: string;
+  providerID?: string;
+  time?: {
+    created?: number;
+    completed?: number;
+    start?: number;
+    end?: number;
+    [key: string]: unknown;
+  };
+  finish?: string;
+  id?: string;
+  sessionID?: string;
+  structured?: Record<string, unknown>;
+  structuredOutput?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface OpenCodeRawResponse {
+  info?: OpenCodeRawResponseInfo;
+  parts?: OpenCodeRawResponsePart[];
+  message?: string;
+  text?: string;
+  content?: string;
+  structured?: Record<string, unknown>;
+  structuredOutput?: Record<string, unknown>;
+  [key: string]: unknown;
 }
 
 export interface MessageEdit {
@@ -338,6 +465,15 @@ export interface MessageStep {
   filePath?: string;
 }
 
+export interface CentralizedDebugSourceData {
+  sessionId?: string;
+  rawSdkEventPayloads?: unknown[];
+}
+
+export interface CentralizedDebugData {
+  rawEventStream?: CentralizedDebugSourceData;
+}
+
 export interface MessageChangeSummaryFile {
   file: string;
   added: number;
@@ -363,6 +499,21 @@ export interface MessageChangeSummary {
   files: MessageChangeSummaryFile[];
 }
 
+export interface CentralizedSessionDiffFile {
+  file: string;
+  patch?: string;
+  additions?: number;
+  deletions?: number;
+  status?: string;
+}
+
+export interface CentralizedSessionDiffEvent {
+  id?: string;
+  sessionId?: string;
+  createdAt?: number;
+  files: CentralizedSessionDiffFile[];
+}
+
 export interface ActivityDiffExcerpt {
   header?: string;
   lines?: string[];
@@ -374,12 +525,20 @@ export interface ActivityDetail {
   kind?: "tool_call" | "file_edit" | "command" | "read" | "search" | "other";
   summary?: string;
   command?: string;
+  input?: Record<string, unknown>;
+  files?: string[];
   output?: string;
+  backgroundTaskId?: string;
+  backgroundOutput?: string;
   tool?: string;
   query?: string;
   file?: string;
+  isDirectory?: boolean;
+  /** Display title for read steps (e.g., relative path like "desktop/renderer/package.json") */
+  title?: string;
   diffExcerpt?: ActivityDiffExcerpt;
   metadata?: Record<string, string | number | boolean>;
+  sessionID?: string;
 }
 
 export interface InteractiveChoice {
@@ -387,6 +546,7 @@ export interface InteractiveChoice {
   label: string;
   value?: string;
   description?: string;
+  recommended?: boolean;
 }
 
 export type InteractiveUiCategory = "quick_input" | "passive";
@@ -449,86 +609,21 @@ export type InteractiveEvent =
   | InteractiveQuickActionsEvent
   | InteractiveMessageEvent;
 
-export type SubagentStatus = 'pending' | 'running' | 'done' | 'error' | 'orphaned';
+// REFACTORED: Subagent types now exported from modular system
+// These imports maintain backward compatibility while using the single source of truth
+import type { SubagentStatus } from './subagents/types';
+import type { SubagentReference } from './subagents/types';
+import type { SubagentTimelineEvent } from './subagents/types';
+import type { SubagentThinkingEvent } from './subagents/types';
+import type { SubagentConversationEvent } from './subagents/types';
+import type { SubagentProgressEvent } from './subagents/types';
+import type { SubagentSummary } from './subagents/types';
+import type { SubagentDetail } from './subagents/types';
+import type { NormalizedSubagentEvent } from './subagents/types';
 
-export interface SubagentReference {
-  messageID?: string;
-  partID?: string;
-  callID?: string;
-}
+// Re-export for backward compatibility
+export type { SubagentStatus, SubagentReference, SubagentTimelineEvent, SubagentThinkingEvent, SubagentConversationEvent, SubagentProgressEvent, SubagentSummary, SubagentDetail, NormalizedSubagentEvent, SubagentPresentationPolicy };
 
-export interface SubagentTimelineEvent {
-  key: string;
-  type: string;
-  label: string;
-  createdAt: number;
-  messageID?: string;
-  partID?: string;
-  callID?: string;
-}
-
-export interface SubagentThinkingEvent {
-  id: string;
-  text: string;
-  createdAt: number;
-  messageID?: string;
-  partID?: string;
-}
-
-export interface SubagentConversationEvent {
-  id: string;
-  role: string;
-  kind: 'message' | 'reasoning' | 'step';
-  text: string;
-  createdAt: number;
-  messageID?: string;
-  partID?: string;
-}
-
-export interface SubagentProgressEvent {
-  id: string;
-  title: string;
-  status: 'pending' | 'done' | 'error';
-  meta?: string;
-  filePath?: string;
-  createdAt: number;
-  messageID?: string;
-  partID?: string;
-  callID?: string;
-}
-
-export interface SubagentSummary {
-  id: string;
-  backgroundTaskId?: string;
-  parentSessionId: string;
-  parentMessageId: string;
-  childSessionId?: string;
-  agentId?: string;
-  agentRole?: string;
-  providerID?: string;
-  modelID?: string;
-  startedAt?: number;
-  endedAt?: number;
-  durationMs?: number;
-  status: SubagentStatus;
-  latestActivity: string;
-  references: SubagentReference[];
-}
-
-export interface SubagentDetail extends SubagentSummary {
-  thinkingEvents: SubagentThinkingEvent[];
-  conversationEvents?: SubagentConversationEvent[];
-  progressEvents: SubagentProgressEvent[];
-  timelineEvents: SubagentTimelineEvent[];
-  tokenUsage?: {
-    input?: number;
-    output?: number;
-    reasoning?: number;
-    cache?: { read?: number; write?: number };
-  };
-  errorText?: string;
-  hydrationUnavailable?: boolean;
-}
 
 export interface Message {
   role?: string;
@@ -551,7 +646,8 @@ export interface Message {
   text?: string;
 
   content?: string;
-  rawResponse?: unknown;
+  rawResponse?: OpenCodeRawResponse | string;
+  rawSdkEventPayloads?: unknown[];
   reasoningPayload?: {
     events: ReasoningEvent[];
     sources?: Array<"stream" | "final" | "raw_debug">;
@@ -615,8 +711,20 @@ export interface Message {
   plainTextFallbackReason?: string;
   /** Indicates this assistant message was aborted by the user (stop button). */
   aborted?: boolean;
+  /** Carries the centralized raw index for a detached terminal lifecycle marker. */
+  terminalRawIndex?: number;
+  /**
+   * Single source of truth for how an interrupted assistant turn should render:
+   * `inline` keeps the badge on the assistant card; `detached` renders a later
+   * synthetic interruption row at the centralized abort position.
+   */
+  interruptedPresentation?: "inline" | "detached";
   /** Marks a user echo as an interactive popover answer submission. */
   interactiveSubmit?: boolean;
+  /** Local-only marker for a user prompt accepted by OpenCode deferred delivery. */
+  pendingDeferredPrompt?: boolean;
+  /** Local-only status label shown while the centralized tape has not echoed this prompt yet. */
+  pendingDeferredPromptLabel?: string;
   /** Optional structured error information for display in the UI */
   displayError?: DisplayError;
 }
@@ -700,8 +808,12 @@ export interface AppState {
   currentSessionId: string | null;
   messages: Message[];
   messagesBySessionId?: Record<string, Message[]>;
+  rawSdkEventPayloadsBySessionId?: Record<string, unknown[]>;
+  liveToastNotificationsBySessionId?: Record<string, import("./toastEvents").CentralizedToastNotification[]>;
   promptQueue: QueueItem[];
   queueBySessionId: Record<string, QueueItem[]>;
+  pendingDeferredPromptsBySessionId?: Record<string, PendingDeferredPrompt[]>;
+  pendingUserMessagesBySessionId?: Record<string, PendingUserMessage[]>;
   isExecutingQueue: boolean; // Legacy global flag, to be removed or used carefully
   executingQueueSessionIds: Set<string>;
   isQueueOpen: boolean;
@@ -813,10 +925,11 @@ export interface ModelCapability {
 }
 
 export interface TodoItem {
-  id: string;
-  text: string;
-  status: 'pending' | 'in_progress' | 'completed' | 'cancelled' | 'failed';
-  sessionId: string;
+  id?: string;
+  text?: string;
+  content?: string;
+  status: 'pending' | 'in_progress' | 'completed' | 'cancelled' | 'failed' | string;
+  sessionId?: string;
   parentMessageId?: string;
   // optional human-friendly description used by the UI
   description?: string;

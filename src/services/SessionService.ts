@@ -51,10 +51,15 @@
 
 import * as vscode from "vscode";
 import { OpencodeServerManager } from "./OpencodeServerManager";
-import type { Session } from "@opencode-ai/sdk";
+import type { Session } from "@opencode-ai/sdk/v2";
 import { createLogger } from "../utils/Logger";
 import { LoggingCategories } from "../utils/LoggingSchema";
 import { restoreCheckpointIfPresent } from "./CheckpointRestore";
+import {
+  getCentralizedDebugPayloadIdentity,
+  sanitizeCentralizedDebugPayload,
+  shouldPersistCentralizedSessionEventPayload,
+} from "../shared/centralizedDebugPayloadFilter";
 
 const log = createLogger(LoggingCategories.SESSION_SERVICE);
 const MAX_CACHED_MESSAGES_PER_SESSION = 200;
@@ -145,6 +150,24 @@ function sanitizeForPersistence(
     if (Object.keys(obj).length > entries.length) {
       result.__truncatedKeys = Object.keys(obj).length - entries.length;
     }
+    if (!Object.prototype.hasOwnProperty.call(result, "rawResponse") &&
+      Object.prototype.hasOwnProperty.call(obj, "rawResponse")) {
+      result.rawResponse = sanitizeForPersistence(
+        obj.rawResponse,
+        depth + 1,
+        seen,
+      );
+    }
+    if (
+      !Object.prototype.hasOwnProperty.call(result, "rawSdkEventPayloads") &&
+      Object.prototype.hasOwnProperty.call(obj, "rawSdkEventPayloads")
+    ) {
+      result.rawSdkEventPayloads = sanitizeForPersistence(
+        obj.rawSdkEventPayloads,
+        depth + 1,
+        seen,
+      );
+    }
     return result;
   }
 
@@ -218,6 +241,73 @@ function compactProgressEventForPersistence(event: unknown): unknown {
     return sanitizeForPersistence(event);
   }
   return compact;
+}
+
+function rawSdkEventPersistenceRichness(event: unknown): number {
+  const rec =
+    event && typeof event === "object"
+      ? (event as Record<string, unknown>)
+      : null;
+  if (!rec) {
+    return 0;
+  }
+
+  const properties =
+    rec.properties && typeof rec.properties === "object"
+      ? (rec.properties as Record<string, unknown>)
+      : null;
+  const info =
+    (properties?.info && typeof properties.info === "object"
+      ? (properties.info as Record<string, unknown>)
+      : null) ??
+    (rec.info && typeof rec.info === "object"
+      ? (rec.info as Record<string, unknown>)
+      : null);
+  const part =
+    (properties?.part && typeof properties.part === "object"
+      ? (properties.part as Record<string, unknown>)
+      : null) ??
+    (rec.part && typeof rec.part === "object"
+      ? (rec.part as Record<string, unknown>)
+      : null);
+  const state =
+    part?.state && typeof part.state === "object"
+      ? (part.state as Record<string, unknown>)
+      : null;
+
+  let score = 0;
+  if (typeof rec.id === "string" && rec.id.trim()) score += 2;
+  if (typeof rec.type === "string" && rec.type.trim()) score += 2;
+  if (part) {
+    score += 6;
+    if (typeof part.id === "string" && part.id.trim()) score += 2;
+    if (typeof part.type === "string" && part.type.trim()) score += 2;
+    if (typeof part.tool === "string" && part.tool.trim()) score += 2;
+    if (typeof part.messageID === "string" && part.messageID.trim()) score += 2;
+    if (typeof part.text === "string" && part.text.trim()) score += 3;
+    if (typeof part.content === "string" && part.content.trim()) score += 3;
+  }
+  if (state) {
+    score += 8;
+    if (typeof state.status === "string" && state.status.trim()) score += 2;
+    if (typeof state.input !== "undefined") score += 6;
+    if (typeof state.output !== "undefined") score += 4;
+    if (typeof state.metadata !== "undefined") score += 2;
+    if (typeof state.title === "string" && state.title.trim()) score += 1;
+  }
+  if (info) {
+    score += 4;
+    if (typeof info.id === "string" && info.id.trim()) score += 2;
+    if (typeof info.role === "string" && info.role.trim()) score += 1;
+  }
+
+  try {
+    score += JSON.stringify(rec).length;
+  } catch {
+    // Ignore serialization issues; structural richness already covers the fallback.
+  }
+
+  return score;
 }
 
 function compactSubagentForPersistence(subagent: unknown): unknown {
@@ -325,6 +415,14 @@ function compactMessageForPersistence(message: unknown): unknown {
     compact.parts = (rec.parts as unknown[])
       .slice(0, 16)
       .map((part) => sanitizeForPersistence(part));
+  }
+
+  if (Array.isArray(rec.rawSdkEventPayloads)) {
+    // Preserve the raw SDK event tape so rehydrated debug views can inspect
+    // the exact event payloads that drove the assistant turn.
+    compact.rawSdkEventPayloads = (rec.rawSdkEventPayloads as unknown[])
+      .slice(-200)
+      .map((item) => sanitizeForPersistence(item));
   }
 
   if (Array.isArray(rec.reasoningEvents)) {
@@ -606,25 +704,124 @@ function getMessageFallbackSignature(message: unknown): string {
   return `fallback:${role}|${created}|${body}`;
 }
 
-function getAssistantContentAliasSignature(message: unknown): string | undefined {
+function getAssistantContentAliasSignatures(message: unknown): string[] {
   if (!message || typeof message !== "object") {
-    return undefined;
+    return [];
   }
 
   const role = getMessageRoleForSignature(message).toLowerCase();
   if (role !== "assistant") {
-    return undefined;
+    return [];
   }
 
   const body = normalizeSignatureText(getMessageTextForSignature(message));
   if (!body) {
-    return undefined;
+    return [];
   }
 
   const created = getMessageCreatedTime(message);
   const createdPart = created > 0 ? String(Math.floor(created / 15_000)) : "unknown";
   const sessionId = getMessageSessionIdForSignature(message) || "unknown";
-  return `assistant-activity:${sessionId}|${createdPart}|${body.slice(0, 500)}`;
+  const truncated = body.slice(0, 500);
+  const aliases: string[] = [];
+
+  aliases.push(`assistant-activity:any|${createdPart}|${truncated}`);
+  if (sessionId !== "unknown") {
+    aliases.push(`assistant-activity:${sessionId}|${createdPart}|${truncated}`);
+  }
+
+  return aliases;
+}
+
+/**
+ * Narrows a raw message object to the centralized SDK UserMessage shape.
+ *
+ * The server wraps SDK messages as `{ info: UserMessage | AssistantMessage, parts: [...] }`.
+ * Locally-appended optimistic messages are plain `{ role: "user", content: string, ... }`
+ * with no `info` envelope.
+ */
+function extractUserMessageRecord(
+  message: unknown,
+): (Record<string, unknown> & { role?: "user" }) | undefined {
+  if (!message || typeof message !== "object") {
+    return undefined;
+  }
+
+  const rec = message as Record<string, unknown>;
+
+  if (rec.info && typeof rec.info === "object") {
+    const info = rec.info as Record<string, unknown>;
+    if (info.role === "user") {
+      return info;
+    }
+    return undefined;
+  }
+
+  if (rec.role === "user") {
+    return rec as Record<string, unknown> & { role: "user" };
+  }
+
+  return undefined;
+}
+
+/**
+ * Extracts the canonical text body of a user message.
+ */
+function getUserMessageBody(userRec: Record<string, unknown>): string {
+  const candidates: unknown[] = [
+    userRec["content"],
+    userRec["text"],
+    ...(Array.isArray(userRec["parts"])
+      ? (userRec["parts"] as unknown[]).flatMap((part) => {
+          if (!part || typeof part !== "object") return [];
+          const p = part as Record<string, unknown>;
+          if (p["type"] !== "text") return [];
+          return [p["text"] ?? p["content"]];
+        })
+      : []),
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      return candidate.trim();
+    }
+  }
+  return "";
+}
+
+/**
+ * Returns content-only alias signatures for user-role messages.
+ */
+function getUserMessageContentAliasSignatures(message: unknown): string[] {
+  const userRec = extractUserMessageRecord(message);
+  if (!userRec) {
+    return [];
+  }
+
+  const rawBody = getUserMessageBody(userRec);
+  const body = normalizeSignatureText(rawBody);
+  if (!body) {
+    return [];
+  }
+
+  const truncated = body.slice(0, 500);
+  const aliases: string[] = [];
+
+  aliases.push(`user-content:any|${truncated}`);
+
+  const sessionId: string =
+    (typeof (userRec as Record<string, unknown>)["sessionID"] === "string"
+      ? ((userRec as Record<string, unknown>)["sessionID"] as string)
+      : "") ||
+    (typeof (userRec as Record<string, unknown>)["sessionId"] === "string"
+      ? ((userRec as Record<string, unknown>)["sessionId"] as string)
+      : "");
+      
+  if (sessionId) {
+    aliases.push(`user-content:${sessionId}|${truncated}`);
+  }
+
+  return aliases;
 }
 
 function getMessageSignaturesForMerge(message: unknown): string[] {
@@ -637,9 +834,12 @@ function getMessageSignaturesForMerge(message: unknown): string[] {
     signatures.add(fallback);
   }
 
-  const assistantAlias = getAssistantContentAliasSignature(message);
-  if (assistantAlias) {
-    signatures.add(assistantAlias);
+  for (const alias of getAssistantContentAliasSignatures(message)) {
+    signatures.add(alias);
+  }
+
+  for (const alias of getUserMessageContentAliasSignatures(message)) {
+    signatures.add(alias);
   }
 
   return Array.from(signatures.values());
@@ -784,6 +984,7 @@ function mergeRicherMessageFields(
   backfillArrayField("steps");
   backfillArrayField("edits");
   backfillArrayField("interactiveEvents");
+  backfillArrayField("rawSdkEventPayloads");
   backfillArrayField("parts");
   backfillArrayField("subagents", true);
   backfillArrayField("images");
@@ -794,6 +995,12 @@ function mergeRicherMessageFields(
   }
   if (!merged.structuredOutput && fallbackRec.structuredOutput) {
     merged.structuredOutput = fallbackRec.structuredOutput;
+  }
+  if (!merged.rawResponse && fallbackRec.rawResponse) {
+    merged.rawResponse = fallbackRec.rawResponse;
+  }
+  if (!merged.rawSdkEventPayloads && fallbackRec.rawSdkEventPayloads) {
+    merged.rawSdkEventPayloads = fallbackRec.rawSdkEventPayloads;
   }
   if (!merged.info && fallbackRec.info) {
     merged.info = fallbackRec.info;
@@ -896,7 +1103,8 @@ function summarizePotentialAssistantDuplicates(messages: unknown[]): {
       continue;
     }
     totalAssistantMessages += 1;
-    const alias = getAssistantContentAliasSignature(message);
+    const aliasList = getAssistantContentAliasSignatures(message);
+    const alias = aliasList.length > 0 ? aliasList[0] : null;
     if (!alias) {
       continue;
     }
@@ -1041,6 +1249,80 @@ export class SessionService {
   /** Track last logged session ID for deduplication */
   private lastLoggedSessionId: string | null = null;
 
+  /** In-memory cache of raw SDK event payloads by session for atomic appends */
+  private rawSdkEventPayloadCache = new Map<string, unknown[]>();
+
+  /** Per-session debounce timer for raw SDK event payload persistence */
+  private rawSdkEventPersistTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  private cloneRawSdkEventPayload<T>(value: T): T {
+    if (typeof structuredClone === "function") {
+      try {
+        return structuredClone(value);
+      } catch {
+        return value;
+      }
+    }
+    return value;
+  }
+
+  private shouldPersistRawSdkEventPayload(event: unknown): boolean {
+    return shouldPersistCentralizedSessionEventPayload(event);
+  }
+
+  private describeRawSdkEventPayloadForLog(event: unknown): Record<string, unknown> {
+    const rec =
+      event && typeof event === "object" && !Array.isArray(event)
+        ? (event as Record<string, unknown>)
+        : undefined;
+    const properties =
+      rec?.properties && typeof rec.properties === "object" && !Array.isArray(rec.properties)
+        ? (rec.properties as Record<string, unknown>)
+        : undefined;
+    const info =
+      properties?.info && typeof properties.info === "object" && !Array.isArray(properties.info)
+        ? (properties.info as Record<string, unknown>)
+        : undefined;
+    const part =
+      properties?.part && typeof properties.part === "object" && !Array.isArray(properties.part)
+        ? (properties.part as Record<string, unknown>)
+        : undefined;
+
+    return {
+      eventType: typeof rec?.type === "string" ? rec.type : undefined,
+      source: typeof rec?.source === "string" ? rec.source : undefined,
+      sessionId:
+        typeof rec?.sessionId === "string"
+          ? rec.sessionId
+          : typeof rec?.sessionID === "string"
+            ? rec.sessionID
+            : typeof properties?.sessionId === "string"
+              ? properties.sessionId
+              : typeof properties?.sessionID === "string"
+                ? properties.sessionID
+                : undefined,
+      messageId:
+        typeof info?.id === "string"
+          ? info.id
+          : typeof part?.messageId === "string"
+            ? part.messageId
+            : typeof part?.messageID === "string"
+              ? part.messageID
+              : undefined,
+      partType: typeof part?.type === "string" ? part.type : undefined,
+      hasProperties: !!properties,
+      hasInfo: !!info,
+      hasPart: !!part,
+    };
+  }
+
+  private filterPersistedRawSdkEventPayloads(events: unknown[] | undefined): unknown[] {
+    if (!Array.isArray(events) || events.length === 0) {
+      return [];
+    }
+    return events.filter((event) => this.shouldPersistRawSdkEventPayload(event));
+  }
+
   // ============================================================================
   // PERSISTENCE KEYS
   // ============================================================================
@@ -1052,6 +1334,10 @@ export class SessionService {
 
   /** Prefix for storing messages per session (appended with session ID) */
   private static readonly MESSAGES_PREFIX = "opencode.session.messages.";
+
+  /** Prefix for storing raw SDK event payloads per session (appended with session ID) */
+  private static readonly RAW_SDK_EVENT_PAYLOADS_PREFIX =
+    "opencode.session.raw-sdk-event-payloads.";
 
   /** Key for storing current session ID */
   private static readonly SESSION_ID_KEY = "opencode.currentSessionId";
@@ -1141,7 +1427,7 @@ export class SessionService {
     const client = await this.serverManager.ensureRunning();
     log.featureStep(flow, 'server_ready');
 
-    const createOptions = title ? { body: { title } } : {};
+    const createOptions = title ? { title } : {};
     const response = await client.session.create(createOptions);
 
     if (!response.data) {
@@ -1368,11 +1654,15 @@ export class SessionService {
     const flow = log.startFeatureFlow('SwitchSession', { sessionId });
 
     try {
+      const currentSessionId = this.currentSession?.id;
+      if (currentSessionId && currentSessionId !== sessionId) {
+        await this.flushRawSdkEventPayloads(currentSessionId);
+      }
       const client = await this.serverManager.ensureRunning();
       log.featureStep(flow, 'fetching_session_from_server');
 
       const response = await client.session.get({
-        path: { id: sessionId },
+        sessionID: sessionId,
       });
 
       if (!response.data) {
@@ -1451,7 +1741,7 @@ export class SessionService {
     try {
       const client = await this.serverManager.ensureRunning();
       await client.session.delete({
-        path: { id: sessionId },
+        sessionID: sessionId,
       });
     } catch (error) {
       log.warn("Server delete failed, continuing with local cleanup", {
@@ -1465,9 +1755,17 @@ export class SessionService {
       log.debug("Cleared current session (was deleted)", { sessionId });
     }
 
+    await this.flushRawSdkEventPayloads(sessionId);
+    // Memory fix: evict in-memory caches for the deleted session so data
+    // doesn't accumulate indefinitely for sessions that no longer exist.
+    this.rawSdkEventPayloadCache.delete(sessionId);
     this.sessionHistory = this.sessionHistory.filter((s) => s.id !== sessionId);
     await this.context.workspaceState.update(
       `${SessionService.MESSAGES_PREFIX}${sessionId}`,
+      undefined,
+    );
+    await this.context.workspaceState.update(
+      `opencode.session.raw-messages.${sessionId}`,
       undefined,
     );
     this.persistState();
@@ -1519,8 +1817,8 @@ export class SessionService {
     try {
       const client = await this.serverManager.ensureRunning();
       const response = await client.session.update({
-        path: { id: sessionId },
-        body: { title: newTitle },
+        sessionID: sessionId,
+        title: newTitle,
       });
 
       if (!response.data) {
@@ -1623,9 +1921,7 @@ export class SessionService {
     try {
       const client = await this.serverManager.ensureRunning();
       const response = await client.session.messages({
-        path: {
-          id: sessionId,
-        },
+        sessionID: sessionId,
       });
 
       if (response.data && response.data.length > 0) {
@@ -1794,6 +2090,77 @@ export class SessionService {
   }
 
   /**
+   * Saves raw SDK event payloads for a specific session to local workspace storage.
+   *
+   * This stores the untouched event tape so rehydrated sessions can replay the
+   * same raw stream and append future events without normalization.
+   */
+  async saveSessionRawSdkEventPayloads(
+    sessionId: string,
+    events: unknown[],
+  ): Promise<void> {
+    const persisted = events.map((event) =>
+      this.cloneRawSdkEventPayload(event),
+    );
+    this.rawSdkEventPayloadCache.set(sessionId, persisted);
+    const existingTimer = this.rawSdkEventPersistTimers.get(sessionId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      this.rawSdkEventPersistTimers.delete(sessionId);
+    }
+    await this.context.workspaceState.update(
+      `${SessionService.RAW_SDK_EVENT_PAYLOADS_PREFIX}${sessionId}`,
+      persisted,
+    );
+  }
+
+  /**
+   * Loads raw SDK event payloads for a specific session from local storage.
+   */
+  async loadSessionRawSdkEventPayloads(sessionId: string): Promise<unknown[]> {
+    const cached = this.rawSdkEventPayloadCache.get(sessionId);
+    if (Array.isArray(cached)) {
+      log.info("[CENTRALIZED-TAPE][SESSION] load_raw_sdk_events_cache_hit", {
+        sessionId,
+        count: cached.length,
+      });
+      return [...cached];
+    }
+    const value = this.context.workspaceState.get<unknown[]>(
+      `${SessionService.RAW_SDK_EVENT_PAYLOADS_PREFIX}${sessionId}`,
+    );
+    const raw = Array.isArray(value) ? value : [];
+    this.rawSdkEventPayloadCache.set(sessionId, [...raw]);
+    log.info("[CENTRALIZED-TAPE][SESSION] load_raw_sdk_events_workspace_state", {
+      sessionId,
+      count: raw.length,
+      hadStoredArray: Array.isArray(value),
+    });
+    return raw;
+  }
+
+  /**
+   * Loads centralized session event data for a session.
+   *
+   * Called from ChatViewProvider and SessionHandler when rehydrating a session
+   * into the webview chat UI (chatHistory message).
+   *
+   * @param sessionId - The ID of the session to load data for
+   * @returns Object containing centralized raw SDK event payloads
+   */
+  async loadCentralizedSessionData(sessionId: string): Promise<{
+    rawSdkEventPayloads: unknown[];
+  }> {
+    void this.context.workspaceState.update(
+      `opencode.session.raw-messages.${sessionId}`,
+      undefined,
+    );
+    const rawSdkEventPayloads = await this.loadSessionRawSdkEventPayloads(sessionId);
+    return { rawSdkEventPayloads };
+  }
+
+
+  /**
    * Appends a new message to the local message history for a session.
    *
    * **Use Case:**
@@ -1857,6 +2224,156 @@ export class SessionService {
       });
     }
     await this.saveSessionMessages(sessionId, messages);
+  }
+
+  async appendRawSdkEventPayload(sessionId: string, event: unknown): Promise<void> {
+    const eventSummary = this.describeRawSdkEventPayloadForLog(event);
+    log.info("[CENTRALIZED-TAPE][SESSION] append_received", {
+      sessionId,
+      ...eventSummary,
+    });
+
+    if (!this.shouldPersistRawSdkEventPayload(event)) {
+      log.warn("[CENTRALIZED-TAPE][SESSION] append_rejected_by_filter", {
+        sessionId,
+        ...eventSummary,
+      });
+      return;
+    }
+    
+    let events = this.rawSdkEventPayloadCache.get(sessionId);
+    let loadedFromState = false;
+    if (!Array.isArray(events)) {
+      const value = this.context.workspaceState.get<unknown[]>(
+        `${SessionService.RAW_SDK_EVENT_PAYLOADS_PREFIX}${sessionId}`,
+      );
+      events = Array.isArray(value) ? [...value] : [];
+      this.rawSdkEventPayloadCache.set(sessionId, events);
+      loadedFromState = true;
+      log.info("[CENTRALIZED-TAPE][SESSION] append_loaded_existing_events", {
+        sessionId,
+        loadedFromState,
+        existingCount: events.length,
+        hadStoredArray: Array.isArray(value),
+      });
+    }
+
+    const sanitizedEvent = sanitizeCentralizedDebugPayload(event);
+    const snapshot = this.cloneRawSdkEventPayload(sanitizedEvent);
+    const eventIdentity = getCentralizedDebugPayloadIdentity(event);
+    let appendAction: "appended" | "replaced" | "duplicate-skipped" = "appended";
+    if (eventIdentity) {
+      const existingIndex = events.findIndex((existing) => {
+        return getCentralizedDebugPayloadIdentity(existing) === eventIdentity;
+      });
+      if (existingIndex >= 0) {
+        const existingEvent = events[existingIndex];
+        if (
+          rawSdkEventPersistenceRichness(snapshot) >=
+          rawSdkEventPersistenceRichness(existingEvent)
+        ) {
+          events[existingIndex] = snapshot;
+          appendAction = "replaced";
+        } else {
+          appendAction = "duplicate-skipped";
+        }
+      } else {
+        events.push(snapshot);
+      }
+    } else {
+      events.push(snapshot);
+    }
+
+    log.info("[CENTRALIZED-TAPE][SESSION] append_result", {
+      sessionId,
+      action: appendAction,
+      currentEventsLength: events.length,
+      loadedFromState,
+      hasIdentity: !!eventIdentity,
+      eventIdentity: eventIdentity || undefined,
+      ...eventSummary,
+    });
+
+    const existingTimer = this.rawSdkEventPersistTimers.get(sessionId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      log.info("[CENTRALIZED-TAPE][SESSION] append_reset_flush_timer", {
+        sessionId,
+        currentEventsLength: events.length,
+      });
+    }
+
+    this.rawSdkEventPersistTimers.set(
+      sessionId,
+      setTimeout(() => {
+        void this.flushRawSdkEventPayloads(sessionId);
+        this.rawSdkEventPersistTimers.delete(sessionId);
+      }, 250),
+    );
+    log.info("[CENTRALIZED-TAPE][SESSION] append_scheduled_flush", {
+      sessionId,
+      delayMs: 250,
+      currentEventsLength: events.length,
+    });
+  }
+
+  async flushRawSdkEventPayloads(sessionId: string): Promise<void> {
+    const events = this.rawSdkEventPayloadCache.get(sessionId);
+    if (!Array.isArray(events)) {
+      log.warn("[CENTRALIZED-TAPE][SESSION] flush_skipped_no_cache", {
+        sessionId,
+      });
+      return;
+    }
+    const existingTimer = this.rawSdkEventPersistTimers.get(sessionId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      this.rawSdkEventPersistTimers.delete(sessionId);
+    }
+    const storageKey = `${SessionService.RAW_SDK_EVENT_PAYLOADS_PREFIX}${sessionId}`;
+    log.info("[CENTRALIZED-TAPE][SESSION] flush_start", {
+      sessionId,
+      storageKey,
+      flushedEventsLength: events.length
+    });
+    try {
+      await this.context.workspaceState.update(storageKey, [...events]);
+      const stored = this.context.workspaceState.get<unknown[]>(storageKey);
+      log.info("[CENTRALIZED-TAPE][SESSION] flush_complete", {
+        sessionId,
+        storageKey,
+        flushedEventsLength: events.length,
+        storedEventsLength: Array.isArray(stored) ? stored.length : 0,
+        storedIsArray: Array.isArray(stored),
+      });
+    } catch (error) {
+      log.error("[CENTRALIZED-TAPE][SESSION] flush_failed", {
+        sessionId,
+        storageKey,
+        flushedEventsLength: events.length,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  }
+
+  async flushAllRawSdkEventPayloads(): Promise<void> {
+    const sessionIds = Array.from(this.rawSdkEventPayloadCache.keys());
+    for (const sessionId of sessionIds) {
+      await this.flushRawSdkEventPayloads(sessionId);
+    }
+  }
+
+  async dispose(): Promise<void> {
+    // Flush all pending event payloads to workspaceState before clearing timers
+    await this.flushAllRawSdkEventPayloads();
+    for (const timer of this.rawSdkEventPersistTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.rawSdkEventPersistTimers.clear();
+    // Memory fix: release in-memory caches — data has been flushed to disk
+    // above and the service is being torn down.
+    this.rawSdkEventPayloadCache.clear();
   }
 
   private async mergeMessagesForSessionAliases(

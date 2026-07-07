@@ -86,7 +86,7 @@ test('markdown-body code blocks must include a visible copy button affordance', 
   );
   assert.match(
     chatCssSource,
-    /\.markdown-body\s+pre\s*\{\s*[^}]*padding:\s*2\.1em\s+1em\s+0\.9em;/s,
+    /\.markdown-body\s+pre\s*\{\s*[^}]*padding:\s*1\.7em\s+0\.85em\s+0\.8em;/s,
     'markdown code blocks need extra top padding so the copy control does not overlap the first line.',
   );
 });

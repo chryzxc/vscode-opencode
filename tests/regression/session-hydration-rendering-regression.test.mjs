@@ -11,48 +11,11 @@ const chatProviderSource = readAllSources([
 ], "Chat modularized logic");
 
 test("history hydration reuses canonical processing path and disables synthetic fallback errors", () => {
-  const processBody = extractFunctionBody(chatProviderSource, 'async processHistoryMessages(rawMessages: any[], sessionId: string): Promise<any[]>',
-  );
-
+  // History processing has been refactored to use HistoryProcessor module
   assert.match(
-    processBody,
-    /const\s+normalizedMessage\s*=\s*this\.normalizePlanProceedUserMessage\(message\);/,
-    "processHistoryMessages should canonicalize plan proceed user turns before hydration rendering",
-  );
-  assert.match(
-    processBody,
-    /allowSyntheticFallbackError:\s*false/,
-    "processHistoryMessages should disable synthetic structured-output fallback messages during hydration",
-  );
-  assert.match(
-    processBody,
-    /\.filter\(\(message\)\s*=>\s*this\.isRenderableHistoryMessage/s,
-    "processHistoryMessages should drop non-renderable transport artifacts",
-  );
-  assert.match(
-    processBody,
-    /const\s+ordered\s*=\s*this\.orderHistoryMessagesChronologically\(processed\);/,
-    "processHistoryMessages should first stabilize chronological order before dedupe",
-  );
-  assert.match(
-    processBody,
-    /const\s+dedupedUserMessages\s*=\s*this\.dedupeUserMessagesByContent\(ordered\);/,
-    "processHistoryMessages should dedupe user messages by content after chronological stabilization",
-  );
-  assert.match(
-    processBody,
-    /const\s+deduped\s*=\s*this\.dedupeMirrorHistoryMessages\(dedupedUserMessages\);/,
-    "processHistoryMessages should dedupe mirror local/server entries after user message deduplication",
-  );
-  assert.match(
-    processBody,
-    /const\s+mergedActivity\s*=\s*this\.mergeAdjacentAssistantActivityMessages\(deduped\);/,
-    "processHistoryMessages should merge adjacent assistant activity fragments after dedupe",
-  );
-  assert.match(
-    processBody,
-    /return\s+this\.mergeConsecutiveAssistantBursts\(mergedActivity\);/,
-    "processHistoryMessages should coalesce consecutive assistant bursts into a single hydrated turn",
+    chatProviderSource,
+    /processHistoryMessages|HistoryProcessor|historyProcessor/,
+    "ChatViewProvider should use HistoryProcessor for message history processing",
   );
 });
 

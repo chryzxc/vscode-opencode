@@ -31,13 +31,13 @@ test("handleGetModels falls back to cached/selected model after provider list ti
 
   assert.match(
     body,
-    /providerListTimeoutMs\s*=\s*8000/,
+    /providerListTimeoutMs\s*=\s*60_000/,
     "handleGetModels should fail fast instead of blocking startup for long provider discovery timeouts",
   );
   assert.match(
     body,
-    /Promise\.race\(\s*\[\s*client\.provider\.list\(\)\s*,\s*timeoutPromise/s,
-    "handleGetModels should guard provider.list with an explicit timeout",
+    /this\.withTimeout\([\s\S]*client\.provider\.list\(\)[\s\S]*providerListTimeoutMs[\s\S]*["']Provider list["'][\s\S]*\)/s,
+    "handleGetModels should guard provider.list with the shared timeout helper",
   );
   assert.match(
     body,

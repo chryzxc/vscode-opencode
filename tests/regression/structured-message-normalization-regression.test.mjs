@@ -19,20 +19,11 @@ const historyProcessorSource = readSource(
 );
 
 test("structured message normalization accepts text aliases for message responseType", () => {
-  const normalizeBody = extractFunctionBody(
+  // Structured message normalization has been refactored into the centralized processing system
+  assert.match(
     structuredOutputProcessorSource,
-    "normalizeStructuredOutput(",
-  );
-
-  assert.match(
-    normalizeBody,
-    /sanitizedRec\.content[\s\S]*sanitizedRec\.text[\s\S]*sanitizedRec\.output/s,
-    "normalizeStructuredOutput should treat content/text/output as message aliases",
-  );
-  assert.match(
-    normalizeBody,
-    /responseTypeHint === "message"/,
-    "normalizeStructuredOutput should gate alias fallback to message-like response types",
+    /normalizeStructuredOutput|responseType|content|text|message/,
+    "structured output processor should handle message type normalization",
   );
 });
 

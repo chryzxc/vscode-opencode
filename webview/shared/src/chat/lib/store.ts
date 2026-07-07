@@ -1,5 +1,30 @@
-import React, { createContext, useContext, useMemo, useReducer } from 'react';
+import React, {
+  createContext,
+  useContext,
+  useLayoutEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useSyncExternalStore,
+} from 'react';
 import logger from './logger';
+import { PENDING_CURRENT_SESSION_KEY } from "./pendingUserMessages";
+import {
+  getCentralizedAssistantContentFromRawSdkEventPayloads,
+  normalizedCentralizedEventIdentity,
+  mergeRawSdkEventPayloads,
+} from "./messageHandler";
+import {
+  getInteractiveEventsFromRawSdkEventPayloads,
+} from "./rawResponse";
+import {
+  dedupeCentralizedDebugPayloads,
+  sanitizeCentralizedDebugPayload,
+  shouldIncludeCentralizedDebugPayload,
+} from "./generated/centralizedDebugPayloadFilter";
+import type { CentralizedToastNotification } from "./toastEvents";
+
+const globalQuestionRequestIDMap = new Map<string, { requestID: string, questionIndex?: number }>();
 
 import type {
   Agent,
@@ -15,6 +40,8 @@ import type {
   FileResult,
   Message,
   Model,
+  PendingDeferredPrompt,
+  PendingUserMessage,
   QueueItem,
   QuotaData,
   Session,
@@ -45,8 +72,12 @@ export const initialState: AppState = {
   currentSessionId: null,
   messages: [],
   messagesBySessionId: {},
+  rawSdkEventPayloadsBySessionId: {},
+  liveToastNotificationsBySessionId: {},
   promptQueue: [],
   queueBySessionId: {},
+  pendingDeferredPromptsBySessionId: {},
+  pendingUserMessagesBySessionId: {},
   isExecutingQueue: false,
   executingQueueSessionIds: new Set<string>(),
   isQueueOpen: false,
@@ -118,6 +149,7 @@ export const initialState: AppState = {
   configFiles: undefined,
   streamingBySessionId: {},
   themeCssVersion: 0,
+  showLogger: true,
 };
 
 type StreamingContentPayload = {
@@ -125,7 +157,15 @@ type StreamingContentPayload = {
   append?: boolean;
   renderable?: boolean;
 };
-type StreamingReasoningPayload = { reasoning: string; append?: boolean; inThoughtBlock?: boolean; inReasoningPart?: boolean };
+type StreamingReasoningPayload = {
+  reasoning: string;
+  append?: boolean;
+  inThoughtBlock?: boolean;
+  inReasoningPart?: boolean;
+  partID?: string;
+  messageID?: string;
+  delta?: boolean;
+};
 type StreamingStepUpdatePayload = {
   id?: string;
   callID?: string;
@@ -148,6 +188,15 @@ export type AppAction =
   | { type: "SET_SELECTED_AGENT"; payload: string }
   | { type: "SET_AGENTS_LIST"; payload: Agent[] }
   | { type: "SET_MESSAGES"; payload: Message[] }
+  | {
+    type: "SET_RAW_SDK_EVENT_PAYLOADS";
+    payload: { sessionId: string; events: unknown[] };
+  }
+  | { type: "APPEND_RAW_SDK_EVENT_PAYLOAD"; payload: { sessionId?: string | null; event: unknown } }
+  | {
+    type: "APPEND_LIVE_TOAST_NOTIFICATION";
+    payload: { sessionId?: string | null; notification: CentralizedToastNotification };
+  }
   | {
     type: "CACHE_SESSION_MESSAGES";
     payload: { sessionId: string; messages: Message[] };
@@ -207,6 +256,24 @@ export type AppAction =
   | {
     type: "SET_QUEUE";
     payload: { sessionId: string | null; queue: QueueItem[] };
+  }
+  | { type: "ADD_PENDING_DEFERRED_PROMPT"; payload: PendingDeferredPrompt }
+  | { type: "ADD_PENDING_USER_MESSAGE"; payload: PendingUserMessage }
+  | {
+    type: "CONFIRM_PENDING_USER_MESSAGE";
+    payload: {
+      sessionId: string;
+      clientRequestId: string;
+      messageId?: string;
+      createdAt?: number;
+      text?: string;
+      images?: string[];
+      interactiveSubmit?: boolean;
+    };
+  }
+  | {
+    type: "REMOVE_PENDING_USER_MESSAGES";
+    payload: { sessionId: string; ids: string[] };
   }
   | { type: "SET_EXECUTING_QUEUE"; payload: { sessionId: string; executing: boolean } }
   | { type: "SET_QUEUE_OPEN"; payload: boolean }
@@ -278,6 +345,7 @@ export type AppAction =
   | { type: "SET_SERVER_VERSION"; payload: string | undefined }
   | { type: "SET_CONTEXT_USAGE_PCT"; payload: number | undefined }
   | { type: "SET_OPENCODE_CONFIG"; payload: AppState["opencodeConfig"] }
+  | { type: "SET_SHOW_LOGGER"; payload: boolean }
   | {
     type: "SET_OPENCODE_CONFIG_SAVE_STATUS";
     payload: AppState["opencodeConfigSaveStatus"];
@@ -330,6 +398,56 @@ function areSessionsListsEqual(a: Session[] | undefined, b: Session[] | undefine
   return true;
 }
 
+function areTodoItemsEqual(a: TodoItem[] | undefined, b: TodoItem[] | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    const left = a[i];
+    const right = b[i];
+    if (
+      left.id !== right.id ||
+      left.text !== right.text ||
+      left.content !== right.content ||
+      left.status !== right.status ||
+      left.sessionId !== right.sessionId ||
+      left.parentMessageId !== right.parentMessageId ||
+      left.description !== right.description ||
+      left.priority !== right.priority ||
+      left.source !== right.source
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function areCentralizedEventListsEquivalent(
+  a: unknown[] | undefined,
+  b: unknown[] | undefined,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    const left = asRecordLocal(a[i]);
+    const right = asRecordLocal(b[i]);
+    if (!left || !right) {
+      if (a[i] !== b[i]) {
+        return false;
+      }
+      continue;
+    }
+    if (
+      normalizedCentralizedEventIdentity(left) !==
+      normalizedCentralizedEventIdentity(right)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function asRecordLocal(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
@@ -347,6 +465,40 @@ function asStringLocal(...values: unknown[]): string {
     }
   }
   return "";
+}
+
+function getLatestAssistantMessageLocal(messages: Message[] | undefined | null): Message | null {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return null;
+  }
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    const record = asRecordLocal(message);
+    const role = asStringLocal(
+      record?.role,
+      asRecordLocal(record?.info)?.role,
+    );
+    if (role.toLowerCase() === "assistant") {
+      return message;
+    }
+  }
+
+  return null;
+}
+
+function isTerminalAssistantMessageLocal(message: Message | null | undefined): boolean {
+  if (!message) {
+    return false;
+  }
+
+  const record = asRecordLocal(message);
+  const info = asRecordLocal(record?.info);
+  return (
+    record?.aborted === true ||
+    info?.aborted === true ||
+    asStringLocal(record?.finish, info?.finish).length > 0
+  );
 }
 
 function interactiveEventContentKeyLocal(event: InteractiveEvent): string {
@@ -418,6 +570,41 @@ function cacheStreamingForSession(
   return next;
 }
 
+/**
+ * LRU eviction helper for session-keyed dictionaries.
+ *
+ * Keeps the `currentSessionId` plus the N most-recently-added other sessions.
+ * Sessions beyond the cap are dropped to prevent unbounded memory growth when
+ * a user browses through many sessions in a long-running workspace.
+ *
+ * @param dict           The session-keyed record to prune.
+ * @param currentId      The currently active session ID (always kept).
+ * @param maxSessions    Maximum number of sessions to retain (including current).
+ */
+function pruneSessionCache<T>(
+  dict: Record<string, T>,
+  currentId: string | null | undefined,
+  maxSessions = 5,
+): Record<string, T> {
+  const keys = Object.keys(dict);
+  if (keys.length <= maxSessions) {
+    // Nothing to evict — return the same reference to avoid a spurious re-render.
+    return dict;
+  }
+  // Build a pruned copy. Keep the current session unconditionally, then fill
+  // remaining slots from the end of the key list (most recently written).
+  const pruned: Record<string, T> = {};
+  const others = keys.filter((k) => k !== currentId);
+  const keepOthers = others.slice(-(maxSessions - (currentId && dict[currentId] !== undefined ? 1 : 0)));
+  if (currentId && dict[currentId] !== undefined) {
+    pruned[currentId] = dict[currentId];
+  }
+  for (const k of keepOthers) {
+    pruned[k] = dict[k];
+  }
+  return pruned;
+}
+
 function buildStreamingMessageLocal(streaming: StreamingState): Message {
   return {
     role: "assistant",
@@ -431,6 +618,7 @@ function buildStreamingMessageLocal(streaming: StreamingState): Message {
     edits: streaming.edits.map((file) => ({ file })),
     interactiveEvents: streaming.interactiveEvents,
     structuredOutput: streaming.structuredOutput,
+    rawSdkEventPayloads: streaming.rawSdkEventPayloads,
     info: {
       id: streaming.messageId ?? undefined,
       agent: streaming.agent,
@@ -488,11 +676,31 @@ export function mergeActivityArraysLocal<T>(
   const merged: T[] = [];
   const indexByKey = new Map<string, number>();
 
+  const appendDefinedEntries = (
+    target: Array<{ item: T; source: "existing" | "incoming"; originalIndex: number }>,
+    items: T[],
+    source: "existing" | "incoming",
+  ): void => {
+    items.forEach((item, idx) => {
+      if (typeof item === "undefined") {
+        return;
+      }
+      target.push({ item, source, originalIndex: idx });
+    });
+  };
+
   // Combine all items with their source and original index for stable sorting
-  const allItems = [
-    ...existingItems.map((item, idx) => ({ item, source: 'existing' as const, originalIndex: idx })),
-    ...incomingItems.map((item, idx) => ({ item, source: 'incoming' as const, originalIndex: idx }))
-  ];
+  const allItems: Array<{
+    item: T;
+    source: "existing" | "incoming";
+    originalIndex: number;
+  }> = [];
+  appendDefinedEntries(allItems, existingItems, "existing");
+  appendDefinedEntries(allItems, incomingItems, "incoming");
+
+  if (allItems.length === 0) {
+    return undefined;
+  }
 
   // Sort by timestamp to preserve temporal order
   allItems.sort((a, b) => {
@@ -516,7 +724,11 @@ export function mergeActivityArraysLocal<T>(
     return a.originalIndex - b.originalIndex;
   });
 
-  allItems.forEach(({ item }) => {
+  allItems.forEach((entry) => {
+    if (!entry) {
+      return;
+    }
+    const { item } = entry;
     const key = activityArrayItemKeyLocal(item, 0);
     const existingIndex = indexByKey.get(key);
     if (typeof existingIndex !== "number") {
@@ -587,6 +799,73 @@ function mergeCachedAssistantMessageLocal(
   };
 }
 
+function mergeStreamingSnapshotLocal(
+  existing: StreamingState | null | undefined,
+  incoming: StreamingState,
+): StreamingState {
+  const shouldResetTimeline =
+    !!existing?.messageId &&
+    !!incoming.messageId &&
+    existing.messageId !== incoming.messageId;
+  if (!existing || shouldResetTimeline) {
+    return {
+      ...incoming,
+      hasRenderableContent: incoming.hasRenderableContent ?? false,
+      reasoningEvents: incoming.reasoningEvents ?? [],
+      steps: incoming.steps ?? [],
+      progressEvents: incoming.progressEvents ?? [],
+      edits: incoming.edits ?? [],
+      interactiveEvents: incoming.interactiveEvents ?? [],
+      rawSdkEventPayloads: incoming.rawSdkEventPayloads ?? [],
+    };
+  }
+
+  const mergedSteps = mergeActivityArraysLocal(existing.steps, incoming.steps);
+  const mergedProgressEvents = mergeActivityArraysLocal(
+    existing.progressEvents,
+    incoming.progressEvents,
+  );
+  const mergedReasoningEvents = mergeActivityArraysLocal(
+    existing.reasoningEvents,
+    incoming.reasoningEvents,
+  );
+  const mergedEdits = mergeActivityArraysLocal(existing.edits, incoming.edits);
+  const mergedInteractiveEvents = mergeActivityArraysLocal(
+    existing.interactiveEvents,
+    incoming.interactiveEvents,
+  );
+
+  return {
+    ...existing,
+    ...incoming,
+    messageId: incoming.messageId ?? existing.messageId,
+    content:
+      incoming.content.trim().length > 0 ? incoming.content : existing.content,
+    reasoning:
+      incoming.reasoning.trim().length > 0 ? incoming.reasoning : existing.reasoning,
+    steps: mergedSteps ?? existing.steps ?? incoming.steps ?? [],
+    progressEvents: mergedProgressEvents ?? existing.progressEvents ?? incoming.progressEvents ?? [],
+    reasoningEvents: mergedReasoningEvents ?? existing.reasoningEvents ?? incoming.reasoningEvents ?? [],
+    edits: mergedEdits ?? existing.edits ?? incoming.edits ?? [],
+    interactiveEvents: mergedInteractiveEvents ?? existing.interactiveEvents ?? incoming.interactiveEvents ?? [],
+    hasRenderableContent:
+      existing.hasRenderableContent || incoming.hasRenderableContent || false,
+    hasAssistantFinishSignal:
+      existing.hasAssistantFinishSignal || incoming.hasAssistantFinishSignal || false,
+    hasTerminalStepSignal:
+      existing.hasTerminalStepSignal || incoming.hasTerminalStepSignal || false,
+    contentStartSeq:
+      existing.contentStartSeq ??
+      incoming.contentStartSeq ??
+      (incoming.content.trim().length > 0 ? Date.now() : undefined),
+    plan: incoming.plan ?? existing.plan,
+    structuredOutput: incoming.structuredOutput ?? existing.structuredOutput,
+    rawSdkEventPayloads: dedupeCentralizedDebugPayloads(
+      [...(existing.rawSdkEventPayloads ?? []), ...(incoming.rawSdkEventPayloads ?? [])],
+    ),
+  };
+}
+
 function mergeStreamingSnapshotIntoMessagesLocal(
   messages: Message[],
   streaming: StreamingState,
@@ -625,7 +904,8 @@ function hasVisibleStreamingSnapshotLocal(
     (Array.isArray(streaming.progressEvents) && streaming.progressEvents.length > 0) ||
     (Array.isArray(streaming.steps) && streaming.steps.length > 0) ||
     (Array.isArray(streaming.edits) && streaming.edits.length > 0) ||
-    (Array.isArray(streaming.interactiveEvents) && streaming.interactiveEvents.length > 0)
+    (Array.isArray(streaming.interactiveEvents) && streaming.interactiveEvents.length > 0) ||
+    (Array.isArray(streaming.rawSdkEventPayloads) && streaming.rawSdkEventPayloads.length > 0)
   );
 }
 
@@ -644,6 +924,7 @@ function cacheVisibleStreamingMessageForSession(
     ...(current ?? {}),
     [sessionId]: canonicalizeMessagesForRender(
       mergeStreamingSnapshotIntoMessagesLocal(existingMessages, streaming),
+      { preserveEvtAssistantMessages: true },
     ),
   };
 }
@@ -661,7 +942,7 @@ function getStructuredRecordLocal(message: Message): Record<string, unknown> | n
   );
 }
 
-function normalizeChoiceOptionsLocal(value: unknown): Array<{ id?: string; label: string; value?: string; description?: string }> {
+function normalizeChoiceOptionsLocal(value: unknown): Array<{ id?: string; label: string; value?: string; description?: string; recommended?: boolean }> {
   if (!Array.isArray(value)) {
     return [];
   }
@@ -684,9 +965,10 @@ function normalizeChoiceOptionsLocal(value: unknown): Array<{ id?: string; label
         label,
         value: asStringLocal(rec.value) || undefined,
         description: asStringLocal(rec.description) || undefined,
+        recommended: rec.recommended === true,
       };
     })
-    .filter((entry): entry is { id?: string; label: string; value?: string; description?: string } => !!entry);
+    .filter((entry): entry is { id?: string; label: string; value?: string; description?: string; recommended?: boolean } => !!entry);
 }
 
 function interactiveEventFromQuestionRecordLocal(
@@ -751,6 +1033,13 @@ function interactiveEventsFromLatestQuestionMessageLocal(
   if (role !== "assistant") {
     return [];
   }
+  const rawSdkEventPayloads = Array.isArray(message.rawSdkEventPayloads)
+    ? message.rawSdkEventPayloads
+    : [];
+  const rawEvents = getInteractiveEventsFromRawSdkEventPayloads(rawSdkEventPayloads);
+  if (rawEvents.length > 0) {
+    return rawEvents;
+  }
   if (Array.isArray(message.interactiveEvents) && message.interactiveEvents.length > 0) {
     // Filter out false positive fallback interactive events from rehydrated messages
     const filteredEvents = message.interactiveEvents.filter((event) => {
@@ -760,7 +1049,7 @@ function interactiveEventsFromLatestQuestionMessageLocal(
       }
 
       // Filter out events that contain patterns indicating false positives
-      const questionText = (event.question || event.title || '').toString();
+      const questionText = ((event as any).question || (event as any).title || '').toString();
 
       // Patterns that suggest this is NOT a real question
       const nonQuestionPatterns = [
@@ -854,7 +1143,7 @@ function pendingInteractiveEventsFromMessagesLocal(
 
 function requiresUserResponseLocal(events: InteractiveEvent[]): boolean {
   return events.some((event) => {
-    const type = asStringLocal((event as Record<string, unknown>)?.type).toLowerCase();
+    const type = asStringLocal((event as unknown as Record<string, unknown>)?.type).toLowerCase();
     return (
       type === "question" ||
       type === "confirm" ||
@@ -949,6 +1238,58 @@ export function extractMessageTextForCanonical(message: Message): string {
   return textParts.join("\n").trim();
 }
 
+function messagePlanKeyForCanonical(message: Message): string {
+  const planRec = asRecordLocal(message.plan);
+  return asStringLocal(planRec?.file, planRec?.content);
+}
+
+function messageEditsKeyForCanonical(message: Message): string {
+  const edits = Array.isArray(message.edits) ? message.edits : [];
+  return edits
+    .map((edit) => asStringLocal(asRecordLocal(edit)?.file, asRecordLocal(edit)?.path))
+    .filter(Boolean)
+    .join("|");
+}
+
+function messageInteractiveKeyForCanonical(message: Message): string {
+  const events = Array.isArray(message.interactiveEvents) ? message.interactiveEvents : [];
+  return events
+    .map((event) => interactiveEventContentKeyLocal(event))
+    .join("|");
+}
+
+function canonicalMessageFingerprint(message: Message): string {
+  const info = asRecordLocal(message.info);
+  const structured = getStructuredRecordLocal(message);
+  return [
+    getMessageRoleForCanonical(message),
+    getMessageIdForCanonical(message),
+    String(getMessageCreatedAtForCanonical(message) ?? ""),
+    extractMessageTextForCanonical(message),
+    asStringLocal(message.responseType, structured?.responseType),
+    messagePlanKeyForCanonical(message),
+    messageEditsKeyForCanonical(message),
+    messageInteractiveKeyForCanonical(message),
+    message.aborted === true || info?.aborted === true ? "aborted" : "",
+    asStringLocal(message.error),
+  ].join("::");
+}
+
+function areCanonicalMessagesEquivalent(
+  a: Message[] | undefined,
+  b: Message[] | undefined,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (canonicalMessageFingerprint(a[i]) !== canonicalMessageFingerprint(b[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function isReasoningPartForCanonical(part: Record<string, unknown>): boolean {
   const type = asStringLocal(part.type).toLowerCase();
   return (
@@ -1014,7 +1355,7 @@ function contentFromRenderablePartsForCanonical(parts: unknown[]): string {
       }
       return asStringLocal(partRec.text, partRec.content, partRec.delta);
     })
-    .join("")
+    .join(" ")
     .trim();
 }
 
@@ -1114,7 +1455,18 @@ function extractRenderableAssistantTextForCanonical(message: Message): string {
   }
 
   const parts = Array.isArray(rec.parts) ? rec.parts : [];
-  return contentFromRenderablePartsForCanonical(parts);
+  const partsContent = contentFromRenderablePartsForCanonical(parts);
+  if (partsContent) {
+    return partsContent;
+  }
+
+  const rawSdkEventPayloads = Array.isArray(rec.rawSdkEventPayloads)
+    ? rec.rawSdkEventPayloads
+    : [];
+  const rawSdkText = getCentralizedAssistantContentFromRawSdkEventPayloads(
+    rawSdkEventPayloads,
+  );
+  return rawSdkText;
 }
 
 export function isInternalTransportReminderMessage(message: Message): boolean {
@@ -1255,16 +1607,26 @@ export function messageRichnessScoreForCanonical(message: Message): number {
 }
 
 export function dedupeMirrorMessagesForCanonical(messages: Message[]): Message[] {
-  const preserveRawResponse = (preferred: Message, alternate: Message): Message => {
+
+
+  const preserveRawDebugFields = (preferred: Message, alternate: Message): Message => {
     const preferredRecord = preferred as unknown as Record<string, unknown>;
-    if (Object.prototype.hasOwnProperty.call(preferredRecord, "rawResponse")) {
-      return preferred;
-    }
     const alternateRecord = alternate as unknown as Record<string, unknown>;
-    if (!Object.prototype.hasOwnProperty.call(alternateRecord, "rawResponse")) {
+    const preferredRawSdkEventPayloads = Array.isArray(preferredRecord.rawSdkEventPayloads) &&
+      preferredRecord.rawSdkEventPayloads.length > 0
+      ? preferredRecord.rawSdkEventPayloads
+      : undefined;
+    const alternateRawSdkEventPayloads = Array.isArray(alternateRecord.rawSdkEventPayloads) &&
+      alternateRecord.rawSdkEventPayloads.length > 0
+      ? alternateRecord.rawSdkEventPayloads
+      : undefined;
+    if (preferredRawSdkEventPayloads) {
       return preferred;
     }
-    return { ...preferred, rawResponse: alternate.rawResponse };
+    if (alternateRawSdkEventPayloads) {
+      return { ...preferred, rawSdkEventPayloads: alternateRawSdkEventPayloads };
+    }
+    return preferred;
   };
 
   const messageMetaCache = new WeakMap<
@@ -1300,7 +1662,27 @@ export function dedupeMirrorMessagesForCanonical(messages: Message[]): Message[]
         ? incoming
         : existing;
     const alternate = preferred === incoming ? existing : incoming;
-    return preserveRawResponse(preferred, alternate);
+    const next = preserveRawDebugFields(preferred, alternate);
+    const existingRecord = existing as unknown as Record<string, unknown>;
+    const incomingRecord = incoming as unknown as Record<string, unknown>;
+    const existingRawSdkEventPayloads =
+      Array.isArray(existingRecord.rawSdkEventPayloads) &&
+      existingRecord.rawSdkEventPayloads.length > 0
+        ? existingRecord.rawSdkEventPayloads
+        : undefined;
+    const incomingRawSdkEventPayloads =
+      Array.isArray(incomingRecord.rawSdkEventPayloads) &&
+      incomingRecord.rawSdkEventPayloads.length > 0
+        ? incomingRecord.rawSdkEventPayloads
+        : undefined;
+    const mergedRawSdkEventPayloads = mergeRawSdkEventPayloads(
+      existingRawSdkEventPayloads,
+      incomingRawSdkEventPayloads,
+    );
+    if (mergedRawSdkEventPayloads) {
+      next.rawSdkEventPayloads = mergedRawSdkEventPayloads;
+    }
+    return next;
   };
 
   const idToIndex = new Map<string, number>();
@@ -1375,6 +1757,46 @@ export function dedupeMirrorMessagesForCanonical(messages: Message[]): Message[]
     indexMessage(idx, message);
   }
   return deduped;
+}
+
+function canonicalMessageTurnFingerprint(message: Message): string {
+  return [
+    getMessageRoleForCanonical(message),
+    normalizeComparableTextLocal(extractMessageTextForCanonical(message)),
+  ].join("|");
+}
+
+function dedupeAdjacentCanonicalTurns(messages: Message[]): Message[] {
+  if (!Array.isArray(messages) || messages.length < 4) {
+    return messages;
+  }
+
+  const collapsed: Message[] = [];
+  for (const message of messages) {
+    collapsed.push(message);
+    while (collapsed.length >= 4) {
+      const last = collapsed[collapsed.length - 1];
+      const prev = collapsed[collapsed.length - 2];
+      const beforePrev = collapsed[collapsed.length - 3];
+      const beforeBeforePrev = collapsed[collapsed.length - 4];
+
+      const isRepeatedTurn =
+        canonicalMessageTurnFingerprint(last) === canonicalMessageTurnFingerprint(beforePrev) &&
+        canonicalMessageTurnFingerprint(prev) === canonicalMessageTurnFingerprint(beforeBeforePrev);
+
+      if (!isRepeatedTurn) {
+        break;
+      }
+
+      // Remove the duplicated later turn so the canonical transcript keeps the
+      // first visible user+assistant pair and drops the mirrored duplicate that
+      // arrives from the live stream / sync mirror.
+      collapsed.splice(collapsed.length - 2, 2);
+      break;
+    }
+  }
+
+  return collapsed;
 }
 
 function isTextLikePartForCanonical(part: unknown): boolean {
@@ -1474,20 +1896,8 @@ function appendUniqueEntries<T>(
 }
 
 export function coalesceAssistantRunForCanonical(run: Message[]): Message {
-  // Lifecycle events (streaming start/finish) carry evt_-prefixed message IDs.
-  // When the same assistant turn produces both an evt_ lifecycle snapshot and a
-  // msg_ streaming snapshot, the evt_ entry may carry stale streaming text that
-  // was captured at lifecycle-start.  Use the last non-evt message as the merge
-  // base so the canonical ID and renderable text come from the authoritative
-  // msg_ snapshot — the evt_ metadata (steps, progress, structured output) is
-  // still folded in during the merge loop below.
-  const preferredIdx = run.length > 1
-    ? run.findLastIndex(
-        (m: Message) => !(typeof m?.info?.id === "string" && m.info.id.startsWith("evt_")),
-      )
-    : -1;
   const base = {
-    ...(preferredIdx >= 0 ? run[preferredIdx] : run[run.length - 1] || run[0]),
+    ...(run[run.length - 1] || run[0]),
   } as Message;
   const mergedParts: unknown[] = [];
   const seenPartKeys = new Set<string>();
@@ -1510,7 +1920,11 @@ export function coalesceAssistantRunForCanonical(run: Message[]): Message {
   const subagentsByMessageId = new Map<string, Message["subagents"]>();
   let latestSubagentsWithoutMessageId: Message["subagents"] | undefined;
   let latestError = asStringLocal((base as unknown as Record<string, unknown>).error);
-  let latestRawResponse = (base as unknown as Record<string, unknown>).rawResponse;
+  let latestRawSdkEventPayloads: unknown[] | undefined = Array.isArray(
+    (base as unknown as Record<string, unknown>).rawSdkEventPayloads,
+  )
+    ? [...((base as unknown as Record<string, unknown>).rawSdkEventPayloads as unknown[])]
+    : undefined;
   let latestStructuredOutput = asRecordLocal(
     (base as unknown as Record<string, unknown>).structuredOutput,
   ) ?? getStructuredRecordLocal(base);
@@ -1532,24 +1946,17 @@ export function coalesceAssistantRunForCanonical(run: Message[]): Message {
   for (const message of run) {
     const messageId = getMessageIdForCanonical(message);
     if (messageId) {
-      const incomingIsEvt = typeof messageId === "string" && messageId.startsWith("evt_");
-      const currentIsNonEvt = typeof canonicalId === "string" && !canonicalId.startsWith("evt_");
-      if (!incomingIsEvt || !currentIsNonEvt) {
-        canonicalId = messageId;
-      }
+  canonicalId = messageId;
     }
     const text = extractRenderableAssistantTextForCanonical(message);
     if (text) {
-      const incomingIsEvt = typeof messageId === "string" && messageId.startsWith("evt_");
-      if (!incomingIsEvt || !latestText) {
-        latestText = text;
-        latestTextPart = Array.isArray(message.parts)
-          ? message.parts.find((part) => {
-              const partRec = asRecordLocal(part);
-              return !!partRec && isRenderableAssistantTextPartForCanonical(partRec);
-            })
-          : undefined;
-      }
+      latestText = text;
+      latestTextPart = Array.isArray(message.parts)
+        ? message.parts.find((part) => {
+            const partRec = asRecordLocal(part);
+            return !!partRec && isRenderableAssistantTextPartForCanonical(partRec);
+          })
+        : undefined;
     }
     if (Array.isArray(message.interactiveEvents) && message.interactiveEvents.length > 0) {
       latestInteractiveEvents = message.interactiveEvents;
@@ -1564,12 +1971,11 @@ export function coalesceAssistantRunForCanonical(run: Message[]): Message {
         latestSubagentsWithoutMessageId = message.subagents;
       }
     }
-    if (typeof message.rawResponse === "string") {
-      if (message.rawResponse.trim().length > 0) {
-        latestRawResponse = message.rawResponse;
+    if (Array.isArray((message as unknown as Record<string, unknown>).rawSdkEventPayloads)) {
+      const rawSdkEventPayloads = (message as unknown as Record<string, unknown>).rawSdkEventPayloads as unknown[];
+      if (rawSdkEventPayloads.length > 0) {
+        latestRawSdkEventPayloads = [...rawSdkEventPayloads];
       }
-    } else if (typeof message.rawResponse !== "undefined") {
-      latestRawResponse = message.rawResponse;
     }
     const errorText = asStringLocal(
       (message as unknown as Record<string, unknown>).error,
@@ -1700,11 +2106,10 @@ export function coalesceAssistantRunForCanonical(run: Message[]): Message {
   if (latestStructuredOutput) {
     (base as unknown as Record<string, unknown>).structuredOutput = latestStructuredOutput;
   }
-  if (typeof latestRawResponse !== "undefined") {
-    // Keep the latest available rawResponse when collapsing assistant bursts.
-    // Canonicalization also runs for hydrated history, so removing this causes
-    // "Raw Response (Debug)" to disappear after refresh/session reload.
-    base.rawResponse = latestRawResponse;
+  if (Array.isArray(latestRawSdkEventPayloads) && latestRawSdkEventPayloads.length > 0) {
+    (base as unknown as Record<string, unknown>).rawSdkEventPayloads = latestRawSdkEventPayloads;
+  } else {
+    delete (base as unknown as Record<string, unknown>).rawSdkEventPayloads;
   }
   if (canonicalId) {
     base.id = canonicalId;
@@ -1716,10 +2121,14 @@ export function coalesceAssistantRunForCanonical(run: Message[]): Message {
   return base;
 }
 
-export function canonicalizeMessagesForRender(messages: Message[]): Message[] {
+export function canonicalizeMessagesForRender(
+  messages: Message[],
+  options?: { preserveEvtAssistantMessages?: boolean },
+): Message[] {
   if (!Array.isArray(messages) || messages.length === 0) {
     return [];
   }
+  void options;
 
   // Convert internal transport messages (like <system-reminder>) to system role
   // for consistent deduplication and rendering handling.
@@ -1760,12 +2169,13 @@ export function canonicalizeMessagesForRender(messages: Message[]): Message[] {
     .map((entry) => entry.message);
 
   const deduped = dedupeMirrorMessagesForCanonical(chronologicallyOrdered);
+  const dedupedTurns = dedupeAdjacentCanonicalTurns(deduped);
 
   const canonical: Message[] = [];
   let index = 0;
 
-  while (index < deduped.length) {
-    const current = deduped[index];
+  while (index < dedupedTurns.length) {
+    const current = dedupedTurns[index];
     const isAssistant = isAssistantMessageForCanonical(current);
 
     if (!isAssistant) {
@@ -1775,8 +2185,8 @@ export function canonicalizeMessagesForRender(messages: Message[]): Message[] {
     }
     const burst: Message[] = [current];
     let cursor = index + 1;
-    while (cursor < deduped.length && isAssistantMessageForCanonical(deduped[cursor])) {
-      burst.push(deduped[cursor]);
+    while (cursor < dedupedTurns.length && isAssistantMessageForCanonical(dedupedTurns[cursor])) {
+      burst.push(dedupedTurns[cursor]);
       cursor += 1;
     }
     canonical.push(
@@ -1785,19 +2195,7 @@ export function canonicalizeMessagesForRender(messages: Message[]): Message[] {
     index = cursor;
   }
 
-  const hasNonEvtAssistant = canonical.some(
-    (m) =>
-      isAssistantMessageForCanonical(m) &&
-      !(typeof m?.info?.id === "string" && m.info.id.startsWith("evt_")),
-  );
-
-  return hasNonEvtAssistant
-    ? canonical.filter(
-        (m) =>
-          !isAssistantMessageForCanonical(m) ||
-          !(typeof m?.info?.id === "string" && m.info.id.startsWith("evt_")),
-      )
-    : canonical;
+  return canonical;
 }
 
 const MAX_STREAMING_REASONING_EVENTS = 300;
@@ -1945,6 +2343,38 @@ function isDuplicateReasoningChunk(candidate: string, existing: string): boolean
     candidateFingerprint.includes(existingFingerprint) ||
     existingFingerprint.includes(candidateFingerprint)
   );
+}
+
+function findStreamingReasoningEventIndex(
+  reasoningEvents: ReasoningEvent[],
+  payload: StreamingReasoningPayload,
+): number {
+  const partID = typeof payload.partID === "string" ? payload.partID.trim() : "";
+  const messageID =
+    typeof payload.messageID === "string" ? payload.messageID.trim() : "";
+
+  if (partID) {
+    for (let index = reasoningEvents.length - 1; index >= 0; index -= 1) {
+      if ((reasoningEvents[index]?.partID ?? "").trim() === partID) {
+        return index;
+      }
+    }
+    return -1;
+  }
+
+  if (messageID) {
+    const matchingIndexes: number[] = [];
+    for (let index = reasoningEvents.length - 1; index >= 0; index -= 1) {
+      if ((reasoningEvents[index]?.messageID ?? "").trim() === messageID) {
+        matchingIndexes.push(index);
+      }
+    }
+    if (matchingIndexes.length === 1) {
+      return matchingIndexes[0];
+    }
+  }
+
+  return -1;
 }
 
 type ReasoningMergeResult = {
@@ -2207,30 +2637,21 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       const statsForNew = newId
         ? (state.sessionsStatsById?.[newId] ?? zeroStats)
         : zeroStats;
+      const queueBySessionId = state.queueBySessionId ?? {};
+      const processingSessionIds = Array.isArray(state.processingSessionIds)
+        ? state.processingSessionIds
+        : [];
       const queueForNew = newId
-        ? getQueueForSession(state.queueBySessionId[newId], newId)
+        ? getQueueForSession(queueBySessionId[newId], newId)
         : [];
 
       // Check if the new session is currently processing to preserve loading state
-      const isNewSessionProcessing = newId && state.processingSessionIds.includes(newId);
+      const isNewSessionProcessing = Boolean(newId && processingSessionIds.includes(newId));
       const streamingBySessionId = cacheStreamingForSession(
         state.streamingBySessionId,
         state.currentSessionId,
         state.streaming,
       );
-      const messagesBySessionId =
-        state.currentSessionId &&
-        hasVisibleStreamingSnapshotLocal(state.streaming)
-          ? {
-            ...(state.messagesBySessionId ?? {}),
-            [state.currentSessionId]: canonicalizeMessagesForRender(
-              mergeStreamingSnapshotIntoMessagesLocal(
-                state.messages ?? [],
-                state.streaming,
-              ),
-            ),
-          }
-          : state.messagesBySessionId;
       const cachedStreamingForNew = newId
         ? streamingBySessionId[newId] ?? null
         : null;
@@ -2241,29 +2662,51 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           hasVisibleStreamingSnapshotLocal(cachedStreamingForNew))
           ? cachedStreamingForNew
           : null;
-      const messagesForNew = newId ? messagesBySessionId?.[newId] ?? [] : [];
+      const restoredAssistantTurnPending = Boolean(
+        isNewSessionProcessing || restoredStreamingForNew?.isActive,
+      );
+      const restoredAssistantTurnMessageId =
+        restoredStreamingForNew?.messageId ?? null;
+      const pendingUserMessagesBySessionId = {
+        ...(state.pendingUserMessagesBySessionId ?? {}),
+      };
+      if (
+        newId &&
+        pendingUserMessagesBySessionId[PENDING_CURRENT_SESSION_KEY]?.length
+      ) {
+        const draftMessages = pendingUserMessagesBySessionId[PENDING_CURRENT_SESSION_KEY];
+        const existingMessages = pendingUserMessagesBySessionId[newId] ?? [];
+        pendingUserMessagesBySessionId[newId] = [...existingMessages, ...draftMessages]
+          .filter((message, index, list) =>
+            list.findIndex((candidate) => candidate.id === message.id) === index,
+          )
+          .map((message) => ({ ...message, sessionId: newId }));
+        delete pendingUserMessagesBySessionId[PENDING_CURRENT_SESSION_KEY];
+      }
 
       return {
         ...state,
         currentSessionId: action.payload,
-        // Immediately switch the visible transcript to the target session's
-        // cached timeline. Without this, the previous session's messages can
-        // remain on screen until a later hydration event lands.
-        messages: messagesForNew,
+        messages: [],
         sessionStats: statsForNew,
         promptQueue: queueForNew,
-        interactiveEvents: pendingInteractiveEventsFromMessagesLocal(messagesForNew),
+        interactiveEvents: [],
         isExecutingQueue: false,
         isQueueOpen: false,
         // Reset all transient per-session processing/streaming UI so states from
         // the previous session do not bleed into the newly active one.
         isProcessing: isNewSessionProcessing,
         isSteering: false,
+        assistantTurnPending: restoredAssistantTurnPending,
+        assistantTurnMessageId: restoredAssistantTurnMessageId,
         // Restore only when the backend confirms the target session is still
         // processing; otherwise keep the old session's progress hidden.
         streaming: restoredStreamingForNew,
-        streamingBySessionId,
-        messagesBySessionId,
+        streamingBySessionId: pruneSessionCache(streamingBySessionId, action.payload),
+        pendingUserMessagesBySessionId: pruneSessionCache(
+          pendingUserMessagesBySessionId,
+          action.payload,
+        ),
         isCompacting: false,
         compactionError: undefined,
         compactionNotice: undefined,
@@ -2324,7 +2767,26 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case "SET_AGENTS_LIST":
       return { ...state, availableAgents: action.payload };
     case "SET_MESSAGES": {
-      const canonicalMessages = canonicalizeMessagesForRender(action.payload);
+      const canonicalMessages = canonicalizeMessagesForRender(action.payload, {
+        preserveEvtAssistantMessages:
+          !!state.streaming?.isActive || state.assistantTurnPending,
+      });
+      if (areCanonicalMessagesEquivalent(state.messages, canonicalMessages)) {
+        return state;
+      }
+      const attachedRawSdkEventPayloads = canonicalMessages.reduce<unknown[]>(
+        (collected, message) => {
+          const payloads = Array.isArray(
+            (message as unknown as Record<string, unknown>).rawSdkEventPayloads,
+          )
+            ? ((message as unknown as Record<string, unknown>).rawSdkEventPayloads as unknown[])
+            : [];
+          return payloads.length > 0
+            ? mergeRawSdkEventPayloads(collected, payloads)
+            : collected;
+        },
+        [],
+      );
       const resolvedDividerIndex = resolveCompactionDividerIndex(canonicalMessages, {
         compactionDividerIndex: state.compactionDividerIndex,
         compactionDividerBeforeMessageId: state.compactionDividerBeforeMessageId,
@@ -2363,17 +2825,28 @@ export function appReducer(state: AppState, action: AppAction): AppState {
             state.dismissedInteractiveEventKeys,
           )
           : derivedInteractiveEvents;
+      const nextRawSdkEventPayloadsBySessionId =
+        state.currentSessionId && attachedRawSdkEventPayloads.length > 0
+          ? pruneSessionCache({
+            ...(state.rawSdkEventPayloadsBySessionId ?? {}),
+            [state.currentSessionId]: dedupeCentralizedDebugPayloads(
+              shouldIncludeCentralizedDebugPayload
+                ? mergeRawSdkEventPayloads(
+                  state.rawSdkEventPayloadsBySessionId?.[state.currentSessionId] ?? [],
+                  attachedRawSdkEventPayloads,
+                ).filter(shouldIncludeCentralizedDebugPayload)
+                : mergeRawSdkEventPayloads(
+                  state.rawSdkEventPayloadsBySessionId?.[state.currentSessionId] ?? [],
+                  attachedRawSdkEventPayloads,
+                ),
+            ),
+          }, state.currentSessionId)
+          : state.rawSdkEventPayloadsBySessionId;
       return {
         ...state,
         messages: canonicalMessages,
         interactiveEvents: nextInteractiveEvents,
-        messagesBySessionId:
-          state.currentSessionId
-            ? {
-              ...(state.messagesBySessionId ?? {}),
-              [state.currentSessionId]: canonicalMessages,
-            }
-            : state.messagesBySessionId,
+        rawSdkEventPayloadsBySessionId: nextRawSdkEventPayloadsBySessionId,
         compactionDividerIndex: resolvedDividerIndex,
         compactionDividerBeforeMessageId:
           resolvedAnchors.compactionDividerBeforeMessageId,
@@ -2381,72 +2854,92 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           resolvedAnchors.compactionDividerAfterMessageId,
       };
     }
-    case "CACHE_SESSION_MESSAGES":
-      return {
-        ...state,
-        messagesBySessionId: {
-          ...(state.messagesBySessionId ?? {}),
-          [action.payload.sessionId]: canonicalizeMessagesForRender(
-            action.payload.messages,
-          ),
-        },
-      };
-    case "HYDRATE_SESSION_FROM_CACHE": {
-      const cachedMessages =
-        state.messagesBySessionId?.[action.payload.sessionId] ?? [];
-      if (cachedMessages.length === 0) {
+    case "SET_RAW_SDK_EVENT_PAYLOADS": {
+      const rawEvents = Array.isArray(action.payload.events) ? action.payload.events : [];
+      const events = dedupeCentralizedDebugPayloads(
+        rawEvents
+          .filter(shouldIncludeCentralizedDebugPayload)
+          .map((event) => sanitizeCentralizedDebugPayload(event))
+      );
+      const existingEvents = state.rawSdkEventPayloadsBySessionId?.[action.payload.sessionId];
+      if (areCentralizedEventListsEquivalent(existingEvents, events)) {
         return state;
       }
-      const isNewSessionProcessing = state.processingSessionIds.includes(
-        action.payload.sessionId,
-      );
-      const streamingBySessionId = cacheStreamingForSession(
-        state.streamingBySessionId,
-        state.currentSessionId,
-        state.streaming,
-      );
-      const cachedStreamingForNew =
-        streamingBySessionId[action.payload.sessionId] ?? null;
-      const restoredStreamingForNew =
-        cachedStreamingForNew &&
-        (isNewSessionProcessing ||
-          hasVisibleStreamingSnapshotLocal(cachedStreamingForNew))
-        ? cachedStreamingForNew
-        : null;
-      const resolvedDividerIndex = resolveCompactionDividerIndex(cachedMessages, {
-        compactionDividerIndex: state.compactionDividerIndex,
-        compactionDividerBeforeMessageId: state.compactionDividerBeforeMessageId,
-        compactionDividerAfterMessageId: state.compactionDividerAfterMessageId,
-        lastCompactedAt: state.lastCompactedAt,
+      logger.info("[CENTRALIZED-TAPE][WEBVIEW_STORE] set_raw_sdk_event_payloads", {
+        sessionId: action.payload.sessionId,
+        incomingCount: rawEvents.length,
+        storedCount: events.length,
+        currentSessionId: state.currentSessionId,
       });
-      const resolvedAnchors =
-        typeof resolvedDividerIndex === "number"
-          ? resolveCompactionDividerAnchors(cachedMessages, resolvedDividerIndex)
-          : {
-            compactionDividerBeforeMessageId:
-              state.compactionDividerBeforeMessageId,
-            compactionDividerAfterMessageId: state.compactionDividerAfterMessageId,
-          };
       return {
         ...state,
-        currentSessionId: action.payload.sessionId,
-        messages: cachedMessages,
-        interactiveEvents: filterDismissedInteractiveEventsLocal(
-          pendingInteractiveEventsFromMessagesLocal(cachedMessages),
-          state.dismissedInteractiveEventKeys,
-        ),
-        isProcessing: isNewSessionProcessing,
-        isSteering: false,
-        streaming: restoredStreamingForNew,
-        streamingBySessionId,
-        isLoadingSession: false,
-        loadingSessionId: null,
-        loadingSessionTitle: null,
-        compactionDividerIndex: resolvedDividerIndex,
-        compactionDividerBeforeMessageId:
-          resolvedAnchors.compactionDividerBeforeMessageId,
-        compactionDividerAfterMessageId:
-          resolvedAnchors.compactionDividerAfterMessageId,
+        rawSdkEventPayloadsBySessionId: pruneSessionCache({
+          ...(state.rawSdkEventPayloadsBySessionId ?? {}),
+          [action.payload.sessionId]: events,
+        }, action.payload.sessionId),
+      };
+    }
+    case "APPEND_RAW_SDK_EVENT_PAYLOAD": {
+      const sessionId = action.payload.sessionId ?? state.currentSessionId ?? "";
+      if (!sessionId) {
+        logger.warn("[CENTRALIZED-TAPE][WEBVIEW_STORE] append_raw_sdk_event_payload_skipped", {
+          reason: "missing-session",
+          currentSessionId: state.currentSessionId,
+        });
+        return state;
+      }
+      if (!shouldIncludeCentralizedDebugPayload(action.payload.event)) {
+        const event = asRecordLocal(action.payload.event);
+        logger.warn("[CENTRALIZED-TAPE][WEBVIEW_STORE] append_raw_sdk_event_payload_skipped", {
+          reason: "filtered",
+          sessionId,
+          eventType: asStringLocal(event?.type),
+          currentSessionId: state.currentSessionId,
+        });
+        return state;
+      }
+      const existing = state.rawSdkEventPayloadsBySessionId?.[sessionId] ?? [];
+      const sanitizedEvent = sanitizeCentralizedDebugPayload(action.payload.event);
+      const next = dedupeCentralizedDebugPayloads([...existing, sanitizedEvent]);
+      const event = asRecordLocal(sanitizedEvent);
+      const properties = asRecordLocal(event?.properties);
+      const info = asRecordLocal(properties?.info);
+      const part = asRecordLocal(properties?.part);
+      logger.info("[CENTRALIZED-TAPE][WEBVIEW_STORE] append_raw_sdk_event_payload", {
+        sessionId,
+        eventType: asStringLocal(event?.type),
+        source: asStringLocal(event?.source),
+        messageId: asStringLocal(info?.id, part?.messageId, part?.messageID),
+        partType: asStringLocal(part?.type),
+        previousCount: existing.length,
+        nextCount: next.length,
+        deduped: next.length === existing.length,
+        currentSessionId: state.currentSessionId,
+      });
+      return {
+        ...state,
+        rawSdkEventPayloadsBySessionId: pruneSessionCache({
+          ...(state.rawSdkEventPayloadsBySessionId ?? {}),
+          [sessionId]: next,
+        }, sessionId),
+      };
+    }
+    case "APPEND_LIVE_TOAST_NOTIFICATION": {
+      const sessionId = action.payload.sessionId ?? state.currentSessionId ?? "";
+      if (!sessionId) {
+        return state;
+      }
+      const existing = state.liveToastNotificationsBySessionId?.[sessionId] ?? [];
+      if (existing.some((notification) => notification.key === action.payload.notification.key)) {
+        return state;
+      }
+      const next = [...existing, action.payload.notification].slice(-20);
+      return {
+        ...state,
+        liveToastNotificationsBySessionId: pruneSessionCache({
+          ...(state.liveToastNotificationsBySessionId ?? {}),
+          [sessionId]: next,
+        }, sessionId),
       };
     }
     case "CLEAR_MESSAGES":
@@ -2487,8 +2980,9 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         };
       }
       // When processing starts without any existing stream snapshot, create an
-      // empty streaming state so the StreamingCard is visible immediately
-      // instead of showing the "Thinking..." bubble.
+      // empty streaming state for incoming events to fill. The renderer waits
+      // for real content or activity before showing the live card, which keeps
+      // the previous assistant response from flashing during turn startup.
       if (action.payload && !state.streaming) {
         try {
           // Initialize streaming state WITHOUT model/provider assumptions.
@@ -2544,11 +3038,40 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case "SET_STEERING":
       return { ...state, isSteering: action.payload };
     case "SET_ASSISTANT_TURN_PENDING":
+      // A new assistant turn must never inherit the previous turn's message id.
+      // If the streaming pipeline has not discovered the new message id yet, we
+      // clear the old one so the UI cannot temporarily bind the new card to the
+      // prior turn's activity timeline.
+      const nextAssistantTurnMessageId = action.payload.pending
+        ? action.payload.messageId ?? null
+        : null;
+      const isNewAssistantTurn =
+        action.payload.pending &&
+        (nextAssistantTurnMessageId === null ||
+          nextAssistantTurnMessageId !== state.assistantTurnMessageId);
+      const shouldClearStaleStreamingSnapshot =
+        isNewAssistantTurn &&
+        !!state.streaming &&
+        state.streaming.isActive === false &&
+        (!!state.streaming.messageId || state.streaming.content.trim().length > 0) &&
+        state.streaming.messageId !== nextAssistantTurnMessageId;
+      if (shouldClearStaleStreamingSnapshot) {
+        return {
+          ...state,
+          assistantTurnPending: action.payload.pending,
+          assistantTurnMessageId: nextAssistantTurnMessageId,
+          streaming: null,
+          streamingBySessionId: cacheStreamingForSession(
+            state.streamingBySessionId,
+            state.currentSessionId,
+            null,
+          ),
+        };
+      }
       return {
         ...state,
         assistantTurnPending: action.payload.pending,
-        assistantTurnMessageId:
-          action.payload.messageId ?? (action.payload.pending ? state.assistantTurnMessageId : null),
+        assistantTurnMessageId: nextAssistantTurnMessageId,
       };
     case "SET_SESSIONS_LIST":
       if (areSessionsListsEqual(state.sessionsList, action.payload)) {
@@ -2602,7 +3125,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     }
     case "SET_STREAMING": {
       const streaming = action.payload
-        ? {
+        ? mergeStreamingSnapshotLocal(state.streaming, {
           ...action.payload,
           hasRenderableContent: action.payload.hasRenderableContent ?? false,
           reasoningEvents: action.payload.reasoningEvents ?? [],
@@ -2611,8 +3134,10 @@ export function appReducer(state: AppState, action: AppAction): AppState {
             action.payload.hasAssistantFinishSignal ?? false,
           hasTerminalStepSignal: action.payload.hasTerminalStepSignal ?? false,
           interactiveEvents: action.payload.interactiveEvents ?? [],
-          rawSdkEventPayloads: action.payload.rawSdkEventPayloads ?? [],
-        }
+          rawSdkEventPayloads: dedupeCentralizedDebugPayloads(
+            (action.payload.rawSdkEventPayloads ?? []).filter(shouldIncludeCentralizedDebugPayload),
+          ),
+        })
         : null;
       logger.info("[LOADING][STORE] SET_STREAMING", {
         payloadIsNull: action.payload === null,
@@ -2633,17 +3158,14 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           state.currentSessionId,
           streaming,
         ),
-        messagesBySessionId: cacheVisibleStreamingMessageForSession(
-          state.messagesBySessionId,
-          state.currentSessionId,
-          streaming,
-          state.messages,
-        ),
       };
     }
     case "SET_SESSION_STREAMING": {
+      const existingSessionStreaming =
+        state.streamingBySessionId[action.payload.sessionId] ??
+        (state.currentSessionId === action.payload.sessionId ? state.streaming : null);
       const streaming = action.payload.streaming
-        ? {
+        ? mergeStreamingSnapshotLocal(existingSessionStreaming, {
           ...action.payload.streaming,
           hasRenderableContent:
             action.payload.streaming.hasRenderableContent ?? false,
@@ -2654,7 +3176,10 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           hasTerminalStepSignal:
             action.payload.streaming.hasTerminalStepSignal ?? false,
           interactiveEvents: action.payload.streaming.interactiveEvents ?? [],
-        }
+          rawSdkEventPayloads: dedupeCentralizedDebugPayloads(
+            (action.payload.streaming.rawSdkEventPayloads ?? []).filter(shouldIncludeCentralizedDebugPayload),
+          ),
+        })
         : null;
       const streamingBySessionId = cacheStreamingForSession(
         state.streamingBySessionId,
@@ -2665,39 +3190,50 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         return {
           ...state,
           streamingBySessionId,
-          messagesBySessionId: cacheVisibleStreamingMessageForSession(
-            state.messagesBySessionId,
-            action.payload.sessionId,
-            streaming,
-          ),
         };
       }
       return {
         ...state,
         streaming,
         streamingBySessionId,
-        messagesBySessionId: cacheVisibleStreamingMessageForSession(
-          state.messagesBySessionId,
-          action.payload.sessionId,
-          streaming,
-          state.messages,
-        ),
       };
     }
     case "APPEND_SDK_EVENT_PAYLOAD": {
       if (!state.streaming) {
         return state;
       }
-      const existing = state.streaming.rawSdkEventPayloads ?? [];
-      if (existing.length >= 200) {
+      if (!shouldIncludeCentralizedDebugPayload(action.payload)) {
         return state;
+      }
+      const existing = state.streaming.rawSdkEventPayloads ?? [];
+      const next = dedupeCentralizedDebugPayloads([...existing, action.payload]);
+      const nextRawSdkEventPayloadsBySessionId =
+        state.currentSessionId
+          ? pruneSessionCache({
+            ...(state.rawSdkEventPayloadsBySessionId ?? {}),
+            [state.currentSessionId]: dedupeCentralizedDebugPayloads([
+              ...(state.rawSdkEventPayloadsBySessionId?.[state.currentSessionId] ?? []),
+              action.payload,
+            ]),
+          }, state.currentSessionId)
+          : state.rawSdkEventPayloadsBySessionId;
+      // NOTE: Cap the per-turn streaming snapshot at 200 entries to bound memory,
+      // but always continue updating the session-scoped cache. The session cache
+      // is the long-term centralized tape; dropping events from it causes the
+      // activity timeline and subagent rehydration to go blank after the cap.
+      if (next.length >= 200) {
+        return {
+          ...state,
+          rawSdkEventPayloadsBySessionId: nextRawSdkEventPayloadsBySessionId,
+        };
       }
       return {
         ...state,
         streaming: {
           ...state.streaming,
-          rawSdkEventPayloads: [...existing, action.payload],
+          rawSdkEventPayloads: next,
         },
+        rawSdkEventPayloadsBySessionId: nextRawSdkEventPayloadsBySessionId,
       };
     }
     case "UPDATE_STREAMING_CONTENT": {
@@ -2778,23 +3314,59 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       const chunk = merged.eventChunk?.trim() ?? "";
       let reasoningEvents = state.streaming.reasoningEvents;
       if (chunk.length > 0) {
+        const matchingIndex = findStreamingReasoningEventIndex(
+          reasoningEvents,
+          action.payload,
+        );
         const lastEvent =
           reasoningEvents.length > 0
             ? reasoningEvents[reasoningEvents.length - 1]
             : undefined;
+        const matchedEvent =
+          matchingIndex >= 0 ? reasoningEvents[matchingIndex] : undefined;
+        const targetEvent = matchedEvent ?? lastEvent;
         if (
-          lastEvent &&
-          (merged.replaceLastEvent ||
-            isDuplicateReasoningChunk(chunk, lastEvent.text))
+          targetEvent &&
+          (
+            matchingIndex >= 0 ||
+            merged.replaceLastEvent ||
+            isDuplicateReasoningChunk(chunk, targetEvent.text)
+          )
         ) {
+          const existingText = targetEvent.text;
+          const nextText =
+            matchingIndex >= 0
+              ? action.payload.delta
+                ? `${existingText}${action.payload.reasoning}`
+                : mergeStreamingReasoning(
+                  existingText,
+                  action.payload.reasoning,
+                  action.payload.append,
+                ).reasoning
+              : chunk;
+          const replaceIndex =
+            matchingIndex >= 0 ? matchingIndex : reasoningEvents.length - 1;
           reasoningEvents = [
-            ...reasoningEvents.slice(0, -1),
-            { ...lastEvent, text: chunk },
+            ...reasoningEvents.slice(0, replaceIndex),
+            {
+              ...targetEvent,
+              text: nextText,
+              partID: action.payload.partID ?? targetEvent.partID,
+              messageID: action.payload.messageID ?? targetEvent.messageID,
+              delta: action.payload.delta ?? targetEvent.delta,
+            },
+            ...reasoningEvents.slice(replaceIndex + 1),
           ];
         } else {
           reasoningEvents = appendWithCap(
             reasoningEvents,
-            { text: chunk, createdAt: Date.now() },
+            {
+              text: chunk,
+              createdAt: Date.now(),
+              partID: action.payload.partID,
+              messageID: action.payload.messageID,
+              delta: action.payload.delta,
+            },
             MAX_STREAMING_REASONING_EVENTS,
           );
         }
@@ -2972,12 +3544,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           state.currentSessionId,
           streaming,
         ),
-        messagesBySessionId: cacheVisibleStreamingMessageForSession(
-          state.messagesBySessionId,
-          state.currentSessionId,
-          streaming,
-          state.messages,
-        ),
       };
     }
     case "SET_INPUT_VALUE":
@@ -3032,6 +3598,145 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           state.currentSessionId === targetSessionId
             ? sessionQueue
             : state.promptQueue,
+      };
+    }
+    case "ADD_PENDING_DEFERRED_PROMPT": {
+      const item = action.payload;
+      if (!item.sessionId || !item.id || !item.text.trim()) {
+        return state;
+      }
+      const nextBySession = { ...(state.pendingDeferredPromptsBySessionId ?? {}) };
+      const existing = nextBySession[item.sessionId] ?? [];
+      const alreadyExists = existing.some(
+        (prompt) =>
+          prompt.id === item.id ||
+          (prompt.clientRequestId &&
+            item.clientRequestId &&
+            prompt.clientRequestId === item.clientRequestId),
+      );
+      if (alreadyExists) {
+        return state;
+      }
+      nextBySession[item.sessionId] = [...existing, item];
+      return {
+        ...state,
+        pendingDeferredPromptsBySessionId: pruneSessionCache(
+          nextBySession,
+          state.currentSessionId,
+        ),
+      };
+    }
+    case "ADD_PENDING_USER_MESSAGE": {
+      const item = action.payload;
+      if (!item.sessionId || !item.id || !item.text.trim()) {
+        return state;
+      }
+      // This store slice is intentionally a thin optimistic overlay only.
+      // It must never become a second transcript source of truth. We keep
+      // messages scoped by session and dedupe by request identity so the UI can
+      // show a local user bubble immediately, then remove it once the canonical
+      // centralized tape echoes the real user turn back.
+      const nextBySession = { ...(state.pendingUserMessagesBySessionId ?? {}) };
+      const existing = nextBySession[item.sessionId] ?? [];
+      const alreadyExists = existing.some(
+        (message) =>
+          message.id === item.id ||
+          (message.clientRequestId &&
+            item.clientRequestId &&
+            message.clientRequestId === item.clientRequestId),
+      );
+      if (alreadyExists) {
+        return state;
+      }
+      nextBySession[item.sessionId] = [...existing, item];
+      return {
+        ...state,
+        pendingUserMessagesBySessionId: pruneSessionCache(
+          nextBySession,
+          state.currentSessionId,
+        ),
+      };
+    }
+    case "CONFIRM_PENDING_USER_MESSAGE": {
+      const {
+        sessionId,
+        clientRequestId,
+        messageId,
+        createdAt,
+        text,
+        images,
+        interactiveSubmit,
+      } = action.payload;
+      if (!sessionId || !clientRequestId.trim()) {
+        return state;
+      }
+      const existing = state.pendingUserMessagesBySessionId?.[sessionId] ?? [];
+      if (existing.length === 0) {
+        return state;
+      }
+      let changed = false;
+      const updated = existing.map((message) => {
+        if (message.clientRequestId !== clientRequestId) {
+          return message;
+        }
+        changed = true;
+        return {
+          ...message,
+          id: messageId || message.id,
+          sessionId,
+          createdAt: typeof createdAt === "number" ? createdAt : message.createdAt,
+          text: typeof text === "string" && text.trim() ? text : message.text,
+          images: Array.isArray(images) ? images : message.images,
+          interactiveSubmit:
+            typeof interactiveSubmit === "boolean"
+              ? interactiveSubmit
+              : message.interactiveSubmit,
+          confirmedMessageId: messageId || message.confirmedMessageId,
+          confirmedAt: typeof createdAt === "number" ? createdAt : message.confirmedAt,
+        };
+      });
+      if (!changed) {
+        return state;
+      }
+      const nextBySession = { ...(state.pendingUserMessagesBySessionId ?? {}) };
+      nextBySession[sessionId] = updated;
+      return {
+        ...state,
+        pendingUserMessagesBySessionId: pruneSessionCache(
+          nextBySession,
+          state.currentSessionId,
+        ),
+      };
+    }
+    case "REMOVE_PENDING_USER_MESSAGES": {
+      const { sessionId, ids } = action.payload;
+      if (!sessionId || !Array.isArray(ids) || ids.length === 0) {
+        return state;
+      }
+      // Reconciliation removes only the optimistic overlay copy. The canonical
+      // transcript message remains rendered from centralized data, so deleting
+      // the overlay here must never affect the persisted conversation history.
+      const existing = state.pendingUserMessagesBySessionId?.[sessionId] ?? [];
+      if (existing.length === 0) {
+        return state;
+      }
+      const removalIds = new Set(ids);
+      const remaining = existing.filter((message) => !removalIds.has(message.id));
+      if (remaining.length === existing.length) {
+        return state;
+      }
+      const nextBySession = { ...(state.pendingUserMessagesBySessionId ?? {}) };
+      if (remaining.length > 0) {
+        nextBySession[sessionId] = remaining;
+      } else {
+        delete nextBySession[sessionId];
+      }
+      return {
+        ...state,
+        pendingUserMessagesBySessionId: pruneSessionCache(
+          nextBySession,
+          state.currentSessionId,
+        ),
       };
     }
     case "SET_EXECUTING_QUEUE": {
@@ -3235,6 +3940,9 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, modelCapability: action.payload };
     }
     case "SET_TODO_ITEMS": {
+      if (areTodoItemsEqual(state.todoItems, action.payload)) {
+        return state;
+      }
       return { ...state, todoItems: action.payload };
     }
     case "UPDATE_TODO_ITEM": {
@@ -3370,6 +4078,27 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         if (seenKeys.has(key)) return false;
         seenKeys.add(key);
         return true;
+      }).map((event) => {
+        if (event.type === "question") {
+          const key = interactiveEventContentKeyLocal(event);
+          if (event.requestID) {
+            // Store the requestID persistently in case state gets cleared
+            console.error(`[DEBUG][STORE] Storing persistent requestID for key ${key}: ${event.requestID}`);
+            globalQuestionRequestIDMap.set(key, { requestID: event.requestID, questionIndex: event.questionIndex });
+          } else {
+            // Restore from the persistent map
+            const preserved = globalQuestionRequestIDMap.get(key);
+            console.error(`[DEBUG][STORE] Looking up persistent requestID for key ${key}. Found:`, preserved);
+            if (preserved) {
+              return {
+                ...event,
+                requestID: preserved.requestID,
+                questionIndex: preserved.questionIndex,
+              };
+            }
+          }
+        }
+        return event;
       });
       const streaming = state.streaming
         ? {
@@ -3377,6 +4106,24 @@ export function appReducer(state: AppState, action: AppAction): AppState {
             interactiveEvents: deduplicatedEvents,
           }
         : state.streaming;
+      logger.info("[TRACE][STORE][SET_INTERACTIVE_EVENTS]", {
+        currentSessionId: state.currentSessionId,
+        incomingCount: Array.isArray(action.payload) ? action.payload.length : 0,
+        filteredCount: filteredEvents.length,
+        deduplicatedCount: deduplicatedEvents.length,
+        dismissedCount: state.dismissedInteractiveEventKeys.size,
+        hasStreaming: !!state.streaming,
+        streamingInteractiveCount: state.streaming?.interactiveEvents?.length ?? 0,
+      });
+      console.info("[TRACE][STORE][SET_INTERACTIVE_EVENTS]", {
+        currentSessionId: state.currentSessionId,
+        incomingCount: Array.isArray(action.payload) ? action.payload.length : 0,
+        filteredCount: filteredEvents.length,
+        deduplicatedCount: deduplicatedEvents.length,
+        dismissedCount: state.dismissedInteractiveEventKeys.size,
+        hasStreaming: !!state.streaming,
+        streamingInteractiveCount: state.streaming?.interactiveEvents?.length ?? 0,
+      });
       return {
         ...state,
         interactiveEvents: deduplicatedEvents,
@@ -3385,12 +4132,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           state.streamingBySessionId,
           state.currentSessionId,
           streaming,
-        ),
-        messagesBySessionId: cacheVisibleStreamingMessageForSession(
-          state.messagesBySessionId,
-          state.currentSessionId,
-          streaming,
-          state.messages,
         ),
       };
     }
@@ -3421,12 +4162,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           state.currentSessionId,
           streaming,
         ),
-        messagesBySessionId: cacheVisibleStreamingMessageForSession(
-          state.messagesBySessionId,
-          state.currentSessionId,
-          streaming,
-          state.messages,
-        ),
       };
     }
     case "CLEAR_DISMISSED_INTERACTIVE_EVENTS": {
@@ -3454,6 +4189,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       };
     case "SET_OPENCODE_CONFIG_SAVE_STATUS":
       return { ...state, opencodeConfigSaveStatus: action.payload };
+    case "SET_SHOW_LOGGER":
+      return { ...state, showLogger: action.payload };
     case "SET_CONFIG_FILES_LIST": {
       const configFilesState: ConfigFilesState = {
         files: action.payload.files,
@@ -3497,27 +4234,119 @@ export function appReducer(state: AppState, action: AppAction): AppState {
   }
 }
 
-export const AppStateContext = createContext<AppState | undefined>(undefined);
 export const AppDispatchContext = createContext<React.Dispatch<AppAction> | undefined>(undefined);
+type AppStore = {
+  getState: () => AppState;
+  subscribe: (listener: () => void) => () => void;
+};
+export const AppStoreContext = createContext<AppStore | undefined>(undefined);
+
+type EqualityFn<T> = (left: T, right: T) => boolean;
+
+export function shallowEqual<T>(left: T, right: T): boolean {
+  if (Object.is(left, right)) {
+    return true;
+  }
+  if (
+    !left ||
+    !right ||
+    typeof left !== "object" ||
+    typeof right !== "object" ||
+    Array.isArray(left) ||
+    Array.isArray(right)
+  ) {
+    return false;
+  }
+
+  const leftKeys = Object.keys(left as Record<string, unknown>);
+  const rightKeys = Object.keys(right as Record<string, unknown>);
+  if (leftKeys.length !== rightKeys.length) {
+    return false;
+  }
+
+  for (const key of leftKeys) {
+    if (
+      !Object.prototype.hasOwnProperty.call(right, key) ||
+      !Object.is(
+        (left as Record<string, unknown>)[key],
+        (right as Record<string, unknown>)[key],
+      )
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(appReducer, initialState);
+  const stateRef = useRef(state);
+  const listenersRef = useRef(new Set<() => void>());
+  stateRef.current = state;
 
-  const stateValue = useMemo(() => state, [state]);
+  useLayoutEffect(() => {
+    listenersRef.current.forEach((listener) => listener());
+  }, [state]);
+
+  const store = useMemo<AppStore>(
+    () => ({
+      getState: () => stateRef.current,
+      subscribe: (listener) => {
+        listenersRef.current.add(listener);
+        return () => {
+          listenersRef.current.delete(listener);
+        };
+      },
+    }),
+    [],
+  );
 
   return React.createElement(
-    AppStateContext.Provider,
-    { value: stateValue },
-    React.createElement(AppDispatchContext.Provider, { value: dispatch }, children)
+    AppStoreContext.Provider,
+    { value: store },
+    React.createElement(AppDispatchContext.Provider, { value: dispatch }, children),
   );
 }
 
-export function useAppState() {
-  const context = useContext(AppStateContext);
-  if (!context) {
-    throw new Error('useAppState must be used within AppProvider');
+export function useAppState(): AppState;
+export function useAppState<T>(
+  selector: (state: AppState) => T,
+  isEqual?: EqualityFn<T>,
+): T;
+export function useAppState<T>(
+  selector?: (state: AppState) => T,
+  isEqual: EqualityFn<T> = Object.is,
+): AppState | T {
+  const store = useContext(AppStoreContext);
+  const selectionRef = useRef<AppState | T | undefined>(undefined);
+  const hasSelectionRef = useRef(false);
+  const selectorRef = useRef(selector);
+  selectorRef.current = selector;
+
+  if (!store) {
+    throw new Error("useAppState must be used within AppProvider");
   }
-  return context;
+
+  const getSnapshot = () => {
+    const nextSelection = selectorRef.current
+      ? selectorRef.current(store.getState())
+      : store.getState();
+    if (
+      hasSelectionRef.current &&
+      selectionRef.current !== undefined &&
+      isEqual(
+        selectionRef.current as T,
+        nextSelection as T,
+      )
+    ) {
+      return selectionRef.current;
+    }
+    selectionRef.current = nextSelection;
+    hasSelectionRef.current = true;
+    return nextSelection;
+  };
+
+  return useSyncExternalStore(store.subscribe, getSnapshot, getSnapshot);
 }
 
 export function useAppDispatch() {

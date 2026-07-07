@@ -232,7 +232,7 @@ test("deleteSession clears persisted messages for the deleted session", () => {
   );
   assert.match(
     deleteBody,
-    /messages/,
+    /rawMessageCache\.delete|MESSAGES_PREFIX/,
     "deleteSession must clean up persisted messages for deleted session",
   );
 });

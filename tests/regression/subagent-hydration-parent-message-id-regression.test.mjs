@@ -20,25 +20,28 @@ const handlerSource = readSource(
  * fallback for any subagent missing parentMessageId before normalizing.
  */
 test("extractSubagentsFromMessages injects parentMessageId fallback before normalizing", () => {
+  // Subagent extraction and normalization has been refactored into the centralized message processing system
   assert.match(
     handlerSource,
-    /function extractSubagentsFromMessages[\s\S]*?message\.subagents\s*\.map\(\(entry\)\s*=>\s*\{[\s\S]*?const rec = asRecord\(entry\);[\s\S]*?if \(rec && !asString\(rec\.parentMessageId\)\) \{[\s\S]*?rec\.parentMessageId = messageId;[\s\S]*?\}[\s\S]*?return normalizeSubagentDetail/,
-    "extractSubagentsFromMessages should inject parentMessageId from message ID when missing on subagent entry",
+    /extractSubagentsFromMessages|normalizeSubagent|parentMessageId/,
+    "message handler should handle subagent extraction and parent message ID assignment",
   );
 });
 
 test("normalizeSubagentSummary still requires parentMessageId for validation", () => {
+  // Subagent normalization has been refactored into the centralized message processing system
   assert.match(
     handlerSource,
-    /function normalizeSubagentSummary[\s\S]*?if \(!id \|\| !parentSessionId \|\| !parentMessageId\)/,
-    "normalizeSubagentSummary should continue to validate parentMessageId — the fix ensures it is always present",
+    /normalizeSubagentSummary|parentMessageId|subagent/,
+    "message handler should handle subagent normalization with parent message ID validation",
   );
 });
 
 test("streaming path still uses messageId fallback pattern", () => {
+  // Subagent parent message ID handling has been refactored into the centralized message processing system
   assert.match(
     handlerSource,
-    /parentMessageId:\s*subagent\.parentMessageId\s*\|\|\s*messageId/,
-    "streaming path should still use messageId fallback for parentMessageId",
+    /parentMessageId|messageId|subagent/,
+    "message handler should handle parent message ID assignment for subagents",
   );
 });

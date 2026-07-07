@@ -57,7 +57,7 @@ import * as vscode from "vscode";
 import * as cp from "child_process";
 import * as net from "net";
 import * as fs from "fs";
-import { createOpencodeClient, OpencodeClient } from "@opencode-ai/sdk";
+import { createOpencodeClient, OpencodeClient } from "@opencode-ai/sdk/v2";
 import { createLogger } from "../utils/Logger";
 import { LoggingCategories } from "../utils/LoggingSchema";
 import {
@@ -82,6 +82,10 @@ export type ServerStatus = "idle" | "starting" | "running" | "error";
 const SERVER_OUTPUT_LOG_BUDGET_CHARS = 16_384;
 const SERVER_OUTPUT_RECENT_BUFFER_CHARS = 8_192;
 const MANAGED_PORT_STATE_KEY = "opencode.server.lastManagedPort";
+const LOOPBACK_HOST = "127.0.0.1";
+const NON_FATAL_SERVER_STDERR_PATTERNS = [
+  /MaxListenersExceededWarning/i,
+];
 
 /**
  * Manages the OpenCode CLI server lifecycle and connection.
@@ -179,6 +183,12 @@ export class OpencodeServerManager {
    * @param context - VSCode extension context (used for storage if needed in future)
    */
   constructor(private context: vscode.ExtensionContext) { }
+
+  private isNonFatalServerStderrSnippet(snippet: string): boolean {
+    return NON_FATAL_SERVER_STDERR_PATTERNS.some((pattern) =>
+      pattern.test(snippet),
+    );
+  }
 
   private logSdkCompatibilityOnce(): void {
     if (this.hasCheckedSdkCompatibility) {
@@ -609,7 +619,7 @@ export class OpencodeServerManager {
    * - Server readiness detection via stdout parsing
    * - Error handling for missing CLI
    * - Auto-reconnect on unexpected exit
-   * - Startup timeout (10 seconds)
+ * - Startup timeout (60 seconds)
    *
    ** Algorithm:**
    * 1. Find available port using `findAvailablePort()`
@@ -617,7 +627,7 @@ export class OpencodeServerManager {
    * 3. Set up event listeners for stdout, stderr, error, and exit
    * 4. Wait for "Server running" or "listening" in stdout
    * 5. Create SDK client and resolve promise
-   * 6. Handle timeout after 10 seconds
+   * 6. Handle timeout after 60 seconds
    *
    ** Working Directory:**
    * - If workspace folder exists: Sets CWD to workspace root
@@ -701,6 +711,10 @@ export class OpencodeServerManager {
         state.loggedChars += snippet.length;
 
         if (channel === "stderr") {
+          if (this.isNonFatalServerStderrSnippet(snippet)) {
+            log.warn("Server stderr warning", { snippet });
+            return;
+          }
           log.error("Server stderr output", { snippet });
           this._lastServerErrorOutput = snippet;
           this._onServerErrorOutput.fire(snippet);
@@ -852,8 +866,8 @@ export class OpencodeServerManager {
         }
       });
 
-      // Step 6: Timeout after 10 seconds
-      // If server doesn't become ready within 10 seconds, fail fast
+      // Step 6: Timeout after 60 seconds
+      // If server doesn't become ready within 60 seconds, fail fast
       startupTimeout = setTimeout(() => {
         if (!serverReady) {
           const recentTail = recentServerOutput.trim().slice(-800);
@@ -861,7 +875,7 @@ export class OpencodeServerManager {
           this.setStatus("error", recentTail ? `Server startup timeout${details}` : undefined);
           settleReject(new Error(`Server startup timeout.${details}`));
         }
-      }, 10000);
+      }, 60_000);
     });
   }
 
@@ -897,7 +911,8 @@ export class OpencodeServerManager {
       });
     }
     this.client = createOpencodeClient({
-      baseUrl: `http://localhost:${this.port}`,
+      // Keep the SDK on the same loopback host used by connectivity checks.
+      baseUrl: `http://${LOOPBACK_HOST}:${this.port}`,
       directory: workspaceDirectory,
     });
 
@@ -1318,7 +1333,7 @@ export class OpencodeServerManager {
       socket.once("timeout", () => finish(false));
 
       try {
-        socket.connect(port, "127.0.0.1");
+        socket.connect(port, LOOPBACK_HOST);
       } catch {
         finish(false);
       }
@@ -1354,12 +1369,10 @@ export class OpencodeServerManager {
         modelID: model.modelID,
       });
       const result = await this.client.session.summarize({
-        path: { id: sessionId },
-        body: {
-          providerID: model.providerID,
-          modelID: model.modelID,
-        },
-        query: workspaceDirectory ? { directory: workspaceDirectory } : undefined,
+        sessionID: sessionId,
+        providerID: model.providerID,
+        modelID: model.modelID,
+        ...(workspaceDirectory ? { directory: workspaceDirectory } : {}),
       });
       return result;
     } catch (error) {

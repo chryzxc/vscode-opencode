@@ -35,6 +35,7 @@ import type {
   SubagentProgressEvent,
   SubagentConversationEvent,
   SubagentTimelineEvent,
+  SubagentPresentationPolicy,
   TodoItem,
 } from "./types";
 import type { StructuredResponseType } from "./generated/structuredOutputSchema";
@@ -42,10 +43,53 @@ import {
   sanitizeStructuredOutput,
   validateStructuredOutput,
 } from "./structuredOutputValidator";
+import { getCentralizedDebugPayloadDisposition } from "./generated/centralizedDebugPayloadFilter";
 import { config } from "../../config";
 import vscode from "./vscode";
+import {
+  PENDING_CURRENT_SESSION_KEY,
+} from "./pendingUserMessages";
+import { toastNotificationFromPayload } from "./toastEvents";
 
-const STREAM_DEBUG_ENABLED = true;
+// NEW: Import modular subagent processing functions
+import {
+  extractSubagentsFromCentralizedEvents as modularExtractSubagentsFromCentralizedEvents
+} from './subagents/centralExtractor';
+import {
+  mergeSubagentSummaries,
+  hasSubagentSummaryEntries,
+  mergeSubagentDetailPayload,
+  mergeSubagentSummaryPayload
+} from './subagents/stateManager';
+import {
+  sanitizeSubagentLabel,
+  normalizeSubagentDetail,
+  normalizeSubagentSummaryMap,
+  normalizeSubagentDetailMap,
+} from './subagents/dataNormalizer';
+import {
+  normalizeSubagentProgressEventsForPresentation,
+  normalizeSubagentTimelineEventsForPresentation
+} from './subagents/eventBuilder';
+import {
+  normalizeHydratedSubagentDetail as compatNormalizeHydratedSubagentDetail,
+  hydrateSubagentSummary as compatHydrateSubagentSummary,
+  areSubagentListsEquivalent as compatAreSubagentListsEquivalent,
+  shouldFreezeSubagentForPresentation as compatShouldFreezeSubagentForPresentation,
+  applyStructuredSubagentPayload
+} from './subagents/compatUtils';
+import {
+  latestSubagentEventTimestamp,
+  shouldFreezeSubagentForPresentation as uiShouldFreezeSubagentForPresentation,
+} from './subagents/uiFormatter';
+
+// Export modular function with original name for backward compatibility
+export const extractSubagentsFromCentralizedEvents = modularExtractSubagentsFromCentralizedEvents;
+
+// Export modular subagent functions for backward compatibility
+export { normalizeSubagentDetail } from './subagents/dataNormalizer';
+
+const STREAM_DEBUG_ENABLED = false;
 
 // Debouncing state for rendering snapshots
 let lastRenderLogTime = 0;
@@ -83,11 +127,65 @@ function isHeartbeatEventType(eventType: string): boolean {
   return eventType === "server.heartbeat";
 }
 
+export function extractEventMessageId(event: unknown): string | null {
+  const eventRecord = asRecord(event);
+  if (!eventRecord) return null;
+
+  // Sometimes the raw stream wraps the actual payload in a `payload` property.
+  const payloadRecord = asRecord(eventRecord.payload);
+
+  const info =
+    asRecord(asRecord(eventRecord.properties)?.info) ||
+    asRecord(eventRecord.info) ||
+    asRecord(asRecord(payloadRecord?.properties)?.info) ||
+    asRecord(payloadRecord?.info);
+
+  const part =
+    asRecord(asRecord(eventRecord.properties)?.part) ||
+    asRecord(eventRecord.part) ||
+    asRecord(asRecord(payloadRecord?.properties)?.part) ||
+    asRecord(payloadRecord?.part);
+
+  const syncData =
+    asRecord(asRecord(eventRecord.syncEvent)?.data) ||
+    asRecord(asRecord(payloadRecord?.syncEvent)?.data);
+  const syncInfo = asRecord(syncData?.info);
+  const syncPart = asRecord(syncData?.part);
+
+  const messageRecord =
+    asRecord(eventRecord.message) ||
+    asRecord(asRecord(eventRecord.properties)?.message) ||
+    asRecord(payloadRecord?.message) ||
+    asRecord(asRecord(payloadRecord?.properties)?.message);
+
+  return firstNonEmptyString(
+    asString(info?.id),
+    asString(info?.messageID),
+    asString(info?.messageId),
+    asString(part?.messageID),
+    asString(part?.messageId),
+    asString(syncInfo?.id),
+    asString(syncInfo?.messageID),
+    asString(syncInfo?.messageId),
+    asString(syncPart?.messageID),
+    asString(syncPart?.messageId),
+    asString(messageRecord?.id),
+    asString(messageRecord?.messageID),
+    asString(messageRecord?.messageId),
+    asString(eventRecord.messageId),
+    asString(eventRecord.messageID),
+    asString(payloadRecord?.messageId),
+    asString(payloadRecord?.messageID),
+    // Finally fall back to the wrapper's own ID
+    asString(payloadRecord?.id),
+    asString(eventRecord.id)
+  ) || null;
+}
+
 function summarizeStreamEventForLog(payload: UnknownRecord): Record<string, unknown> {
   const properties = asRecord(payload.properties);
   const partRecord = asRecord(payload.part) ?? asRecord(properties?.part);
   const infoRecord = asRecord(payload.info) ?? asRecord(properties?.info);
-  const structuredRecord = asRecord(payload.structured);
   const eventType =
     asString(payload.type) || asString(payload.event) || asString(payload.kind) || "unknown";
   const textLike =
@@ -123,9 +221,14 @@ function summarizeStreamEventForLog(payload: UnknownRecord): Record<string, unkn
         : typeof payload.finish === "boolean"
           ? payload.finish
           : null,
-    structuredKind: asString(structuredRecord?.kind) || null,
+    structuredKind:
+      normalizePartType(partRecord?.type) === "reasoning" ? "thinking" : null,
     structuredTextPreview: previewForLog(
-      asString(structuredRecord?.message) || asString(structuredRecord?.text),
+      asRichString(partRecord?.reasoning) ||
+        asRichString(partRecord?.thought) ||
+        asRichString(partRecord?.thinking) ||
+        asRichString(partRecord?.text) ||
+        asRichString(partRecord?.message),
     ),
     partType: normalizePartType(partRecord?.type),
     textPreview: previewForLog(textLike),
@@ -284,7 +387,673 @@ export function asString(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback;
 }
 
-function asNumber(value: unknown, fallback = 0): number {
+export function getCentralizedEventPart(payload: unknown): UnknownRecord | null {
+  const event = asRecord(payload);
+  if (!event) {
+    return null;
+  }
+
+  const payloadRecord = asRecord(event.payload);
+  const payloadPropertiesPart = asRecord(asRecord(payloadRecord?.properties)?.part);
+  if (payloadPropertiesPart) {
+    return payloadPropertiesPart;
+  }
+
+  const payloadSyncEvent = asRecord(payloadRecord?.syncEvent);
+  const payloadSyncPart = asRecord(asRecord(payloadSyncEvent?.data)?.part) ?? asRecord(payloadSyncEvent?.part);
+  if (payloadSyncPart) {
+    return payloadSyncPart;
+  }
+
+  const syncEvent = asRecord(event.syncEvent);
+  const syncPart = asRecord(asRecord(syncEvent?.data)?.part) ?? asRecord(syncEvent?.part);
+  if (syncPart) {
+    return syncPart;
+  }
+
+  const dataPart = asRecord(asRecord(event.data)?.part);
+  if (dataPart) {
+    return dataPart;
+  }
+
+  const payloadDataPart = asRecord(asRecord(payloadRecord?.data)?.part) ?? asRecord(payloadRecord?.part);
+  if (payloadDataPart) {
+    return payloadDataPart;
+  }
+
+  const propertiesPart = asRecord(asRecord(event.properties)?.part) ?? asRecord(event.part);
+  if (propertiesPart) {
+    return propertiesPart;
+  }
+
+  return null;
+}
+
+export function getCentralizedEventInfo(payload: unknown): UnknownRecord | null {
+  const event = asRecord(payload);
+  if (!event) {
+    return null;
+  }
+
+  const payloadRecord = asRecord(event.payload);
+  const payloadPropertiesInfo = asRecord(asRecord(payloadRecord?.properties)?.info);
+  if (payloadPropertiesInfo) {
+    return payloadPropertiesInfo;
+  }
+
+  const payloadSyncEvent = asRecord(payloadRecord?.syncEvent);
+  const payloadSyncData = asRecord(payloadSyncEvent?.data);
+  const payloadSyncInfo = asRecord(payloadSyncData?.info);
+  if (payloadSyncInfo) {
+    return payloadSyncInfo;
+  }
+
+  const syncEvent = asRecord(event.syncEvent);
+  const syncData = asRecord(syncEvent?.data);
+  const syncInfo = asRecord(syncData?.info);
+  if (syncInfo) {
+    return syncInfo;
+  }
+
+  const propertiesInfo = asRecord(asRecord(event.properties)?.info);
+  if (propertiesInfo) {
+    return propertiesInfo;
+  }
+
+  const info = asRecord(event.info);
+  if (info) {
+    return info;
+  }
+
+  const isInfoLike = (obj: Record<string, unknown> | null) => 
+    obj && (obj.role || obj.id || obj.messageID || obj.messageId);
+
+  if (isInfoLike(payloadSyncData)) return payloadSyncData;
+  if (isInfoLike(syncData)) return syncData;
+  if (isInfoLike(payloadRecord)) return payloadRecord;
+  if (isInfoLike(event)) return event;
+
+  return null;
+}
+
+export function getCentralizedEventType(payload: unknown): string {
+  const event = asRecord(payload);
+  if (!event) {
+    return "";
+  }
+
+  const directType = asString(event.type).trim();
+  const payloadRecord = asRecord(event.payload);
+  const payloadType = asString(payloadRecord?.type).trim();
+  const payloadSyncType = asString(asRecord(payloadRecord?.syncEvent)?.type).trim();
+  const syncType = asString(asRecord(event.syncEvent)?.type).trim();
+
+  // Sync-hydrated events commonly arrive as top-level `type: "sync"` with
+  // the real OpenCode event name nested under `syncEvent.type`. Render logic
+  // should make decisions from the OpenCode event name, not from the transport
+  // envelope, otherwise hydrated activity parts have no assistant message shell.
+  const rawType =
+    directType && directType !== "sync"
+      ? directType
+      : payloadSyncType || syncType || directType || payloadType;
+
+  return rawType.replace(/\.\d+$/, "");
+}
+
+export function normalizeCentralizedEventPayload(payload: unknown): UnknownRecord | null {
+  const event = asRecord(payload);
+  if (!event) {
+    return null;
+  }
+
+  // Centralized debug events arrive in two valid shapes:
+  // - `properties.part` for direct message.part.updated entries
+  // - `payload.syncEvent.data.part` / `syncEvent.data.part` for sync-wrapped entries
+  // Normalize both into a single envelope so renderers only consume one shape.
+  const part = getCentralizedEventPart(event);
+  if (!part) {
+    return event;
+  }
+
+  const properties = asRecord(event.properties) ?? {};
+  const payloadRecord = asRecord(event.payload) ?? {};
+  const payloadSyncEvent = asRecord(payloadRecord.syncEvent) ?? {};
+  const payloadSyncData = asRecord(payloadSyncEvent.data) ?? {};
+  const syncEvent = asRecord(event.syncEvent) ?? {};
+  const syncData = asRecord(syncEvent.data) ?? {};
+
+  return {
+    ...event,
+    part,
+    properties: {
+      ...properties,
+      part,
+    },
+    payload: Object.keys(payloadRecord).length > 0
+      ? {
+          ...payloadRecord,
+          syncEvent: {
+            ...payloadSyncEvent,
+            data: {
+              ...payloadSyncData,
+              part,
+            },
+          },
+        }
+      : payloadRecord,
+    syncEvent: Object.keys(syncEvent).length > 0
+      ? {
+          ...syncEvent,
+          data: {
+            ...syncData,
+            part,
+          },
+        }
+      : syncEvent,
+  };
+}
+
+export function normalizedCentralizedEventIdentity(event: UnknownRecord): string {
+  const eventType = getCentralizedEventType(event);
+  if (!eventType) {
+    return "";
+  }
+
+  const part = getCentralizedEventPart(event);
+  if (part) {
+    return [
+      eventType,
+      firstNonEmptyString(
+        asString(part.id),
+        asString(part.partID),
+        asString(part.partId),
+        asString(part.callID),
+        asString(part.callId),
+      ) ?? "",
+      firstNonEmptyString(
+        asString(part.messageID),
+        asString(part.messageId),
+      ) ?? "",
+      asString(part.type).trim().toLowerCase(),
+      asString(part.tool).trim().toLowerCase(),
+    ].join("|");
+  }
+
+  const info = getCentralizedEventInfo(event);
+  if (info) {
+    return [
+      eventType,
+      firstNonEmptyString(
+        asString(info.id),
+        asString(info.messageID),
+        asString(info.messageId),
+      ) ?? "",
+      firstNonEmptyString(
+        asString(info.parentID),
+        asString(info.parentId),
+      ) ?? "",
+      asString(info.role).trim().toLowerCase(),
+    ].join("|");
+  }
+
+  return [
+    eventType,
+    firstNonEmptyString(
+      asString(event.id),
+      asString(asRecord(event.syncEvent)?.id),
+    ) ?? "",
+  ].join("|");
+}
+
+function normalizedCentralizedEventRichness(event: UnknownRecord): number {
+  const part = getCentralizedEventPart(event);
+  const info = getCentralizedEventInfo(event);
+  const state = asRecord(part?.state);
+  let score = 0;
+
+  if (part) {
+    score += 5;
+    if (typeof part.text === "string" && part.text.trim()) score += 4;
+    if (typeof part.content === "string" && part.content.trim()) score += 4;
+    if (typeof part.message === "string" && part.message.trim()) score += 4;
+    if (typeof part.tool === "string" && part.tool.trim()) score += 2;
+    if (typeof part.callID === "string" && part.callID.trim()) score += 2;
+    if (typeof part.messageID === "string" && part.messageID.trim()) score += 2;
+  }
+  if (state) {
+    score += 3;
+    if (typeof state.status === "string" && state.status.trim()) score += 2;
+    if (typeof state.output !== "undefined") score += 4;
+    if (typeof state.input !== "undefined") score += 2;
+    if (typeof state.metadata !== "undefined") score += 2;
+    if (typeof state.time !== "undefined") score += 1;
+    if (typeof state.title === "string" && state.title.trim()) score += 1;
+  }
+  if (info) {
+    score += 3;
+    if (typeof info.id === "string" && info.id.trim()) score += 2;
+    if (typeof info.role === "string" && info.role.trim()) score += 1;
+    if (typeof info.time !== "undefined") score += 1;
+    // Events carrying file-change diffs (info.summary.diffs) are richer
+    // and must survive deduplication over duplicates without diff data.
+    const summary = asRecord(info.summary);
+    if (Array.isArray(summary?.diffs) && summary.diffs.length > 0) score += 5;
+  }
+
+  return score;
+}
+
+export function normalizeCentralizedEventPayloads(
+  rawSdkEventPayloads?: unknown[],
+): UnknownRecord[] {
+  if (!Array.isArray(rawSdkEventPayloads) || rawSdkEventPayloads.length === 0) {
+    return [];
+  }
+
+  const normalized: UnknownRecord[] = [];
+  const indexByIdentity = new Map<string, number>();
+  for (const payload of rawSdkEventPayloads) {
+    const event = normalizeCentralizedEventPayload(payload);
+    if (event) {
+      const identity = normalizedCentralizedEventIdentity(event);
+      if (!identity) {
+        normalized.push(event);
+        continue;
+      }
+
+      const existingIndex = indexByIdentity.get(identity);
+      if (typeof existingIndex !== "number") {
+        indexByIdentity.set(identity, normalized.length);
+        normalized.push(event);
+        continue;
+      }
+
+      const existing = normalized[existingIndex];
+      if (
+        normalizedCentralizedEventRichness(event) >=
+        normalizedCentralizedEventRichness(existing)
+      ) {
+        normalized[existingIndex] = event;
+      }
+    }
+  }
+  return normalized;
+}
+
+export function getCentralizedAssistantContentChunksFromRawSdkEventPayloads(
+  rawSdkEventPayloads?: unknown[],
+): string[] {
+  if (!Array.isArray(rawSdkEventPayloads) || rawSdkEventPayloads.length === 0) {
+    return [];
+  }
+
+  const assistantMessageId =
+    latestAssistantMessageIdFromCentralizedTape(rawSdkEventPayloads);
+  if (!assistantMessageId) {
+    return [];
+  }
+
+  for (let index = rawSdkEventPayloads.length - 1; index >= 0; index -= 1) {
+    const payload = rawSdkEventPayloads[index];
+    const event = asRecord(payload);
+    const eventType = getCentralizedEventType(payload);
+    const info = getCentralizedEventInfo(payload);
+    if (eventType !== "message.updated" || !info) {
+      continue;
+    }
+
+    const candidateMessageId =
+      firstNonEmptyString(info.id, info.messageID, info.messageId) || "";
+    const role = asString(info.role).trim().toLowerCase();
+    if (candidateMessageId !== assistantMessageId || role !== "assistant") {
+      continue;
+    }
+
+    const messageChunk = firstNonEmptyString(
+      info.text,
+      info.content,
+      info.message,
+      event?.text,
+      event?.content,
+      event?.message,
+    );
+    if (messageChunk) {
+      return [messageChunk];
+    }
+
+    const structuredChunk = firstNonEmptyString(
+      asRecord(info?.structured)?.text,
+      asRecord(info?.structured)?.message,
+      asRecord(info?.structured)?.content,
+      asRecord(info?.structuredOutput)?.text,
+      asRecord(info?.structuredOutput)?.message,
+      asRecord(info?.structuredOutput)?.content,
+      asRecord((info as UnknownRecord | null)?.structured_output)?.text,
+      asRecord((info as UnknownRecord | null)?.structured_output)?.message,
+      asRecord((info as UnknownRecord | null)?.structured_output)?.content,
+    );
+    if (structuredChunk) {
+      return [structuredChunk];
+    }
+  }
+
+  const structuredChunks: string[] = [];
+  const textChunks: string[] = [];
+  const seenStructured = new Set<string>();
+  const seenText = new Set<string>();
+  for (let index = 0; index < rawSdkEventPayloads.length; index += 1) {
+    const payload = rawSdkEventPayloads[index];
+    const part = getCentralizedEventPart(payload);
+    if (!part) {
+      continue;
+    }
+
+    const partType = asString(part.type).toLowerCase();
+    if (partType === "tool") {
+      const toolName = asString(part.tool).toLowerCase();
+      if (toolName === "structuredoutput" || toolName === "structured_output") {
+        const partMessageId =
+          firstNonEmptyString(part.messageID, part.messageId) || "";
+        if (partMessageId !== assistantMessageId) {
+          continue;
+        }
+        const stateRec = asRecord(part.state);
+        const inputRec = asRecord(stateRec?.input) ?? asRecord(part.input);
+        const structuredType = firstNonEmptyString(
+          inputRec?.type,
+          inputRec?.responseType,
+          stateRec?.type,
+          stateRec?.responseType,
+        )?.toLowerCase();
+        if (structuredType === "implementation_plan") {
+          continue;
+        }
+        const toolChunk = firstNonEmptyString(
+          inputRec?.text,
+          inputRec?.message,
+          inputRec?.content,
+          stateRec?.message,
+          stateRec?.content,
+          stateRec?.text,
+        );
+        if (toolChunk) {
+          const normalizedToolChunk = toolChunk.replace(/\s+/g, " ").trim().toLowerCase();
+          if (!seenStructured.has(normalizedToolChunk)) {
+            seenStructured.add(normalizedToolChunk);
+            structuredChunks.push(toolChunk);
+          }
+        }
+      }
+      continue;
+    }
+    if (partType !== "text" && partType !== "message" && partType !== "output_text") {
+      continue;
+    }
+
+    const partMessageId =
+      firstNonEmptyString(
+        part.messageID,
+        part.messageId,
+      ) || "";
+    if (partMessageId !== assistantMessageId) {
+      continue;
+    }
+
+    const chunk =
+      asString(part.text).trim() ||
+      asString(part.content).trim() ||
+      asString(part.message).trim();
+    if (chunk) {
+      const normalizedChunk = chunk.replace(/\s+/g, " ").trim().toLowerCase();
+      if (seenText.has(normalizedChunk)) {
+        continue;
+      }
+      seenText.add(normalizedChunk);
+      textChunks.push(chunk);
+    }
+  }
+
+  const canonicalStructuredChunk = structuredChunks[structuredChunks.length - 1];
+  if (
+    canonicalStructuredChunk &&
+    shouldPreferStructuredToolResponseOverTextChunks(
+      canonicalStructuredChunk,
+      textChunks,
+    )
+  ) {
+    return [canonicalStructuredChunk];
+  }
+
+  if (textChunks.length > 0) {
+    return textChunks;
+  }
+
+  return canonicalStructuredChunk ? [canonicalStructuredChunk] : [];
+}
+
+function shouldPreferStructuredToolResponseOverTextChunks(
+  structuredChunk: string,
+  textChunks: string[],
+): boolean {
+  const structuredNorm = normalizeComparableText(structuredChunk);
+  if (!structuredNorm) {
+    return false;
+  }
+  if (!Array.isArray(textChunks) || textChunks.length === 0) {
+    return true;
+  }
+
+  const joinedText = textChunks.join(" ").trim();
+  const joinedNorm = normalizeComparableText(joinedText);
+  if (!joinedNorm) {
+    return true;
+  }
+
+  if (joinedNorm === structuredNorm) {
+    return true;
+  }
+
+  if (
+    structuredNorm.startsWith(joinedNorm) &&
+    joinedNorm.length >= Math.max(12, Math.floor(structuredNorm.length * 0.55))
+  ) {
+    return true;
+  }
+
+  if (
+    joinedNorm.includes(structuredNorm) &&
+    joinedNorm.length >= structuredNorm.length + 24
+  ) {
+    return false;
+  }
+
+  const structuredTokens = comparableTokens(structuredNorm);
+  const textTokens = comparableTokens(joinedNorm);
+  if (structuredTokens.length === 0 || textTokens.length === 0) {
+    return false;
+  }
+
+  const textTokenSet = new Set(textTokens);
+  let sharedTokenCount = 0;
+  for (const token of structuredTokens) {
+    if (textTokenSet.has(token)) {
+      sharedTokenCount += 1;
+    }
+  }
+
+  const structuredCoverage = sharedTokenCount / structuredTokens.length;
+  const textCoverage = sharedTokenCount / textTokens.length;
+
+  return (
+    structuredCoverage >= 0.72 &&
+    textCoverage >= 0.72 &&
+    joinedNorm.length <= structuredNorm.length + 16
+  );
+}
+
+export function getCentralizedAssistantContentFromRawSdkEventPayloads(
+  rawSdkEventPayloads?: unknown[],
+): string {
+  return getCentralizedAssistantContentChunksFromRawSdkEventPayloads(
+    rawSdkEventPayloads,
+  )
+    .join("")
+    .trim();
+}
+
+export function latestAssistantMessageIdFromCentralizedTape(
+  rawSdkEventPayloads?: unknown[],
+): string | null {
+  if (!Array.isArray(rawSdkEventPayloads) || rawSdkEventPayloads.length === 0) {
+    return null;
+  }
+
+  for (let index = rawSdkEventPayloads.length - 1; index >= 0; index -= 1) {
+    const event = asRecord(rawSdkEventPayloads[index]);
+    if (!event) {
+      continue;
+    }
+
+    const properties = asRecord(event.properties);
+    const info = asRecord(properties?.info) ?? asRecord(event.info) ?? getCentralizedEventInfo(event);
+    const part = getCentralizedEventPart(event);
+
+    const eventType = getCentralizedEventType(event);
+
+    if (
+      eventType === "message.updated" &&
+      asString(info?.role).trim().toLowerCase() === "assistant"
+    ) {
+      const assistantId = firstNonEmptyString(
+        info?.id,
+        info?.messageID,
+        info?.messageId,
+      );
+      if (assistantId) {
+        return assistantId;
+      }
+    }
+
+    const partType = asString(part?.type).trim().toLowerCase();
+    const toolName = firstNonEmptyString(part?.tool, part?.name)?.toLowerCase();
+
+    if (
+      partType === "step-finish" ||
+      partType === "step-start" ||
+      partType === "reasoning" ||
+      partType === "tool" ||
+      !!toolName
+    ) {
+      const assistantId = firstNonEmptyString(
+        part?.messageID,
+        part?.messageId,
+      );
+      if (assistantId) {
+        return assistantId;
+      }
+    }
+  }
+
+  // Some older/simpler centralized fixtures only contain the final assistant
+  // text part and never include an explicit assistant `message.updated` or
+  // `step-finish` marker. In that case, fall back to the last text-bearing
+  // message id so the renderer still has a stable response anchor.
+  for (let index = rawSdkEventPayloads.length - 1; index >= 0; index -= 1) {
+    const event = asRecord(rawSdkEventPayloads[index]);
+    if (!event) {
+      continue;
+    }
+
+    const part = getCentralizedEventPart(event);
+    if (!part) {
+      continue;
+    }
+
+    const partType = asString(part.type).trim().toLowerCase();
+    if (
+      partType === "tool" &&
+      asString(part.tool).toLowerCase().includes("structuredoutput")
+    ) {
+      const assistantId = firstNonEmptyString(
+        part?.messageID,
+        part?.messageId,
+      );
+      if (assistantId) {
+        return assistantId;
+      }
+      continue;
+    }
+    if (partType !== "text" && partType !== "message" && partType !== "output_text" && partType !== "reasoning" && partType !== "step-start") {
+      continue;
+    }
+
+    const assistantId = firstNonEmptyString(
+      part?.messageID,
+      part?.messageId,
+    );
+    if (assistantId) {
+      return assistantId;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Returns the last index that belongs to the finalized assistant turn in the
+ * centralized tape.
+ */
+export function getCentralizedAssistantTurnCompletionIndex(
+  rawSdkEventPayloads?: unknown[],
+): number {
+  if (!Array.isArray(rawSdkEventPayloads) || rawSdkEventPayloads.length === 0) {
+    return -1;
+  }
+
+  const latestAssistantMessageId =
+    latestAssistantMessageIdFromCentralizedTape(rawSdkEventPayloads);
+  if (!latestAssistantMessageId) {
+    return -1;
+  }
+
+  for (let index = 0; index < rawSdkEventPayloads.length; index += 1) {
+    const event = asRecord(rawSdkEventPayloads[index]);
+    if (!event) {
+      continue;
+    }
+
+    const properties = asRecord(event.properties);
+    const info = asRecord(properties?.info) ?? asRecord(event.info);
+    const part = getCentralizedEventPart(event);
+    const eventType = asString(event.type).trim();
+    const candidateMessageId = firstNonEmptyString(
+      info?.id,
+      info?.messageID,
+      info?.messageId,
+      part?.messageID,
+      part?.messageId,
+    );
+
+    if (candidateMessageId !== latestAssistantMessageId) {
+      continue;
+    }
+
+    if (eventType === "message.updated" && asString(info?.finish).trim()) {
+      return index;
+    }
+
+    if (
+      eventType === "message.part.updated" &&
+      asString(part?.type).trim().toLowerCase() === "step-finish"
+    ) {
+      return index;
+    }
+  }
+
+  return -1;
+}
+
+export function asNumber(value: unknown, fallback = 0): number {
   return typeof value === 'number' ? value : fallback;
 }
 
@@ -421,16 +1190,19 @@ function calculateContextUsagePct(
   }
 
   const selectedModel = state.selectedModel;
+  const availableModels = Array.isArray(state.availableModels)
+    ? state.availableModels
+    : [];
   const providerID = modelIdentity?.providerID || selectedModel?.providerID;
   const modelID = modelIdentity?.modelID || selectedModel?.modelID;
   const matched =
     providerID && modelID
-      ? state.availableModels.find(
+      ? availableModels.find(
           (model) =>
             model.providerID === providerID && model.modelID === modelID,
         )
       : selectedModel
-        ? state.availableModels.find(
+        ? availableModels.find(
             (model) =>
               model.providerID === selectedModel.providerID &&
               model.modelID === selectedModel.modelID,
@@ -480,7 +1252,6 @@ function isFinishSignal(value: unknown): boolean {
     normalized === "completed" ||
     normalized === "success" ||
     normalized === "finished" ||
-    normalized === "tool-calls" ||
     normalized === "error"
   );
 }
@@ -495,17 +1266,33 @@ function resolveMessageUpdatedFinishSignal(
     return true;
   }
 
+  // Explicit error payloads mean the message is no longer processing.
+  if (info?.error || payload.error || properties?.error) {
+    return true;
+  }
+
+  // If the payload explicitly includes a completion timestamp, it's finished.
+  if (asRecord(info?.time)?.completed) {
+    return true;
+  }
+
   // Fallbacks for providers that emit terminal status only on message/part/state
   // records. Without this, UI can remain in loading even after the final content
   // has already arrived.
   const statusCandidates = [
     payload.status,
     payload.state,
+    payload.reason,
     properties?.status,
+    properties?.reason,
     asRecord(properties?.state)?.status,
+    asRecord(properties?.state)?.reason,
     asRecord(properties?.message)?.status,
+    asRecord(properties?.message)?.reason,
     asRecord(properties?.part)?.status,
+    asRecord(properties?.part)?.reason,
     asRecord(payload.message)?.status,
+    asRecord(payload.message)?.reason,
   ];
   return statusCandidates.some((candidate) => isFinishSignal(candidate));
 }
@@ -830,7 +1617,7 @@ function isTerminalProgressPart(part: UnknownRecord, partType: string): boolean 
 
 type StructuredProgressUpdate = {
   title: string;
-  status?: 'pending' | 'done' | 'error';
+  status?: 'pending' | 'running' | 'done' | 'error';
   meta?: string;
   filePath?: string;
   command?: string;
@@ -839,14 +1626,26 @@ type StructuredProgressUpdate = {
 
 function normalizeProgressStatus(
   value?: string | null,
-): "pending" | "done" | "error" {
+): "pending" | "running" | "done" | "completed" | "error" {
   const v = value?.toLowerCase();
   if (
-    v === "done" ||
+    v === "running" ||
+    v === "in_progress" ||
+    v === "processing" ||
+    v === "streaming"
+  ) {
+    return "running";
+  }
+  if (
     v === "completed" ||
-    v === "success" ||
-    v === "finished" ||
     v === "complete"
+  ) {
+    return "completed";
+  }
+  if (
+    v === "done" ||
+    v === "success" ||
+    v === "finished"
   ) {
     return "done";
   }
@@ -1003,9 +1802,24 @@ function extractFilePathCandidate(
     if (nested) return nested;
   }
 
+  // Check nested object values
   for (const fieldValue of Object.values(rec)) {
     const nested = extractFilePathCandidate(fieldValue, depth + 1, seen);
     if (nested) return nested;
+  }
+  return undefined;
+}
+
+function extractBackgroundTaskId(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    const text = asOptionalString(value);
+    if (!text) {
+      continue;
+    }
+    const match = text.match(/\b(bg_[a-z0-9]+)\b/i);
+    if (match?.[1]) {
+      return match[1];
+    }
   }
   return undefined;
 }
@@ -1029,16 +1843,56 @@ function normalizeActivityDetail(value: unknown): ActivityDetail | undefined {
     }
   }
 
+  // Extract input properties supporting both rec.input and rec.state.input
+  const inputRec = asRecord(rec.input) || asRecord(asRecord(rec.state)?.input);
+  const stateRec = asRecord(rec.state);
+  const outputText = asOptionalString(rec.output) || asOptionalString(asRecord(rec.state)?.output);
+  const files = asArray(
+    rec.files,
+    (item): item is string => typeof item === "string" && item.trim().length > 0,
+  ).map((item) => item.trim());
+  const backgroundTaskId = extractBackgroundTaskId(
+    metadataRec?.task_id,
+    metadataRec?.taskId,
+    inputRec?.task_id,
+    inputRec?.taskId,
+    outputText,
+  );
+
+  // Construct the ActivityDetail object
   const activityDetail: ActivityDetail = {
     kind: asOptionalString(rec.kind) as ActivityDetail["kind"] | undefined,
     summary: asOptionalString(rec.summary),
     command: asOptionalString(rec.command),
-    output: asOptionalString(rec.output),
+    // Extract input properties (e.g. pattern, path for glob tool) from raw payload
+    input: inputRec || undefined,
+    files: files.length > 0 ? files : undefined,
+    output: outputText,
+    backgroundTaskId,
+    backgroundOutput: asOptionalString(asRecord(rec.state)?.output) || asOptionalString(rec.output),
     tool: asOptionalString(rec.tool),
-    query: asOptionalString(rec.query),
-    file: asOptionalString(rec.file),
+    // Map search/glob/grep input pattern or query to query field if query is missing so that the search pattern builder captures it
+    query:
+      asOptionalString(rec.query) ||
+      (inputRec
+        ? asOptionalString(inputRec.pattern) ||
+          asOptionalString(inputRec.Pattern) ||
+          asOptionalString(inputRec.query) ||
+          asOptionalString(inputRec.Query)
+        : undefined),
+    file:
+      asOptionalString(rec.file) ||
+      asOptionalString(inputRec?.file) ||
+      asOptionalString(inputRec?.path) ||
+      files[0],
     diffExcerpt: normalizeActivityDiffExcerpt(rec.diffExcerpt),
     metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
+    sessionID:
+      asOptionalString(rec.sessionID) ||
+      asOptionalString(rec.sessionId) ||
+      asOptionalString(stateRec?.sessionID) ||
+      asOptionalString(stateRec?.sessionId) ||
+      undefined,
   };
 
   // Debug logging to see what's actually in the activityDetail
@@ -1053,15 +1907,19 @@ function normalizeActivityDetail(value: unknown): ActivityDetail | undefined {
     });
   }
 
+  // Ensure that we don't return an empty activityDetail object
   if (
     !activityDetail.kind &&
     !activityDetail.summary &&
     !activityDetail.command &&
+    !activityDetail.input &&
     !activityDetail.tool &&
     !activityDetail.query &&
     !activityDetail.file &&
     !activityDetail.diffExcerpt &&
-    !activityDetail.metadata
+    !activityDetail.metadata &&
+    !activityDetail.backgroundTaskId &&
+    !activityDetail.backgroundOutput
   ) {
     return undefined;
   }
@@ -1071,12 +1929,7 @@ function normalizeActivityDetail(value: unknown): ActivityDetail | undefined {
 
 type ActivitySource = "stream" | "final" | "raw_debug";
 
-type ParsedRawDebug = {
-  parseStatus: "parsed" | "empty" | "unparseable" | "truncated";
-  parts: UnknownRecord[];
-  info: UnknownRecord | null;
-};
-
+// Normalizes the source type of an activity event to ensure it matches the ActivitySource union
 function normalizeActivitySource(
   value: unknown,
   fallback: ActivitySource,
@@ -1088,6 +1941,7 @@ function normalizeActivitySource(
   return fallback;
 }
 
+// Merges two activity source values, preferring the one with higher precedence/rank
 function mergeActivitySource(
   current?: ActivitySource,
   incoming?: ActivitySource,
@@ -1112,50 +1966,6 @@ function isInternalToolName(tool?: string): boolean {
   );
 }
 
-function parseRawResponseDebug(value: unknown): ParsedRawDebug {
-  if (typeof value === "undefined" || value === null) {
-    return { parseStatus: "empty", parts: [], info: null };
-  }
-
-  if (typeof value === "object") {
-    const rec = asRecord(value);
-    const parts = Array.isArray(rec?.parts)
-      ? rec?.parts.map((part) => asRecord(part)).filter((part): part is UnknownRecord => !!part)
-      : [];
-    return { parseStatus: "parsed", parts, info: asRecord(rec?.info) };
-  }
-
-  if (typeof value !== "string") {
-    return { parseStatus: "unparseable", parts: [], info: null };
-  }
-
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return { parseStatus: "empty", parts: [], info: null };
-  }
-
-  const truncatedMarkerMatch = trimmed.match(/\.\.\.<truncated\s+\d+\s+chars>\s*$/i);
-  const isTruncated = !!truncatedMarkerMatch;
-  const candidate = isTruncated
-    ? trimmed.slice(0, truncatedMarkerMatch?.index ?? trimmed.length).trim()
-    : trimmed;
-
-  try {
-    const parsed = JSON.parse(candidate);
-    const rec = asRecord(parsed);
-    const parts = Array.isArray(rec?.parts)
-      ? rec?.parts.map((part) => asRecord(part)).filter((part): part is UnknownRecord => !!part)
-      : [];
-    return {
-      parseStatus: isTruncated ? "truncated" : "parsed",
-      parts,
-      info: asRecord(rec?.info),
-    };
-  } catch {
-    return { parseStatus: isTruncated ? "truncated" : "unparseable", parts: [], info: null };
-  }
-}
-
 function normalizeActivityStepRecord(
   value: unknown,
   fallbackSource: ActivitySource,
@@ -1175,7 +1985,8 @@ function normalizeActivityStepRecord(
     return undefined;
   }
   const stateRec = asRecord(rec.state);
-  const stateInput = asRecord(stateRec?.input);
+  // Extract input record supporting both stateRec.input and rec.input
+  const stateInput = asRecord(stateRec?.input) || asRecord(rec.input);
   const filePath =
     asString(rec.filePath) ||
     asString(rec.content) ||
@@ -1302,7 +2113,8 @@ function extractActivityStepsFromParts(
     const callID = asString(rec.callID) || asString(rec.callId) || undefined;
 
     const stateRec = asRecord(rec.state);
-    const inputRec = asRecord(stateRec?.input);
+    // Extract input properties supporting both stateRec.input and rec.input
+    const inputRec = asRecord(stateRec?.input) || asRecord(rec.input);
     const resultRec = asRecord(stateRec?.result);
     const filePath =
       asString(inputRec?.file) ||
@@ -1384,9 +2196,17 @@ function extractActivityStepsFromParts(
           return normalizeActivityDetail({
             kind: "tool_call",
             tool: tool || undefined,
-            command: metaValues[0],
-            query: metaValues[2] || metaValues[3] || undefined,
+            // Extract command and query directly from inputRec first to avoid shifting index bugs from metaValues
+            command: asOptionalString(inputRec?.CommandLine ?? inputRec?.command) || metaValues[0],
+            query: asOptionalString(
+              inputRec?.Query ??
+              inputRec?.query ??
+              inputRec?.Pattern ??
+              inputRec?.pattern
+            ) || metaValues[2] || metaValues[3] || undefined,
             file: filePath,
+            // Capture and pass the raw tool input properties
+            input: inputRec || undefined,
             output: finalOutput,
             diffExcerpt: (() => {
               const diffExcerptRec = asRecord(stateRec?.diffExcerpt) || asRecord(resultRec?.diffExcerpt);
@@ -1462,15 +2282,6 @@ function normalizeActivitySteps(
     );
   }
 
-  const parsedRaw = parseRawResponseDebug(message.rawResponse);
-  if (parsedRaw.parts.length > 0) {
-    const rawSteps = extractActivityStepsFromParts(
-      parsedRaw.parts as unknown as MessagePart[],
-      "raw_debug",
-    );
-    candidates.push(...rawSteps);
-  }
-
   const merged: MessageStep[] = [];
   const indexByKey = new Map<string, number>();
   candidates.forEach((candidate, index) => {
@@ -1508,31 +2319,45 @@ function normalizeActivitySteps(
     mergedSteps: summarizeStepListForLog(merged),
   });
 
-  if (merged.length > 0) {
-    const editSteps = merged.filter(isEditLikeStep);
-    if (editSteps.length > 0) {
-      logger.info("[ACTIVITY STEP][EDIT] Rehydrated edit steps", {
-        messageId,
-        editCount: editSteps.length,
-        editSteps: editSteps.map((s) => ({
-          title: s.title,
-          type: s.type,
-          partType: s.partType,
-          status: s.status,
-          content: s.content,
-          diffStats: s.diffStats,
-          activityDetail: s.activityDetail,
-        })),
-      });
-    }
-    return merged;
+  const editSteps = merged.filter(isEditLikeStep);
+  if (editSteps.length > 0) {
+    logger.info("[ACTIVITY STEP][EDIT] Rehydrated edit steps", {
+      messageId,
+      editCount: editSteps.length,
+      editSteps: editSteps.map((s) => ({
+        title: s.title,
+        type: s.type,
+        partType: s.partType,
+        status: s.status,
+        content: s.content,
+        diffStats: s.diffStats,
+        activityDetail: s.activityDetail,
+      })),
+    });
   }
+
   const fallback = extractActivityStepsFromParts(sanitizedMergedParts, "final");
-  streamDebug("Timeline normalization: fallback to parts extraction", {
-    messageId,
-    fallbackSteps: summarizeStepListForLog(fallback),
-  });
-  return fallback;
+  if (fallback.length > 0) {
+    streamDebug("Timeline normalization: extracting fallback steps from parts", {
+      messageId,
+      fallbackSteps: summarizeStepListForLog(fallback),
+    });
+    fallback.forEach((normalized) => {
+      const key = activityStepMergeKey(normalized, merged.length);
+      const existingIndex = indexByKey.get(key);
+      if (typeof existingIndex !== "number") {
+        indexByKey.set(key, merged.length);
+        merged.push(normalized);
+        return;
+      }
+      merged[existingIndex] = mergeCanonicalActivityStep(
+        merged[existingIndex],
+        normalized,
+      );
+    });
+  }
+
+  return merged;
 }
 
 type StructuredInteractiveEvent = {
@@ -1586,25 +2411,6 @@ type StructuredOutput = {
   reasoning?: string[];
   progressUpdates?: StructuredProgressUpdate[];
   interactiveEvents?: StructuredInteractiveEvent[];
-  question?: {
-    type?: string;
-    id?: string;
-    title?: string;
-    question?: string;
-    text?: string;
-    multiSelect?: boolean;
-    allowCustomInput?: boolean;
-    options?: Array<{ id?: string; label?: string; value?: string; description?: string }>;
-    choices?: Array<{ id?: string; label?: string; value?: string; description?: string }>;
-    actions?: Array<{ id?: string; label?: string; value?: string; description?: string }>;
-    confirmLabel?: string;
-    cancelLabel?: string;
-    dismissLabel?: string;
-    message?: string;
-    content?: string;
-    displayPrompt?: string;
-    assistantPrompt?: string;
-  };
   subagents?: StructuredSubagent[];
   subagentsDelta?: {
     parentMessageId?: string;
@@ -1817,25 +2623,6 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
   if (!rec) {
     return undefined;
   }
-  // IMPORTANT ORDERING CONTRACT:
-  // 1) sanitizeStructuredOutput(rec)
-  // 2) validateStructuredOutput(sanitizedRec)
-  //
-  // We intentionally sanitize BEFORE validating because providers/models often emit
-  // "development-shaped" question payloads that are semantically valid but structurally
-  // loose, for example:
-  // - responseType: "question"
-  // - question: "..."                    (string instead of object)
-  // - options: "[{...},{...}]"           (JSON-stringified options array)
-  //
-  // sanitizeStructuredOutput() canonicalizes those forms into schema-compatible shape
-  // (question object + parsed options), which allows validation to succeed and preserves
-  // the interactive question event for UI rendering.
-  //
-  // If we validate the raw record first, those payloads fail validation and are dropped,
-  // which causes the question popover/stepper UI to disappear and only raw debug text to
-  // remain visible. Keep this ordering unless the validator itself is redesigned to accept
-  // all legacy/development aliases directly.
   const sanitizedRec = sanitizeStructuredOutput(rec);
   warnOnStructuredFieldDrop(rec, sanitizedRec, { stage: "sanitized" });
   const validation = validateStructuredOutput(sanitizedRec);
@@ -1862,8 +2649,13 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
   }
   const responseType =
     rawResponseType.toLowerCase() === "interactive"
-      ? "question"
-      : rawResponseType;
+      ? undefined
+      : ["question", "confirm", "quick_actions"].includes(rawResponseType.toLowerCase())
+        ? undefined
+        : rawResponseType;
+  if (!responseType) {
+    return undefined;
+  }
   const messageText =
     asString(sanitizedRec.message) ||
     asString((rec as UnknownRecord).message) ||
@@ -1890,82 +2682,6 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
       normalizedPlan.content ||
       (Array.isArray(normalizedPlan.files) && normalizedPlan.files.length > 0)
     );
-
-  const reasoningRaw =
-    sanitizedRec.reasoning;
-  const reasoning = Array.isArray(reasoningRaw)
-    ? reasoningRaw
-      .filter((item): item is string => typeof item === 'string')
-      .map((item) => item.trim())
-      .filter(Boolean)
-    : typeof reasoningRaw === 'string' && reasoningRaw.trim()
-      ? [reasoningRaw.trim()]
-      : [];
-  const normalizeComparableText = (value: string): string =>
-    value.replace(/\r\n/g, "\n").replace(/\s+/g, " ").trim().toLowerCase();
-  const stripAssistantEchoFromReasoning = (
-    chunk: string,
-    replyText?: string,
-  ): string => {
-    const trimmedChunk = chunk.trim();
-    if (!trimmedChunk) {
-      return "";
-    }
-    if (!replyText) {
-      return trimmedChunk;
-    }
-    const trimmedReply = replyText.trim();
-    if (!trimmedReply) {
-      return trimmedChunk;
-    }
-    if (
-      normalizeComparableText(trimmedChunk) ===
-      normalizeComparableText(trimmedReply)
-    ) {
-      return "";
-    }
-    if (trimmedChunk.startsWith(trimmedReply)) {
-      return trimmedChunk
-        .slice(trimmedReply.length)
-        .replace(/^[\s:;,\-.!?]+/, "")
-        .trim();
-    }
-    return trimmedChunk;
-  };
-  const cleanedReasoning = reasoning
-    .map((chunk) =>
-      stripAssistantEchoFromReasoning(chunk, messageText),
-    )
-    .filter(Boolean);
-
-  const progressRaw =
-    sanitizedRec.progressUpdates ?? (rec.progress_updates as unknown);
-  const progressUpdates = Array.isArray(progressRaw)
-    ? progressRaw
-      .map((item) => {
-        const step = asRecord(item);
-        if (!step) {
-          return undefined;
-        }
-        const title = asString(step.title) || asString(step.message);
-        if (!title) {
-          return undefined;
-        }
-        const statusValue = asString(step.status);
-        const status = normalizeProgressStatus(statusValue);
-        return {
-          title,
-          status,
-          meta: asString(step.meta) || asString(step.detail) || undefined,
-          filePath:
-            asString(step.filePath) ||
-            asString(step.file) ||
-            asString(step.path) ||
-            undefined
-        } as StructuredProgressUpdate;
-      })
-      .filter((step): step is StructuredProgressUpdate => !!step)
-    : [];
 
   const normalizeChoices = (raw: unknown): InteractiveChoice[] => {
     let candidate = raw;
@@ -2038,23 +2754,6 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
       };
     }
 
-    if (typeRaw === 'question' || typeRaw === 'interactive') {
-      const question = asString(event.question) || asString(event.prompt) || asString(event.title);
-      const options = normalizeChoices(event.options ?? event.choices);
-      if (!question || options.length < 2) {
-        return undefined;
-      }
-      return {
-        type: 'question',
-        id,
-        title: asString(event.title) || undefined,
-        question,
-        options,
-        multiSelect: event.multiSelect === true,
-        allowCustomInput: event.allowCustomInput === true
-      };
-    }
-
     if (typeRaw === 'message') {
       const message =
         asString(event.message) ||
@@ -2078,10 +2777,6 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
     return undefined;
   };
 
-  const isInteractiveResponseType = responseType === 'question';
-  const normalizedQuestion = isInteractiveResponseType
-    ? asRecord(sanitizedRec.question) ?? asRecord(rec.question)
-    : null;
   const sanitizedInteractiveEvents = Array.isArray(sanitizedRec.interactiveEvents)
     ? sanitizedRec.interactiveEvents
     : undefined;
@@ -2090,8 +2785,7 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
       ? sanitizedInteractiveEvents
       : undefined) ??
     rec.interactions ??
-    rec.uiEvents ??
-    normalizedQuestion;
+    rec.uiEvents;
   const singleInteractive = normalizeInteractiveEvent(interactiveRaw, 0);
   let interactiveEvents = Array.isArray(interactiveRaw)
     ? interactiveRaw
@@ -2100,156 +2794,6 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
     : singleInteractive
       ? [singleInteractive]
       : [];
-
-  const fileChangesRaw = sanitizedRec.fileChanges ?? rec.fileChanges;
-  const fileChanges = Array.isArray(fileChangesRaw)
-    ? fileChangesRaw
-        .map((item) => {
-          const change = asRecord(item);
-          if (!change) {
-            return null;
-          }
-          const file = asString(change.file).trim();
-          if (!file) {
-            return null;
-          }
-          const kindValue = asString(change.kind).trim();
-          const kind =
-            kindValue === "file_edit" ||
-            kindValue === "file_create" ||
-            kindValue === "file_delete" ||
-            kindValue === "file_move" ||
-            kindValue === "other"
-              ? kindValue
-              : undefined;
-          const diffStatsRec = asRecord(change.diffStats);
-          const diffExcerptRec = asRecord(change.diffExcerpt);
-          return {
-            file,
-            kind,
-            diffStats: diffStatsRec
-              ? {
-                  added:
-                    typeof diffStatsRec.added === "number" &&
-                    Number.isFinite(diffStatsRec.added)
-                      ? diffStatsRec.added
-                      : undefined,
-                  deleted:
-                    typeof diffStatsRec.deleted === "number" &&
-                    Number.isFinite(diffStatsRec.deleted)
-                      ? diffStatsRec.deleted
-                      : undefined,
-                }
-              : undefined,
-            diffExcerpt: diffExcerptRec
-              ? {
-                  header:
-                    typeof diffExcerptRec.header === "string"
-                      ? diffExcerptRec.header
-                      : undefined,
-                  lines: Array.isArray(diffExcerptRec.lines)
-                    ? diffExcerptRec.lines.filter(
-                        (line): line is string =>
-                          typeof line === "string" && line.trim().length > 0,
-                      )
-                    : undefined,
-                  added:
-                    typeof diffExcerptRec.added === "number" &&
-                    Number.isFinite(diffExcerptRec.added)
-                      ? diffExcerptRec.added
-                      : undefined,
-                  deleted:
-                    typeof diffExcerptRec.deleted === "number" &&
-                    Number.isFinite(diffExcerptRec.deleted)
-                      ? diffExcerptRec.deleted
-                      : undefined,
-                }
-              : undefined,
-          } satisfies StructuredFileChange;
-        })
-        .filter((item): item is StructuredFileChange => Boolean(item))
-    : [];
-
-  const rootQuestion = isInteractiveResponseType
-    ? asString(normalizedQuestion?.question) ||
-      asString(normalizedQuestion?.text) ||
-      asString(rec.question) ||
-      asString(rec.prompt)
-    : '';
-  const questionOptionSource = (() => {
-    if (!isInteractiveResponseType) {
-      return undefined;
-    }
-    const normalizedSource =
-      normalizedQuestion?.options ?? normalizedQuestion?.choices;
-    if (Array.isArray(normalizedSource)) {
-      if (normalizedSource.length > 0) {
-        return normalizedSource;
-      }
-    } else if (
-      typeof normalizedSource === "string" &&
-      normalizedSource.trim().length > 0
-    ) {
-      return normalizedSource;
-    }
-    return rec.options ?? rec.choices ?? rec.actions;
-  })();
-  const rootOptions = normalizeChoices(questionOptionSource);
-  const rootAllowCustomInput =
-    normalizedQuestion?.allowCustomInput === true || rec.allowCustomInput === true;
-  const rootMultiSelect =
-    normalizedQuestion?.multiSelect === true || rec.multiSelect === true;
-
-  if (interactiveEvents.length === 0) {
-    if (rootQuestion && rootOptions.length >= 2) {
-      interactiveEvents = [
-        {
-          type: 'question',
-          id: `interactive-${Date.now()}-0`,
-          title:
-            asString(normalizedQuestion?.title) ||
-            asString(rec.title) ||
-            undefined,
-          question: rootQuestion,
-          options: rootOptions,
-          multiSelect: rootMultiSelect,
-          allowCustomInput: rootAllowCustomInput
-        }
-      ];
-    }
-  }
-
-  if (interactiveEvents.length === 0 && isInteractiveResponseType) {
-    const fallbackQuestion =
-      rootQuestion ||
-      messageText ||
-      "I need a quick clarification before I continue.";
-    interactiveEvents = [
-      {
-        type: 'question',
-        id: `interactive-${Date.now()}-fallback`,
-        title:
-          asString(normalizedQuestion?.title) ||
-          asString(rec.title) ||
-          "Question",
-        question: fallbackQuestion,
-        options:
-          rootQuestion && rootOptions.length < 2
-            ? []
-            : rootOptions.length >= 2
-              ? rootOptions
-              : [
-                { id: "yes", label: "Yes", value: "yes" },
-                { id: "no", label: "No", value: "no" },
-              ],
-        multiSelect: rootMultiSelect,
-        allowCustomInput:
-          rootQuestion && rootOptions.length < 2
-            ? true
-            : rootAllowCustomInput || !rootQuestion,
-      },
-    ];
-  }
 
   const subagentsRaw =
     sanitizedRec.subagents ??
@@ -2517,11 +3061,7 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
 
   if (
     !messageText &&
-    !normalizedQuestion &&
     !hasNormalizedPlan &&
-    cleanedReasoning.length === 0 &&
-    progressUpdates.length === 0 &&
-    fileChanges.length === 0 &&
     interactiveEvents.length === 0 &&
     subagents.length === 0 &&
     !subagentsDelta
@@ -2533,11 +3073,7 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
     responseType,
     message: messageText,
     plan: hasNormalizedPlan ? normalizedPlan : undefined,
-    reasoning: cleanedReasoning.length > 0 ? cleanedReasoning : undefined,
-    progressUpdates: progressUpdates.length > 0 ? progressUpdates : undefined,
-    fileChanges: fileChanges.length > 0 ? fileChanges : undefined,
     interactiveEvents: interactiveEvents.length > 0 ? interactiveEvents : undefined,
-    question: normalizedQuestion as StructuredOutput['question'] | undefined,
     subagents: subagents.length > 0 ? subagents : undefined,
     subagentsDelta
   } satisfies StructuredOutput;
@@ -2590,100 +3126,16 @@ function salvageStructuredOutput(value: unknown): StructuredOutput | undefined {
   const normalizedResponseType =
     responseType || (hasPlan ? "implementation_plan" : undefined);
 
-  const questionRec = asRecord(rec.question);
-  const topLevelOptions = Array.isArray(rec.options) ? rec.options : undefined;
-  const topLevelChoices = Array.isArray(rec.choices) ? rec.choices : undefined;
-  const topLevelActions = Array.isArray(rec.actions) ? rec.actions : undefined;
   const rawInteractiveEvents = Array.isArray(rec.interactiveEvents)
     ? rec.interactiveEvents
     : undefined;
-  const hasQuestionPayload =
-    !!questionRec ||
-    Array.isArray(topLevelOptions) ||
-    Array.isArray(topLevelChoices) ||
-    Array.isArray(topLevelActions) ||
-    Array.isArray(rawInteractiveEvents);
-  const normalizedQuestion =
-    questionRec || hasQuestionPayload
-      ? {
-          ...(questionRec ?? {}),
-          ...(typeof (questionRec ?? {}).type === "undefined" ? { type: "question" } : {}),
-          ...(typeof (questionRec ?? {}).options === "undefined" && topLevelOptions
-            ? { options: topLevelOptions }
-            : {}),
-          ...(typeof (questionRec ?? {}).choices === "undefined" && topLevelChoices
-            ? { choices: topLevelChoices }
-            : {}),
-          ...(typeof (questionRec ?? {}).actions === "undefined" && topLevelActions
-            ? { actions: topLevelActions }
-            : {}),
-        }
-      : undefined;
   const effectiveResponseType =
-    normalizedResponseType || (hasQuestionPayload ? "question" : undefined);
-
-  const fileChangesRaw = rec.fileChanges;
-  const fileChanges = Array.isArray(fileChangesRaw)
-    ? fileChangesRaw
-        .map((item) => {
-          const change = asRecord(item);
-          if (!change) return null;
-          const file = asString(change.file).trim();
-          if (!file) return null;
-          const diffStatsRec = asRecord(change.diffStats);
-          const diffExcerptRec = asRecord(change.diffExcerpt);
-          const kindValue = asString(change.kind).trim();
-          const kind =
-            kindValue === "file_edit" ||
-            kindValue === "file_create" ||
-            kindValue === "file_delete" ||
-            kindValue === "file_move" ||
-            kindValue === "other"
-              ? kindValue
-              : undefined;
-          return {
-            file,
-            kind,
-            diffStats: diffStatsRec
-              ? {
-                  added:
-                    typeof diffStatsRec.added === "number" ? diffStatsRec.added : undefined,
-                  deleted:
-                    typeof diffStatsRec.deleted === "number" ? diffStatsRec.deleted : undefined,
-                }
-              : undefined,
-            diffExcerpt: diffExcerptRec
-              ? {
-                  header:
-                    typeof diffExcerptRec.header === "string"
-                      ? diffExcerptRec.header
-                      : undefined,
-                  lines: Array.isArray(diffExcerptRec.lines)
-                    ? diffExcerptRec.lines.filter(
-                        (line): line is string => typeof line === "string",
-                      )
-                    : undefined,
-                  added:
-                    typeof diffExcerptRec.added === "number"
-                      ? diffExcerptRec.added
-                      : undefined,
-                  deleted:
-                    typeof diffExcerptRec.deleted === "number"
-                      ? diffExcerptRec.deleted
-                      : undefined,
-                }
-              : undefined,
-          } satisfies StructuredFileChange;
-        })
-        .filter((item): item is StructuredFileChange => Boolean(item))
-    : [];
+    normalizedResponseType || undefined;
 
   if (
     !effectiveResponseType &&
     !message &&
     !hasPlan &&
-    fileChanges.length === 0 &&
-    !normalizedQuestion &&
     !rawInteractiveEvents
   ) {
     return undefined;
@@ -2693,8 +3145,6 @@ function salvageStructuredOutput(value: unknown): StructuredOutput | undefined {
     responseType: effectiveResponseType,
     message,
     plan: hasPlan ? plan : undefined,
-    fileChanges: fileChanges.length > 0 ? fileChanges : undefined,
-    question: normalizedQuestion as StructuredOutput["question"] | undefined,
     interactiveEvents: rawInteractiveEvents as StructuredOutput["interactiveEvents"] | undefined,
   });
 }
@@ -2705,8 +3155,6 @@ function normalizeStructuredOutputWithFallback(value: unknown): StructuredOutput
 
 function collectRawStructuredOutputCandidates(rec: UnknownRecord): unknown[] {
   const infoRec = asRecord(rec.info);
-  const parsedRawDebug = parseRawResponseDebug(rec.rawResponse);
-  const rawResponseInfoRec = asRecord(parsedRawDebug.info);
   return [
     rec.structuredOutput,
     rec.structured_output,
@@ -2714,10 +3162,6 @@ function collectRawStructuredOutputCandidates(rec: UnknownRecord): unknown[] {
     infoRec?.structuredOutput,
     infoRec?.structured_output,
     infoRec?.structured,
-    parsedRawDebug.info,
-    rawResponseInfoRec?.structuredOutput,
-    rawResponseInfoRec?.structured_output,
-    rawResponseInfoRec?.structured,
   ].filter((candidate): candidate is unknown => typeof candidate !== "undefined" && candidate !== null);
 }
 
@@ -2760,42 +3204,183 @@ function hasTruncatedContentMarker(value: unknown): boolean {
   return false;
 }
 
-function structuredOutputFromRawDebug(parsedRawDebug: ParsedRawDebug): StructuredOutput | undefined {
-  const candidates: unknown[] = [];
-  for (const part of parsedRawDebug.parts) {
-    const partType = asString(part.type).toLowerCase();
-    const toolName = asString(part.tool);
-    const stateRec = asRecord(part.state);
-    if (
-      (partType === "tool" || toolName.length > 0) &&
-      (isInternalToolName(toolName) ||
-        isInternalToolName(asString(stateRec?.title)) ||
-        isInternalToolName(asString(stateRec?.tool)))
-    ) {
-      candidates.push(stateRec?.input);
-      candidates.push((stateRec as UnknownRecord | null)?.payload);
-      candidates.push(part.input);
-      candidates.push((part as UnknownRecord).payload);
+function structuredOutputFromStructuredOutputToolPart(part: unknown): StructuredOutput | undefined {
+  const partRec = asRecord(part);
+  if (!partRec) {
+    return undefined;
+  }
+
+  const toolName = asString(partRec.tool).toLowerCase();
+  if (toolName !== "structuredoutput" && toolName !== "structured_output") {
+    return undefined;
+  }
+
+  const stateRec = asRecord(partRec.state);
+  const inputRec =
+    asRecord(stateRec?.input) ||
+    asRecord(partRec.input) ||
+    asRecord(partRec.arguments);
+  if (!inputRec) {
+    return undefined;
+  }
+
+  const questionCandidate =
+    asRecord(inputRec.question) ||
+    asRecord(asRecord(inputRec.questions)?.[0]) ||
+    asRecord(inputRec.prompt);
+  const responseType = firstNonEmptyString(
+    inputRec.type,
+    inputRec.responseType,
+    partRec.responseType,
+    stateRec?.responseType,
+  )?.toLowerCase();
+  const messageText = firstNonEmptyString(
+    inputRec.text,
+    inputRec.message,
+    inputRec.content,
+    stateRec?.message,
+    stateRec?.content,
+    stateRec?.text,
+  );
+  const planCandidate =
+    asRecord(inputRec.plan) ||
+    asRecord(stateRec?.plan) ||
+    asRecord(partRec.plan);
+
+  const candidate: Record<string, unknown> = {
+    ...inputRec,
+    ...(questionCandidate ? { question: questionCandidate } : {}),
+    ...(planCandidate ? { plan: planCandidate } : {}),
+  };
+  if (responseType) {
+    candidate.type = responseType;
+    candidate.responseType = responseType;
+  }
+  if (messageText) {
+    candidate.text = messageText;
+    candidate.message = messageText;
+  }
+
+  const normalized = normalizeStructuredOutputWithFallback(candidate);
+  if (normalized) {
+    return normalized;
+  }
+
+  if (!responseType && !messageText && !planCandidate && !questionCandidate) {
+    return undefined;
+  }
+
+  return candidate as StructuredOutput;
+}
+
+function fallbackStructuredOutputCandidateFromCentralizedEvent(
+  payload: UnknownRecord,
+  properties: UnknownRecord | null,
+  infoRecord: UnknownRecord | null,
+): StructuredOutput | undefined {
+  const responseType =
+    asString(payload.type) ||
+    asString(payload.responseType) ||
+    asString(properties?.responseType) ||
+    asString(properties?.type) ||
+    asString(infoRecord?.responseType) ||
+    asString(infoRecord?.type);
+  const message =
+    asString(payload.text) ||
+    asString(payload.message) ||
+    asString(properties?.message) ||
+    asString(properties?.text) ||
+    asString(infoRecord?.message) ||
+    asString(infoRecord?.text);
+  const plan =
+    asRecord(payload.plan) ||
+    asRecord(properties?.plan) ||
+    asRecord(infoRecord?.plan) ||
+    undefined;
+
+  if (!responseType && !message && !plan) {
+    return undefined;
+  }
+
+  return {
+    type: responseType,
+    responseType,
+    text: message,
+    message,
+    plan,
+  };
+}
+
+function structuredOutputFromCentralizedEventPayload(
+  payload: unknown,
+  options?: { includeFallbackCandidate?: boolean },
+): StructuredOutput | undefined {
+  const event = normalizeCentralizedEventPayload(payload) ?? asRecord(payload);
+  if (!event) {
+    return undefined;
+  }
+
+  const properties = asRecord(event.properties);
+  const infoRecord = getCentralizedEventInfo(event);
+  const eventPart = getCentralizedEventPart(event);
+  const structuredOutput =
+    normalizeStructuredOutputWithFallback(event.structured) ??
+    normalizeStructuredOutputWithFallback(event.structuredOutput) ??
+    normalizeStructuredOutputWithFallback((event as UnknownRecord).structured_output) ??
+    normalizeStructuredOutputWithFallback(properties?.structured) ??
+    normalizeStructuredOutputWithFallback(properties?.structuredOutput) ??
+    normalizeStructuredOutputWithFallback((properties as UnknownRecord | null)?.structured_output) ??
+    normalizeStructuredOutputWithFallback(infoRecord?.structured) ??
+    normalizeStructuredOutputWithFallback(infoRecord?.structuredOutput) ??
+    normalizeStructuredOutputWithFallback((infoRecord as UnknownRecord | null)?.structured_output) ??
+    structuredOutputFromStructuredOutputToolPart(eventPart);
+
+  if (structuredOutput) {
+    return structuredOutput;
+  }
+
+  if (options?.includeFallbackCandidate === false) {
+    return undefined;
+  }
+
+  return fallbackStructuredOutputCandidateFromCentralizedEvent(event, properties, infoRecord);
+}
+
+export function structuredOutputFromRawSdkEventPayloads(
+  rawSdkEventPayloads?: unknown[],
+): StructuredOutput | undefined {
+  if (!Array.isArray(rawSdkEventPayloads) || rawSdkEventPayloads.length === 0) {
+    return undefined;
+  }
+
+  const normalizedPayloads = normalizeCentralizedEventPayloads(rawSdkEventPayloads);
+
+  for (let index = normalizedPayloads.length - 1; index >= 0; index -= 1) {
+    const structured = structuredOutputFromCentralizedEventPayload(
+      normalizedPayloads[index],
+      { includeFallbackCandidate: false },
+    );
+    if (structured) {
+      return structured;
     }
   }
 
-  const infoRec = asRecord(parsedRawDebug.info);
-  candidates.push((infoRec as UnknownRecord | null)?.structured);
-  candidates.push(infoRec?.structuredOutput);
-  candidates.push((infoRec as UnknownRecord | null)?.structured_output);
-
-  for (const candidate of candidates) {
-    const normalized = normalizeStructuredOutputWithFallback(candidate);
-    if (normalized) {
-      return normalized;
-    }
-  }
   return undefined;
+}
+
+/**
+ * Checks if a centralized raw event payload represents an AI response chunk.
+ * Supported shapes:
+ * - `message.part.updated` with `properties.part.type === "text"`
+ * - `sync` with `syncEvent.data.part.type === "text"`
+ */
+export function isAiResponseEvent(payload: unknown): boolean {
+  const part = getCentralizedEventPart(payload);
+  return (asString(part?.type) || asString(part?.partType)) === "text";
 }
 
 function resolveStructuredOutputFromMessageRecord(rec: UnknownRecord): StructuredOutput | undefined {
   const infoRec = asRecord(rec.info);
-  const parsedRawDebug = parseRawResponseDebug(rec.rawResponse);
   const localCandidates: unknown[] = [
     (rec as UnknownRecord).structured,
     (infoRec as UnknownRecord | null)?.structured,
@@ -2811,28 +3396,13 @@ function resolveStructuredOutputFromMessageRecord(rec: UnknownRecord): Structure
       return normalized;
     }
   }
-  const fromRawDebug = structuredOutputFromRawDebug(parsedRawDebug);
-  if (!fromRawDebug) {
-    return undefined;
+  const rawSdkStructuredOutput = structuredOutputFromRawSdkEventPayloads(
+    Array.isArray(rec.rawSdkEventPayloads) ? rec.rawSdkEventPayloads : undefined,
+  );
+  if (rawSdkStructuredOutput) {
+    return rawSdkStructuredOutput;
   }
-
-  // Raw debug payloads are frequently capped for logging and may contain
-  // "...<truncated N chars>" markers inside plan/content fields. Treat those
-  // as unreliable and avoid propagating partial plan bodies into the viewer.
-  if (hasTruncatedContentMarker(fromRawDebug)) {
-    const plan = fromRawDebug.plan;
-    if (plan && typeof plan === "object") {
-      return {
-        ...fromRawDebug,
-        plan: {
-          ...plan,
-          content: undefined,
-        },
-      };
-    }
-  }
-
-  return fromRawDebug;
+  return undefined;
 }
 
 // Normalize incoming todo-like records into a canonical Todo shape used by the
@@ -2930,15 +3500,10 @@ function ingestNormalizedTodo(
 
 function toInteractiveEvents(structured?: StructuredOutput): InteractiveEvent[] {
   const events = structured?.interactiveEvents ?? [];
-  // NOTE: contextMessage is the full AI conversational context shown as a header in the popup
-  // card. We prefer displayPrompt from the question sub-object.
-  // top level. This is intentionally sourced once for all events (they belong to the same turn).
   const structuredRec = asRecord(structured as UnknownRecord | undefined);
-  const responseType = asOptionalString(structuredRec?.responseType)?.toLowerCase();
-  const questionObj = asRecord(structuredRec?.question);
   const contextMessage: string | undefined =
-    asOptionalString(questionObj?.displayPrompt) ||
-    asOptionalString(questionObj?.assistantPrompt) ||
+    asOptionalString(structuredRec?.displayPrompt) ||
+    asOptionalString(structuredRec?.assistantPrompt) ||
     undefined;
 
   const mapped = events
@@ -2986,6 +3551,8 @@ function toInteractiveEvents(structured?: StructuredOutput): InteractiveEvent[] 
           multiSelect: event.multiSelect,
           allowCustomInput,
           contextMessage,
+          requestID: event.requestID,
+          questionIndex: event.questionIndex,
         } as InteractiveEvent;
       }
       if (event.type === 'message') {
@@ -3004,65 +3571,6 @@ function toInteractiveEvents(structured?: StructuredOutput): InteractiveEvent[] 
       return undefined;
     })
     .filter((event): event is InteractiveEvent => !!event);
-
-  // Fallback: if no interactiveEvents were produced but the structured output has a
-  // question object, synthesize an interactive event from it. This handles the common
-  // case where the model populates only the question object without the interactiveEvents
-  // array (minimal valid question output).
-  if (mapped.length === 0 && responseType === 'question' && questionObj) {
-    const questionText =
-      asOptionalString(questionObj.question) ||
-      asOptionalString(questionObj.text);
-    if (questionText) {
-      const qType = asOptionalString(questionObj.type)?.toLowerCase() || 'question';
-      const id = asOptionalString(questionObj.id) || `question-${Date.now()}`;
-      const title = asOptionalString(questionObj.title);
-      const options = Array.isArray(questionObj.options) ? questionObj.options : [];
-
-      if (qType === 'confirm') {
-        mapped.push({
-          type: 'confirm',
-          id,
-          title,
-          question: questionText,
-          confirmLabel: asOptionalString(questionObj.confirmLabel),
-          cancelLabel: asOptionalString(questionObj.cancelLabel),
-          contextMessage,
-        } as InteractiveEvent);
-      } else if (qType === 'quick_actions') {
-        const actions = Array.isArray(questionObj.actions) ? questionObj.actions : [];
-        if (actions.length > 0) {
-          mapped.push({
-            type: 'quick_actions',
-            id,
-            title,
-            actions,
-            contextMessage,
-          } as InteractiveEvent);
-        }
-      } else if (qType === 'message') {
-        mapped.push({
-          type: 'message',
-          id,
-          title,
-          message: asOptionalString(questionObj.message) || questionText,
-          dismissLabel: asOptionalString(questionObj.dismissLabel),
-          contextMessage,
-        } as InteractiveEvent);
-      } else if (options.length >= 2 || questionObj.allowCustomInput === true) {
-        mapped.push({
-          type: 'question',
-          id,
-          title,
-          question: questionText,
-          options,
-          multiSelect: !!questionObj.multiSelect,
-          allowCustomInput: !!questionObj.allowCustomInput,
-          contextMessage,
-        } as InteractiveEvent);
-      }
-    }
-  }
 
   return dedupeInteractiveEvents(mapped);
 }
@@ -3228,9 +3736,26 @@ function normalizeInteractiveChoices(raw: unknown): InteractiveChoice[] {
         label,
         value: normalizeChoiceAnswerValue(asString(rec.value), label),
         description: asString(rec.description) || asString(rec.detail) || undefined,
+        recommended: rec.recommended === true,
       } as InteractiveChoice;
     })
     .filter((item): item is InteractiveChoice => !!item);
+}
+
+function extractInteractivePromptText(record: UnknownRecord): string | undefined {
+  const nestedQuestion = asRecord(record.question);
+  return (
+    asString(nestedQuestion?.displayPrompt) ||
+    asString(nestedQuestion?.question) ||
+    asString(nestedQuestion?.message) ||
+    asString(nestedQuestion?.content) ||
+    asString(record.displayPrompt) ||
+    asString(record.question) ||
+    asString(record.prompt) ||
+    asString(record.message) ||
+    asString(record.content) ||
+    asString(record.text)
+  ) || undefined;
 }
 
 function normalizeToolInteractiveEvent(
@@ -3240,7 +3765,7 @@ function normalizeToolInteractiveEvent(
 ): InteractiveEvent | undefined {
   const id = asString(record.id) || fallbackId;
   const typeRaw = asString(record.type).toLowerCase();
-  const title = asString(record.title) || fallbackTitle || undefined;
+  const title = asString(record.title) || asString(record.header) || fallbackTitle || undefined;
 
   if (typeRaw === "message") {
     const message =
@@ -3264,11 +3789,13 @@ function normalizeToolInteractiveEvent(
     if (actions.length === 0) {
       return undefined;
     }
+    const prompt = extractInteractivePromptText(record);
     return {
       type: "quick_actions",
       id,
-      title,
+      title: title || "Quick actions",
       actions,
+      contextMessage: prompt && prompt !== title ? prompt : undefined,
     };
   }
 
@@ -3688,6 +4215,130 @@ function shouldBootstrapStreamingFromPart(part: UnknownRecord | null): boolean {
   return Boolean(reasoningLike);
 }
 
+type AssistantStreamBootstrapContext = {
+  eventType: string;
+  eventRole: string;
+  messageId: string | null;
+  eventAgent?: string;
+  eventModel?: Record<string, unknown> | null;
+  eventModelID?: string;
+  eventProviderID?: string;
+  isExplicitStart: boolean;
+  isAssistantUpdateStart: boolean;
+  canBootstrapFromPart: boolean;
+  hasSystemPatternEvent: boolean;
+};
+
+function buildStreamingMetadataFromCentralizedPayload(
+  context: AssistantStreamBootstrapContext,
+  state: AppState,
+): Pick<StreamingState, "agent" | "model" | "modelID" | "providerID" | "variant"> {
+  return {
+    agent: context.eventAgent || state.selectedAgent || undefined,
+    model:
+      context.eventModel && typeof context.eventModel === "object"
+        ? {
+            modelID:
+              asString(context.eventModel.modelID) ||
+              state.selectedModel?.modelID ||
+              "",
+            providerID:
+              asString(context.eventModel.providerID) ||
+              state.selectedModel?.providerID ||
+              "",
+            name:
+              asString((context.eventModel as Record<string, unknown>).name) ||
+              undefined,
+          }
+        : undefined,
+    modelID: context.eventModelID || state.selectedModel?.modelID,
+    providerID: context.eventProviderID || state.selectedModel?.providerID,
+    variant: state.thinkingLevel,
+  };
+}
+
+function buildStreamingBootstrapState(
+  context: AssistantStreamBootstrapContext,
+  state: AppState,
+): StreamingState {
+  return {
+    messageId: context.messageId,
+    content: "",
+    hasRenderableContent: false,
+    reasoning: "",
+    reasoningEvents: [],
+    steps: [],
+    progressEvents: [],
+    edits: [],
+    isActive: true,
+    ...buildStreamingMetadataFromCentralizedPayload(context, state),
+  };
+}
+
+function ensureStreamingBootstrapFromCentralizedPayload(
+  dispatch: Dispatch<AppAction>,
+  getState: () => AppState,
+  context: AssistantStreamBootstrapContext,
+): boolean {
+  const state = getState();
+  const current = state.streaming;
+  const shouldStart =
+    !current &&
+    !context.hasSystemPatternEvent &&
+    (context.isExplicitStart ||
+      context.isAssistantUpdateStart ||
+      context.canBootstrapFromPart ||
+      state.isProcessing);
+
+  if (!shouldStart) {
+    return false;
+  }
+
+  dispatch({
+    type: "SET_STREAMING",
+    payload: buildStreamingBootstrapState(context, state),
+  });
+  dispatch({
+    type: "SET_ASSISTANT_TURN_PENDING",
+    payload: { pending: true, messageId: context.messageId },
+  });
+  dispatch({ type: "SET_PROCESSING", payload: true });
+  return true;
+}
+
+function bindStreamingIdentityFromCentralizedPayload(
+  dispatch: Dispatch<AppAction>,
+  getState: () => AppState,
+  context: AssistantStreamBootstrapContext,
+): boolean {
+  const state = getState();
+  const current = state.streaming;
+
+  // Event-stream rendering can begin from a generic SET_PROCESSING placeholder
+  // before the first assistant payload has been parsed. That placeholder has no
+  // messageId, which means the UI cannot scope session-level centralized debug
+  // payloads back to the active assistant turn. Once a centralized SDK payload
+  // gives us the real messageId, we adopt it here so the same centralized data
+  // can drive the live card and the rehydrated card.
+  if (!current || current.messageId || !context.messageId || context.hasSystemPatternEvent) {
+    return false;
+  }
+
+  dispatch({
+    type: "SET_STREAMING",
+    payload: {
+      ...current,
+      messageId: context.messageId,
+      ...buildStreamingMetadataFromCentralizedPayload(context, state),
+    },
+  });
+  dispatch({
+    type: "SET_ASSISTANT_TURN_PENDING",
+    payload: { pending: true, messageId: context.messageId },
+  });
+  return true;
+}
+
 function isReasoningPart(part: UnknownRecord): boolean {
   const type = normalizePartType(part.type);
   return (
@@ -4045,7 +4696,9 @@ function isCanonicalAssistantDisplayMessage(message: Message): boolean {
 
   const structured = resolveStructuredOutputFromMessageRecord(rec);
   const responseType = firstNonEmptyString(
+    structured?.type,
     structured?.responseType,
+    asString(rec.type),
     asString(rec.responseType),
   )?.toLowerCase();
 
@@ -4058,20 +4711,6 @@ function isCanonicalAssistantDisplayMessage(message: Message): boolean {
   }
 
   return !!getCanonicalStructuredMessageText(message);
-}
-
-function hasRenderableAssistantTextInParts(parts: unknown[]): boolean {
-  return parts.some((part) => {
-    const rec = asRecord(part);
-    if (!rec || !isRenderableAssistantTextPart(rec)) {
-      return false;
-    }
-    const text =
-      asRichString(rec.text) ||
-      asRichString(rec.content) ||
-      asRichString(rec.delta);
-    return text.trim().length > 0;
-  });
 }
 
 function reasoningFromParts(parts: unknown[]): string {
@@ -4116,13 +4755,15 @@ function getCanonicalStructuredMessageText(message: Message | UnknownRecord): st
   }
   const structured = resolveStructuredOutputFromMessageRecord(rec);
   const responseType = firstNonEmptyString(
+    structured?.type,
     structured?.responseType,
+    asString(rec.type),
     asString(rec.responseType),
   )?.toLowerCase();
   if (responseType !== "message") {
     return "";
   }
-  const structuredMessage = asString(structured?.message).trim();
+  const structuredMessage = asString(structured?.text ?? structured?.message).trim();
   if (!structuredMessage) {
     return "";
   }
@@ -4133,6 +4774,10 @@ function getCanonicalStructuredMessageText(message: Message | UnknownRecord): st
 }
 
 function latestUserMessageText(state: AppState): string {
+  if (!state.messages || state.messages.length === 0) {
+    return '';
+  }
+
   for (let i = state.messages.length - 1; i >= 0; i -= 1) {
     const msg = state.messages[i];
     const role = msg.role ?? msg.info?.role;
@@ -4388,6 +5033,23 @@ function sanitizeAssistantMessageEcho(message: Message, state: AppState): Messag
   return next;
 }
 
+function cloneRawSnapshot<T>(value: T): T {
+  if (typeof structuredClone === "function") {
+    try {
+      return structuredClone(value) as T;
+    } catch {
+      // Fall back to a shallow copy below.
+    }
+  }
+  if (Array.isArray(value)) {
+    return [...value] as T;
+  }
+  if (value && typeof value === "object") {
+    return { ...(value as Record<string, unknown>) } as T;
+  }
+  return value;
+}
+
 export function normalizeMessage(message: Message, streaming: StreamingState | null): Message | undefined {
   const rec = asRecord(message);
   if (!rec) {
@@ -4401,8 +5063,12 @@ export function normalizeMessage(message: Message, streaming: StreamingState | n
     return streaming ? buildStreamingMessage(streaming) : undefined;
   }
 
+  const rawSdkEventPayloadsSnapshot = Array.isArray(streaming?.rawSdkEventPayloads)
+    ? cloneRawSnapshot(streaming.rawSdkEventPayloads)
+    : Array.isArray(rec.rawSdkEventPayloads)
+      ? cloneRawSnapshot(rec.rawSdkEventPayloads)
+      : undefined;
   const parts = Array.isArray(rec.parts) ? rec.parts : [];
-  const parsedRawDebug = parseRawResponseDebug(rec.rawResponse);
   const mergedParts = [...parts];
   const currentReasoning = reasoningFromParts(mergedParts);
   const directReasoningRaw = rec.reasoning ?? rec.thinking ?? rec.thoughts;
@@ -4520,6 +5186,11 @@ export function normalizeMessage(message: Message, streaming: StreamingState | n
     normalizeStructuredOutputWithFallback(streaming?.structuredOutput);
 
   const role = asString(rec.role) || asString(asRecord(rec.info)?.role);
+  const sourceMessageId =
+    asString(asRecord(rec.info)?.id) ||
+    asString(rec.id) ||
+    asString(streaming?.messageId) ||
+    "(unknown)";
   const nonReasoningPartsContent = contentFromParts(normalizedParts).trim();
   const contentFromTopLevel = pickBestContentCandidate([
     splitReasoningFromCandidate(asRichString(rec.content)),
@@ -4561,8 +5232,6 @@ export function normalizeMessage(message: Message, streaming: StreamingState | n
       ? structuredMessage
       : nonReasoningPartsContent || (provisionalResponseType === "message" ? structuredMessage : "")
     : structuredMessage || contentFromTopLevel;
-  const sourceMessageId =
-    asString(asRecord(rec.info)?.id) || asString((rec as UnknownRecord).id) || null;
   const contentSelectedSource = hasParts
     ? shouldPreferStructuredMessage
       ? "structured.message"
@@ -4618,19 +5287,6 @@ export function normalizeMessage(message: Message, streaming: StreamingState | n
     content || "",
     streamingContent,
   );
-  const rawHasRenderableText = hasRenderableAssistantTextInParts(parsedRawDebug.parts);
-  const rawHasReasoning = parsedRawDebug.parts.some((part) => {
-    const rec = asRecord(part);
-    return !!rec && isReasoningPart(rec);
-  });
-  const shouldSuppressStreamingFallbackForReasoningOnly =
-    parsedRawDebug.parts.length > 0 &&
-    !hasRenderableStreamingContent &&
-    provisionalResponseType === "message" &&
-    !structuredMessage &&
-    !nonReasoningPartsContent &&
-    rawHasReasoning &&
-    !rawHasRenderableText;
   const streamingContentMatchesReasoning = (() => {
     const streamNorm = normalizeComparableText(streamingContent);
     if (!streamNorm || streamNorm.length < 40) return false;
@@ -4655,7 +5311,6 @@ export function normalizeMessage(message: Message, streaming: StreamingState | n
     role === "assistant" && typeof content === "string" && content.trim().length > 0;
   const shouldUseStreamingContent =
     hasRenderableStreamingContent &&
-    !shouldSuppressStreamingFallbackForReasoningOnly &&
     !nonReasoningPartsContent &&
     preferStreamingContent &&
     !streamingContentMatchesReasoning &&
@@ -4678,12 +5333,8 @@ export function normalizeMessage(message: Message, streaming: StreamingState | n
       hasCanonicalAssistantContent,
       shouldUseStreamingContent,
       streamingContentMatchesReasoning,
-      shouldSuppressStreamingFallbackForReasoningOnly,
       normalizedStructuredOutputResponseType:
         normalizedStructuredOutput?.responseType ?? null,
-      parsedRawDebugPartCount: parsedRawDebug.parts.length,
-      rawHasReasoning,
-      rawHasRenderableText,
     });
   }
   if (streaming && role === "assistant") {
@@ -4700,20 +5351,12 @@ export function normalizeMessage(message: Message, streaming: StreamingState | n
       hasCanonicalAssistantContent,
       shouldUseStreamingContent,
       streamingContentMatchesReasoning,
-      shouldSuppressStreamingFallbackForReasoningOnly,
       normalizedStructuredOutputResponseType:
         normalizedStructuredOutput?.responseType ?? null,
       normalizedStructuredOutputMessagePreview: previewForLog(
         normalizedStructuredOutput?.message,
       ),
       streamingSummary: summarizeStreamingForLog(streaming),
-    });
-  }
-  if (shouldSuppressStreamingFallbackForReasoningOnly) {
-    logger.info("Suppressing streaming fallback: raw debug indicates reasoning-only final payload", {
-      messageId: sourceMessageId,
-      responseType: provisionalResponseType ?? null,
-      rawPartsCount: parsedRawDebug.parts.length,
     });
   }
   const normalized: Message = {
@@ -4726,6 +5369,9 @@ export function normalizeMessage(message: Message, streaming: StreamingState | n
         ? (normalizedParts as Message['parts'])
         : message.parts
   };
+  if (rawSdkEventPayloadsSnapshot) {
+    (normalized as Record<string, unknown>).rawSdkEventPayloads = rawSdkEventPayloadsSnapshot;
+  }
 
   const normalizedInfoRecord = asRecord(normalized.info) || {};
   const variant = firstNonEmptyString(
@@ -4794,6 +5440,18 @@ export function normalizeMessage(message: Message, streaming: StreamingState | n
     (normalized as Record<string, unknown>).rawStructuredOutputs = rawStructuredOutputs;
   }
 
+  // Rebuild the legacy "raw debug" view from the centralized event tape so the
+  // normalization path can continue to extract reasoning chunks from raw stream
+  // payloads without depending on a missing helper or on the old rawResponse
+  // shape. This keeps the centralized tape as the single source of truth.
+  const parsedRawDebug = {
+    parts: Array.isArray(rawSdkEventPayloadsSnapshot)
+      ? rawSdkEventPayloadsSnapshot
+          .map((payload) => getCentralizedEventPart(payload))
+          .filter((part): part is UnknownRecord => !!part)
+      : [],
+  };
+
   if (!normalized.plan) {
     const rawPlan = extractRawPlanFromMessageRecord(rec);
     if (rawPlan) {
@@ -4850,26 +5508,28 @@ export function normalizeMessage(message: Message, streaming: StreamingState | n
     .map((part) => asRecord(part))
     .filter((part): part is UnknownRecord => !!part)
     .filter((part) => isReasoningPart(part))
-    .map((part) =>
-      sanitizeReasoningChunk(
+    .map((part) => {
+      const text = sanitizeReasoningChunk(
         asRichString(part.reasoning) ||
         asRichString(part.thought) ||
         asRichString(part.thinking) ||
         asRichString(part.text) ||
         asRichString(part.content),
-      ).trim(),
-    )
-    .filter((text) => text.length > 0);
+      ).trim();
+      const timeStart = typeof asRecord(part.time)?.start === "number" ? asRecord(part.time)?.start as number : (typeof part.createdAt === "number" ? part.createdAt : Date.now());
+      return { text, createdAt: timeStart };
+    })
+    .filter((chunk) => chunk.text.length > 0);
   if (explicitReasoningFromFinalParts.length > 0) {
     reasoningSources.add("final");
     for (const chunk of explicitReasoningFromFinalParts) {
-      const norm = normalizeComparableText(chunk);
+      const norm = normalizeComparableText(chunk.text);
       if (!norm) continue;
       const alreadyTracked = mergedReasoningEvents.some(
         (event) => normalizeComparableText(asString(event.text)) === norm,
       );
       if (!alreadyTracked) {
-        mergedReasoningEvents.push({ text: chunk, createdAt: Date.now() });
+        mergedReasoningEvents.push(chunk);
       }
     }
   }
@@ -4878,25 +5538,27 @@ export function normalizeMessage(message: Message, streaming: StreamingState | n
     .map((part) => asRecord(part))
     .filter((part): part is UnknownRecord => !!part)
     .filter((part) => normalizePartType(part.type) === "reasoning")
-    .map((part) =>
-      sanitizeReasoningChunk(
+    .map((part) => {
+      const text = sanitizeReasoningChunk(
         asRichString(part.reasoning) ||
         asRichString(part.text) ||
         asRichString(part.content) ||
         asRichString(part.delta),
-      ).trim(),
-    )
-    .filter((text) => text.length > 0);
+      ).trim();
+      const timeStart = typeof asRecord(part.time)?.start === "number" ? asRecord(part.time)?.start as number : (typeof part.createdAt === "number" ? part.createdAt : Date.now());
+      return { text, createdAt: timeStart };
+    })
+    .filter((chunk) => chunk.text.length > 0);
   if (explicitReasoningFromRawParts.length > 0) {
     reasoningSources.add("raw_debug");
     for (const chunk of explicitReasoningFromRawParts) {
-      const norm = normalizeComparableText(chunk);
+      const norm = normalizeComparableText(chunk.text);
       if (!norm) continue;
       const alreadyTracked = mergedReasoningEvents.some(
         (event) => normalizeComparableText(asString(event.text)) === norm,
       );
       if (!alreadyTracked) {
-        mergedReasoningEvents.push({ text: chunk, createdAt: Date.now() });
+        mergedReasoningEvents.push(chunk);
       }
     }
   }
@@ -4999,21 +5661,6 @@ export function normalizeMessage(message: Message, streaming: StreamingState | n
     const synthesized = synthesizeQuestionContextMessage(structuredEvents);
     if (synthesized) {
       normalized.content = synthesized;
-    }
-  }
-
-  if (firstNonEmptyString(normalized.responseType, normalizedStructuredOutput?.responseType)?.toLowerCase() === "question") {
-    const questionRecord = asRecord(normalizedStructuredOutput?.question);
-    const structuredQuestionContent =
-      firstNonEmptyString(
-        asString(questionRecord?.question),
-        asString(questionRecord?.message),
-        asString(questionRecord?.content),
-        asString(questionRecord?.prompt),
-      ) ||
-      synthesizeQuestionContextMessage(structuredEvents);
-    if (structuredQuestionContent) {
-      normalized.content = structuredQuestionContent;
     }
   }
 
@@ -5127,379 +5774,110 @@ function isMessage(value: unknown): value is Message {
   );
 }
 
-function isSubagentStatus(value: unknown): value is SubagentSummary['status'] {
-  return value === 'pending' || value === 'running' || value === 'done' || value === 'error' || value === 'orphaned';
-}
+// NOTE: All subagent helper functions removed - now using modular system
+// See: webview/shared/src/chat/lib/subagents/
+// - eventNormalizer.ts, metadataExtractor.ts, eventBuilder.ts
+// - dataNormalizer.ts, stateManager.ts, centralExtractor.ts, uiFormatter.ts
 
-function isOpaqueSubagentToken(value: string): boolean {
-  const text = value.trim();
-  if (text.length < 8) {
-    return false;
-  }
+// ============================================================================
+// REMOVED: All old subagent helper functions (1,843 lines removed)
+// These functions are now in the modular system:
+// - normalizeSubagentProgressEventsForPresentation → eventBuilder.ts
+// - normalizeSubagentTimelineEventsForPresentation → eventBuilder.ts
+// - normalizeSubagentSummary → dataNormalizer.ts
+// - normalizeSubagentDetail → dataNormalizer.ts
+// - normalizeSubagentSummaryMap → dataNormalizer.ts
+// - normalizeSubagentDetailMap → dataNormalizer.ts
+// - handleSubagentUpdatesFromCentralizedEvents (updated below)
+// - extractSubagentsFromMessages → centralExtractor.ts
+// - extractEventPart → eventNormalizer.ts
+// - extractEventMessageID → eventnormalizer.ts
+// - isSubagentToolName → eventNormalizer.ts
+// - normalizeSubagentEvent → eventNormalizer.ts
+// - extractSubagentMetadata → metadataExtractor.ts
+// - buildConversationEvents → eventBuilder.ts
+// - buildProgressEvents → eventBuilder.ts
+// - buildTimelineEvents → eventBuilder.ts
+// - extractSubagentDetailFromCentralizedEvents → centralExtractor.ts
+// - extractSubagentDetailFromEvents → centralExtractor.ts
+// - hydrateSubagentSummary → stateManager.ts
+// - latestSubagentEventTimestamp → uiFormatter.ts
+// - shouldFreezeSubagentForPresentation → uiFormatter.ts
+// - normalizeHydratedSubagentDetail → (removed, not needed)
+// - normalizeHydratedSubagentSummary → (removed, not needed)
+// - normalizeHydratedSubagentMaps → (removed, not needed)
+// - areSubagentListsEquivalent → stateManager.ts
+// - mergeSubagentSummaries → stateManager.ts
+// - hasSubagentSummaryEntries → stateManager.ts
+// - mergeSubagentSummaryPayload → stateManager.ts
+// - mergeUniqueSubagentEntries → stateManager.ts
+// - mergeSubagentDetailRecord → stateManager.ts
+// - mergeSubagentDetailPayload → stateManager.ts
+// - applyStructuredSubagentPayload → (removed, disabled)
+// ============================================================================
+
+// ESSENTIAL UTILITIES - Still needed in messageHandler (not moved to modules)
+function getMessageId(message: Message): string | null {
   return (
-    /^[a-f0-9-]{8,}$/i.test(text) ||
-    /^msg[_-][a-z0-9-]+$/i.test(text) ||
-    /^call[_-][a-z0-9-]+$/i.test(text) ||
-    /^ses[_-][a-z0-9-]+$/i.test(text)
+    asString(asRecord(message.info)?.id) ||
+    asString((message as unknown as UnknownRecord).id) ||
+    null
   );
 }
 
-function sanitizeSubagentLabel(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed || isOpaqueSubagentToken(trimmed)) {
-    return '';
-  }
-  return trimmed.replace(/\s+/g, ' ');
-}
-
-function normalizeSubagentProgressEventsForPresentation(
-  events: SubagentProgressEvent[],
-): SubagentProgressEvent[] {
-  if (events.length <= 1) {
-    return events;
-  }
-
-  const byCallId = new Map<string, SubagentProgressEvent>();
-  const ordered: SubagentProgressEvent[] = [];
-  for (const event of events) {
-    if (!event.callID) {
-      ordered.push(event);
-      continue;
-    }
-    const current = byCallId.get(event.callID);
-    if (!current) {
-      byCallId.set(event.callID, event);
-      ordered.push(event);
-      continue;
-    }
-    current.createdAt = Math.max(current.createdAt, event.createdAt);
-    current.status =
-      event.status === 'error'
-        ? 'error'
-        : event.status === 'done' || current.status === 'done'
-          ? 'done'
-          : 'pending';
-    current.title = event.title || current.title;
-    current.meta = event.meta || current.meta;
-    current.filePath = event.filePath || current.filePath;
-  }
-
-  const deduped: SubagentProgressEvent[] = [];
-  const seen = new Set<string>();
-  for (const event of ordered) {
-    const key = [
-      event.callID || '',
-      normalizeComparableText(event.title),
-      normalizeComparableText(event.meta || ''),
-      normalizeComparableText(event.filePath || ''),
-      event.status,
-    ].join('|');
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    deduped.push(event);
-  }
-  return deduped;
-}
-
-function normalizeSubagentTimelineEventsForPresentation(
-  events: SubagentTimelineEvent[],
-): SubagentTimelineEvent[] {
-  if (events.length <= 1) {
-    return events;
-  }
-  const sorted = [...events].sort((a, b) => a.createdAt - b.createdAt);
-  const deduped: SubagentTimelineEvent[] = [];
-  for (const event of sorted) {
-    const previous = deduped[deduped.length - 1];
-    if (
-      previous &&
-      previous.type === event.type &&
-      normalizeComparableText(previous.label) ===
-      normalizeComparableText(event.label)
-    ) {
-      previous.createdAt = Math.max(previous.createdAt, event.createdAt);
-      previous.messageID = event.messageID || previous.messageID;
-      previous.partID = event.partID || previous.partID;
-      previous.callID = event.callID || previous.callID;
-      continue;
-    }
-    deduped.push(event);
-  }
-  return deduped;
-}
-
-function normalizeSubagentSummary(value: unknown): SubagentSummary | null {
-  const rec = asRecord(value);
-  if (!rec) {
+/**
+ * Shared parent-id parser for assistant messages.
+ *
+ * Keep this broad and reusable. OpenCode history may surface the parent through
+ * normalized `info`, top-level legacy fields, or raw response metadata. Higher
+ * layers should call this helper before adding their own fallback chain, because
+ * divergent parent parsing is what lets reasoning/text from one assistant turn
+ * leak into the next visible user turn.
+ */
+export function getMessageParentId(message: Message | undefined): string | null {
+  if (!message) {
     return null;
   }
-
-  const id = asString(rec.id);
-  const parentSessionId = asString(rec.parentSessionId);
-  const parentMessageId = asString(rec.parentMessageId);
-  if (!id || !parentSessionId || !parentMessageId) {
-    return null;
-  }
-
-  const references = Array.isArray(rec.references)
-    ? rec.references
-      .map((entry) => {
-        const ref = asRecord(entry);
-        if (!ref) {
-          return null;
-        }
-        const res: SubagentReference = {
-          messageID: asString(ref.messageID) || undefined,
-          partID: asString(ref.partID) || undefined,
-          callID: asString(ref.callID) || undefined,
-        };
-        if (!res.messageID && !res.partID && !res.callID) {
-          return null;
-        }
-        return res;
-      })
-      .filter((entry): entry is SubagentReference => !!entry)
-    : [];
-
-  return {
-    id,
-    parentSessionId,
-    parentMessageId,
-    childSessionId: asString(rec.childSessionId) || undefined,
-    backgroundTaskId:
-      asString(rec.backgroundTaskId) ||
-      asString(rec.background_task_id) ||
-      undefined,
-    agentId: asString(rec.agentId) || asString(rec.agent) || undefined,
-    agentRole: asString(rec.agentRole) || undefined,
-    providerID: asString(rec.providerID) || undefined,
-    modelID: asString(rec.modelID) || undefined,
-    startedAt: asOptionalNumber(rec.startedAt),
-    endedAt: asOptionalNumber(rec.endedAt),
-    durationMs: asOptionalNumber(rec.durationMs),
-    status: isSubagentStatus(rec.status) ? rec.status : 'pending',
-    latestActivity: sanitizeSubagentLabel(asString(rec.latestActivity)) || 'Subagent update',
-    references
-  };
+  const rec = asRecord(message);
+  const info = asRecord(message.info);
+  const rawResponse = asRecord(message.rawResponse);
+  const rawInfo = asRecord(rawResponse?.info);
+  return (
+    firstNonEmptyString(
+      asString(info?.parentID),
+      asString(info?.parentId),
+      asString(rec?.parentID),
+      asString(rec?.parentId),
+      asString(rawInfo?.parentID),
+      asString(rawInfo?.parentId),
+    ) ?? null
+  );
 }
 
-function normalizeSubagentDetail(value: unknown): SubagentDetail | null {
-  const summary = normalizeSubagentSummary(value);
-  if (!summary) {
-    return null;
+function getMessageCompletedAt(message: Message | undefined): number | undefined {
+  if (!message) {
+    return undefined;
   }
-  const rec = asRecord(value);
-  if (!rec) {
-    return null;
-  }
-
-  const thinkingEvents = Array.isArray(rec.thinkingEvents)
-    ? rec.thinkingEvents
-      .map((entry, index) => {
-        const evt = asRecord(entry);
-        if (!evt) {
-          return null;
-        }
-        const text = asString(evt.text);
-        if (!text) {
-          return null;
-        }
-        const res: SubagentThinkingEvent = {
-          id: asString(evt.id) || `${summary.id}:thinking:${index}`,
-          text,
-          createdAt: asNumber(evt.createdAt, Date.now()),
-          messageID: asString(evt.messageID) || undefined,
-          partID: asString(evt.partID) || undefined,
-        };
-        return res;
-      })
-      .filter((entry): entry is SubagentThinkingEvent => !!entry)
-    : [];
-
-  const conversationEvents = Array.isArray(rec.conversationEvents)
-    ? rec.conversationEvents
-      .map((entry, index) => {
-        const evt = asRecord(entry);
-        if (!evt) {
-          return null;
-        }
-        const text = asString(evt.text);
-        if (!text) {
-          return null;
-        }
-        const rawKind = asString(evt.kind).toLowerCase();
-        const kind =
-          rawKind === 'reasoning' || rawKind === 'step'
-            ? rawKind
-            : 'message';
-        return {
-          id: asString(evt.id) || `${summary.id}:conversation:${index}`,
-          role: asString(evt.role) || 'assistant',
-          kind,
-          text,
-          createdAt: asNumber(evt.createdAt, Date.now()),
-          messageID: asString(evt.messageID) || undefined,
-          partID: asString(evt.partID) || undefined,
-        };
-      })
-      .filter((entry): entry is SubagentConversationEvent => !!entry)
-    : [];
-
-  const progressEvents = Array.isArray(rec.progressEvents)
-    ? rec.progressEvents
-      .map((entry, index) => {
-        const evt = asRecord(entry);
-        if (!evt) {
-          return null;
-        }
-        const title = sanitizeSubagentLabel(asString(evt.title));
-        if (!title) {
-          return null;
-        }
-        const res: SubagentProgressEvent = {
-          id: asString(evt.id) || `${summary.id}:progress:${index}`,
-          title,
-          status: normalizeProgressStatus(asString(evt.status)),
-          meta: asString(evt.meta) || undefined,
-          filePath: asString(evt.filePath) || undefined,
-          createdAt: asNumber(evt.createdAt, Date.now()),
-          messageID: asString(evt.messageID) || undefined,
-          partID: asString(evt.partID) || undefined,
-          callID: asString(evt.callID) || undefined,
-        };
-        return res;
-      })
-      .filter((entry): entry is SubagentProgressEvent => !!entry)
-    : [];
-
-  const timelineEvents = Array.isArray(rec.timelineEvents)
-    ? rec.timelineEvents
-      .map((entry, index) => {
-        const evt = asRecord(entry);
-        if (!evt) {
-          return null;
-        }
-        const key = asString(evt.key);
-        const type = asString(evt.type);
-        const label = sanitizeSubagentLabel(asString(evt.label));
-        if (!key || !type || !label) {
-          return null;
-        }
-        const res: SubagentTimelineEvent = {
-          key: key || `${summary.id}:timeline:${index}`,
-          type,
-          label,
-          createdAt: asNumber(evt.createdAt, Date.now()),
-          messageID: asString(evt.messageID) || undefined,
-          partID: asString(evt.partID) || undefined,
-          callID: asString(evt.callID) || undefined,
-        };
-        return res;
-      })
-      .filter((entry): entry is SubagentTimelineEvent => !!entry)
-    : [];
-
-  const normalizedProgressEvents =
-    normalizeSubagentProgressEventsForPresentation(progressEvents);
-  const normalizedTimelineEvents =
-    normalizeSubagentTimelineEventsForPresentation(timelineEvents);
-
-  const tokenUsageRec = asRecord(rec.tokenUsage);
-  const tokenCacheRec = asRecord(tokenUsageRec?.cache);
-
-  return {
-    ...summary,
-    thinkingEvents,
-    conversationEvents,
-    progressEvents: normalizedProgressEvents,
-    timelineEvents: normalizedTimelineEvents,
-    tokenUsage: tokenUsageRec
-      ? {
-        input: asOptionalNumber(tokenUsageRec.input),
-        output: asOptionalNumber(tokenUsageRec.output),
-        reasoning: asOptionalNumber(tokenUsageRec.reasoning),
-        cache: tokenCacheRec
-          ? {
-            read: asOptionalNumber(tokenCacheRec.read),
-            write: asOptionalNumber(tokenCacheRec.write)
-          }
-          : undefined
-      }
-      : undefined,
-    errorText: asString(rec.errorText) || undefined,
-    hydrationUnavailable: asBoolean(rec.hydrationUnavailable, false)
-  };
-}
-
-function normalizeSubagentSummaryMap(value: unknown): Record<string, SubagentSummary[]> {
-  const rec = asRecord(value);
-  if (!rec) {
-    return {};
-  }
-  const out: Record<string, SubagentSummary[]> = {};
-  for (const [key, item] of Object.entries(rec)) {
-    if (!Array.isArray(item)) {
-      continue;
-    }
-    const entries = item
-      .map((raw) => normalizeSubagentSummary(raw))
-      .filter((entry): entry is SubagentSummary => !!entry);
-    if (entries.length > 0) {
-      out[key] = entries;
+  const info = asRecord(message.info);
+  const infoTime = asRecord(info?.time);
+  const topLevelTime = asRecord((message as unknown as UnknownRecord).time);
+  const timing = asRecord((message as unknown as UnknownRecord).timing);
+  const candidates = [
+    infoTime?.completed,
+    infoTime?.end,
+    topLevelTime?.completed,
+    topLevelTime?.end,
+    timing?.completed,
+    timing?.end,
+    (message as unknown as UnknownRecord).completed,
+    message.created,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "number" && Number.isFinite(candidate)) {
+      return candidate;
     }
   }
-  return out;
-}
-
-function normalizeSubagentDetailMap(value: unknown): Record<string, SubagentDetail> {
-  const rec = asRecord(value);
-  if (!rec) {
-    return {};
-  }
-  const out: Record<string, SubagentDetail> = {};
-  for (const [key, item] of Object.entries(rec)) {
-    const detail = normalizeSubagentDetail(item);
-    if (!detail) {
-      continue;
-    }
-    out[key] = detail;
-  }
-  return out;
-}
-
-function extractSubagentsFromMessages(messages: Message[]): {
-  summariesByParentMessageId: Record<string, SubagentSummary[]>;
-  detailsById: Record<string, SubagentDetail>;
-} {
-  const summariesByParentMessageId: Record<string, SubagentSummary[]> = {};
-  const detailsById: Record<string, SubagentDetail> = {};
-
-  for (const message of messages) {
-    const messageId = asString(asRecord(message.info)?.id) || asString((message as unknown as UnknownRecord).id);
-    if (!messageId || !Array.isArray(message.subagents)) {
-      continue;
-    }
-    const details = message.subagents
-      .map((entry) => {
-        const rec = asRecord(entry);
-        if (rec && !asString(rec.parentMessageId)) {
-          rec.parentMessageId = messageId;
-        }
-        return normalizeSubagentDetail(rec ?? entry);
-      })
-      .filter((entry): entry is SubagentDetail => !!entry);
-    if (details.length === 0) {
-      continue;
-    }
-    summariesByParentMessageId[messageId] = details.map((detail) => normalizeSubagentSummary(detail) as SubagentSummary);
-    details.forEach((detail) => {
-      detailsById[detail.id] = detail;
-    });
-  }
-
-  return { summariesByParentMessageId, detailsById };
+  return undefined;
 }
 
 function hydrateSubagentSummary(
@@ -5507,157 +5885,26 @@ function hydrateSubagentSummary(
   detailsById: Record<string, SubagentDetail>,
 ): SubagentDetail {
   const detail = detailsById[summary.id];
-  if (!detail) {
-    return {
-      ...(summary as SubagentDetail),
-      thinkingEvents: [],
-      conversationEvents: [],
-      progressEvents: [],
-      timelineEvents: [],
-    };
+  if (detail) {
+    return compatNormalizeHydratedSubagentDetail(detail);
   }
-  return {
-    ...summary,
-    ...detail,
-    parentSessionId: detail.parentSessionId || summary.parentSessionId,
-    parentMessageId: detail.parentMessageId || summary.parentMessageId,
-    status: detail.status || summary.status,
-    latestActivity: detail.latestActivity || summary.latestActivity,
-    references:
-      Array.isArray(detail.references) && detail.references.length > 0
-        ? detail.references
-        : summary.references,
-    thinkingEvents: Array.isArray(detail.thinkingEvents)
-      ? detail.thinkingEvents
-      : [],
-    conversationEvents: Array.isArray(detail.conversationEvents)
-      ? detail.conversationEvents
-      : [],
-    progressEvents: Array.isArray(detail.progressEvents)
-      ? detail.progressEvents
-      : [],
-    timelineEvents: Array.isArray(detail.timelineEvents)
-      ? detail.timelineEvents
-      : [],
-  };
-}
-
-function latestSubagentEventTimestamp(detail: SubagentDetail): number | undefined {
-  const candidates: number[] = [];
-  if (Array.isArray(detail.thinkingEvents)) {
-    detail.thinkingEvents.forEach((event) => {
-      if (typeof event.createdAt === "number" && Number.isFinite(event.createdAt)) {
-        candidates.push(event.createdAt);
-      }
-    });
-  }
-  if (Array.isArray(detail.progressEvents)) {
-    detail.progressEvents.forEach((event) => {
-      if (typeof event.createdAt === "number" && Number.isFinite(event.createdAt)) {
-        candidates.push(event.createdAt);
-      }
-    });
-  }
-  if (Array.isArray(detail.timelineEvents)) {
-    detail.timelineEvents.forEach((event) => {
-      if (typeof event.createdAt === "number" && Number.isFinite(event.createdAt)) {
-        candidates.push(event.createdAt);
-      }
-    });
-  }
-  if (candidates.length === 0) {
-    return undefined;
-  }
-  return Math.max(...candidates);
-}
-
-function messageCompletedAt(message: Message): number | undefined {
-  const info = asRecord(message.info);
-  const infoTime = asRecord(info?.time);
-  const topTime = asRecord((message as unknown as UnknownRecord).time);
-  const candidates = [
-    asOptionalNumber(infoTime?.completed),
-    asOptionalNumber(infoTime?.updated),
-    asOptionalNumber(info?.duration),
-    asOptionalNumber(topTime?.completed),
-    asOptionalNumber(topTime?.updated),
-    asOptionalNumber((message as unknown as UnknownRecord).completed),
-    asOptionalNumber((message as unknown as UnknownRecord).createdAt),
-    asOptionalNumber(message.created),
-  ].filter((value): value is number => typeof value === "number" && Number.isFinite(value));
-  if (candidates.length === 0) {
-    return undefined;
-  }
-  return Math.max(...candidates);
-}
-
-type SubagentPresentationPolicy = {
-  mode: "stream" | "hydration";
-  sessionProcessing?: boolean;
-  liveParentMessageIds?: Set<string>;
-};
-
-function isAssistantMessageFinalized(message: Message | undefined): boolean {
-  if (!message) {
-    return false;
-  }
-  const role = (message.role || asString(asRecord(message.info)?.role) || "").toLowerCase();
-  if (role && role !== "assistant") {
-    return false;
-  }
-
-  const info = asRecord(message.info);
-  const infoTime = asRecord(info?.time);
-  const topTime = asRecord((message as unknown as UnknownRecord).time);
-  const completedAt =
-    asOptionalNumber(infoTime?.completed) ??
-    asOptionalNumber(topTime?.completed) ??
-    asOptionalNumber((message as unknown as UnknownRecord).completed);
-  if (typeof completedAt === "number" && Number.isFinite(completedAt) && completedAt > 0) {
-    return true;
-  }
-
-  const finish = asString(info?.finish).toLowerCase();
-  if (finish === "done" || finish === "stop" || finish === "tool-calls" || finish === "error") {
-    return true;
-  }
-
-  if (typeof message.content === "string" && message.content.trim().length > 0) {
-    return true;
-  }
-  if (Array.isArray(message.parts) && message.parts.length > 0) {
-    return true;
-  }
-  return false;
+  return compatHydrateSubagentSummary(summary);
 }
 
 function shouldFreezeSubagentForPresentation(
   detail: SubagentDetail,
-  message: Message | undefined,
+  _message: Message | undefined,
   policy: SubagentPresentationPolicy | undefined,
   explicitFreezeFlag?: boolean,
 ): boolean {
-  if (explicitFreezeFlag === true) {
-    return true;
-  }
-  if (!policy || policy.mode !== "hydration") {
-    return false;
-  }
-
-  const status = detail.status;
-  if (status !== "pending" && status !== "running" && status !== "orphaned") {
-    return false;
-  }
-
-  if (policy.liveParentMessageIds?.has(detail.parentMessageId)) {
-    return false;
-  }
-
-  if (isAssistantMessageFinalized(message)) {
-    return true;
-  }
-
-  return policy.sessionProcessing !== true;
+  return (
+    uiShouldFreezeSubagentForPresentation(
+      detail,
+      policy,
+      explicitFreezeFlag,
+    ) ||
+    compatShouldFreezeSubagentForPresentation(detail, policy, explicitFreezeFlag)
+  );
 }
 
 function normalizeHydratedSubagentDetail(
@@ -5665,16 +5912,20 @@ function normalizeHydratedSubagentDetail(
   message: Message | undefined,
   freezeIncompleteStatuses: boolean,
 ): SubagentDetail {
-  const cleanedLatestActivity =
-    sanitizeSubagentLabel(detail.latestActivity) || "Subagent update";
+  const normalizedBase = compatNormalizeHydratedSubagentDetail(detail);
   const normalizedForPresentation: SubagentDetail = {
-    ...detail,
-    latestActivity: cleanedLatestActivity,
+    ...normalizedBase,
+    latestActivity:
+      sanitizeSubagentLabel(normalizedBase.latestActivity) || "Subagent update",
     progressEvents: normalizeSubagentProgressEventsForPresentation(
-      Array.isArray(detail.progressEvents) ? detail.progressEvents : [],
+      Array.isArray(normalizedBase.progressEvents)
+        ? normalizedBase.progressEvents
+        : [],
     ),
     timelineEvents: normalizeSubagentTimelineEventsForPresentation(
-      Array.isArray(detail.timelineEvents) ? detail.timelineEvents : [],
+      Array.isArray(normalizedBase.timelineEvents)
+        ? normalizedBase.timelineEvents
+        : [],
     ),
   };
 
@@ -5682,28 +5933,27 @@ function normalizeHydratedSubagentDetail(
     return normalizedForPresentation;
   }
 
-  const status = normalizedForPresentation.status;
-  if (status !== "pending" && status !== "running" && status !== "orphaned") {
+  if (
+    normalizedForPresentation.status !== "pending" &&
+    normalizedForPresentation.status !== "running" &&
+    normalizedForPresentation.status !== "orphaned"
+  ) {
     return normalizedForPresentation;
   }
 
   const completedAt =
     (typeof normalizedForPresentation.endedAt === "number" &&
-      Number.isFinite(normalizedForPresentation.endedAt)
+    Number.isFinite(normalizedForPresentation.endedAt)
       ? normalizedForPresentation.endedAt
       : undefined) ??
-    (message ? messageCompletedAt(message) : undefined) ??
+    getMessageCompletedAt(message) ??
     latestSubagentEventTimestamp(normalizedForPresentation) ??
     normalizedForPresentation.startedAt;
   const startedAt =
     typeof normalizedForPresentation.startedAt === "number" &&
-      Number.isFinite(normalizedForPresentation.startedAt)
+    Number.isFinite(normalizedForPresentation.startedAt)
       ? normalizedForPresentation.startedAt
       : undefined;
-  const durationMs =
-    typeof startedAt === "number" && typeof completedAt === "number"
-      ? Math.max(0, completedAt - startedAt)
-      : normalizedForPresentation.durationMs;
 
   const normalized: SubagentDetail = {
     ...normalizedForPresentation,
@@ -5712,58 +5962,52 @@ function normalizeHydratedSubagentDetail(
       typeof completedAt === "number"
         ? completedAt
         : normalizedForPresentation.endedAt,
-    durationMs,
+    durationMs:
+      typeof startedAt === "number" && typeof completedAt === "number"
+        ? Math.max(0, completedAt - startedAt)
+        : normalizedForPresentation.durationMs,
   };
+
   if (
     !normalized.latestActivity ||
-    normalized.latestActivity.trim().toLowerCase() === "running" ||
-    normalized.latestActivity.trim().toLowerCase() === "pending" ||
-    normalized.latestActivity.trim().toLowerCase() === "orphaned"
+    ["running", "pending", "orphaned"].includes(
+      normalized.latestActivity.trim().toLowerCase(),
+    )
   ) {
     normalized.latestActivity = "Completed";
   }
+
   return normalized;
 }
 
-function normalizeHydratedSubagentSummary(
-  summary: SubagentSummary,
-  detail: SubagentDetail | undefined,
-  message: Message | undefined,
-  freezeIncompleteStatuses: boolean,
-): SubagentSummary {
-  if (!freezeIncompleteStatuses) {
-    return summary;
+function areSubagentListsEquivalent(
+  previous: SubagentDetail[] | undefined,
+  next: SubagentDetail[],
+): boolean {
+  if (compatAreSubagentListsEquivalent(previous ?? [], next)) {
+    return true;
   }
-  const normalizedDetail = normalizeHydratedSubagentDetail(
-    detail
-      ? detail
-      : ({
-        ...(summary as SubagentDetail),
-        thinkingEvents: [],
-        conversationEvents: [],
-        progressEvents: [],
-        timelineEvents: [],
-      } as SubagentDetail),
-    message,
-    true,
-  );
-  return {
-    ...summary,
-    status: normalizedDetail.status,
-    startedAt:
-      typeof normalizedDetail.startedAt === "number"
-        ? normalizedDetail.startedAt
-        : summary.startedAt,
-    endedAt:
-      typeof normalizedDetail.endedAt === "number"
-        ? normalizedDetail.endedAt
-        : summary.endedAt,
-    durationMs:
-      typeof normalizedDetail.durationMs === "number"
-        ? normalizedDetail.durationMs
-        : summary.durationMs,
-    latestActivity: normalizedDetail.latestActivity || summary.latestActivity,
-  };
+  const prev = Array.isArray(previous) ? previous : [];
+  if (prev.length !== next.length) {
+    return false;
+  }
+  for (let index = 0; index < prev.length; index += 1) {
+    const left = prev[index];
+    const right = next[index];
+    if (
+      left.id !== right.id ||
+      left.status !== right.status ||
+      left.latestActivity !== right.latestActivity ||
+      (left.durationMs ?? 0) !== (right.durationMs ?? 0) ||
+      (left.progressEvents?.length ?? 0) !== (right.progressEvents?.length ?? 0) ||
+      (left.thinkingEvents?.length ?? 0) !== (right.thinkingEvents?.length ?? 0) ||
+      (left.conversationEvents?.length ?? 0) !== (right.conversationEvents?.length ?? 0) ||
+      (left.timelineEvents?.length ?? 0) !== (right.timelineEvents?.length ?? 0)
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function normalizeHydratedSubagentMaps(
@@ -5781,12 +6025,12 @@ function normalizeHydratedSubagentMaps(
   }
 
   const messageById = new Map<string, Message>();
-  messages.forEach((message) => {
+  for (const message of messages) {
     const id = getMessageId(message);
     if (id) {
       messageById.set(id, message);
     }
-  });
+  }
 
   const normalizedDetailsById: Record<string, SubagentDetail> = {};
   for (const [detailId, detail] of Object.entries(detailsById)) {
@@ -5807,19 +6051,29 @@ function normalizeHydratedSubagentMaps(
   const normalizedSummariesByParentMessageId: Record<string, SubagentSummary[]> = {};
   for (const [parentMessageId, summaries] of Object.entries(summariesByParentMessageId)) {
     const message = messageById.get(parentMessageId);
-    normalizedSummariesByParentMessageId[parentMessageId] = summaries.map((summary) =>
-      normalizeHydratedSubagentSummary(
-        summary,
-        normalizedDetailsById[summary.id] ?? detailsById[summary.id],
-        message,
-        shouldFreezeSubagentForPresentation(
-          normalizedDetailsById[summary.id] ?? (detailsById[summary.id] as SubagentDetail),
-          message,
-          policy,
-          freezeIncompleteStatuses,
-        ),
-      ),
-    );
+    normalizedSummariesByParentMessageId[parentMessageId] = summaries.map((summary) => {
+      const normalizedDetail = normalizedDetailsById[summary.id] ?? detailsById[summary.id];
+      if (!normalizedDetail) {
+        return summary;
+      }
+      return {
+        ...summary,
+        status: normalizedDetail.status,
+        startedAt:
+          typeof normalizedDetail.startedAt === "number"
+            ? normalizedDetail.startedAt
+            : summary.startedAt,
+        endedAt:
+          typeof normalizedDetail.endedAt === "number"
+            ? normalizedDetail.endedAt
+            : summary.endedAt,
+        durationMs:
+          typeof normalizedDetail.durationMs === "number"
+            ? normalizedDetail.durationMs
+            : summary.durationMs,
+        latestActivity: normalizedDetail.latestActivity || summary.latestActivity,
+      };
+    });
   }
 
   return {
@@ -5828,62 +6082,25 @@ function normalizeHydratedSubagentMaps(
   };
 }
 
-function areSubagentListsEquivalent(
-  previous: SubagentDetail[] | undefined,
-  next: SubagentDetail[],
+function canCoalesceAssistantHistoryMessages(
+  left: Message,
+  right: Message,
 ): boolean {
-  const prev = Array.isArray(previous) ? previous : [];
-  if (prev.length !== next.length) {
+  const leftParentId = getMessageParentId(left);
+  const rightParentId = getMessageParentId(right);
+  if (leftParentId && rightParentId && leftParentId !== rightParentId) {
     return false;
   }
-  for (let index = 0; index < prev.length; index += 1) {
-    const a = prev[index];
-    const b = next[index];
-    if (
-      a.id !== b.id ||
-      a.status !== b.status ||
-      a.latestActivity !== b.latestActivity ||
-      (a.durationMs ?? 0) !== (b.durationMs ?? 0) ||
-      (a.progressEvents?.length ?? 0) !== (b.progressEvents?.length ?? 0) ||
-      (a.thinkingEvents?.length ?? 0) !== (b.thinkingEvents?.length ?? 0) ||
-      (a.conversationEvents?.length ?? 0) !== (b.conversationEvents?.length ?? 0) ||
-      (a.timelineEvents?.length ?? 0) !== (b.timelineEvents?.length ?? 0)
-    ) {
-      return false;
-    }
+  const leftId = getMessageId(left);
+  const rightId = getMessageId(right);
+  if (leftId && rightId && leftId !== rightId) {
+    return false;
   }
   return true;
 }
 
-function deriveSessionIdFromMessage(
-  message: Message,
-  fallbackSessionId: string | null,
-): string | null {
-  const info = asRecord(message.info);
-  const infoSessionId =
-    asString(info?.sessionID) || asString(info?.sessionId);
-  if (infoSessionId) {
-    return infoSessionId;
-  }
-
-  if (Array.isArray(message.subagents)) {
-    for (const subagent of message.subagents) {
-      const sessionId = asString(asRecord(subagent)?.parentSessionId);
-      if (sessionId) {
-        return sessionId;
-      }
-    }
-  }
-
-  return fallbackSessionId;
-}
-
-function getMessageId(message: Message): string | null {
-  return (
-    asString(asRecord(message.info)?.id) ||
-    asString((message as unknown as UnknownRecord).id) ||
-    null
-  );
+function assistantHistoryBurstKey(message: Message): string {
+  return getMessageParentId(message) || "__unparented_assistant_burst__";
 }
 
 function mergeAssistantActivitySteps(
@@ -6048,10 +6265,11 @@ function mergeAssistantReplacement(existing: Message, incoming: Message): Messag
 }
 
 function replaceMatchingAssistantTurn(
-  messages: Message[],
+  messages: Message[] | undefined,
   incoming: Message,
   candidateIds: Array<string | null | undefined>,
 ): Message[] {
+  const safeMessages = messages || [];
   const ids = new Set(candidateIds.map((id) => asString(id)).filter(Boolean));
   if (ids.size === 0) {
     streamDebug("Timeline: assistant turn append without ID", {
@@ -6064,11 +6282,11 @@ function replaceMatchingAssistantTurn(
         Array.isArray(incoming.progressEvents) ? incoming.progressEvents : [],
       ),
     });
-    return [...messages, incoming];
+    return [...safeMessages, incoming];
   }
 
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
+  for (let index = safeMessages.length - 1; index >= 0; index -= 1) {
+    const message = safeMessages[index];
     if (!isAssistantHistoryMessage(message)) {
       continue;
     }
@@ -6076,7 +6294,7 @@ function replaceMatchingAssistantTurn(
     if (!id || !ids.has(id)) {
       continue;
     }
-    const next = [...messages];
+    const next = [...safeMessages];
     streamDebug("Timeline: assistant turn matched and replacing", {
       matchedId: id,
       candidateIds: Array.from(ids),
@@ -6110,49 +6328,140 @@ function replaceMatchingAssistantTurn(
       Array.isArray(incoming.progressEvents) ? incoming.progressEvents : [],
     ),
   });
-  return [...messages, incoming];
+  return [...safeMessages, incoming];
 }
 
-function mergeSubagentSummaries(
-  existing: SubagentSummary[] | undefined,
-  incoming: SubagentSummary[],
-): SubagentSummary[] {
-  const statusRank = (status: SubagentSummary["status"] | undefined): number => {
-    if (status === "done" || status === "error" || status === "orphaned") return 2;
-    if (status === "running") return 1;
-    return 0;
-  };
-  const byId = new Map<string, SubagentSummary>();
-  const source = Array.isArray(existing) ? existing : [];
-  source.forEach((entry) => {
-    if (entry?.id) {
-      byId.set(entry.id, entry);
-    }
-  });
-  incoming.forEach((entry) => {
-    if (!entry?.id) {
-      return;
-    }
-    const prev = byId.get(entry.id);
-    if (!prev) {
-      byId.set(entry.id, entry);
-      return;
-    }
-    const merged = { ...prev, ...entry, id: entry.id };
-    if (statusRank(prev.status) > statusRank(entry.status)) {
-      merged.status = prev.status;
-    }
-    byId.set(entry.id, merged);
-  });
-  return Array.from(byId.values());
-}
+// Updated handler to use modular system
+function handleSubagentUpdatesFromCentralizedEvents(
+  dispatch: Dispatch<AppAction>,
+  getState: () => AppState
+): void {
+  const currentState = getState();
 
-function hasSubagentSummaryEntries(
+  // NOTE: AppState does not have a top-level rawSdkEventPayloads field.
+  // The centralized tape is stored in rawSdkEventPayloadsBySessionId keyed by
+  // session ID. Reading the wrong field would silently return undefined and
+  // starve the extractor, producing no subagent data after every messageResponse.
+  const sessionEvents =
+    currentState.currentSessionId
+      ? (currentState.rawSdkEventPayloadsBySessionId?.[currentState.currentSessionId] ?? [])
+      : [];
+
+  // Use the modular extraction system
+  const { summariesByParentMessageId, detailsById } =
+    modularExtractSubagentsFromCentralizedEvents(sessionEvents);
+
+  // Dispatch updates to store
+  if (Object.keys(summariesByParentMessageId).length > 0) {
+    dispatch({
+      type: "UPSERT_SUBAGENT_SUMMARIES",
+      payload: summariesByParentMessageId,
+    });
+  }
+
+  if (Object.keys(detailsById).length > 0) {
+    dispatch({ type: "UPSERT_SUBAGENT_DETAIL", payload: detailsById });
+  }
+}
+function syncSubagentMapsIntoMessages(
+  dispatch: Dispatch<AppAction>,
+  getState: () => AppState,
   summariesByParentMessageId: Record<string, SubagentSummary[]>,
-): boolean {
-  return Object.values(summariesByParentMessageId).some(
-    (entries) => Array.isArray(entries) && entries.length > 0,
-  );
+  detailsById: Record<string, SubagentDetail>,
+  mode: "merge" | "replace",
+  options?: { freezeIncompleteStatuses?: boolean; presentationPolicy?: SubagentPresentationPolicy },
+): void {
+  const state = getState();
+  const allSummariesByParentMessageId =
+    mode === "replace"
+      ? summariesByParentMessageId
+      : {
+        ...state.subagentsByParentMessageId,
+        ...summariesByParentMessageId,
+      };
+  const allDetailsById =
+    mode === "replace"
+      ? detailsById
+      : {
+        ...state.subagentDetailsById,
+        ...detailsById,
+      };
+
+  const messageIds = new Set<string>();
+  if (state.messages && state.messages.length > 0) {
+    state.messages.forEach((message) => {
+      const messageId = getMessageId(message);
+      if (messageId) {
+        messageIds.add(messageId);
+      }
+    });
+  }
+
+  // Rebind orphaned summary groups (usually keyed by transient streaming IDs)
+  // to the latest assistant message for the same session so cards survive
+  // reload/session hydration even when final message IDs differ.
+  const effectiveSummariesByParentMessageId: Record<string, SubagentSummary[]> = {
+    ...allSummariesByParentMessageId,
+  };
+  for (const [parentMessageId, summaries] of Object.entries(
+    allSummariesByParentMessageId,
+  )) {
+    if (!Array.isArray(summaries) || summaries.length === 0) {
+      continue;
+    }
+    if (messageIds.has(parentMessageId)) {
+      continue;
+    }
+
+    // DISABLED: Rebounding subagents to the 'latest' message causes 'ghosting'
+    // where old subagents appear in new responses. Only allow direct ID matches.
+    continue;
+  }
+
+  const updatedMessages: Message[] = [];
+  let hasChanges = false;
+  const nextMessages = (state.messages || []).map((message) => {
+    const messageId = getMessageId(message);
+    if (!messageId) {
+      return message;
+    }
+    const summaries = effectiveSummariesByParentMessageId[messageId];
+    if (!Array.isArray(summaries) || summaries.length === 0) {
+      return message;
+    }
+    const freezeIncompleteStatuses =
+      options?.freezeIncompleteStatuses === true ||
+      policyAwareFreeze(
+        summaries,
+        allDetailsById,
+        message,
+        options?.presentationPolicy,
+      );
+    const hydratedSubagents = summaries.map((summary) =>
+      normalizeHydratedSubagentDetail(
+        hydrateSubagentSummary(summary, allDetailsById),
+        message,
+        freezeIncompleteStatuses,
+      ),
+    );
+    if (areSubagentListsEquivalent(message.subagents, hydratedSubagents)) {
+      return message;
+    }
+
+    hasChanges = true;
+    const nextMessage: Message = {
+      ...message,
+      subagents: hydratedSubagents,
+    };
+    updatedMessages.push(nextMessage);
+    return nextMessage;
+  });
+
+  if (!hasChanges) {
+    return;
+  }
+
+  dispatch({ type: "SET_MESSAGES", payload: nextMessages });
 }
 
 function getSubagentPayloadSessionId(
@@ -6199,12 +6508,14 @@ function filterSubagentMapsForActiveSession(
   }
 
   const currentMessageIds = new Set<string>();
-  state.messages.forEach((message) => {
-    const messageId = getMessageId(message);
-    if (messageId) {
-      currentMessageIds.add(messageId);
-    }
-  });
+  if (state.messages && state.messages.length > 0) {
+    state.messages.forEach((message) => {
+      const messageId = getMessageId(message);
+      if (messageId) {
+        currentMessageIds.add(messageId);
+      }
+    });
+  }
   const streamingMessageId = state.streaming?.messageId || null;
 
   const filteredSummariesByParentMessageId: Record<string, SubagentSummary[]> = {};
@@ -6262,426 +6573,27 @@ function filterSubagentMapsForActiveSession(
   };
 }
 
-function mergeSubagentSummaryPayload(
-  existingByParentMessageId: Record<string, SubagentSummary[]>,
-  incomingByParentMessageId: Record<string, SubagentSummary[]>,
-): Record<string, SubagentSummary[]> {
-  const merged: Record<string, SubagentSummary[]> = {};
-  for (const [parentMessageId, incoming] of Object.entries(
-    incomingByParentMessageId,
-  )) {
-    if (!Array.isArray(incoming) || incoming.length === 0) {
-      continue;
-    }
-    merged[parentMessageId] = mergeSubagentSummaries(
-      existingByParentMessageId[parentMessageId],
-      incoming,
-    );
-  }
-  return merged;
-}
-
-function mergeUniqueSubagentEntries<T>(
-  existing: T[] | undefined,
-  incoming: T[] | undefined,
-  keyBuilder: (item: T, index: number) => string,
-): T[] {
-  const out: T[] = [];
-  const byKey = new Map<string, T>();
-  const push = (items: T[] | undefined) => {
-    if (!Array.isArray(items) || items.length === 0) {
-      return;
-    }
-    items.forEach((item, index) => {
-      const key = keyBuilder(item, index);
-      if (!key) {
-        out.push(item);
-        return;
-      }
-      if (byKey.has(key)) {
-        const existingItemIndex = out.findIndex((entry, entryIndex) => {
-          const entryKey = keyBuilder(entry, entryIndex);
-          return entryKey === key;
-        });
-        if (existingItemIndex >= 0) {
-          out[existingItemIndex] = item;
-        }
-      } else {
-        out.push(item);
-      }
-      byKey.set(key, item);
-    });
-  };
-  push(existing);
-  push(incoming);
-  return out;
-}
-
-function mergeSubagentDetailRecord(
-  existing: SubagentDetail | undefined,
-  incoming: SubagentDetail,
-): SubagentDetail {
-  const latestActivity =
-    sanitizeSubagentLabel(incoming.latestActivity || "") ||
-    sanitizeSubagentLabel(existing?.latestActivity || "") ||
-    "Subagent update";
-
-  const references = mergeUniqueSubagentEntries(
-    existing?.references,
-    incoming.references,
-    (entry) =>
-      `${entry.messageID || ""}|${entry.partID || ""}|${entry.callID || ""}`,
-  );
-  const thinkingEvents = mergeUniqueSubagentEntries(
-    existing?.thinkingEvents,
-    incoming.thinkingEvents,
-    (event, index) =>
-      event.id || `${event.createdAt || 0}:${event.text || ""}:${index}`,
-  );
-  const conversationEvents = mergeUniqueSubagentEntries(
-    existing?.conversationEvents,
-    incoming.conversationEvents,
-    (event, index) =>
-      event.id ||
-      `${event.role || ""}:${event.kind || ""}:${event.createdAt || 0}:${event.text || ""}:${index}`,
-  );
-  const progressEvents = normalizeSubagentProgressEventsForPresentation(
-    mergeUniqueSubagentEntries(
-      existing?.progressEvents,
-      incoming.progressEvents,
-      (event, index) =>
-        event.callID ||
-        event.id ||
-        `${event.title || ""}:${event.status || ""}:${event.createdAt || 0}:${index}`,
-    ),
-  );
-  const timelineEvents = normalizeSubagentTimelineEventsForPresentation(
-    mergeUniqueSubagentEntries(
-      existing?.timelineEvents,
-      incoming.timelineEvents,
-      (event, index) =>
-        event.key ||
-        `${event.type || ""}:${event.label || ""}:${event.createdAt || 0}:${index}`,
-    ),
-  );
-
-  return {
-    ...(existing || incoming),
-    ...incoming,
-    id: incoming.id || existing?.id || "",
-    parentSessionId:
-      incoming.parentSessionId || existing?.parentSessionId || "",
-    parentMessageId:
-      incoming.parentMessageId || existing?.parentMessageId || "",
-    status: incoming.status || existing?.status || "pending",
-    latestActivity,
-    references,
-    thinkingEvents,
-    conversationEvents,
-    progressEvents,
-    timelineEvents,
-  };
-}
-
-function mergeSubagentDetailPayload(
-  existingById: Record<string, SubagentDetail>,
-  incomingById: Record<string, SubagentDetail>,
-): Record<string, SubagentDetail> {
-  const merged: Record<string, SubagentDetail> = {};
-  for (const [detailId, incoming] of Object.entries(incomingById)) {
-    if (!incoming) {
-      continue;
-    }
-    merged[detailId] = mergeSubagentDetailRecord(
-      existingById[detailId],
-      incoming,
-    );
-  }
-  return merged;
-}
-
-function applyStructuredSubagentPayload(
-  dispatch: Dispatch<AppAction>,
-  getState: () => AppState,
-  structuredOutput: StructuredOutput,
-  messageId: string,
-): void {
-  logger.info('[SUBAGENT-DEBUG] applyStructuredSubagentPayload called', {
-    messageId,
-    responseType: structuredOutput.responseType,
-    subagentsCount: structuredOutput.subagents?.length ?? 0,
-    subagentsDeltaItems: structuredOutput.subagentsDelta?.items?.length ?? 0,
-    subagentsDeltaParentMessageId: structuredOutput.subagentsDelta?.parentMessageId,
-    caller: new Error().stack?.split('\n')[2]?.trim() || 'unknown',
-  });
-
-  if (structuredOutput.responseType === 'subagents') {
-    if (!structuredOutput.subagents || structuredOutput.subagents.length === 0) {
-      logger.warn('Structured subagents responseType received without subagents array');
-    }
-  }
-
-  if (structuredOutput.subagents && structuredOutput.subagents.length > 0) {
-    const parentSessionId = getState().currentSessionId || '';
-    const summaries: SubagentSummary[] = [];
-    const details: Record<string, SubagentDetail> = {};
-
-    structuredOutput.subagents.forEach((subagent) => {
-      const statusValue = (subagent.status || 'pending').toLowerCase();
-      const status: SubagentSummary['status'] =
-        statusValue === 'running' || statusValue === 'done' || statusValue === 'error' || statusValue === 'orphaned'
-          ? statusValue
-          : 'pending';
-      const summary: SubagentSummary = {
-        id: subagent.id,
-        backgroundTaskId: subagent.backgroundTaskId || undefined,
-        parentSessionId: subagent.parentSessionId || parentSessionId,
-        parentMessageId: subagent.parentMessageId || messageId,
-        childSessionId: subagent.childSessionId,
-        agentId: subagent.agentId || subagent.agent || subagent.name || subagent.id,
-        agentRole: subagent.agentRole || undefined,
-        status,
-        latestActivity:
-          subagent.latestActivity || subagent.description || subagent.name || 'Subagent update',
-        references: []
-      };
-      summaries.push(summary);
-      details[subagent.id] = {
-        ...summary,
-        thinkingEvents: subagent.thinkingEvents || [],
-        conversationEvents: [],
-        progressEvents: subagent.progressEvents || [],
-        timelineEvents: subagent.timelineEvents || []
-      };
-    });
-
-    if (summaries.length > 0) {
-      const mergedSummaries = mergeSubagentSummaryPayload(
-        getState().subagentsByParentMessageId,
-        { [messageId]: summaries },
-      );
-      dispatch({
-        type: 'UPSERT_SUBAGENT_SUMMARIES',
-        payload: mergedSummaries,
-      });
-    }
-    if (Object.keys(details).length > 0) {
-      const mergedDetails = mergeSubagentDetailPayload(
-        getState().subagentDetailsById,
-        details,
-      );
-      dispatch({ type: 'UPSERT_SUBAGENT_DETAIL', payload: mergedDetails });
-    }
-  }
-
-  if (structuredOutput.subagentsDelta && structuredOutput.subagentsDelta.items.length > 0) {
-    const targetMessageId =
-      structuredOutput.subagentsDelta.parentMessageId || messageId || '';
-    logger.info('[SUBAGENT-DEBUG] processing subagentsDelta', {
-      targetMessageId,
-      itemsCount: structuredOutput.subagentsDelta.items.length,
-      firstItemId: structuredOutput.subagentsDelta.items[0]?.id,
-      firstItemStatus: structuredOutput.subagentsDelta.items[0]?.status,
-      firstItemLatestActivity: structuredOutput.subagentsDelta.items[0]?.latestActivity,
-    });
-    if (!targetMessageId) {
-      return;
-    }
-    const summaries: SubagentSummary[] = [];
-    const details: Record<string, SubagentDetail> = {};
-
-    structuredOutput.subagentsDelta.items.forEach((subagent) => {
-      const statusValue = (subagent.status || 'pending').toLowerCase();
-      const status: SubagentSummary['status'] =
-        statusValue === 'running' ||
-          statusValue === 'done' ||
-          statusValue === 'error' ||
-          statusValue === 'orphaned'
-          ? statusValue
-          : 'pending';
-      const summary: SubagentSummary = {
-        id: subagent.id,
-        backgroundTaskId: subagent.backgroundTaskId || undefined,
-        parentSessionId: subagent.parentSessionId || getState().currentSessionId || '',
-        parentMessageId: subagent.parentMessageId || targetMessageId,
-        childSessionId: subagent.childSessionId,
-        agentId: subagent.agentId || subagent.agent || subagent.name || subagent.id,
-        agentRole: subagent.agentRole || undefined,
-        providerID: subagent.providerID || subagent.provider || undefined,
-        modelID: subagent.modelID || subagent.model || undefined,
-        status,
-        latestActivity:
-          subagent.latestActivity || subagent.description || subagent.name || 'Subagent update',
-        references: []
-      };
-      summaries.push(summary);
-      details[subagent.id] = {
-        ...summary,
-        thinkingEvents: subagent.thinkingEvents || [],
-        conversationEvents: [],
-        progressEvents: subagent.progressEvents || [],
-        timelineEvents: subagent.timelineEvents || []
-      };
-    });
-
-    if (summaries.length > 0) {
-      const mergedSummaries = mergeSubagentSummaryPayload(
-        getState().subagentsByParentMessageId,
-        { [targetMessageId]: summaries },
-      );
-      dispatch({
-        type: 'UPSERT_SUBAGENT_SUMMARIES',
-        payload: mergedSummaries,
-      });
-    }
-    if (Object.keys(details).length > 0) {
-      const mergedDetails = mergeSubagentDetailPayload(
-        getState().subagentDetailsById,
-        details,
-      );
-      dispatch({ type: 'UPSERT_SUBAGENT_DETAIL', payload: mergedDetails });
-    }
-  }
-}
-
-function findLatestAssistantMessageIdForSession(
-  messages: Message[],
+function deriveSessionIdFromMessage(
+  message: Message,
   fallbackSessionId: string | null,
-  targetSessionId?: string,
 ): string | null {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    const role = message.role ?? asString(asRecord(message.info)?.role) ?? "";
-    if (role !== "assistant") {
-      continue;
-    }
-    const messageId = getMessageId(message);
-    if (!messageId) {
-      continue;
-    }
+  const info = asRecord(message.info);
+  const infoSessionId =
+    asString(info?.sessionID) || asString(info?.sessionId);
+  if (infoSessionId) {
+    return infoSessionId;
+  }
 
-    if (targetSessionId) {
-      const sessionId = deriveSessionIdFromMessage(message, fallbackSessionId);
-      if (sessionId && sessionId !== targetSessionId) {
-        continue;
+  if (Array.isArray(message.subagents)) {
+    for (const subagent of message.subagents) {
+      const sessionId = asString(asRecord(subagent)?.parentSessionId);
+      if (sessionId) {
+        return sessionId;
       }
     }
-
-    return messageId;
   }
 
-  return null;
-}
-
-function syncSubagentMapsIntoMessages(
-  dispatch: Dispatch<AppAction>,
-  getState: () => AppState,
-  summariesByParentMessageId: Record<string, SubagentSummary[]>,
-  detailsById: Record<string, SubagentDetail>,
-  mode: "merge" | "replace",
-  options?: { freezeIncompleteStatuses?: boolean; presentationPolicy?: SubagentPresentationPolicy },
-): void {
-  const state = getState();
-  const allSummariesByParentMessageId =
-    mode === "replace"
-      ? summariesByParentMessageId
-      : {
-        ...state.subagentsByParentMessageId,
-        ...summariesByParentMessageId,
-      };
-  const allDetailsById =
-    mode === "replace"
-      ? detailsById
-      : {
-        ...state.subagentDetailsById,
-        ...detailsById,
-      };
-
-  const messageIds = new Set<string>();
-  state.messages.forEach((message) => {
-    const messageId = getMessageId(message);
-    if (messageId) {
-      messageIds.add(messageId);
-    }
-  });
-
-  // Rebind orphaned summary groups (usually keyed by transient streaming IDs)
-  // to the latest assistant message for the same session so cards survive
-  // reload/session hydration even when final message IDs differ.
-  const effectiveSummariesByParentMessageId: Record<string, SubagentSummary[]> = {
-    ...allSummariesByParentMessageId,
-  };
-  for (const [parentMessageId, summaries] of Object.entries(
-    allSummariesByParentMessageId,
-  )) {
-    if (!Array.isArray(summaries) || summaries.length === 0) {
-      continue;
-    }
-    if (messageIds.has(parentMessageId)) {
-      continue;
-    }
-
-    // DISABLED: Rebounding subagents to the 'latest' message causes 'ghosting'
-    // where old subagents appear in new responses. Only allow direct ID matches.
-    continue;
-  }
-
-  const updatedMessages: Message[] = [];
-  let hasChanges = false;
-  const nextMessages = state.messages.map((message) => {
-    const messageId = getMessageId(message);
-    if (!messageId) {
-      return message;
-    }
-    const summaries = effectiveSummariesByParentMessageId[messageId];
-    if (!Array.isArray(summaries) || summaries.length === 0) {
-      return message;
-    }
-    const freezeIncompleteStatuses =
-      options?.freezeIncompleteStatuses === true ||
-      policyAwareFreeze(
-        summaries,
-        allDetailsById,
-        message,
-        options?.presentationPolicy,
-      );
-    const hydratedSubagents = summaries.map((summary) =>
-      normalizeHydratedSubagentDetail(
-        hydrateSubagentSummary(summary, allDetailsById),
-        message,
-        freezeIncompleteStatuses,
-      ),
-    );
-    if (areSubagentListsEquivalent(message.subagents, hydratedSubagents)) {
-      return message;
-    }
-
-    hasChanges = true;
-    const nextMessage: Message = {
-      ...message,
-      subagents: hydratedSubagents,
-    };
-    updatedMessages.push(nextMessage);
-    return nextMessage;
-  });
-
-  if (!hasChanges) {
-    return;
-  }
-
-  dispatch({ type: "SET_MESSAGES", payload: nextMessages });
-  const currentSessionId = getState().currentSessionId;
-  for (const message of updatedMessages) {
-    const sessionId = deriveSessionIdFromMessage(message, currentSessionId);
-    if (!sessionId) {
-      continue;
-    }
-    vscode.postMessage({
-      type: "persistAssistantMessage",
-      sessionId,
-      message,
-    });
-  }
+  return fallbackSessionId;
 }
 
 function extractMessageText(message: Message): string {
@@ -6885,37 +6797,34 @@ function isTextLikePart(part: MessagePart): boolean {
   );
 }
 
-/**
- * Coalesce an adjacent assistant-message burst into a single message.
- *
- * CRITICAL — evt_ vs msg_ merge base selection:
- * `mergeAssistantReplacement` calls this with `[existing, incoming]` where
- * the incoming message often carries an `evt_` lifecycle ID while the existing
- * message carries the authoritative `msg_` ID.  Always prefer the last non-evt
- * message as the merge base so that canonical fields (`content`, `text`,
- * `structuredOutput.message`) come from the `msg_` record.  The `evt_` entry
- * only contributes metadata (steps, reasoning events, edits, interactive
- * events).  This prevents garbled event-fragment text from overwriting valid
- * assistant responses while still folding in all lifecycle state.
- *
- * This mirrors the same pattern in `coalesceAssistantRunForCanonical` (store.ts).
- */
 function coalesceAssistantHistoryBurst(burst: Message[]): Message {
-  const preferredIdx = burst.length > 1
-    ? burst.findLastIndex(
-        (m) => !(typeof getMessageId(m) === "string" && getMessageId(m)?.startsWith("evt_")),
-      )
-    : -1;
   const base = {
-    ...(preferredIdx >= 0 ? burst[preferredIdx] : burst[burst.length - 1] || burst[0]),
+    ...(burst[burst.length - 1] || burst[0]),
   } as Message;
+  const burstParentId =
+    burst.map((message) => getMessageParentId(message)).find((value): value is string => !!value) ?? null;
+  if (burstParentId) {
+    base.info = {
+      ...(base.info ?? {}),
+      parentID: firstNonEmptyString(
+        asString(asRecord(base.info)?.parentID),
+        asString(asRecord(base.info)?.parentId),
+        burstParentId,
+      ),
+    };
+  }
+  const wasAborted = burst.some(
+    (message) =>
+      message?.aborted === true ||
+      asRecord(message)?.aborted === true ||
+      asRecord(asRecord(message)?.info)?.aborted === true,
+  );
   const mergedParts: MessagePart[] = [];
   const seenPartFingerprints = new Set<string>();
   const seenReasoning = new Set<string>();
   const seenProgress = new Set<string>();
   const seenSteps = new Set<string>();
   const seenEdits = new Set<string>();
-
   let latestText = "";
   let latestTextScore = 0;
   let latestTextPart: MessagePart | undefined;
@@ -6924,7 +6833,9 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
   const subagentsByMessageId = new Map<string, Message["subagents"]>();
   let latestSubagentsWithoutMessageId: Message["subagents"] | undefined;
   let latestError = asString((base as unknown as UnknownRecord).error);
-  let latestRawResponse: unknown = (base as unknown as UnknownRecord).rawResponse;
+  // Rebuild the centralized raw tape in burst order so hydration matches the
+  // exact stream chronology instead of inheriting the newest assistant turn.
+  let mergedRawSdkEventPayloads: unknown[] | undefined;
   let latestStructuredOutput = asRecord(
     (base as unknown as UnknownRecord).structuredOutput,
   );
@@ -7024,21 +6935,25 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
 
     const messageId = getMessageId(message);
     if (messageId) {
-      const incomingIsEvt = typeof messageId === "string" && messageId.startsWith("evt_");
-      const currentIsNonEvt = typeof canonicalMessageId === "string" && !canonicalMessageId.startsWith("evt_");
-      if (!incomingIsEvt || !currentIsNonEvt) {
-        canonicalMessageId = messageId;
+      canonicalMessageId = messageId;
+      const baseRec = base as unknown as Record<string, unknown>;
+      // We must preserve all message IDs merged during this burst so that 
+      // the centralized event loop can properly map streamed events that 
+      // were tagged with earlier IDs (e.g. reasoning or step events prior 
+      // to a tool call finishing).
+      if (!Array.isArray(baseRec.coalescedIds)) {
+        baseRec.coalescedIds = [];
+      }
+      if (!baseRec.coalescedIds.includes(messageId)) {
+        baseRec.coalescedIds.push(messageId);
       }
     }
 
     const content = extractRenderableAssistantTextForHydration(message).trim();
     if (content.length > 0) {
-      const structuredMessage = getCanonicalStructuredMessageText(message);
-      const incomingIsEvt = typeof messageId === "string" && messageId.startsWith("evt_");
-      const currentIsNonEvt = typeof canonicalMessageId === "string" && !canonicalMessageId.startsWith("evt_");
       const candidateTextScore =
         content.length + (isCanonicalAssistantDisplayMessage(message) ? 100000 : 0);
-      if (candidateTextScore >= latestTextScore && (!incomingIsEvt || !currentIsNonEvt)) {
+      if (candidateTextScore >= latestTextScore) {
         latestTextScore = candidateTextScore;
         latestText = content;
         latestTextPart = Array.isArray(message.parts)
@@ -7070,12 +6985,14 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
     if (errorText) {
       latestError = errorText;
     }
-    if (typeof message.rawResponse === "string") {
-      if (message.rawResponse.trim().length > 0) {
-        latestRawResponse = message.rawResponse;
+    if (Array.isArray((message as unknown as UnknownRecord).rawSdkEventPayloads)) {
+      const rawSdkEventPayloads = (message as unknown as UnknownRecord).rawSdkEventPayloads as unknown[];
+      if (rawSdkEventPayloads.length > 0) {
+        mergedRawSdkEventPayloads = mergeRawSdkEventPayloads(
+          mergedRawSdkEventPayloads,
+          rawSdkEventPayloads,
+        );
       }
-    } else if (typeof message.rawResponse !== "undefined") {
-      latestRawResponse = message.rawResponse;
     }
     const structured = asRecord(
       (message as unknown as UnknownRecord).structuredOutput,
@@ -7174,19 +7091,21 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
     });
     return filtered.length > 0 ? filtered : undefined;
   })();
-  if (scopedSubagents) {
-    base.subagents = scopedSubagents;
-  } else {
-    delete (base as UnknownRecord).subagents;
-  }
+  // Subagent sync to messages disabled - using centralized events as single source of truth
+  // Subagents should only come from the centralized store, not from message.subagents
+  // if (scopedSubagents) {
+  //   base.subagents = scopedSubagents;
+  // } else {
+  //   delete (base as UnknownRecord).subagents;
+  // }
   if (latestError) {
     (base as unknown as UnknownRecord).error = latestError;
   }
   if (latestStructuredOutput) {
     (base as unknown as UnknownRecord).structuredOutput = latestStructuredOutput;
   }
-  if (typeof latestRawResponse !== "undefined") {
-    (base as unknown as UnknownRecord).rawResponse = latestRawResponse;
+  if (Array.isArray(mergedRawSdkEventPayloads) && mergedRawSdkEventPayloads.length > 0) {
+    (base as unknown as UnknownRecord).rawSdkEventPayloads = mergedRawSdkEventPayloads;
   }
 
   if (canonicalMessageId) {
@@ -7197,7 +7116,84 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
       : ({ id: canonicalMessageId } as Record<string, unknown>);
   }
 
+  if (wasAborted || base.aborted === true) {
+    base.aborted = true;
+    const infoRec = asRecord(base.info) || {};
+    base.info = { ...infoRec, aborted: true };
+  }
+
   return base;
+}
+
+export function rawSdkEventPayloadFingerprint(value: unknown): string {
+  const rec = asRecord(value);
+  if (!rec) {
+    return `primitive:${String(value)}`;
+  }
+  const payloadRecord = asRecord(rec.payload);
+  const eventToParse = payloadRecord ?? rec;
+  const identity = normalizedCentralizedEventIdentity(rec);
+  if (identity) {
+    const syncEvent = asRecord(payloadRecord?.syncEvent) ?? asRecord(rec.syncEvent);
+    const seq = asString(rec.seq, syncEvent?.seq, payloadRecord?.seq);
+    if (seq) {
+      return `identity:${identity}|seq:${seq}`;
+    }
+    return `identity:${identity}`;
+  }
+  const id = asString(eventToParse.id);
+  if (id) {
+    return `id:${id}`;
+  }
+  const properties = asRecord(eventToParse.properties);
+  const type = asString(eventToParse.type);
+  const part = asRecord(properties?.part);
+  const info = asRecord(properties?.info);
+  const messageId = asString(
+    eventToParse.messageID,
+    eventToParse.messageId,
+    properties?.messageID,
+    properties?.messageId,
+    part?.messageID,
+    part?.messageId,
+    info?.messageID,
+    info?.messageId,
+  );
+  const partId = asString(
+    eventToParse.partID,
+    eventToParse.partId,
+    properties?.partID,
+    properties?.partId,
+    part?.id,
+    part?.partID,
+    part?.partId,
+  );
+  const time = asString(eventToParse.time, properties?.time);
+  return `${type}|${messageId}|${partId}|${time}|${String(value)}`;
+}
+
+export function mergeRawSdkEventPayloads(
+  preferred: unknown[] | undefined,
+  alternate: unknown[] | undefined,
+): unknown[] | undefined {
+  const merged: unknown[] = [];
+  const seen = new Set<string>();
+  for (const source of [preferred, alternate]) {
+    if (!Array.isArray(source) || source.length === 0) {
+      continue;
+    }
+    for (let i = source.length - 1; i >= 0; i--) {
+      const item = source[i];
+      const key = rawSdkEventPayloadFingerprint(item);
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      merged.push(item);
+    }
+  }
+  merged.reverse();
+  return merged.length > 0 ? merged : undefined;
 }
 
 export function coalesceAdjacentAssistantHistoryMessages(messages: Message[]): Message[] {
@@ -7216,9 +7212,25 @@ export function coalesceAdjacentAssistantHistoryMessages(messages: Message[]): M
     }
 
     const burst: Message[] = [current];
+    let burstKey = assistantHistoryBurstKey(current);
     let cursor = index + 1;
     while (cursor < messages.length && isAssistantHistoryMessage(messages[cursor])) {
-      burst.push(messages[cursor]);
+      const next = messages[cursor];
+      if (!canCoalesceAssistantHistoryMessages(burst[burst.length - 1], next)) {
+        break;
+      }
+      const nextKey = assistantHistoryBurstKey(next);
+      if (
+        burstKey !== "__unparented_assistant_burst__" &&
+        nextKey !== "__unparented_assistant_burst__" &&
+        burstKey !== nextKey
+      ) {
+        break;
+      }
+      if (burstKey === "__unparented_assistant_burst__") {
+        burstKey = nextKey;
+      }
+      burst.push(next);
       cursor += 1;
     }
 
@@ -7241,7 +7253,7 @@ function summarizeRenderMessageForDebug(message: Message, index: number): Record
     index,
     id: getMessageId(message),
     role: asString(message.role) || asString(info?.role) || "unknown",
-    responseType: asString(structured?.responseType).toLowerCase() || undefined,
+    responseType: asString(structured?.type ?? structured?.responseType).toLowerCase() || undefined,
     textLength: text.length,
     textPreview: text ? text.slice(0, 160) : undefined,
     hasPlan: !!message.plan,
@@ -7252,39 +7264,13 @@ function summarizeRenderMessageForDebug(message: Message, index: number): Record
 }
 
 function logRenderSnapshot(source: string, messages: Message[]): void {
-  const now = Date.now();
-  if (now - lastRenderLogTime < RENDER_LOG_DEBOUNCE_MS) {
-    return; // Skip logging if too soon since last render log
-  }
-  lastRenderLogTime = now;
-
-  const tail = messages.slice(-20);
-  const summary = tail.map((message, index) =>
-    summarizeRenderMessageForDebug(message, messages.length - tail.length + index),
-  );
-  const last = summary[summary.length - 1];
-  logger.info("[PRE-RENDER] rendering snapshot", {
-    source,
-    messageCount: messages.length,
-    last,
-  });
+  void source;
+  void messages;
 }
 
 function logSourceSnapshot(source: string, messages: Message[] | unknown[]): void {
-  const normalizedMessages = Array.isArray(messages) ? messages : [];
-  const tail = normalizedMessages.slice(-20);
-  const summary = tail.map((message, index) =>
-    summarizeRenderMessageForDebug(
-      message as Message,
-      normalizedMessages.length - tail.length + index,
-    ),
-  );
-  const last = summary[summary.length - 1];
-  logger.info("[SOURCE] incoming render payload", {
-    source,
-    messageCount: normalizedMessages.length,
-    last,
-  });
+  void source;
+  void messages;
 }
 
 function logFullPayloadSnapshot(
@@ -7292,14 +7278,9 @@ function logFullPayloadSnapshot(
   source: string,
   payload: Record<string, unknown>,
 ): void {
-  const messages = payload.messages as unknown[];
-  const messageCount = Array.isArray(messages) ? messages.length : 0;
-
-  logger.info(`[${stage}] payload snapshot`, {
-    source,
-    messageCount,
-    keys: Object.keys(payload).filter(k => k !== 'messages')
-  });
+  void stage;
+  void source;
+  void payload;
 }
 
 function stripChoicePrefix(input: string): string {
@@ -8111,10 +8092,15 @@ export function dedupePlanProceedMessages(messages: Message[]): Message[] {
 }
 
 function buildStreamingMessage(streaming: StreamingState): Message {
+  const content =
+    asString(streaming.content).trim() ||
+    asString(streaming.structuredOutput?.text).trim() ||
+    asString(streaming.structuredOutput?.message).trim();
+
   const parts: any[] = [
     {
       type: "text",
-      text: streaming.content,
+      text: content,
     },
   ];
   if (streaming.reasoning) {
@@ -8135,7 +8121,7 @@ function buildStreamingMessage(streaming: StreamingState): Message {
   return {
     role: "assistant",
     responseType: streaming.responseType,
-    content: streaming.content,
+    content,
     parts,
     plan: streaming.plan,
     reasoningEvents: streaming.reasoningEvents,
@@ -8144,6 +8130,7 @@ function buildStreamingMessage(streaming: StreamingState): Message {
     edits: streaming.edits.map((file) => ({ file })),
     interactiveEvents: streaming.interactiveEvents,
     structuredOutput: streaming.structuredOutput,
+    rawSdkEventPayloads: streaming.rawSdkEventPayloads,
     info: {
       id: streaming.messageId ?? undefined,
       agent: streaming.agent,
@@ -8168,7 +8155,8 @@ function hasVisibleStreamingSnapshot(streaming: StreamingState | null | undefine
     (Array.isArray(streaming.progressEvents) && streaming.progressEvents.length > 0) ||
     (Array.isArray(streaming.steps) && streaming.steps.length > 0) ||
     (Array.isArray(streaming.edits) && streaming.edits.length > 0) ||
-    (Array.isArray(streaming.interactiveEvents) && streaming.interactiveEvents.length > 0)
+    (Array.isArray(streaming.interactiveEvents) && streaming.interactiveEvents.length > 0) ||
+    (Array.isArray(streaming.rawSdkEventPayloads) && streaming.rawSdkEventPayloads.length > 0)
   );
 }
 
@@ -8274,69 +8262,7 @@ function mergeStreamingSnapshotIntoHistory(
     asString(asRecord(streamingMessage.info)?.id) ||
     asString(streamingMessage.id) ||
     null;
-  const candidateIds: Array<string | null | undefined> = [streamingMessageId];
-
-  // Providers use evt_-prefixed message IDs for lifecycle events (streaming
-  // start/finish) that can land after the authoritative msg_ message.  Without
-  // text-match fallback these evt_ entries would be appended as duplicate
-  // assistant cards and coalesce into the visible response with stale text.
-  // Expand the text-match path to cover missing IDs AND evt_-prefixed IDs so
-  // the evt_ entry replaces the existing non-evt message instead of forking
-  // the assistant run.
-  const shouldTryTextMatch =
-    !streamingMessageId ||
-    (typeof streamingMessageId === "string" && streamingMessageId.startsWith("evt_"));
-
-  if (shouldTryTextMatch) {
-    const incomingText = normalizeComparableText(
-      extractMessageText(streamingMessage),
-    );
-    if (incomingText.length > 0) {
-      let lastUserIndex = -1;
-      for (let index = messages.length - 1; index >= 0; index -= 1) {
-        const message = messages[index];
-        if (!message) {
-          continue;
-        }
-        const role =
-          (asString(message.role) || asString(asRecord(message.info)?.role))
-            .toLowerCase()
-            .trim();
-        if (role === "user") {
-          lastUserIndex = index;
-          break;
-        }
-      }
-
-      for (let index = messages.length - 1; index > lastUserIndex; index -= 1) {
-        const candidate = messages[index];
-        if (!isAssistantHistoryMessage(candidate)) {
-          continue;
-        }
-        const candidateId = getMessageId(candidate);
-        const isNonEvtCandidate =
-          typeof candidateId === "string" && !candidateId.startsWith("evt_");
-        // When the incoming snapshot has an evt_ ID, prefer latching onto the
-        // first non-evt assistant message (msg_), even without text matching.
-        // This prevents the evt_ entry from forking the assistant run and
-        // keeps the canonical response text surfaced by the msg_ card.
-        if (isNonEvtCandidate) {
-          candidateIds.unshift(candidateId);
-          break;
-        }
-        const candidateText = normalizeComparableText(extractMessageText(candidate));
-        if (!candidateText || candidateText !== incomingText) {
-          continue;
-        }
-        if (candidateId) {
-          candidateIds.push(candidateId);
-          break;
-        }
-      }
-    }
-  }
-
-  return replaceMatchingAssistantTurn(messages, streamingMessage, candidateIds);
+  return replaceMatchingAssistantTurn(messages, streamingMessage, [streamingMessageId]);
 }
 
 function flushVisibleStreamingSnapshotToMessages(
@@ -8354,19 +8280,6 @@ function flushVisibleStreamingSnapshotToMessages(
   const messages = getState().messages || [];
   const nextMessages = mergeStreamingSnapshotIntoHistory(messages, finalized);
   dispatch({ type: "SET_MESSAGES", payload: nextMessages });
-
-  const message = buildStreamingMessage(finalized);
-  const sessionId = deriveSessionIdFromMessage(
-    message,
-    getState().currentSessionId,
-  );
-  if (sessionId) {
-    vscode.postMessage({
-      type: "persistAssistantMessage",
-      sessionId,
-      message,
-    });
-  }
 }
 
 function finalizeStreamingSnapshotSteps(
@@ -8403,35 +8316,19 @@ function finalizeStreamingSnapshotSteps(
   };
 }
 
-function maybeCompleteOnStepsFinished(
-  dispatch: Dispatch<AppAction>,
-  getState: () => AppState,
-): boolean {
-  const streaming = getState().streaming;
-  if (!streaming?.isActive) return false;
-  if (streaming.inReasoningPart) return false;
-
-  const steps = streaming.steps;
-  const hasSteps = Array.isArray(steps) && steps.length > 0;
-  if (!hasSteps) return false;
-
-  const allStepsTerminal = steps.every(
-    (step) => step.status === "done" || step.status === "error",
-  );
-  if (!allStepsTerminal) return false;
-
-  const hasContent = streaming.hasRenderableContent === true;
-  if (!hasContent) return false;
-
-  return true;
-}
-
 function handleStreamEvent(
   dispatch: Dispatch<AppAction>,
   getState: () => AppState,
   payload: UnknownRecord,
-  terminalErrorReached: boolean
+  terminalErrorReached: boolean,
+  shouldSuppressProcessingBootstrap: boolean = false
 ): void {
+  const dispatchProcessingTrue = () => {
+    if (!shouldSuppressProcessingBootstrap) {
+      dispatchProcessingTrue();
+    }
+  };
+
   // Log every stream event for comprehensive debugging
   const eventType = asString(payload.type) || asString(payload.event) || asString(payload.kind);
   logger.debug(`Handling Stream Event: ${eventType}`, {
@@ -8454,31 +8351,6 @@ function handleStreamEvent(
   const isPartUpdateEvent = eventType.startsWith("message.part.");
   const normalizedEventType = isPartUpdateEvent ? "message.part.updated" : eventType;
   const isHeartbeatEvent = isHeartbeatEventType(eventType);
-  if (!isHeartbeatEvent && !terminalErrorReached) {
-    const capturePayload: Record<string, unknown> = { type: eventType };
-    if (payload.properties) {
-      capturePayload.properties = { ...payload.properties };
-    }
-    if (payload.part) {
-      capturePayload.part = { ...payload.part };
-    }
-    if (payload.info) {
-      capturePayload.info = { ...payload.info };
-    }
-    if (payload.structured) {
-      capturePayload.structured = { ...payload.structured };
-    }
-    if (payload.text) {
-      capturePayload.text = payload.text;
-    }
-    if (payload.id || payload.messageId || (payload as UnknownRecord).messageID) {
-      capturePayload.id = payload.id || payload.messageId || (payload as UnknownRecord).messageID;
-    }
-    if (payload.sessionId || payload.sessionID) {
-      capturePayload.sessionId = payload.sessionId || payload.sessionID;
-    }
-    dispatch({ type: "APPEND_SDK_EVENT_PAYLOAD", payload: capturePayload });
-  }
   const state = getState();
   const current = state.streaming;
   const properties = asRecord(payload.properties);
@@ -8491,42 +8363,11 @@ function handleStreamEvent(
   const structuredRecord = asRecord(payload.structured);
   const structuredKind = asString(structuredRecord?.kind).toLowerCase();
   const structuredText =
-    asString(structuredRecord?.message) ||
-    asString(structuredRecord?.text);
-  const fallbackStructuredOutputCandidate = (() => {
-    const responseType =
-      asString(payload.responseType) ||
-      asString(properties?.responseType) ||
-      asString(infoRecord?.responseType);
-    const message =
-      asString(payload.message) ||
-      asString(properties?.message) ||
-      asString(infoRecord?.message);
-    const plan =
-      asRecord(payload.plan) ||
-      asRecord(properties?.plan) ||
-      asRecord(infoRecord?.plan) ||
-      undefined;
-    if (!responseType && !message && !plan) {
-      return undefined;
-    }
-    return {
-      responseType,
-      message,
-      plan,
-    };
-  })();
-  const structuredOutput =
-    normalizeStructuredOutputWithFallback(payload.structured) ??
-    normalizeStructuredOutputWithFallback(payload.structuredOutput) ??
-    normalizeStructuredOutputWithFallback((payload as UnknownRecord).structured_output) ??
-    normalizeStructuredOutputWithFallback(properties?.structured) ??
-    normalizeStructuredOutputWithFallback(properties?.structuredOutput) ??
-    normalizeStructuredOutputWithFallback((properties as UnknownRecord | null)?.structured_output) ??
-    normalizeStructuredOutputWithFallback(infoRecord?.structured) ??
-    normalizeStructuredOutputWithFallback(infoRecord?.structuredOutput) ??
-    normalizeStructuredOutputWithFallback((infoRecord as UnknownRecord | null)?.structured_output) ??
-    normalizeStructuredOutputWithFallback(fallbackStructuredOutputCandidate);
+    asString(structuredRecord?.text) ||
+    asString(structuredRecord?.message);
+  const structuredOutput = structuredOutputFromCentralizedEventPayload(payload, {
+    includeFallbackCandidate: true,
+  });
   const eventSessionId =
     asString(payload.sessionId) ||
     asString(payload.sessionID) ||
@@ -8567,6 +8408,32 @@ function handleStreamEvent(
     asString(infoRecord?.id) ||
     current?.messageId ||
     null;
+
+  // Ignore parts that echo the user's recent input to prevent them from incorrectly
+  // bootstrapping an assistant streaming block and binding the wrong message ID.
+  const isPartEcho = isPartUpdateEvent && Boolean(eventPart);
+  const partText = asRichString(eventPart?.text) || asRichString(eventPart?.content) || "";
+  const reasoningPartID =
+    asString(payload.partID) ||
+    asString(payload.partId) ||
+    asString(properties?.partID) ||
+    asString(properties?.partId) ||
+    asString(eventPart?.id) ||
+    undefined;
+
+  if (isPartUpdateEvent && partText) {
+    const currentMessages = state.messages || [];
+    const lastMessage = currentMessages.length > 0 ? currentMessages[currentMessages.length - 1] : null;
+    if (
+      lastMessage &&
+      lastMessage.role === "user" &&
+      !lastMessage.id &&
+      asString(lastMessage.content).trim() === partText.trim()
+    ) {
+      logger.debug("Ignoring stream event echoing user message");
+      return;
+    }
+  }
 
   const extractSystemPatternText = (): string => {
     const candidates = [
@@ -8649,7 +8516,23 @@ function handleStreamEvent(
     asString(infoRecord?.role) === 'assistant' &&
     !isFinishSignal(infoRecord?.finish);
   const canBootstrapFromPart =
-    isPartUpdateEvent && shouldBootstrapStreamingFromPart(eventPart);
+    isPartUpdateEvent &&
+    eventRole === "assistant" &&
+    shouldBootstrapStreamingFromPart(eventPart);
+  const bootstrapContext: AssistantStreamBootstrapContext = {
+    eventType,
+    eventRole: asString(infoRecord?.role) || asString(payload.role),
+    messageId,
+    eventAgent: asString(infoRecord?.agent) || asString(payload.agent) || undefined,
+    eventModel: asRecord(infoRecord?.model) || asRecord(payload.model),
+    eventModelID: asString(infoRecord?.modelID) || asString(payload.modelID) || undefined,
+    eventProviderID:
+      asString(infoRecord?.providerID) || asString(payload.providerID) || undefined,
+    isExplicitStart,
+    isAssistantUpdateStart,
+    canBootstrapFromPart,
+    hasSystemPatternEvent,
+  };
 
   // Ignore stray global stream events when neither a request is in progress nor the
   // event carries an explicit lifecycle signal. This prevents phantom "Thinking..." /
@@ -8660,63 +8543,11 @@ function handleStreamEvent(
     return;
   }
 
-  if (
-    !current &&
-    !isHeartbeatEvent &&
-    (isExplicitStart ||
-      isAssistantUpdateStart ||
-      canBootstrapFromPart ||
-      state.isProcessing) &&
-    !hasSystemPatternEvent
-  ) {
-    // Extract model/agent metadata from the event payload or fall back to app state
-    const eventAgent = asString(infoRecord?.agent) || asString(payload.agent);
-    const eventModel = asRecord(infoRecord?.model) || asRecord(payload.model);
-    const eventModelID =
-      asString(infoRecord?.modelID) || asString(payload.modelID);
-    const eventProviderID =
-      asString(infoRecord?.providerID) || asString(payload.providerID);
-
-    dispatch({
-      type: "SET_STREAMING",
-      payload: {
-        messageId,
-        content: "",
-        hasRenderableContent: false,
-        reasoning: "",
-        reasoningEvents: [],
-        steps: [],
-        progressEvents: [],
-        edits: [],
-        isActive: true,
-        // Include model/agent metadata for display during streaming
-        agent: eventAgent || state.selectedAgent || undefined,
-        model:
-          eventModel && typeof eventModel === "object"
-            ? {
-              modelID:
-                asString(eventModel.modelID) ||
-                state.selectedModel?.modelID ||
-                "",
-              providerID:
-                asString(eventModel.providerID) ||
-                state.selectedModel?.providerID ||
-                "",
-              name:
-                asString((eventModel as Record<string, unknown>).name) ||
-                undefined,
-            }
-            : undefined,
-        modelID: eventModelID || state.selectedModel?.modelID,
-        providerID: eventProviderID || state.selectedModel?.providerID,
-        variant: state.thinkingLevel,
-      },
-    });
-    dispatch({
-      type: "SET_ASSISTANT_TURN_PENDING",
-      payload: { pending: true, messageId },
-    });
-    dispatch({ type: "SET_PROCESSING", payload: true });
+  if (!isHeartbeatEvent && ensureStreamingBootstrapFromCentralizedPayload(
+    dispatch,
+    getState,
+    bootstrapContext,
+  )) {
     logger.info("[LOADING][HANDLER] stream bootstrap - new streaming + SET_PROCESSING(true)", {
       messageId,
       eventType,
@@ -8728,6 +8559,13 @@ function handleStreamEvent(
       wasProcessing: state.isProcessing,
       hadStreaming: !!current,
     });
+  }
+  if (!isHeartbeatEvent) {
+    bindStreamingIdentityFromCentralizedPayload(
+      dispatch,
+      getState,
+      bootstrapContext,
+    );
   }
 
   const streamResponseType = firstNonEmptyString(
@@ -8760,9 +8598,14 @@ function handleStreamEvent(
           structuredOutput: structuredOutput
             ? {
               ...structuredOutput,
+              type:
+                (normalizedStreamResponseType as StructuredResponseType | undefined) ??
+                structuredOutput.type ??
+                structuredOutput.responseType,
               responseType:
                 (normalizedStreamResponseType as StructuredResponseType | undefined) ??
-                structuredOutput.responseType,
+                structuredOutput.responseType ??
+                structuredOutput.type,
             }
             : streamNow.structuredOutput,
         },
@@ -8777,50 +8620,64 @@ function handleStreamEvent(
   }
 
   // Pattern-based system reminders must not depend on role field correctness.
-  // If a stream payload looks like an internal/system notice, render it as
-  // system immediately even when upstream labels it as "user".
+  // However, when the same content is already visible in the user prompt UI,
+  // we do not want to materialize a second standalone system card below the
+  // build/assistant response. Keep the stream moving, but avoid duplicating
+  // the prompt echo in the conversation list.
   if (hasSystemPatternEvent) {
-    upsertRealtimeSystemMessage(systemPatternText);
-    dispatch({ type: "SET_PROCESSING", payload: true });
+    dispatchProcessingTrue();
     return;
+  }
+
+  // Stray event guard: If this event carries a messageId that belongs to a different
+  // response than the one currently streaming (e.g. from a background task or a stale
+  // previous turn), we must drop the stream-mutating portion of the event to prevent
+  // it from bleeding into the active UI streaming card.
+  const isStrayEvent = (() => {
+    if (!messageId) return false;
+    const currentStreamingMessageId = getState().streaming?.messageId;
+    if (!currentStreamingMessageId) return false;
+    if (messageId === currentStreamingMessageId) return false;
+    
+    // Some events explicitly bootstrap a new turn (like streamStart, or message.updated
+    // which has its own re-keying logic). Those are not "stray", they are the start
+    // of a *new* streaming sequence.
+    if (normalizedEventType === "start" || normalizedEventType === "streamStart") return false;
+    if (normalizedEventType === "message.updated") return false;
+    
+    return true;
+  })();
+
+  if (isStrayEvent) {
+    logger.debug(`Suppressing stray stream event for inactive message ID`, {
+      normalizedEventType,
+      eventMessageId: messageId,
+      activeStreamingMessageId: getState().streaming?.messageId,
+    });
+    // For purely streaming UI events, we just drop them.
+    // For lifecycle events like 'message.completed' or 'finish', we don't want them
+    // to accidentally close the ACTIVE assistant turn. We should just early return.
+    const isPurelyStreamEvent = [
+      'contentDelta', 'content', 'text-delta', 'text',
+      'reasoningDelta', 'reasoning', 'thinking',
+      'stepStart', 'stepUpdate', 'stepDone', 'stepError',
+      'edit', 'fileEdit',
+      'message.part.updated', 'message.part.added', 'message.part.created',
+      'finish', 'done', 'message.completed', 'session.completed',
+      'error', 'session.error'
+    ].includes(normalizedEventType);
+    
+    if (isPurelyStreamEvent) {
+       return;
+    }
   }
 
   switch (normalizedEventType) {
     case 'question.asked': {
-      const questionEvents = interactiveEventsFromQuestionAskedPayload(payload);
-      logger.info("[QUESTION DEBUG] question.asked received in webview", {
-        messageId,
-        questionEvents: questionEvents.map((event) => ({
-          id: event.id,
-          type: event.type,
-          title: "title" in event ? event.title : undefined,
-          question: event.type === "question" || event.type === "confirm" ? event.question : undefined,
-          optionCount: event.type === "question" ? event.options.length : undefined,
-          requestID: event.type === "question" ? event.requestID : undefined,
-        })),
-        payloadKeys: Object.keys(payload),
-        propertyKeys: Object.keys(asRecord(payload.properties) || {}),
-      });
-      if (questionEvents.length > 0) {
-        dispatch({
-          type: "SET_INTERACTIVE_EVENTS",
-          payload: questionEvents,
-        });
-        const injectedContent = maybeInjectStreamingInteractiveContext(
-          dispatch,
-          getState,
-          questionEvents,
-        );
-        if (hasBlockingInteractiveEvents(questionEvents)) {
-          const streamingNow = getState().streaming;
-          const streamingOverride = injectedContent && streamingNow
-            ? { ...streamingNow, content: injectedContent }
-            : null;
-          flushVisibleStreamingSnapshotToMessages(dispatch, getState, streamingOverride);
-          dispatch({ type: "FINISH_STREAMING" });
-          dispatch({ type: "FINISH_STREAMING" });
-          dispatch({ type: "SET_PROCESSING", payload: false });
-        }
+      const interactiveEvents = interactiveEventsFromQuestionAskedPayload(payload);
+      if (interactiveEvents.length > 0) {
+        dispatch({ type: "SET_INTERACTIVE_EVENTS", payload: interactiveEvents });
+        maybeInjectStreamingInteractiveContext(dispatch, getState, interactiveEvents);
       }
       break;
     }
@@ -8843,7 +8700,7 @@ function handleStreamEvent(
           break;
         }
         logger.debug(`No part data, setting processing=true`);
-        dispatch({ type: 'SET_PROCESSING', payload: true });
+        dispatchProcessingTrue();
         break;
       }
 
@@ -8859,11 +8716,31 @@ function handleStreamEvent(
       // may reopen inactive streams on SET_PROCESSING(true), so terminal activity
       // needs a final guard before the generic keep-processing dispatch below.
       const wasStreamInactiveAtPartStart = currentStreamingState?.isActive === false;
+      let terminalTurnClosed = false;
 
-      // Detect start of reasoning part sequence
-      const isReasoning = currentPartType === 'reasoning' || currentStructuredKind === 'thinking';
-      if (isReasoning) {
-        logger.debug('Starting reasoning part sequence - will drop all content');
+      // Detect start of reasoning part sequence.
+      // Also handle raw message.part.delta events where field="reasoning"/"thinking":
+      // these carry the reasoning delta in properties.delta (not part.reasoning) and
+      // properties.field (not part.type), so currentPartType is empty and the normal
+      // reasoning detection misses them entirely — causing delta chunks to be mistakenly
+      // routed to the content pipeline instead of the reasoning timeline.
+      const deltaField = asString(properties?.field).trim().toLowerCase();
+      const isRawDeltaReasoningField =
+        eventType === "message.part.delta" &&
+        (deltaField === "reasoning" || deltaField === "thinking");
+      const isReasoning = currentPartType === 'reasoning' || currentStructuredKind === 'thinking' || isRawDeltaReasoningField;
+      
+      // Only emit the "enter reasoning sequence" signal when we first detect a
+      // reasoning part. For raw delta events this fires on every chunk, so guard
+      // it with isInReasoningPart to avoid redundant dispatches that would
+      // unnecessarily reset the reasoning string to '' on every chunk.
+      if (isReasoning && !isInReasoningPart) {
+        logger.debug('Starting reasoning part sequence - will drop all content', {
+          partType: currentPartType,
+          structuredKind: currentStructuredKind,
+          isRawDeltaReasoningField,
+          deltaField,
+        });
         dispatch({ type: 'UPDATE_STREAMING_REASONING', payload: { reasoning: '', append: false, inReasoningPart: true } });
       }
 
@@ -8892,7 +8769,6 @@ function handleStreamEvent(
       // events with role="user" but should be rendered as system messages
       const partText = asRichString(part.text) || asRichString(part.content) || '';
       if (partText && hasSystemMessagePatternInText(partText)) {
-        upsertRealtimeSystemMessage(partText);
         break; // Don't process this as regular content
       }
 
@@ -8905,6 +8781,10 @@ function handleStreamEvent(
         asRichString(properties?.delta) ||
         asRichString(payload.delta) ||
         asRichString(part.delta);
+      const isDeltaReasoningChunk =
+        !!deltaChunk ||
+        normalizedEventType.toLowerCase().includes("delta") ||
+        eventType.toLowerCase().includes("delta");
       const reasoningChunk =
         asRichString(part.reasoning) ||
         asRichString(part.thought) ||
@@ -8939,43 +8819,6 @@ function handleStreamEvent(
         partType === "subtask" ||
         partType === "agent";
 
-      if (structuredOutput?.reasoning) {
-        const reasoningEvents = getState().streaming?.reasoningEvents;
-        const latestReasoning =
-          reasoningEvents && reasoningEvents.length > 0
-            ? reasoningEvents[reasoningEvents.length - 1].text
-            : undefined;
-        structuredOutput.reasoning.forEach((chunk) => {
-          const sanitized = sanitizeReasoningChunk(chunk);
-          if (sanitized && sanitized !== latestReasoning) {
-            dispatch({
-              type: "UPDATE_STREAMING_REASONING",
-              payload: { reasoning: sanitized, append: true },
-            });
-          }
-        });
-      }
-
-      if (structuredOutput?.progressUpdates) {
-        structuredOutput.progressUpdates.forEach((update) => {
-          upsertStreamingStep(dispatch, getState, {
-            title: update.title,
-            type: "step",
-            status: update.status ?? "pending",
-            source: "stream",
-            partType: "structured-progress",
-            internal: false,
-            meta: update.meta,
-            filePath: update.filePath,
-            activityDetail: (update.command || update.output) ? {
-              kind: "command",
-              command: update.command,
-              output: update.output,
-            } : undefined,
-          });
-        });
-      }
-
       const interactiveEvents = toInteractiveEvents(structuredOutput);
       const hasBlockingInteractive =
         hasBlockingInteractiveEvents(interactiveEvents);
@@ -8986,15 +8829,18 @@ function handleStreamEvent(
           getState,
           interactiveEvents,
         );
+        logger.info("[TRACE][HANDLER][PART_INTERACTIVE_EVENTS]", {
+          eventType: normalizedEventType,
+          messageId,
+          structuredKind: currentStructuredKind || null,
+          interactiveCount: interactiveEvents.length,
+          blockingInteractive: hasBlockingInteractive,
+          streamingExists: !!getState().streaming,
+          streamingInteractiveCount: getState().streaming?.interactiveEvents?.length ?? 0,
+        });
       }
 
       if (structuredOutput?.subagents || structuredOutput?.subagentsDelta) {
-        logger.info('[SUBAGENT-DEBUG] stream message.part.updated dispatching subagents', {
-          messageId,
-          subagentsCount: structuredOutput.subagents?.length ?? 0,
-          subagentsDeltaItemCount: structuredOutput.subagentsDelta?.items?.length ?? 0,
-          responseType: structuredOutput.responseType,
-        });
         applyStructuredSubagentPayload(dispatch, getState, structuredOutput, messageId || '');
         bindStreamingToParentMessageIdFromSubagents(
           dispatch,
@@ -9012,7 +8858,7 @@ function handleStreamEvent(
         if (sanitized) {
           dispatch({
             type: "UPDATE_STREAMING_REASONING",
-            payload: { reasoning: sanitized, append: true },
+            payload: { reasoning: sanitized, append: true, delta: isDeltaReasoningChunk },
           });
         }
       }
@@ -9029,7 +8875,7 @@ function handleStreamEvent(
         if (sanitized) {
           dispatch({
             type: "UPDATE_STREAMING_REASONING",
-            payload: { reasoning: sanitized, append: true },
+            payload: { reasoning: sanitized, append: true, delta: isDeltaReasoningChunk },
           });
         }
       }
@@ -9050,7 +8896,7 @@ function handleStreamEvent(
         if (sanitized) {
           dispatch({
             type: 'UPDATE_STREAMING_REASONING',
-            payload: { reasoning: sanitized, append: true },
+            payload: { reasoning: sanitized, append: true, delta: isDeltaReasoningChunk },
           });
         }
 
@@ -9080,10 +8926,10 @@ function handleStreamEvent(
             if (reasoningLeak) {
               dispatch({
                 type: "UPDATE_STREAMING_REASONING",
-                payload: { reasoning: reasoningLeak, append: true },
+                payload: { reasoning: reasoningLeak, append: true, delta: isDeltaReasoningChunk },
               });
             }
-            dispatch({ type: "SET_PROCESSING", payload: true });
+            dispatchProcessingTrue();
             break;
           }
 
@@ -9092,7 +8938,7 @@ function handleStreamEvent(
             if (reasoningLeak) {
               dispatch({
                 type: "UPDATE_STREAMING_REASONING",
-                payload: { reasoning: reasoningLeak, append: true },
+                payload: { reasoning: reasoningLeak, append: true, delta: isDeltaReasoningChunk },
               });
             }
             candidateChunk = mixedChunk.content;
@@ -9103,15 +8949,15 @@ function handleStreamEvent(
             if (reasoningLeak) {
               dispatch({
                 type: "UPDATE_STREAMING_REASONING",
-                payload: { reasoning: reasoningLeak, append: true },
+                payload: { reasoning: reasoningLeak, append: true, delta: isDeltaReasoningChunk },
               });
             }
-            dispatch({ type: "SET_PROCESSING", payload: true });
+            dispatchProcessingTrue();
             break;
           }
           // Ignore id-like echoes that can appear before assistant output begins.
           if (isOpaqueIdLike(candidateChunk.trim())) {
-            dispatch({ type: "SET_PROCESSING", payload: true });
+            dispatchProcessingTrue();
             break;
           }
           const contentEmpty = !streamingState || !streamingState.content.trim();
@@ -9135,7 +8981,7 @@ function handleStreamEvent(
               !!deltaChunk,
             );
             if (!contentPatch) {
-              dispatch({ type: "SET_PROCESSING", payload: true });
+              dispatchProcessingTrue();
               break;
             }
             const candidateContent = contentPatch.append
@@ -9147,7 +8993,7 @@ function handleStreamEvent(
                 type: "UPDATE_STREAMING_REASONING",
                 payload: { reasoning: contentPatch.content, append: contentPatch.append },
               });
-              dispatch({ type: "SET_PROCESSING", payload: true });
+              dispatchProcessingTrue();
               break;
             }
             streamDebug("Stream: message part updated chunk", {
@@ -9205,7 +9051,7 @@ function handleStreamEvent(
           duration: asOptionalNumber(asRecord(part.timing)?.duration),
           diffStats,
         });
-        maybeCompleteOnStepsFinished(dispatch, getState);
+        terminalTurnClosed = true;
       }
 
       if (partType === 'tool') {
@@ -9240,6 +9086,12 @@ function handleStreamEvent(
           inputObj?.pattern,
         );
         const callID = asString(part.callID) || undefined;
+        const sessionID =
+          asString(part.sessionID) ||
+          asString(part.sessionId) ||
+          asString((stateObj as UnknownRecord)?.sessionID) ||
+          asString((stateObj as UnknownRecord)?.sessionId) ||
+          undefined;
         const title = asString(part.title) || (tool ? `Running ${tool}...` : inferredStepTitle(part));
 
         // Extract output from multiple possible sources
@@ -9280,17 +9132,21 @@ function handleStreamEvent(
           });
         }
 
-        const baseActivityDetail: ActivityDetail | undefined = normalizeActivityDetail({
-          kind: "tool_call",
-          tool: tool || undefined,
-          command: commandValue,
-          query: queryValue,
-          file: filePath,
-          summary: asOptionalString(part.meta),
-          output: finalOutput,
-          diffExcerpt: diffExcerpt,
-          metadata: metadataTruncated ? { truncated: true } : undefined,
-        });
+        const baseActivityDetail: ActivityDetail | undefined = tool === "question"
+          ? undefined
+          : normalizeActivityDetail({
+              kind: "tool_call",
+              tool: tool || undefined,
+              command: commandValue,
+              query: queryValue,
+              file: filePath,
+              input: inputObj || partInputObj || undefined,
+              summary: asOptionalString(part.meta),
+              output: finalOutput,
+              diffExcerpt: diffExcerpt,
+              metadata: metadataTruncated ? { truncated: true } : undefined,
+              sessionID,
+            });
 
         const existing = getState().streaming?.steps.find(
           (step) => !!callID && step.callID === callID
@@ -9307,7 +9163,9 @@ function handleStreamEvent(
             internal: isInternalToolName(tool),
             meta: asString(part.meta) || metaValues[0] || undefined,
             filePath,
+            sessionID,
             activityDetail: baseActivityDetail,
+            startedAt: Date.now(),
             startTime: Date.now(),
           });
         } else {
@@ -9342,6 +9200,7 @@ function handleStreamEvent(
             internal: Boolean(existing.internal || isInternalToolName(tool)),
             meta: asString(part.meta) || metaValues[0] || existing.meta,
             filePath: filePath || existing.filePath,
+            sessionID: sessionID || existing.sessionID,
             activityDetail: baseActivityDetail || existing.activityDetail,
           });
         }
@@ -9416,6 +9275,7 @@ function handleStreamEvent(
             break;
           }
         }
+
       }
 
       if (
@@ -9438,6 +9298,10 @@ function handleStreamEvent(
 
       if (partType === 'patch') {
         const files = Array.isArray(part.files) ? part.files : [];
+        const normalizedFiles = files
+          .map((file) => asString(file))
+          .filter((file): file is string => file.length > 0);
+        const primaryPatchFile = normalizedFiles[0];
         logger.info("[ACTIVITY STEP][EDIT] Streaming patch part", {
           messageId,
           files,
@@ -9448,6 +9312,26 @@ function handleStreamEvent(
           if (path) {
             dispatch({ type: 'ADD_STREAMING_EDIT', payload: path });
           }
+        });
+        upsertStreamingStep(dispatch, getState, {
+          id: asString(part.id) || undefined,
+          callID: asString(part.callID) || undefined,
+          title: inferredStepTitle(part),
+          type: "step",
+          status: normalizeProgressStatus(asString(part.status) || asString(asRecord(part.state)?.status)),
+          source: "stream",
+          partType: partType,
+          internal: false,
+          meta: primaryPatchFile || asString(part.meta) || undefined,
+          filePath: primaryPatchFile,
+          activityDetail: normalizeActivityDetail({
+            kind: "file_edit",
+            summary: primaryPatchFile || inferredStepTitle(part),
+            file: primaryPatchFile,
+            files: normalizedFiles,
+            metadata: { fileCount: normalizedFiles.length },
+          }),
+          startTime: Date.now(),
         });
       }
 
@@ -9471,19 +9355,16 @@ function handleStreamEvent(
         });
       }
 
-      if (hasBlockingInteractive) {
-        flushVisibleStreamingSnapshotToMessages(dispatch, getState);
-        dispatch({ type: "FINISH_STREAMING" });
-        dispatch({ type: "SET_PROCESSING", payload: false });
+      if (terminalTurnClosed) {
         break;
       }
 
       if (wasStreamInactiveAtPartStart && isTerminalProgressPart(part, partType)) {
-        dispatch({ type: "SET_PROCESSING", payload: true });
+        dispatchProcessingTrue();
         break;
       }
 
-      dispatch({ type: 'SET_PROCESSING', payload: true });
+      dispatchProcessingTrue();
       break;
     }
     case 'message.updated': {
@@ -9493,8 +9374,7 @@ function handleStreamEvent(
         asRichString(properties?.text) ||
         asRichString(properties?.content);
       if (updatedText && hasSystemMessagePatternInText(updatedText)) {
-        upsertRealtimeSystemMessage(updatedText);
-        dispatch({ type: "SET_PROCESSING", payload: true });
+        dispatchProcessingTrue();
         break;
       }
       // Some providers can emit final assistant updates with role mislabels.
@@ -9505,6 +9385,71 @@ function handleStreamEvent(
         hasInfo: !!asRecord(payload.info),
       });
       const finish = resolveMessageUpdatedFinishSignal(payload, properties);
+      const currentStreamingSnapshot = getState().streaming;
+      const currentStreamingMessageId = currentStreamingSnapshot?.messageId ?? null;
+      if (!currentStreamingSnapshot) {
+        ensureStreamingBootstrapFromCentralizedPayload(
+          dispatch,
+          getState,
+          bootstrapContext,
+        );
+      }
+      const shouldStartFreshAssistantTurn =
+        eventRole === "assistant" &&
+        !!messageId &&
+        !!currentStreamingSnapshot &&
+        !!currentStreamingMessageId &&
+        currentStreamingMessageId !== messageId;
+
+      if (shouldStartFreshAssistantTurn) {
+        // A brand-new assistant turn has started, but the previous turn's
+        // streaming snapshot is still hanging around in state. Re-key the live
+        // snapshot immediately so the old assistant card does not keep loading
+        // and the new turn gets its own timeline / response card.
+        const eventAgent = asString(infoRecord?.agent) || asString(payload.agent);
+        const eventModel = asRecord(infoRecord?.model) || asRecord(payload.model);
+        const eventModelID = asString(infoRecord?.modelID) || asString(payload.modelID);
+        const eventProviderID = asString(infoRecord?.providerID) || asString(payload.providerID);
+        dispatch({
+          type: "SET_STREAMING",
+          payload: {
+            messageId,
+            content: "",
+            reasoning: "",
+            reasoningEvents: [],
+            steps: [],
+            progressEvents: [],
+            edits: [],
+            interactiveEvents: [],
+            rawSdkEventPayloads: [],
+            isActive: true,
+            agent: eventAgent || getState().selectedAgent || undefined,
+            model:
+              eventModel && typeof eventModel === "object"
+                ? {
+                    modelID:
+                      asString(eventModel.modelID) ||
+                      getState().selectedModel?.modelID ||
+                      "",
+                    providerID:
+                      asString(eventModel.providerID) ||
+                      getState().selectedModel?.providerID ||
+                      "",
+                    name:
+                      asString((eventModel as Record<string, unknown>).name) ||
+                      undefined,
+                  }
+                : undefined,
+            modelID: eventModelID || getState().selectedModel?.modelID,
+            providerID: eventProviderID || getState().selectedModel?.providerID,
+            variant: getState().thinkingLevel,
+          },
+        });
+        dispatch({
+          type: "SET_ASSISTANT_TURN_PENDING",
+          payload: { pending: true, messageId },
+        });
+      }
 
       if (structuredOutput && messageId) {
         applyStructuredSubagentPayload(dispatch, getState, structuredOutput, messageId);
@@ -9549,16 +9494,6 @@ function handleStreamEvent(
           getState,
           liveStructuredInteractiveEvents,
         );
-        if (liveHasBlockingInteractive && !finish) {
-          const streamingNow = getState().streaming;
-          const streamingOverride = injectedContent && streamingNow
-            ? { ...streamingNow, content: injectedContent }
-            : null;
-          flushVisibleStreamingSnapshotToMessages(dispatch, getState, streamingOverride);
-          dispatch({ type: "FINISH_STREAMING" });
-          dispatch({ type: "SET_PROCESSING", payload: false });
-          break;
-        }
       }
 
       const hasRenderableLiveStructuredUpdate =
@@ -9580,49 +9515,20 @@ function handleStreamEvent(
         break;
       }
 
+      logger.info("[TRACE][HANDLER][MESSAGE_UPDATED_STATE]", {
+        messageId,
+        finish,
+        structuredKind: structuredKind || null,
+        hasRenderableLiveStructuredUpdate,
+        liveInteractiveCount: liveStructuredInteractiveEvents.length,
+        currentStreamingMessageId: getState().streaming?.messageId ?? null,
+        currentStreamingInteractiveCount: getState().streaming?.interactiveEvents?.length ?? 0,
+        streamingExists: !!getState().streaming,
+      });
+
       if (finish && structuredOutput) {
-        if (structuredOutput.reasoning) {
-          structuredOutput.reasoning.forEach((chunk) => {
-            const sanitized = sanitizeReasoningChunk(chunk);
-            if (sanitized) {
-              dispatch({
-                type: 'UPDATE_STREAMING_REASONING',
-                payload: { reasoning: sanitized, append: true }
-              });
-            }
-          });
-        }
-
-        if (structuredOutput.progressUpdates) {
-          structuredOutput.progressUpdates.forEach((step) => {
-            upsertStreamingStep(dispatch, getState, {
-              title: step.title,
-              type: 'step',
-              status: step.status ?? 'pending',
-              source: "stream",
-              partType: "structured-progress",
-              internal: false,
-              meta: step.meta,
-              filePath: step.filePath,
-              activityDetail: (step.command || step.output) ? {
-                kind: "command",
-                command: step.command,
-                output: step.output,
-              } : undefined,
-            });
-          });
-        }
-
-        const structuredQuestionRecord = asRecord(
-          (structuredOutput as UnknownRecord).question,
-        );
-        const structuredQuestionText =
-          asString(structuredQuestionRecord?.displayPrompt) ||
-          asString(structuredQuestionRecord?.question) ||
-          asString(structuredQuestionRecord?.message) ||
-          asString(structuredQuestionRecord?.content);
         const structuredMessage =
-          structuredQuestionText ||
+          structuredOutput.text ||
           structuredOutput.message;
         if (structuredMessage) {
           const streamingState = getState().streaming;
@@ -9660,7 +9566,7 @@ function handleStreamEvent(
             }
           } else {
             const canRenderStructuredMessageLive =
-              !!structuredQuestionText || !!finish;
+              !!structuredMessage || !!finish;
             if (!canRenderStructuredMessageLive) {
               const deferredReasoning = sanitizeReasoningChunk(messageText || structuredMessage);
               if (deferredReasoning) {
@@ -9669,7 +9575,7 @@ function handleStreamEvent(
                   payload: { reasoning: deferredReasoning, append: true },
                 });
               }
-              dispatch({ type: "SET_PROCESSING", payload: true });
+              dispatchProcessingTrue();
               break;
             }
             if (mixedMessage) {
@@ -9716,7 +9622,7 @@ function handleStreamEvent(
           const rawTodoItems = Array.isArray(todoSource?.todoItems) ? todoSource!.todoItems : undefined;
           if (
             structuredOutput &&
-            (structuredOutput.responseType === '__legacy_disabled_todo_update' ||
+            ((structuredOutput.type || structuredOutput.responseType) === '__legacy_disabled_todo_update' ||
               asString(payload.responseType) === '__legacy_disabled_todo_update') &&
             Array.isArray(rawTodoItems)
           ) {
@@ -9738,54 +9644,26 @@ function handleStreamEvent(
 
 
 
-      // Lifecycle events that carry the final structured message text may not
-      // include an explicit finish signal from the server. When a lifecycle
-      // message.updated delivers renderable text, treat it as a terminal signal
-      // so the loading state transitions to complete instead of staying stuck.
-      if (finish || (structuredKind === "lifecycle" && hasRenderableLiveStructuredUpdate)) {
-        const effectiveFinish = structuredKind === "lifecycle" && !finish;
-        if (effectiveFinish) {
-          streamDebug("Stream: lifecycle event with renderable update treated as terminal", {
-            messageId,
-            structuredKind,
-            hasRenderableLiveStructuredUpdate,
-            currentStreaming: summarizeStreamingForLog(getState().streaming),
-          });
-
-          // Lifecycle events carry the final message text in structured output
-          // rather than in streaming.content. Inject it into the streaming
-          // snapshot so the flush creates a message with the correct body.
-          const streamingNow = getState().streaming;
-          if (streamingNow && structuredText) {
-            const streamingOverride: StreamingState = {
-              ...streamingNow,
-              content: structuredText,
-              structuredOutput: structuredOutput as unknown as StreamingState["structuredOutput"],
-              responseType: (structuredOutput?.responseType || "message") as StructuredResponseType,
-            };
-            flushVisibleStreamingSnapshotToMessages(dispatch, getState, streamingOverride);
-          }
-        }
-        const terminalStatus: "done" | "error" =
-          asString(asRecord(payload.info)?.error) ||
-          asString(asRecord(properties)?.error)
-            ? "error"
-            : "done";
+      if (finish) {
+        markAssistantTurnClosed(
+          asString(asRecord(payload.info)?.id),
+          asString(asRecord(properties)?.messageID),
+          asString(asRecord(properties)?.messageId),
+          asString(payload.messageId),
+          asString(payload.messageID),
+        );
         const finalized = finalizeStreamingSnapshotSteps(
           getState().streaming,
-          terminalStatus,
+          asString(asRecord(payload.info)?.error) ||
+            asString(asRecord(properties)?.error)
+            ? "error"
+            : "done",
         );
         if (finalized) {
           dispatch({
             type: "SET_STREAMING",
             payload: {
               ...finalized,
-              // Lifecycle events carry the correct final text in
-              // structured output, not streaming.content. Inject it
-              // so subsequent state reads reflect the real content.
-              ...(effectiveFinish && structuredText
-                ? { content: structuredText }
-                : {}),
               hasAssistantFinishSignal: true,
             },
           });
@@ -9794,10 +9672,12 @@ function handleStreamEvent(
           type: "SET_ASSISTANT_TURN_PENDING",
           payload: { pending: false, messageId: null },
         });
-        dispatch({ type: 'SET_PROCESSING', payload: false });
-        dispatch({ type: 'FINISH_STREAMING' });
+        dispatch({ type: "SET_PROCESSING", payload: false });
+        dispatch({ type: "FINISH_STREAMING" });
       } else {
-        dispatch({ type: 'SET_PROCESSING', payload: true });
+        if (eventRole !== "user") {
+          dispatchProcessingTrue();
+        }
       }
       break;
     }
@@ -9806,8 +9686,9 @@ function handleStreamEvent(
       const errorMessage = asString(payload.message) || asString(payload.error) || asString(asRecord(payload.error)?.message);
       const errorReason = asString(payload.reason) || asString(payload.code);
 
-      // Only show user-facing errors for genuine problems, not signaling events
-      // Error events are used for various purposes - only show toasts for actual errors
+      // Only surface user-facing errors for genuine problems, not signaling events.
+      // The inline conversation card is driven by the matching message.updated
+      // sync event, so this branch only cleans up state and logging.
       const isGenuineError = errorMessage &&
         errorMessage.trim().length > 0 &&
         // Filter out signaling/completion messages
@@ -9830,7 +9711,6 @@ function handleStreamEvent(
           errorMessage,
           errorReason,
         });
-        dispatch({ type: "ADD_ERROR_MESSAGE", payload: errorMessage });
       } else {
         logger.debug("Skipping error event - not user-facing", {
           normalizedEventType,
@@ -9839,7 +9719,9 @@ function handleStreamEvent(
         });
       }
 
-      // Always clean up processing state
+      // The matching message.updated sync event carries info.error and renders
+      // the inline conversation card. Avoid duplicating that same failure as a
+      // toast, but always clean up the loading state.
       dispatch({
         type: "SET_ASSISTANT_TURN_PENDING",
         payload: { pending: false, messageId: null },
@@ -9917,7 +9799,7 @@ function handleStreamEvent(
             ...startMetadata,
           },
       });
-      dispatch({ type: 'SET_PROCESSING', payload: true });
+      dispatchProcessingTrue();
       break;
     }
     case 'contentDelta':
@@ -9925,11 +9807,11 @@ function handleStreamEvent(
     case 'text':
     case 'text-delta': {
       if (eventRole && eventRole !== "assistant") {
-        dispatch({ type: "SET_PROCESSING", payload: true });
+        dispatchProcessingTrue();
         break;
       }
       if (structuredKind && structuredKind !== "message") {
-        dispatch({ type: "SET_PROCESSING", payload: true });
+        dispatchProcessingTrue();
         break;
       }
       const chunk =
@@ -9951,11 +9833,17 @@ function handleStreamEvent(
             if (sanitized) {
               dispatch({
                 type: "UPDATE_STREAMING_REASONING",
-                payload: { reasoning: sanitized, append: true },
+                payload: {
+                  reasoning: sanitized,
+                  append: true,
+                  partID: reasoningPartID,
+                  messageID: messageId || undefined,
+                  delta: true,
+                },
               });
             }
           }
-          dispatch({ type: "SET_PROCESSING", payload: true });
+          dispatchProcessingTrue();
           break;
         }
         const contentEmpty = !streamingState || !streamingState.content.trim();
@@ -9968,7 +9856,13 @@ function handleStreamEvent(
           if (mixedReasoning) {
             dispatch({
               type: "UPDATE_STREAMING_REASONING",
-              payload: { reasoning: mixedReasoning, append: true },
+              payload: {
+                reasoning: mixedReasoning,
+                append: true,
+                partID: reasoningPartID,
+                messageID: messageId || undefined,
+                delta: true,
+              },
             });
           }
           candidateChunk = mixedChunk.content;
@@ -9982,7 +9876,13 @@ function handleStreamEvent(
           if (reasoningLeak) {
             dispatch({
               type: "UPDATE_STREAMING_REASONING",
-              payload: { reasoning: reasoningLeak, append: true },
+              payload: {
+                reasoning: reasoningLeak,
+                append: true,
+                partID: reasoningPartID,
+                messageID: messageId || undefined,
+                delta: true,
+              },
             });
           }
           break;
@@ -10033,7 +9933,16 @@ function handleStreamEvent(
       });
       const sanitized = sanitizeReasoningChunk(chunk);
       if (sanitized) {
-        dispatch({ type: 'UPDATE_STREAMING_REASONING', payload: { reasoning: sanitized, append: true } });
+        dispatch({
+          type: 'UPDATE_STREAMING_REASONING',
+          payload: {
+            reasoning: sanitized,
+            append: true,
+            partID: reasoningPartID,
+            messageID: messageId || undefined,
+            delta: true,
+          },
+        });
       }
       break;
     }
@@ -10106,7 +10015,6 @@ function handleStreamEvent(
           }
         }
       });
-      maybeCompleteOnStepsFinished(dispatch, getState);
       break;
     }
     case 'stepError': {
@@ -10123,7 +10031,6 @@ function handleStreamEvent(
           }
         }
       });
-      maybeCompleteOnStepsFinished(dispatch, getState);
       break;
     }
     case 'edit':
@@ -10142,6 +10049,12 @@ function handleStreamEvent(
         asString(payload.error) || asString(asRecord(payload.info)?.error)
           ? "error"
           : "done";
+      markAssistantTurnClosed(
+        asString(asRecord(payload.info)?.id),
+        asString(payload.messageID) || asString(payload.messageId),
+        asString(asRecord(payload.properties)?.messageID),
+        asString(asRecord(payload.properties)?.messageId),
+      );
       const finalized = finalizeStreamingSnapshotSteps(
         getState().streaming,
         terminalStatus,
@@ -10164,50 +10077,15 @@ function handleStreamEvent(
           }
         }
       });
-      // Keep isProcessing true — the authoritative terminal signal comes from either
-      // messageResponse (when the extension finishes the prompt call) or
-      // SET_PROCESSING_SESSIONS (when the backend confirms the session is no longer
-      // processing). Dispatching SET_PROCESSING(false) here causes the loading
-      // indicator to disappear while the AI is still streaming content.
+      dispatch({
+        type: "SET_ASSISTANT_TURN_PENDING",
+        payload: { pending: false, messageId: null },
+      });
+      dispatch({ type: "SET_PROCESSING", payload: false });
       break;
     }
     default: {
       let consumed = false;
-      if (structuredOutput?.reasoning) {
-        structuredOutput.reasoning.forEach((chunk) => {
-          const sanitized = sanitizeReasoningChunk(chunk);
-          if (!sanitized) {
-            return;
-          }
-          dispatch({
-            type: "UPDATE_STREAMING_REASONING",
-            payload: { reasoning: sanitized, append: true },
-          });
-          consumed = true;
-        });
-      }
-
-      if (structuredOutput?.progressUpdates) {
-        structuredOutput.progressUpdates.forEach((step) => {
-          upsertStreamingStep(dispatch, getState, {
-            title: step.title,
-            type: "step",
-            status: step.status ?? "pending",
-            source: "stream",
-            partType: "structured-progress",
-            internal: false,
-            meta: step.meta,
-            filePath: step.filePath,
-            activityDetail: (step.command || step.output) ? {
-              kind: "command",
-              command: step.command,
-              output: step.output,
-            } : undefined,
-          });
-          consumed = true;
-        });
-      }
-
       const interactiveEvents = toInteractiveEvents(structuredOutput);
       const hasBlockingInteractive =
         hasBlockingInteractiveEvents(interactiveEvents);
@@ -10218,17 +10096,19 @@ function handleStreamEvent(
           getState,
           interactiveEvents,
         );
+        logger.info("[TRACE][HANDLER][STRUCTURED_INTERACTIVE_EVENTS]", {
+          eventType: normalizedEventType,
+          messageId,
+          structuredKind: structuredKind || null,
+          interactiveCount: interactiveEvents.length,
+          blockingInteractive: hasBlockingInteractive,
+          streamingExists: !!getState().streaming,
+          streamingInteractiveCount: getState().streaming?.interactiveEvents?.length ?? 0,
+        });
         consumed = true;
       }
 
       if (structuredOutput?.subagents || structuredOutput?.subagentsDelta) {
-        logger.info('[SUBAGENT-DEBUG] stream default case dispatching subagents', {
-          messageId,
-          eventType: normalizedEventType,
-          subagentsCount: structuredOutput.subagents?.length ?? 0,
-          subagentsDeltaItemCount: structuredOutput.subagentsDelta?.items?.length ?? 0,
-          responseType: structuredOutput.responseType,
-        });
         applyStructuredSubagentPayload(dispatch, getState, structuredOutput, messageId || '');
         bindStreamingToParentMessageIdFromSubagents(
           dispatch,
@@ -10344,15 +10224,8 @@ function handleStreamEvent(
         }
       }
 
-      if (hasBlockingInteractive) {
-        flushVisibleStreamingSnapshotToMessages(dispatch, getState);
-        dispatch({ type: "FINISH_STREAMING" });
-        dispatch({ type: "SET_PROCESSING", payload: false });
-        break;
-      }
-
       if (consumed) {
-        dispatch({ type: "SET_PROCESSING", payload: true });
+        dispatchProcessingTrue();
       }
       break;
     }
@@ -10532,12 +10405,14 @@ function remapSubagentsToFinalMessageId(
 
   const state = getState();
   const persistedMessageIds = new Set<string>();
-  state.messages.forEach((message) => {
-    const messageId = getMessageId(message);
-    if (messageId) {
-      persistedMessageIds.add(messageId);
-    }
-  });
+  if (state.messages && state.messages.length > 0) {
+    state.messages.forEach((message) => {
+      const messageId = getMessageId(message);
+      if (messageId) {
+        persistedMessageIds.add(messageId);
+      }
+    });
+  }
   const uniqueSourceIds = Array.from(
     new Set(
       sourceMessageIds.filter(
@@ -10609,8 +10484,17 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
   let latestStreamingSnapshot: StreamingState | null = null;
   let terminalErrorReached = false;
   let activeSubagentParentMessageIds = new Set<string>();
+  const closedAssistantTurnMessageIds = new Set<string>();
   const stoppedSessionIds = new Set<string>();
   let awaitingInteractiveTurnStart = false;
+
+  const markAssistantTurnClosed = (...messageIds: Array<string | null | undefined>) => {
+    for (const messageId of messageIds) {
+      if (messageId) {
+        closedAssistantTurnMessageIds.add(messageId);
+      }
+    }
+  };
 
   const streamEventCanStartVisibleAssistantTurn = (payload: UnknownRecord): boolean => {
     const eventType = asString(payload.type) || asString(payload.event) || asString(payload.kind);
@@ -10637,31 +10521,25 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
       asRichString(payload.text) ||
       asRichString(payload.content) ||
       asRichString(properties?.text) ||
-      asRichString(properties?.content);
+      asRichString(properties?.content) ||
+      asRichString(eventPart?.text) ||
+      asRichString(eventPart?.content) ||
+      asRichString(eventPart?.message);
     if (updatedText.trim()) {
       return true;
     }
 
-    const structuredRecord = asRecord(payload.structured);
-    const structuredKind = asString(structuredRecord?.kind).toLowerCase();
     const structuredText =
-      asString(structuredRecord?.message) ||
-      asString(structuredRecord?.text);
-    if (
-      structuredText.trim() &&
-      structuredKind !== "lifecycle"
-    ) {
+      asRichString(eventPart?.reasoning) ||
+      asRichString(eventPart?.thought) ||
+      asRichString(eventPart?.thinking);
+    if (normalizePartType(eventPart?.type) === "reasoning" || structuredText.trim()) {
       return true;
     }
 
-    const structuredOutput =
-      normalizeStructuredOutputWithFallback(payload.structuredOutput) ??
-      normalizeStructuredOutputWithFallback((payload as UnknownRecord).structured_output) ??
-      normalizeStructuredOutputWithFallback(properties?.structuredOutput) ??
-      normalizeStructuredOutputWithFallback((properties as UnknownRecord | null)?.structured_output) ??
-      normalizeStructuredOutputWithFallback(infoRecord?.structuredOutput) ??
-      normalizeStructuredOutputWithFallback((infoRecord as UnknownRecord | null)?.structured_output) ??
-      normalizeStructuredOutputWithFallback((infoRecord as UnknownRecord | null)?.structured);
+    const structuredOutput = structuredOutputFromCentralizedEventPayload(payload, {
+      includeFallbackCandidate: false,
+    });
 
     if (structuredOutput) {
       return true;
@@ -10722,6 +10600,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
       }
 
       const type = asString(data.type);
+      const eventMessageId = extractEventMessageId(data);
 
       // Log ALL events for comprehensive debugging
       logger.debug(`Received Event: ${type}`, {
@@ -10740,6 +10619,9 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           type !== "streamEvent" ||
           !streamEventCanStartVisibleAssistantTurn(asRecord(data.event) ?? data)
         )
+      ) || (
+        !!eventMessageId &&
+        closedAssistantTurnMessageIds.has(eventMessageId)
       );
       if (
         asBoolean(data.processing, false) &&
@@ -10753,6 +10635,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
       switch (type) {
         case "initState":
         case "init": {
+          closedAssistantTurnMessageIds.clear();
           terminalErrorReached = false;
           activeSubagentParentMessageIds = new Set<string>();
           const initSessionId =
@@ -10768,15 +10651,16 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           const stateBeforeInit = getState();
           const sessionId =
             asString(state.sessionId) || asString(state.currentSessionId) || null;
+          const previousMessages = Array.isArray(stateBeforeInit.messages)
+            ? stateBeforeInit.messages
+            : [];
+          const previousSessionsList = Array.isArray(stateBeforeInit.sessionsList)
+            ? stateBeforeInit.sessionsList
+            : [];
           const processingSessionIds = asArray(
             state.processingSessionIds,
             (item): item is string => typeof item === "string",
           );
-          const cachedInitMessages =
-            sessionId
-              ? stateBeforeInit.messagesBySessionId?.[sessionId] ?? []
-              : [];
-
           const selectedModelRecord = asRecord(state.selectedModel);
           const selectedModel = selectedModelRecord
             ? {
@@ -10788,11 +10672,10 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           if (
             sessionId &&
             !stateBeforeInit.receivedInitState &&
-            stateBeforeInit.messages.length === 0 &&
-            cachedInitMessages.length === 0 &&
+            previousMessages.length === 0 &&
             !stateBeforeInit.isLoadingSession
           ) {
-            const existingSession = stateBeforeInit.sessionsList.find(
+            const existingSession = previousSessionsList.find(
               (session) => session.id === sessionId,
             );
             dispatch({
@@ -10820,7 +10703,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             sessionIsProcessing: processingSessionIds.includes(sessionId ?? ""),
             isProcessingBefore: stateBeforeInit.isProcessing,
             streamingExistsBefore: !!stateBeforeInit.streaming,
-            hasMessagesBefore: stateBeforeInit.messages.length,
+            hasMessagesBefore: previousMessages.length,
           });
           dispatch({
             type: "SET_SERVER_STATUS",
@@ -10854,6 +10737,11 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             payload: normalizeCompatibilityWarnings(state.compatibilityWarnings),
           });
           dispatch({ type: "SET_RECEIVED_INIT_STATE", payload: true });
+          // Startup should become interactive as soon as initState arrives.
+          // chatHistory is still allowed to hydrate afterward, but we do not
+          // keep the shell blocked behind the session-loading overlay while
+          // waiting on the fallback timeout.
+          dispatch({ type: "END_SESSION_LOADING" });
 
           // Store workspace root on window object for use in file path display
           const workspaceRoot = asString(state.workspaceRoot);
@@ -10876,6 +10764,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           const showLogger = state.showLogger;
           if (typeof showLogger === "boolean") {
             logger.setShowLogger(showLogger);
+            dispatch({ type: "SET_SHOW_LOGGER", payload: showLogger });
           }
 
           break;
@@ -11102,13 +10991,22 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               }
             }
 
-            // Set aborted flag to indicate user stopped the response
+            // Set aborted flag to indicate user stopped the response and clear
+            // stale blocking interactive payloads so the interrupted badge can
+            // render for the finalized assistant turn.
             (normalizedMessage as unknown as UnknownRecord).aborted = true;
+            normalizedMessage.interactiveEvents = [];
+            const normalizedInfo = asRecord(normalizedMessage.info) || {};
+            normalizedMessage.info = {
+              ...normalizedInfo,
+              aborted: true,
+            };
 
             const normalizedMessageId =
               asString(asRecord(normalizedMessage.info)?.id) ||
               asString((normalizedMessage as unknown as UnknownRecord).id) ||
               null;
+            markAssistantTurnClosed(normalizedMessageId, streamingMessageId);
 
             // Persist to messages array (locked data). Replace matching assistant
             // turn instead of blind-append so already rendered content is never
@@ -11121,38 +11019,60 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               ]),
             });
 
-            // Extract and persist subagents
-            const { summariesByParentMessageId, detailsById } =
-              extractSubagentsFromMessages([normalizedMessage]);
-            if (Object.keys(summariesByParentMessageId).length > 0) {
-              dispatch({
-                type: "UPSERT_SUBAGENT_SUMMARIES",
-                payload: summariesByParentMessageId,
-              });
-            }
-            if (Object.keys(detailsById).length > 0) {
-              dispatch({ type: "UPSERT_SUBAGENT_DETAIL", payload: detailsById });
-            }
+            // Update subagents from centralized events (single source of truth)
+            handleSubagentUpdatesFromCentralizedEvents(dispatch, getState);
 
-            // Persist to backend
-            const sessionId = deriveSessionIdFromMessage(
-              normalizedMessage,
-              getState().currentSessionId,
-            );
-            if (sessionId) {
-              vscode.postMessage({
-                type: "persistAssistantMessage",
-                sessionId,
-                message: normalizedMessage,
-              });
-            }
           }
 
           dispatch({ type: "SET_STEERING", payload: false });
+          dispatch({
+            type: "SET_ASSISTANT_TURN_PENDING",
+            payload: { pending: false, messageId: null },
+          });
           dispatch({ type: "SET_PROCESSING", payload: false });
           dispatch({ type: "FINISH_STREAMING" });
           dispatch({ type: "SET_STREAMING", payload: null });
           dispatch({ type: "SET_INTERACTIVE_EVENTS", payload: [] });
+          break;
+        }
+        case "deferredPromptAccepted": {
+          const messageRecord = asRecord(data.message);
+          const timeRecord = asRecord(messageRecord?.time);
+          const sessionId = firstNonEmptyString(
+            asString(data.sessionId),
+            asString(data.sessionID),
+            asString(messageRecord?.sessionID),
+            getState().currentSessionId ?? undefined,
+          );
+          const text = firstNonEmptyString(
+            asString(messageRecord?.text),
+            asString(data.text),
+          );
+          if (!sessionId || !text) {
+            break;
+          }
+
+          dispatch({
+            type: "ADD_PENDING_DEFERRED_PROMPT",
+            payload: {
+              id:
+                firstNonEmptyString(
+                  asString(messageRecord?.id),
+                  asString(data.clientRequestId),
+                ) ?? `deferred-${Date.now()}`,
+              sessionId,
+              createdAt:
+                asOptionalNumber(timeRecord?.created) ??
+                asOptionalNumber(data.createdAt) ??
+                Date.now(),
+              text,
+              files: asArray(data.files, (item): item is string => typeof item === "string"),
+              contexts: asArray(data.contexts, (item): item is ContextItem => !!asRecord(item)),
+              images: Array.isArray(data.images) ? data.images : undefined,
+              agent: asOptionalString(data.agent),
+              clientRequestId: asOptionalString(data.clientRequestId),
+            },
+          });
           break;
         }
         case "messageResponse": {
@@ -11195,8 +11115,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             ),
           });
 
-          const responseMessageId =
-            asString(msg.id) || asString(asRecord(msg.info)?.id);
+          const responseMessageId = getMessageId(msg);
           const currentStateForResponse = getState();
           const currentStreaming = currentStateForResponse.streaming;
           const snapshotMessageId = latestStreamingSnapshot?.messageId || null;
@@ -11410,17 +11329,8 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               [streamingMessageId, ...Array.from(activeSubagentParentMessageIds)],
               finalMessageId,
             );
-            const { summariesByParentMessageId, detailsById } =
-              extractSubagentsFromMessages([sanitized]);
-            if (Object.keys(summariesByParentMessageId).length > 0) {
-              dispatch({
-                type: "UPSERT_SUBAGENT_SUMMARIES",
-                payload: summariesByParentMessageId,
-              });
-            }
-            if (Object.keys(detailsById).length > 0) {
-              dispatch({ type: "UPSERT_SUBAGENT_DETAIL", payload: detailsById });
-            }
+            // Update subagents from centralized events (single source of truth)
+            handleSubagentUpdatesFromCentralizedEvents(dispatch, getState);
             const interactiveEvents = interactiveEventsFromMessage(sanitized);
             if (interactiveEvents.length > 0) {
               dispatch({
@@ -11429,17 +11339,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               });
             }
 
-            const sessionId = deriveSessionIdFromMessage(
-              sanitized,
-              getState().currentSessionId,
-            );
-            if (sessionId) {
-              vscode.postMessage({
-                type: "persistAssistantMessage",
-                sessionId,
-                message: sanitized,
-              });
-            }
           }
           const isMatchingStreamingMessage =
             streamingMessageId && finalMessageId && streamingMessageId === finalMessageId;
@@ -11478,11 +11377,24 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             latestStreamingSnapshot = null;
             activeSubagentParentMessageIds = new Set<string>();
           }
-          dispatch({ type: "SET_PROCESSING", payload: false });
-          if (shouldClearStreamingAfterResponse) {
-            dispatch({ type: "SET_STREAMING", payload: null });
-          } else {
-            dispatch({ type: "FINISH_STREAMING" });
+          markAssistantTurnClosed(
+            finalMessageId,
+            responseMessageId,
+            streamingMessageId,
+            snapshotMessageId,
+          );
+          const isActiveSession = !responseSessionId || responseSessionId === getState().currentSessionId;
+          if (isActiveSession) {
+            dispatch({
+              type: "SET_ASSISTANT_TURN_PENDING",
+              payload: { pending: false, messageId: null },
+            });
+            dispatch({ type: "SET_PROCESSING", payload: false });
+            if (shouldClearStreamingAfterResponse) {
+              dispatch({ type: "SET_STREAMING", payload: null });
+            } else {
+              dispatch({ type: "FINISH_STREAMING" });
+            }
           }
           break;
         }
@@ -11495,21 +11407,29 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           };
           try {
             terminalErrorReached = false;
-            const rawMessages = asArray(data.messages, isMessage);
+            const centralizedMessages = asArray(data.messages, isMessage);
+            const rawSdkEventPayloads = Array.isArray((data as UnknownRecord).rawSdkEventPayloads)
+              ? [...((data as UnknownRecord).rawSdkEventPayloads as unknown[])]
+              : [];
             const historySessionId = asString(data.sessionId) || null;
             if (historySessionId) {
               logger.setSession(historySessionId);
             }
-            logSourceSnapshot("chatHistory", rawMessages);
-            logFullPayloadSnapshot("SOURCE", "chatHistory", {
-              sessionId: historySessionId,
-              messages: rawMessages,
-              processingSessionIds: asArray(
-                data.processingSessionIds,
-                (item): item is string => typeof item === "string",
-              ),
-            });
-            const normalizedMessages = rawMessages
+            // Hydration must render from the centralized messages payload only.
+            // The raw event tape is still dispatched separately for the debug
+            // panel and timeline parsing, but it must not be merged back into
+            // the render list here or we reintroduce duplicate / incomplete turns.
+            const sourceMessages = centralizedMessages;
+            if (rawSdkEventPayloads.length > 0) {
+              dispatch({
+                type: "SET_RAW_SDK_EVENT_PAYLOADS",
+                payload: {
+                  sessionId: historySessionId || asString(data.sessionId) || "",
+                  events: rawSdkEventPayloads,
+                },
+              });
+            }
+            const normalizedMessages = sourceMessages
               .map((msg) => normalizeMessage(msg, null))
               .filter((msg): msg is Message => !!msg)
               .filter((msg) => isRenderableHistoryMessage(msg));
@@ -11539,10 +11459,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             const isSessionProcessing = !!(chatHistorySessionId &&
               effectiveProcessingSessionIds.includes(chatHistorySessionId));
             const currentStreamingSnapshot = currentState.streaming;
-            const cachedStreamingForSwitch =
-              chatHistorySessionId
-                ? currentState.streamingBySessionId?.[chatHistorySessionId] ?? null
-                : null;
             const isSameActiveSessionHydration = !!(
               chatHistorySessionId &&
               currentState.currentSessionId === chatHistorySessionId
@@ -11551,54 +11467,12 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               isSameActiveSessionHydration &&
               currentStreamingSnapshot?.isActive === true &&
               hasVisibleStreamingSnapshot(currentStreamingSnapshot);
-            const shouldMergeFinishedStreamingSnapshot =
-              isSameActiveSessionHydration &&
-              currentStreamingSnapshot?.isActive === false &&
-              hasVisibleStreamingSnapshot(currentStreamingSnapshot);
-            const shouldMergeCachedSwitchStreamingSnapshot = !!(
-              isSessionProcessing &&
-              !isSameActiveSessionHydration &&
-              cachedStreamingForSwitch &&
-              hasVisibleStreamingSnapshot(cachedStreamingForSwitch)
-            );
-            const cachedMessagesForSwitch =
-              chatHistorySessionId
-                ? currentState.messagesBySessionId?.[chatHistorySessionId] ?? []
-                : [];
-
             // Set loading state if we're loading a different session
             const isSwitchingSession = !!(
               chatHistorySessionId &&
               currentState.currentSessionId !== chatHistorySessionId
             );
-            const shouldUseCachedSwitchMessages = !!(
-              isSessionProcessing &&
-              shouldPreferCachedSwitchMessages(
-                cachedMessagesForSwitch,
-                dedupedSystemMessages,
-              )
-            );
-            const incomingHistoryActivityScore =
-              activityScoreFromMessages(dedupedSystemMessages);
-            const existingActiveMessages = currentState.messages ?? [];
-            const existingActiveHistoryActivityScore =
-              activityScoreFromMessages(existingActiveMessages);
-            // Same-session stale hydration guard:
-            // after streaming completes we can briefly receive chatHistory that
-            // does not yet include the just-rendered assistant turn. Keep the
-            // richer local timeline until persisted history catches up.
-            const shouldUseExistingActiveMessages = !!(
-              isSameActiveSessionHydration &&
-              existingActiveMessages.length > 0 &&
-              existingActiveHistoryActivityScore > incomingHistoryActivityScore
-            );
-
-            if (isSwitchingSession && cachedMessagesForSwitch.length > 0) {
-              dispatch({
-                type: "HYDRATE_SESSION_FROM_CACHE",
-                payload: { sessionId: chatHistorySessionId },
-              });
-            } else if (isSwitchingSession) {
+            if (isSwitchingSession) {
               // Look up the session title from the sessions list
               const session = currentState.sessionsList.find(s => s.id === chatHistorySessionId);
               const sessionTitle = session?.title || chatHistorySessionId;
@@ -11612,72 +11486,28 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             hydrationPresentationPolicy = {
               mode: "hydration",
               sessionProcessing:
-                isSessionProcessing ||
-                shouldPreserveActiveStreaming ||
-                shouldMergeCachedSwitchStreamingSnapshot,
+                isSessionProcessing || shouldPreserveActiveStreaming,
             };
 
             if (!shouldPreserveActiveStreaming) {
               latestStreamingSnapshot = null;
             }
 
-            // Same-session history refreshes can arrive just after streaming
-            // completes but before the final assistant message has persisted.
-            // Keep the locally rendered snapshot as authoritative for that turn
-            // so the assistant response cannot blink out of the timeline.
-            // During a session switch, SET_SESSION_ID is responsible for caching
-            // the old stream and restoring the target stream. Clearing here first
-            // would erase the old session's visible activity timeline.
             if (!shouldPreserveActiveStreaming && !isSwitchingSession) {
               dispatch({ type: "SET_STREAMING", payload: null });
               dispatch({ type: "SET_PROCESSING", payload: isSessionProcessing });
             }
-            const hydrationSourceMessages = shouldUseExistingActiveMessages
-              ? existingActiveMessages
-              : shouldUseCachedSwitchMessages
-                ? cachedMessagesForSwitch
-                : dedupedSystemMessages;
-            let stabilizedHydratedMessages = hydrationSourceMessages.map((message) => {
-              if (!Array.isArray(message.subagents) || message.subagents.length === 0) {
-                return message;
+            let stabilizedHydratedMessages = dedupedSystemMessages.map((message) => {
+              // Clear out message-based subagents during rehydration
+              // All subagent data now comes from centralized events via subagentsByParentMessageId
+              // This eliminates dual data source confusion and ensures bash tools appear in subagent cards
+              if (Array.isArray(message.subagents) && message.subagents.length > 0) {
+                const { subagents, ...messageWithoutSubagents } = message;
+                return messageWithoutSubagents as Message;
               }
-              return {
-                ...message,
-                subagents: message.subagents.map((subagent) =>
-                  normalizeHydratedSubagentDetail(
-                    subagent,
-                    message,
-                    shouldFreezeSubagentForPresentation(
-                      subagent,
-                      message,
-                      hydrationPresentationPolicy,
-                    ),
-                  ),
-                ),
-              };
+              return message;
             });
-            if (shouldMergeFinishedStreamingSnapshot && currentStreamingSnapshot) {
-              stabilizedHydratedMessages = mergeStreamingSnapshotIntoHistory(
-                stabilizedHydratedMessages,
-                currentStreamingSnapshot,
-              );
-            }
-            if (
-              shouldMergeCachedSwitchStreamingSnapshot &&
-              cachedStreamingForSwitch
-            ) {
-              stabilizedHydratedMessages = mergeStreamingSnapshotIntoHistory(
-                stabilizedHydratedMessages,
-                cachedStreamingForSwitch,
-              );
-            }
             canonicalMessages = stabilizedHydratedMessages;
-            logFullPayloadSnapshot("PRE-RENDER", "chatHistory", {
-              sessionId: chatHistorySessionId || historySessionId,
-              messages: canonicalMessages,
-              processingSessionIds: effectiveProcessingSessionIds,
-            });
-
             if (chatHistorySessionId) {
               dispatch({ type: "SET_SESSION_ID", payload: chatHistorySessionId });
             }
@@ -11716,8 +11546,13 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           dispatch({ type: "RESET_SESSION_STATS", payload: stats });
           dispatchContextUsageFromMessages(dispatch, getState(), canonicalMessages);
           dispatch({ type: "CLEAR_SUBAGENTS_FOR_SESSION" });
+
+          const postHydrationState = getState();
+          const rawSdkEventPayloads = postHydrationState.rawSdkEventPayloadsBySessionId?.[chatHistorySessionId] ?? [];
+
           const extractedHydratedSubagents =
-            extractSubagentsFromMessages(canonicalMessages);
+            extractSubagentsFromCentralizedEvents(rawSdkEventPayloads);
+
           const normalizedHydratedSubagents = normalizeHydratedSubagentMaps(
             extractedHydratedSubagents.summariesByParentMessageId,
             extractedHydratedSubagents.detailsById,
@@ -11749,6 +11584,12 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           break;
         }
         case "subagentSnapshot": {
+          // DISABLED: Using centralized events as single source of truth
+          // Backend should not send pre-processed subagent data
+          break;
+        }
+        /* ORIGINAL CODE - DISABLED (commented out to prevent syntax errors)
+        logger.info('[SUBAGENT][REHYDRATED] subagentSnapshot received', {
           logger.info('[SUBAGENT][REHYDRATED] subagentSnapshot received', {
             rawSummaryKeys: Object.keys(data.summariesByParentMessageId ?? data.subagentsByParentMessageId ?? {}),
             rawDetailKeys: Object.keys(data.detailsById ?? data.subagentDetailsById ?? {}),
@@ -11858,7 +11699,236 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           // empty snapshot right after chatHistory has already restored subagents
           // from persisted messages. Avoid clobbering those restored cards.
           if (!hasSnapshotSubagents) {
-            const fallback = extractSubagentsFromMessages(getState().messages);
+            // Fallback to centralized events (single source of truth)
+            const fallback = extractSubagentsFromCentralizedEvents(getState().rawSdkEventPayloads);
+            const normalizedFallback = normalizeHydratedSubagentMaps(
+              fallback.summariesByParentMessageId,
+              fallback.detailsById,
+              getState().messages,
+              false,
+              snapshotPolicy,
+            );
+            if (
+              Object.keys(normalizedFallback.summariesByParentMessageId).length >
+              0 ||
+              Object.keys(normalizedFallback.detailsById).length > 0
+            ) {
+              trackActiveSubagentParentIds(
+                normalizedFallback.summariesByParentMessageId,
+              );
+              dispatch({
+                type: "UPSERT_SUBAGENT_SUMMARIES",
+                payload: normalizedFallback.summariesByParentMessageId,
+              });
+              dispatch({
+                type: "UPSERT_SUBAGENT_DETAIL",
+                payload: normalizedFallback.detailsById,
+              });
+              syncSubagentMapsIntoMessages(
+                dispatch,
+                getState,
+                normalizedFallback.summariesByParentMessageId,
+                normalizedFallback.detailsById,
+                "merge",
+                {
+                  freezeIncompleteStatuses: false,
+                  presentationPolicy: snapshotPolicy,
+                },
+              );
+              break;
+            }
+          }
+          const normalizedSnapshot = normalizeHydratedSubagentMaps(
+            summariesByParentMessageId,
+            detailsById,
+            getState().messages,
+            false,
+            snapshotPolicy,
+          );
+
+          // Log final normalized snapshot before rendering
+          logger.info('[SUBAGENT][REHYDRATED] final normalized snapshot before render', {
+            summaryCount: Object.keys(normalizedSnapshot.summariesByParentMessageId).length,
+            detailsCount: Object.keys(normalizedSnapshot.detailsById).length,
+            sampleFinalSummaries: Object.entries(normalizedSnapshot.summariesByParentMessageId).slice(0, 2).map(([parentId, subagents]) => ({
+              parentId,
+              subagentCount: Array.isArray(subagents) ? subagents.length : 0,
+              sampleSubagent: Array.isArray(subagents) && subagents.length > 0 ? {
+                id: subagents[0]?.id,
+                agentId: subagents[0]?.agentId,
+                provider: subagents[0]?.provider ?? subagents[0]?.providerID,
+                model: subagents[0]?.model ?? subagents[0]?.modelID,
+                status: subagents[0]?.status,
+              } : null,
+            })),
+            sampleFinalDetails: Object.entries(normalizedSnapshot.detailsById).slice(0, 2).map(([detailId, detail]) => ({
+              detailId,
+              provider: detail?.provider ?? detail?.providerID,
+              model: detail?.model ?? detail?.modelID,
+              agentId: detail?.agentId,
+            })),
+          });
+
+          const hasNormalizedSnapshotSubagents =
+            hasSubagentSummaryEntries(
+              normalizedSnapshot.summariesByParentMessageId,
+            ) || Object.keys(normalizedSnapshot.detailsById).length > 0;
+          if (!hasNormalizedSnapshotSubagents) {
+            const existingState = getState();
+            const hasExistingRenderedSubagents =
+              hasSubagentSummaryEntries(
+                existingState.subagentsByParentMessageId,
+              ) || Object.keys(existingState.subagentDetailsById).length > 0;
+            if (hasExistingRenderedSubagents) {
+              break;
+            }
+          }
+          trackActiveSubagentParentIds(
+            normalizedSnapshot.summariesByParentMessageId,
+          );
+          dispatch({ type: "CLEAR_SUBAGENTS_FOR_SESSION" });
+          if (
+            Object.keys(normalizedSnapshot.summariesByParentMessageId).length > 0
+          ) {
+            dispatch({
+              type: "UPSERT_SUBAGENT_SUMMARIES",
+              payload: normalizedSnapshot.summariesByParentMessageId,
+            });
+          }
+          if (Object.keys(normalizedSnapshot.detailsById).length > 0) {
+            dispatch({
+              type: "UPSERT_SUBAGENT_DETAIL",
+              payload: normalizedSnapshot.detailsById,
+            });
+          }
+          bindStreamingToParentMessageIdFromSubagents(
+            dispatch,
+            getState,
+            normalizedSnapshot.summariesByParentMessageId,
+          );
+          syncSubagentMapsIntoMessages(
+            dispatch,
+            getState,
+            normalizedSnapshot.summariesByParentMessageId,
+            normalizedSnapshot.detailsById,
+            "replace",
+            {
+              freezeIncompleteStatuses: false,
+              presentationPolicy: snapshotPolicy,
+            },
+          );
+          break;
+          logger.info('[SUBAGENT][REHYDRATED] subagentSnapshot received', {
+            rawSummaryKeys: Object.keys(data.summariesByParentMessageId ?? data.subagentsByParentMessageId ?? {}),
+            rawDetailKeys: Object.keys(data.detailsById ?? data.subagentDetailsById ?? {}),
+            activeSessionId: getState().currentSessionId,
+          });
+
+          // Log detailed subagent data structure
+          const rawSummaries = data.summariesByParentMessageId ?? data.subagentsByParentMessageId ?? {};
+          const rawDetails = data.detailsById ?? data.subagentDetailsById ?? {};
+
+          logger.info('[SUBAGENT][REHYDRATED] detailed subagent data inspection', {
+            summaryCount: Object.keys(rawSummaries).length,
+            detailsCount: Object.keys(rawDetails).length,
+            // Sample first few subagents to see actual values
+            sampleSummaries: Object.entries(rawSummaries).slice(0, 2).map(([parentId, subagents]) => ({
+              parentId,
+              subagentArray: Array.isArray(subagents) ? subagents.slice(0, 2).map(s => ({
+                id: typeof s === 'object' && s !== null ? (s as any).id : undefined,
+                agentId: typeof s === 'object' && s !== null ? (s as any).agentId : undefined,
+                agent: typeof s === 'object' && s !== null ? (s as any).agent : undefined,
+                provider: typeof s === 'object' && s !== null ? (s as any).provider ?? (s as any).providerID : undefined,
+                model: typeof s === 'object' && s !== null ? (s as any).model ?? (s as any).modelID : undefined,
+                status: typeof s === 'object' && s !== null ? (s as any).status : undefined,
+              })) : [],
+            })),
+            sampleDetails: Object.entries(rawDetails).slice(0, 2).map(([detailId, detail]) => ({
+              detailId,
+              provider: typeof detail === 'object' && detail !== null ? (detail as any).provider ?? (detail as any).providerID : undefined,
+              model: typeof detail === 'object' && detail !== null ? (detail as any).model ?? (detail as any).modelID : undefined,
+              agentId: typeof detail === 'object' && detail !== null ? (detail as any).agentId : undefined,
+            })),
+          });
+
+          const snapshotPolicy: SubagentPresentationPolicy = {
+            mode: "hydration",
+            sessionProcessing: getState().processing,
+          };
+          const rawSummariesByParentMessageId = normalizeSubagentSummaryMap(
+            data.summariesByParentMessageId ?? data.subagentsByParentMessageId,
+          );
+          const rawDetailsById = normalizeSubagentDetailMap(
+            data.detailsById ?? data.subagentDetailsById,
+          );
+          const activeSessionId = getState().currentSessionId;
+          const payloadSessionId = getSubagentPayloadSessionId(
+            rawSummariesByParentMessageId,
+            rawDetailsById,
+          );
+          logger.info('[SUBAGENT][REHYDRATED] subagentSnapshot pre-render pull', {
+            activeSessionId,
+            payloadSessionId,
+            rawSummaryParentKeys: Object.keys(rawSummariesByParentMessageId),
+            rawDetailIds: Object.keys(rawDetailsById),
+            processing: getState().processing,
+            streamingMessageId: getState().streaming?.messageId ?? null,
+          });
+
+          // Log normalized subagent data to check if provider/model info is preserved
+          logger.info('[SUBAGENT][REHYDRATED] normalized subagent data inspection', {
+            normalizedSummaryCount: Object.keys(rawSummariesByParentMessageId).length,
+            normalizedDetailsCount: Object.keys(rawDetailsById).length,
+            sampleNormalizedSummaries: Object.entries(rawSummariesByParentMessageId).slice(0, 2).map(([parentId, subagents]) => ({
+              parentId,
+              subagentCount: Array.isArray(subagents) ? subagents.length : 0,
+              sampleSubagent: Array.isArray(subagents) && subagents.length > 0 ? {
+                id: subagents[0]?.id,
+                agentId: subagents[0]?.agentId,
+                provider: subagents[0]?.provider ?? subagents[0]?.providerID,
+                model: subagents[0]?.model ?? subagents[0]?.modelID,
+                status: subagents[0]?.status,
+              } : null,
+            })),
+            sampleNormalizedDetails: Object.entries(rawDetailsById).slice(0, 2).map(([detailId, detail]) => ({
+              detailId,
+              provider: detail?.provider ?? detail?.providerID,
+              model: detail?.model ?? detail?.modelID,
+              agentId: detail?.agentId,
+            })),
+          });
+          if (
+            activeSessionId &&
+            payloadSessionId &&
+            payloadSessionId !== activeSessionId
+          ) {
+            logger.debug(
+              "Ignoring subagentSnapshot payload for inactive session",
+              {
+                activeSessionId,
+                payloadSessionId,
+              },
+            );
+            break;
+          }
+          const scopedSnapshot = filterSubagentMapsForActiveSession(
+            getState(),
+            rawSummariesByParentMessageId,
+            rawDetailsById,
+          );
+          const summariesByParentMessageId =
+            scopedSnapshot.summariesByParentMessageId;
+          const detailsById = scopedSnapshot.detailsById;
+          const hasSnapshotSubagents =
+            hasSubagentSummaryEntries(summariesByParentMessageId) ||
+            Object.keys(detailsById).length > 0;
+
+          // Defensive fallback: some session/history hydration flows can emit an
+          // empty snapshot right after chatHistory has already restored subagents
+          // from persisted messages. Avoid clobbering those restored cards.
+          if (!hasSnapshotSubagents) {
+            // Fallback to centralized events (single source of truth)
+            const fallback = extractSubagentsFromCentralizedEvents(getState().rawSdkEventPayloads);
             const normalizedFallback = normalizeHydratedSubagentMaps(
               fallback.summariesByParentMessageId,
               fallback.detailsById,
@@ -11977,6 +12047,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           );
           break;
         }
+        */ // END OF DISABLED subagentSnapshot CODE
         case "subagentUpdate": {
           const streamPolicy: SubagentPresentationPolicy = {
             mode: "stream",
@@ -12135,7 +12206,11 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           const stateBeforeStreamEvent = getState();
           const payload = asRecord(data.event) ?? data;
           const streamEventType = asString(payload.type) || "unknown";
+          const envelopeSessionId =
+            asString(data.sessionId) ||
+            asString(data.sessionID);
           const eventSessionId =
+            envelopeSessionId ||
             asString(payload.sessionId) ||
             asString(payload.sessionID) ||
             asString(asRecord(payload.properties)?.sessionId) ||
@@ -12157,28 +12232,62 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             streamEventType === "start" || streamEventType === "streamStart";
           const canStartVisibleAssistantTurn =
             streamEventCanStartVisibleAssistantTurn(payload);
-          streamDebug("Stream: inbound event received", {
-            ...summarizeStreamEventForLog(payload),
-            eventSessionId: eventSessionId || null,
-            activeSessionId: activeSessionId || null,
-            isProcessing: stateBeforeStreamEvent.isProcessing,
-            hasConfirmedProcessingSession,
-            hasStreamingSnapshot: !!stateBeforeStreamEvent.streaming,
-            isExplicitStreamStart,
-            canStartVisibleAssistantTurn,
-          });
-
-          // Only log important events, not every text chunk
+          const centralizedDisposition =
+            getCentralizedDebugPayloadDisposition(payload);
+          const liveToastNotification = toastNotificationFromPayload(payload);
           const shouldLogStreamEvent = !streamEventType.includes("message.part") ||
                                       streamEventType === "message.completed" ||
                                       streamEventType === "session.completed";
 
-          if (shouldLogStreamEvent) {
-            logFullPayloadSnapshot("SOURCE", "streamEvent", {
-              streamEventType,
-              eventSessionId: eventSessionId || null,
-              activeSessionId: activeSessionId || null,
-              payload,
+          if (liveToastNotification) {
+            dispatch({
+              type: "APPEND_LIVE_TOAST_NOTIFICATION",
+              payload: {
+                sessionId: eventSessionId || activeSessionId || null,
+                notification: liveToastNotification,
+              },
+            });
+          }
+
+          // Persist the raw centralized tape as soon as the stream event is accepted.
+          // We do this before the visibility gate so the debug tape and hydrated
+          // session state stay in sync even while the live UI waits for a renderable
+          // assistant turn.
+          if (
+            centralizedDisposition === "persist" &&
+            streamEventType !== "server.heartbeat" &&
+            !terminalErrorReached
+          ) {
+            logger.info("[CENTRALIZED-TAPE][WEBVIEW] append_raw_sdk_event", {
+              sessionId: eventSessionId || activeSessionId || getState().currentSessionId || null,
+              eventType: streamEventType,
+              hasPart: !!asRecord(payload.part) || !!asRecord(asRecord(payload.properties)?.part),
+              hasProperties: !!asRecord(payload.properties),
+            });
+            dispatch({
+              type: "APPEND_RAW_SDK_EVENT_PAYLOAD",
+              payload: {
+                sessionId: eventSessionId || activeSessionId || null,
+                event: payload,
+              },
+            });
+            const persistSessionId = eventSessionId || activeSessionId || getState().currentSessionId || null;
+            if (persistSessionId) {
+              vscode.postMessage({
+                type: "persistRawSdkEventPayload",
+                sessionId: persistSessionId,
+                event: payload,
+              });
+            }
+          } else if (
+            centralizedDisposition !== "persist" &&
+            streamEventType !== "server.heartbeat" &&
+            !terminalErrorReached
+          ) {
+            logger.info("[CENTRALIZED-TAPE][WEBVIEW] skip_raw_sdk_event", {
+              sessionId: eventSessionId || activeSessionId || getState().currentSessionId || null,
+              eventType: streamEventType,
+              disposition: centralizedDisposition,
             });
           }
 
@@ -12189,13 +12298,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             !isExplicitStreamStart &&
             !canStartVisibleAssistantTurn
           ) {
-            streamDebug("Stream: event dropped before handling", {
-              ...summarizeStreamEventForLog(payload),
-              reason: "not-processing-and-no-active-stream",
-              eventSessionId: eventSessionId || null,
-              activeSessionId: activeSessionId || null,
-              canStartVisibleAssistantTurn,
-            });
             break;
           }
           if (terminalErrorReached && (getState().isProcessing || hasConfirmedProcessingSession)) {
@@ -12220,13 +12322,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             }
           }
 
-          streamDebug("Stream: event received from extension", {
-            type: streamEventType,
-            hasProperties: !!asRecord(payload.properties),
-            hasPart: !!asRecord(asRecord(payload.properties)?.part),
-            structuredKind:
-              asString(asRecord(payload.structured)?.kind) || "unknown",
-          });
           if (
             eventSessionId &&
             activeSessionId &&
@@ -12244,6 +12339,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             const scopedDispatch: Dispatch<AppAction> = (action) => {
               switch (action.type) {
                 case "SET_STREAMING":
+                case "APPEND_SDK_EVENT_PAYLOAD":
                 case "UPDATE_STREAMING_CONTENT":
                 case "UPDATE_STREAMING_REASONING":
                 case "SET_IN_REASONING_PART":
@@ -12264,6 +12360,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               scopedGetState,
               payload,
               terminalErrorReached,
+              shouldSuppressProcessingBootstrap,
             );
             dispatch({
               type: "SET_SESSION_STREAMING",
@@ -12274,7 +12371,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             });
             break;
           }
-          handleStreamEvent(dispatch, getState, payload, terminalErrorReached);
+          handleStreamEvent(dispatch, getState, payload, terminalErrorReached, shouldSuppressProcessingBootstrap);
           const streamingAfter = getState().streaming;
           if (streamingAfter) {
             latestStreamingSnapshot = streamingAfter;
@@ -12287,7 +12384,21 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             streamEventType === "session.completed"
           ) {
             const stateNow = getState();
-            logRenderSnapshot(`streamEvent:${streamEventType}`, stateNow.messages);
+
+            // Extract properties and check for finish signal to turn off loading state
+            const properties = asRecord(payload.properties);
+            const finish = resolveMessageUpdatedFinishSignal(payload, properties);
+
+            if (finish) {
+              // Turn off loading state but don't end the AI turn
+              dispatch({ type: "SET_PROCESSING", payload: false });
+
+              logger.info("Stream event: Processing finish signal detected, turning off loading state", {
+                streamEventType,
+                finish,
+                sessionId: eventSessionId || activeSessionId || null,
+              });
+            }
           }
           break;
         }
@@ -12520,7 +12631,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           if (!context.file) {
             break;
           }
-          const selected = getState().selectedContexts;
+          const selected = getState().selectedContexts || [];
 
           let nextSelected = [...selected];
 
@@ -12542,7 +12653,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           break;
         }
         case "clearAutoContext": {
-          const selected = getState().selectedContexts;
+          const selected = getState().selectedContexts || [];
           const nextSelected = selected.filter((c) => !c.isAuto);
           if (nextSelected.length !== selected.length) {
             dispatch({ type: "SET_SELECTED_CONTEXTS", payload: nextSelected });
@@ -12604,15 +12715,94 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         case "userMessageAppended": {
           terminalErrorReached = false;
           const message = data.message as Message;
+          const messageSessionId =
+            firstNonEmptyString(
+              asString(data.sessionId),
+              asString(data.sessionID),
+            ) ?? null;
+          const appendedClientRequestId = asOptionalString(data.clientRequestId);
           const resumedSessionId = firstNonEmptyString(
-            asString(data.sessionId),
-            asString(data.sessionID),
+            messageSessionId ?? undefined,
             getState().currentSessionId ?? undefined,
           );
           if (resumedSessionId) {
             stoppedSessionIds.delete(resumedSessionId);
           }
+          if (messageSessionId) {
+            dispatch({ type: "SET_SESSION_ID", payload: messageSessionId });
+          }
           if (message && typeof message === "object") {
+            const appendedRole = firstNonEmptyString(
+              message.role,
+              message.info?.role,
+            )?.toLowerCase();
+            if (appendedRole === "user" && appendedClientRequestId) {
+              const candidateSessionIds = Array.from(
+                new Set(
+                  [
+                    messageSessionId,
+                    getState().currentSessionId ?? null,
+                    PENDING_CURRENT_SESSION_KEY,
+                  ].filter(
+                    (value): value is string =>
+                      typeof value === "string" && value.trim().length > 0,
+                  ),
+                ),
+              );
+              const messageCreatedAt =
+                typeof message.time?.created === "number"
+                  ? message.time.created
+                  : typeof message.info?.time?.created === "number"
+                    ? message.info.time.created
+                    : typeof message.created === "number"
+                      ? message.created
+                      : typeof (message as { createdAt?: number }).createdAt === "number"
+                        ? (message as { createdAt?: number }).createdAt
+                        : undefined;
+              for (const sessionId of candidateSessionIds) {
+                // Confirm the optimistic overlay against the host echo, but do
+                // not remove it yet. The centralized transcript still needs a
+                // beat to catch up, and deleting the optimistic bubble here
+                // causes the visible gap where the user message disappears just
+                // as the assistant begins streaming.
+                //
+                // Why confirmation still matters before centralized ownership:
+                // - it upgrades the optimistic bubble with the host-confirmed
+                //   timestamp / images / interactive flag
+                // - it stores the host-side message identity as a first-class
+                //   ownership hint for later reconciliation
+                // - it lets the pending overlay survive the handoff without
+                //   having to rely purely on fuzzy text matching
+                dispatch({
+                  type: "CONFIRM_PENDING_USER_MESSAGE",
+                  payload: {
+                    sessionId,
+                    clientRequestId: appendedClientRequestId,
+                    messageId: firstNonEmptyString(
+                      message.info?.id,
+                      message.id,
+                      message.messageId,
+                    ),
+                    createdAt: messageCreatedAt,
+                    text: firstNonEmptyString(
+                      message.content,
+                      message.text,
+                      message.info?.content,
+                      message.info?.text,
+                    ),
+                    images: Array.isArray(message.images)
+                      ? message.images.filter(
+                        (image): image is string => typeof image === "string",
+                      )
+                      : undefined,
+                    interactiveSubmit:
+                      typeof message.interactiveSubmit === "boolean"
+                        ? message.interactiveSubmit
+                        : undefined,
+                  },
+                });
+              }
+            }
             const pendingInteractive = latestPendingInteractiveEvents(
               getState().messages || [],
             );
@@ -12684,10 +12874,15 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               !hasVisibleStreamingSnapshot(currentStreaming) &&
               !currentStreaming.messageId;
             if (hasStaleEmptyStreamingPlaceholder) {
-              // If the previous turn left behind an active but empty streaming
-              // shell, clear it now so the next send starts from a clean state
-              // instead of inheriting a perpetual loading bubble.
-              dispatch({ type: "SET_STREAMING", payload: null });
+              // Preserve the shell until the next live stream event replaces it.
+              // Clearing here can hide the assistant card before realtime payloads
+              // have a chance to populate it.
+              logger.info("[TRACE][HANDLER][PRESERVE_EMPTY_STREAMING_PLACEHOLDER]", {
+                currentSessionId: currentState.currentSessionId,
+                streamingMessageId: currentStreaming.messageId ?? null,
+                streamingActive: currentStreaming.isActive,
+                hasVisibleStreamingSnapshot: hasVisibleStreamingSnapshot(currentStreaming),
+              });
             }
             const persistedAssistantMessageIds = new Set(
               currentMessages
@@ -12751,41 +12946,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             type: "SET_PROCESSING_SESSIONS",
             payload: sessionIds,
           });
-          const stateAfterProcessingUpdate = getState();
-          const activeSessionId = stateAfterProcessingUpdate.currentSessionId;
-          const isActiveSessionStillProcessing = !!(
-            activeSessionId && sessionIds.includes(activeSessionId)
-          );
-          if (!isActiveSessionStillProcessing) {
-            awaitingInteractiveTurnStart = false;
-            if (stateAfterProcessingUpdate.isSteering) {
-              dispatch({ type: "SET_STEERING", payload: false });
-            }
-            flushVisibleStreamingSnapshotToMessages(dispatch, getState);
-            if (stateAfterProcessingUpdate.isProcessing) {
-              dispatch({ type: "SET_PROCESSING", payload: false });
-            }
-            if (stateAfterProcessingUpdate.streaming) {
-              dispatch({ type: "FINISH_STREAMING" });
-            }
-            const pendingInteractiveEvents = latestPendingInteractiveEvents(
-              stateAfterProcessingUpdate.messages || [],
-            );
-            const streamingInteractiveEvents = stateAfterProcessingUpdate
-              .streaming?.interactiveEvents ?? [];
-            const mergedInteractiveEvents =
-              pendingInteractiveEvents.length > 0
-                ? pendingInteractiveEvents
-                : streamingInteractiveEvents;
-            if (mergedInteractiveEvents.length > 0) {
-              dispatch({
-                type: "SET_INTERACTIVE_EVENTS",
-                payload: mergedInteractiveEvents,
-              });
-            } else if (stateAfterProcessingUpdate.interactiveEvents.length > 0) {
-              dispatch({ type: "SET_INTERACTIVE_EVENTS", payload: [] });
-            }
-          }
           break;
         }
         case "queueUpdate": {
@@ -12967,10 +13127,14 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           const css = asString(data.css);
           if (css) {
             let styleTag = document.getElementById("vscode-theme-icons");
+            const previousCss = styleTag?.textContent ?? "";
             if (!styleTag) {
               styleTag = document.createElement("style");
               styleTag.id = "vscode-theme-icons";
               document.head.appendChild(styleTag);
+            }
+            if (previousCss === css) {
+              break;
             }
             styleTag.textContent = css;
             // Force re-render of FileIcon components to check for theme icons

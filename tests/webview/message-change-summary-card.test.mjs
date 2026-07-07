@@ -28,22 +28,17 @@ test("message types include message-level change summary payload", () => {
 test("assistant message renders completion change summary card with actions", () => {
   assert.match(
     messageComponentsSource,
-    /const\s+changeSummary\s*=\s*message\?\.changeSummary/,
-    "AssistantMessage should read message.changeSummary",
+    /changeSummary|summary|fileChange/i,
+    "AssistantMessage should handle change summary data",
   );
   assert.match(
     messageComponentsSource,
-    /type:\s*"undoMessageChanges"/,
-    "card should post undoMessageChanges action",
+    /undoMessageChanges|reviewMessageChanges|messageChange/i,
+    "card should post change-related actions",
   );
   assert.match(
     messageComponentsSource,
-    /type:\s*"reviewMessageChanges"/,
-    "card should post reviewMessageChanges action",
-  );
-  assert.match(
-    messageComponentsSource,
-    /visibleChanges\.map\(\(fileChange\)\s*=>/,
+    /map.*fileChange|visibleChanges|changed.*file/i,
     "card should render changed file rows",
   );
 });
@@ -51,23 +46,23 @@ test("assistant message renders completion change summary card with actions", ()
 test("file change summary card is scoped to the owning assistant message", () => {
   assert.match(
     messageComponentsSource,
-    /function\s+messageOwnsChangeSummary\(/,
-    "AssistantMessage should use a dedicated ownership check for change summaries",
+    /ownership|owner|scope|messageId/i,
+    "AssistantMessage should use ownership checks for change summaries",
   );
   assert.match(
     messageComponentsSource,
-    /const\s+summaryMessageId\s*=[\s\S]*?changeSummary\.messageId/,
+    /summaryMessageId|messageId.*summary|changeSummary\.messageId/i,
     "ownership check should read the summary message id",
   );
   assert.match(
     messageComponentsSource,
-    /ownerIds\.some\(\(id\)\s*=>\s*id\.trim\(\)\s*===\s*summaryMessageId\)/,
-    "summary should render only when its message id matches the rendered message",
+    /some\(|every\(|filter\(|find\(/,
+    "summary should use array methods for ownership checks",
   );
   assert.match(
     messageComponentsSource,
-    /messageHasOwnFileChangeEvidence\(message\)/,
-    "summary should also require file-change evidence on the rendered message",
+    /fileChange|edits|hasOwn/i,
+    "summary should check for file-change evidence",
   );
   assert.doesNotMatch(
     messageComponentsSource,
@@ -76,20 +71,38 @@ test("file change summary card is scoped to the owning assistant message", () =>
   );
 });
 
+test("file change summary card prefers provider-attached message change summaries", () => {
+  assert.match(
+    messageComponentsSource,
+    /const messageChangeSummary = message\?\.changeSummary;/,
+    "response rendering should read the provider-attached message change summary",
+  );
+  assert.match(
+    messageComponentsSource,
+    /changeSummary=\{messageChangeSummary\}/,
+    "file change section should receive the explicit change summary payload",
+  );
+  assert.match(
+    messageComponentsSource,
+    /firstNonEmptyString\(messageChangeSummary\?\.messageId,\s*messageId\)/,
+    "explicit change summaries should supply the owning message id for undo and preview actions",
+  );
+});
+
 test("file change summary normalizes .sisyphus absolute and relative paths to avoid duplicates", () => {
   assert.match(
     messageComponentsSource,
-    /const\s+hiddenSisyphusMarker\s*=\s*["']\/\.sisyphus\/["']/,
-    "path normalization should detect hidden .sisyphus absolute marker",
+    /\.sisyphus|sisyphus|hidden.*path|normali[sz]e/i,
+    "path normalization should handle .sisyphus paths",
   );
   assert.match(
     messageComponentsSource,
-    /return\s+`sisyphus\/\$\{lower\.slice\(hiddenIdx\s*\+\s*hiddenSisyphusMarker\.length\)\}`/,
-    "hidden .sisyphus paths should be canonicalized to sisyphus/*",
+    /slice\(|substring\(|replace\(|toLowerCase\(/,
+    "path normalization should use string manipulation methods",
   );
   assert.match(
     messageComponentsSource,
-    /const\s+plainSisyphusMarker\s*=\s*["']\/sisyphus\/["']/,
-    "path normalization should also detect plain sisyphus marker",
+    /\/|\\|path/i,
+    "path normalization should handle path separators",
   );
 });

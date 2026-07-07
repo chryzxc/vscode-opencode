@@ -83,10 +83,13 @@ export class HistoryProcessor {
         return {
           ...message,
           structuredOutput: {
+            type: "message",
+            text: bodyText,
             responseType: "message",
             message: bodyText,
           },
           content: bodyText,
+          text: bodyText,
         };
       }
       return message;
@@ -106,10 +109,11 @@ export class HistoryProcessor {
       !this.extractMessageBodyText(structuredApplied)?.trim() &&
       !Array.isArray(structuredApplied?.parts)
     ) {
-      this.logger.info("[HistoryProcessor] Restoring raw assistant body during hydration", {
+        this.logger.info("[HistoryProcessor] Restoring raw assistant body during hydration", {
         messageId: this.extractHistoryMessageId(structuredApplied),
         originalBodyPreview: originalBodyText.slice(0, 240),
         structuredResponseType: this.firstNonEmptyString(
+          structuredApplied?.structuredOutput?.type,
           structuredApplied?.structuredOutput?.responseType,
           structuredApplied?.responseType,
         ),
@@ -118,11 +122,14 @@ export class HistoryProcessor {
         ...structuredApplied,
         content: originalBodyText,
         text: originalBodyText,
+        rawSdkEventPayloads: structuredApplied?.rawSdkEventPayloads,
         structuredOutput:
           structuredApplied?.structuredOutput &&
-          this.firstNonEmptyString(structuredApplied.structuredOutput.responseType)
+          this.firstNonEmptyString(structuredApplied.structuredOutput.type, structuredApplied.structuredOutput.responseType)
             ? structuredApplied.structuredOutput
             : {
+              type: "message",
+              text: originalBodyText,
               responseType: "message",
               message: originalBodyText,
             },
@@ -212,7 +219,7 @@ export class HistoryProcessor {
 
     return messages.map((message) => {
       const messageId = this.extractHistoryMessageId(message);
-      const override = overrides[messageId];
+      const override = messageId ? overrides[messageId] : undefined;
       if (!messageId || !override) {
         return message;
       }
@@ -568,6 +575,58 @@ export class HistoryProcessor {
       : [];
     base.steps = Array.isArray(base.steps) ? [...base.steps] : [];
     base.reasoning = Array.isArray(base.reasoning) ? [...base.reasoning] : [];
+    const rawSdkEventPayloadFingerprint = (value: unknown): string => {
+      if (!value || typeof value !== "object") {
+        return `primitive:${String(value)}`;
+      }
+      const rec = value as Record<string, unknown>;
+      const id = this.firstNonEmptyString(rec.id);
+      if (id) {
+        return `id:${id}`;
+      }
+      const properties =
+        rec.properties && typeof rec.properties === "object"
+          ? (rec.properties as Record<string, unknown>)
+          : undefined;
+      const type = this.firstNonEmptyString(rec.type);
+      const messageId = this.firstNonEmptyString(
+        rec.messageID,
+        rec.messageId,
+        properties?.messageID,
+        properties?.messageId,
+      );
+      const partId = this.firstNonEmptyString(
+        rec.partID,
+        rec.partId,
+        properties?.partID,
+        properties?.partId,
+      );
+      const time = this.firstNonEmptyString(rec.time, properties?.time);
+      return `${type}|${messageId}|${partId}|${time}|${String(value)}`;
+    };
+    const mergeRawSdkEventPayloads = (
+      target: unknown[] | undefined,
+      incoming: unknown[] | undefined,
+    ): unknown[] | undefined => {
+      const merged = Array.isArray(target) ? [...target] : [];
+      const seen = new Set<string>(merged.map(rawSdkEventPayloadFingerprint));
+      if (Array.isArray(incoming) && incoming.length > 0) {
+        for (const item of incoming) {
+          const key = rawSdkEventPayloadFingerprint(item);
+          if (seen.has(key)) {
+            continue;
+          }
+          seen.add(key);
+          merged.push(item);
+        }
+      }
+      return merged.length > 0 ? merged : undefined;
+    };
+    let mergedRawSdkEventPayloads: unknown[] | undefined = Array.isArray(
+      base.rawSdkEventPayloads,
+    )
+      ? [...base.rawSdkEventPayloads]
+      : undefined;
     base.info = mergeInfoRecord(base.info, undefined);
 
     let latestRawResponse: unknown = base.rawResponse;
@@ -637,9 +696,23 @@ export class HistoryProcessor {
       if (message && "rawResponse" in message) {
         latestRawResponse = message.rawResponse;
       }
+      if (Array.isArray(message?.rawSdkEventPayloads)) {
+        const rawSdkEventPayloads = message.rawSdkEventPayloads as unknown[];
+        if (rawSdkEventPayloads.length > 0) {
+        mergedRawSdkEventPayloads = mergeRawSdkEventPayloads(
+          mergedRawSdkEventPayloads,
+          rawSdkEventPayloads,
+        );
+      }
+    }
     }
 
     base.rawResponse = latestRawResponse;
+    if (Array.isArray(mergedRawSdkEventPayloads) && mergedRawSdkEventPayloads.length > 0) {
+      base.rawSdkEventPayloads = mergedRawSdkEventPayloads;
+    } else {
+      delete base.rawSdkEventPayloads;
+    }
     base.content = visibleBodyText || this.extractMessageBodyText(base);
     if (typeof base.text === "string" || visibleBodyText) {
       base.text = visibleBodyText || this.firstNonEmptyString(base.text);

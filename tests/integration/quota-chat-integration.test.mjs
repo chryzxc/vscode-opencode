@@ -37,8 +37,26 @@ const messageHandlerSource = readSource(
 test('ChatViewProvider posts quotaData on quotaUpdate events', () => {
   assert.match(
     chatProviderSource,
-    /this\.quotaService\.on\("quotaUpdate",\s*\(data\)\s*=>\s*\{[\s\S]*type:\s*"quotaData"/,
+    /this\.quotaService\.on\("quotaUpdate",\s*this\.handleQuotaUpdate\s*\)/,
     'Should post quotaData message on quotaUpdate'
+  );
+  assert.match(
+    chatProviderSource,
+    /private\s+readonly\s+handleQuotaUpdate\s*=\s*\(data:\s*unknown\)\s*=>\s*\{[\s\S]*type:\s*"quotaData"/,
+    'Should keep a stable quota listener callback so it can be removed later'
+  );
+});
+
+test('ChatViewProvider dispose unsubscribes quotaUpdate listener explicitly', () => {
+  const disposeBody = extractFunctionBody(
+    chatProviderSource,
+    'public dispose(): void',
+  );
+
+  assert.match(
+    disposeBody,
+    /this\.quotaService\.off\("quotaUpdate",\s*this\.handleQuotaUpdate\)/,
+    'Should remove quotaUpdate listener during dispose to avoid listener accumulation'
   );
 });
 

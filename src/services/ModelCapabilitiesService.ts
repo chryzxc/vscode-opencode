@@ -9,7 +9,7 @@ export interface ModelCapability {
 }
 
 const CACHE_TTL_MS = 60_000;
-const FETCH_TIMEOUT_MS = 5_000;
+const FETCH_TIMEOUT_MS = 60_000;
 const MODELS_DEV_URL = "https://models.dev/api.json";
 
 export class ModelCapabilitiesService {

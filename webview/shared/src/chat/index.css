@@ -127,6 +127,19 @@ body.vscode-high-contrast-light {
 
   /* AI Response Enhanced Colors */
   --oc-amber-custom: #d97706;
+
+  /*
+   * Shared activity-surface tokens.
+   * Keep these in one place so every activity card, preview, and nested pane
+   * uses the same border weight and fill instead of drifting by component.
+   */
+  /* Match the composer shell outline so activity cards feel like the same system. */
+  --oc-surface-border: color-mix(in srgb, var(--oc-border) 92%, transparent);
+  --oc-surface-border-soft: color-mix(in srgb, var(--oc-border) 72%, transparent);
+  --oc-surface-fill: color-mix(in srgb, var(--oc-panel) 82%, transparent);
+  --oc-surface-fill-soft: color-mix(in srgb, var(--oc-panel-soft) 86%, transparent);
+  --oc-surface-panel: color-mix(in srgb, var(--oc-bg-soft) 18%, transparent);
+  --oc-surface-divider: color-mix(in srgb, var(--oc-border) 72%, transparent);
 }
 
 .text-oc-agent-custom {
@@ -195,14 +208,8 @@ body {
   overflow: hidden;
   background: var(--oc-bg);
   color: var(--oc-text);
-  font-family: var(
-    --vscode-font-family,
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    system-ui,
-    sans-serif
-  );
+  /* Use the platform default system sans stack for the chat UI. */
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   font-size: var(--vscode-font-size, 14px);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -1232,18 +1239,175 @@ body {
 
 /* ── User Message ─────────────────────────────────────────────────────────── */
 .oc-msg-user {
-  background: color-mix(in srgb, var(--oc-accent) 10%, transparent);
-  border: 1px solid color-mix(in srgb, var(--oc-accent) 8%, transparent);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--oc-accent) 16%, var(--oc-panel)) 0%,
+      color-mix(in srgb, var(--oc-accent) 10%, var(--oc-panel-soft)) 100%
+    );
+  border: 1px solid color-mix(in srgb, var(--oc-accent) 28%, var(--oc-border));
   border-radius: 16px 16px 3px 16px;
-  padding: 8px 13px;
-  color: var(--oc-text);
-  font-size: 13px;
-  line-height: 1.55;
+  padding: 8px 12px;
+  color: var(--vscode-editor-foreground, var(--oc-text));
+  font-size: 12px;
+  line-height: 1.45;
   max-height: 320px;
   overflow-y: auto;
+  box-shadow:
+    0 1px 0 color-mix(in srgb, var(--oc-accent) 16%, transparent),
+    0 10px 24px color-mix(in srgb, var(--oc-bg) 52%, transparent);
+  backdrop-filter: blur(8px);
 }
 
 /* ── Avatar ──────────────────────────────────────────────────────────────── */
+.oc-system-message {
+  --oc-system-accent: var(--oc-accent);
+  position: relative;
+  overflow: hidden;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--oc-border) 92%, transparent);
+  background: color-mix(in srgb, var(--oc-panel) 88%, transparent);
+  transition:
+    border-color 0.18s ease,
+    background 0.18s ease;
+}
+
+.oc-system-message::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 2px;
+  background: color-mix(in srgb, var(--oc-system-accent) 48%, transparent);
+  opacity: 1;
+}
+
+.oc-system-message:hover {
+  border-color: color-mix(in srgb, var(--oc-system-accent) 16%, var(--oc-border));
+  background: color-mix(in srgb, var(--oc-panel-soft) 86%, transparent);
+}
+
+.oc-system-message__toggle {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 10px 14px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.oc-system-message__toggle:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--oc-system-accent) 65%, var(--ring));
+  outline-offset: -1px;
+}
+
+.oc-system-message__header {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 3px;
+}
+
+.oc-system-message__meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--oc-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.oc-system-message__title-block {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.oc-system-message__title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.oc-system-message__title {
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
+}
+
+.oc-system-message__title {
+  min-width: 0;
+  color: var(--oc-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.oc-system-message__preview {
+  margin: 0;
+  color: var(--oc-text-secondary);
+  font-size: 12px;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.oc-system-message__chevron {
+  flex-shrink: 0;
+  margin-top: 2px;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--oc-text-secondary);
+}
+
+.oc-system-message__body {
+  margin: 0;
+  padding: 0 14px 12px;
+}
+
+.oc-system-message__content {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--oc-text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+  font-weight: 400;
+}
+
+@media (max-width: 640px) {
+  .oc-system-message__toggle {
+    padding: 10px 14px 8px;
+    gap: 8px;
+  }
+
+  .oc-system-message__body {
+    padding: 0 14px 12px;
+  }
+}
+
 .oc-avatar {
   width: 24px;
   height: 24px;
@@ -1275,8 +1439,8 @@ body {
 /* ── Message header labels ───────────────────────────────────────────────── */
 .oc-msg-header {
   align-items: flex-start;
-  row-gap: 0.45rem;
-  column-gap: 0.75rem;
+  row-gap: 0.3rem;
+  column-gap: 0.6rem;
 }
 
 .oc-msg-header-main {
@@ -1782,7 +1946,7 @@ body {
   color: var(--oc-text);
   font-family: var(--vscode-font-family, inherit);
   font-size: 13px;
-  line-height: 1.7;
+  line-height: 1.55;
 }
 
 .markdown-body h1,
@@ -1791,7 +1955,7 @@ body {
 .markdown-body h4,
 .markdown-body h5,
 .markdown-body h6 {
-  margin: 1.25em 0 0.5em;
+  margin: 1em 0 0.4em;
   font-weight: 700;
   line-height: 1.2;
   color: var(--oc-text);
@@ -1810,12 +1974,12 @@ body {
 }
 
 .markdown-body p {
-  margin: 0.5em 0;
+  margin: 0.35em 0;
 }
 
 .markdown-body ul,
 .markdown-body ol {
-  margin: 0.5em 0;
+  margin: 0.35em 0;
   padding-left: 1.5em;
 }
 
@@ -1828,7 +1992,7 @@ body {
 }
 
 .markdown-body li {
-  margin: 0.2em 0;
+  margin: 0.12em 0;
 }
 
 .markdown-body code {
@@ -1859,8 +2023,8 @@ body {
 }
 
 .markdown-body pre {
-  margin: 0.75em 0;
-  padding: 2.1em 1em 0.9em;
+  margin: 0.55em 0;
+  padding: 1.7em 0.85em 0.8em;
   border-radius: 8px;
   overflow-x: auto;
   background: var(--oc-bg-soft);
@@ -1981,7 +2145,7 @@ body {
   width: 100%;
   border-collapse: collapse;
   table-layout: fixed;
-  margin: 0.75em 0;
+  margin: 0.55em 0;
   font-size: 0.9em;
 }
 
@@ -2623,6 +2787,18 @@ body {
   cursor: zoom-in;
 }
 
+.oc-chip-preview {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  cursor: zoom-in;
+}
+
 .oc-chip-thumb {
   width: 18px;
   height: 18px;
@@ -2760,10 +2936,13 @@ body {
   position: relative;
 }
 
+
+
+
 /* Enhanced stepper item - subtle, no hover effects */
 .oc-refined-stepper-item {
   position: relative;
-  padding: 3px 0px;
+  padding: 6px 0 8px;
   margin: 0;
   border-radius: 6px;
   background: transparent;
@@ -2916,7 +3095,89 @@ body {
   transition: all 0.2s ease-out;
 }
 
-/* Enhanced event content - markdown support */
+/* ── Reasoning Row (Claude-style "Thought for Xs >") ─────────────────────────
+   Compact single-line collapsible header for reasoning / thinking steps.
+   Inspired by Claude's "Thought for 9s >" UI: small dot, muted text, chevron. */
+.oc-reasoning-row {
+  /* Full-width flex row, no box model */
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  padding: 2px 0;
+  min-height: 20px;  /* Matches Stepper indicator wrapper height for perfect alignment */
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  /* Muted, smaller than body text */
+  font-size: 12px;
+  color: var(--vscode-editor-foreground, var(--oc-text));
+  opacity: 0.6;
+  transition: opacity 0.15s ease;
+  user-select: none;
+}
+.oc-reasoning-row:hover {
+  opacity: 0.9;
+}
+.oc-reasoning-row.is-expanded {
+  opacity: 0.85;
+}
+
+
+/* "Thought for Xs" text */
+.oc-reasoning-row-label {
+  font-size: 12px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+
+/* Chevron › — rotates 90° to ∨ when expanded */
+.oc-reasoning-chevron {
+  font-size: 14px;
+  line-height: 1;
+  display: inline-block;
+  transform: rotate(0deg);
+  transition: transform 0.18s ease;
+  flex-shrink: 0;
+  color: inherit;
+}
+.oc-reasoning-chevron.is-expanded {
+  transform: rotate(90deg);
+}
+
+/* Pulsing "Thinking…" state */
+.oc-reasoning-row.is-pending .oc-reasoning-row-label {
+  animation: reasoning-pulse 1.6s ease-in-out infinite;
+}
+@keyframes reasoning-pulse {
+  0%, 100% { opacity: 0.5; }
+  50%       { opacity: 1;   }
+}
+
+/* Expanded reasoning body — appears below the header row */
+.oc-reasoning-body {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--oc-panel-soft) 80%, transparent);
+  border: 1px solid color-mix(in srgb, var(--oc-border-soft) 60%, transparent);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--oc-text-soft);
+  max-height: 360px;
+  overflow-y: auto;
+}
+.oc-reasoning-body .markdown-body {
+  font-size: 12px;
+  line-height: 1.46;
+}
+
+
+/* Unified step surface used across reasoning, read, search, and generic
+   timeline payloads. Keep it visually light so the timeline stays compact. */
+
 .oc-refined-event-content {
   font-family: var(
     --vscode-font-family,
@@ -2927,15 +3188,43 @@ body {
     sans-serif
   );
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.46;
   color: var(--oc-text-soft);
-  padding: 2px 0;
+  padding: 8px 9px;
+  margin-top: 5px;
+  border: 1px solid color-mix(in srgb, var(--oc-border-soft) 72%, transparent);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--oc-panel-soft) 84%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 2%, transparent),
+    0 1px 0 color-mix(in srgb, black 10%, transparent);
+  overflow: hidden;
+}
+
+.oc-activity-step-card,
+.oc-timeline-soft-frame,
+.oc-search-block,
+.oc-bash-command-block,
+.oc-refined-activity-details {
+  border: 1px solid var(--oc-surface-border);
+  border-radius: 15px;
+  background: var(--oc-surface-fill);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 2.5%, transparent),
+    0 1px 0 color-mix(in srgb, black 8%, transparent);
+}
+
+.oc-activity-step-card:hover,
+.oc-timeline-soft-frame:hover {
+  border-color: color-mix(in srgb, var(--oc-accent) 16%, var(--oc-surface-border));
+  background: color-mix(in srgb, var(--oc-panel) 86%, var(--oc-accent) 6%);
 }
 
 /* Markdown styling within event content */
 .oc-refined-event-content .markdown-body {
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .oc-refined-event-content .markdown-body code {
@@ -2956,11 +3245,11 @@ body {
 }
 
 .oc-refined-event-content .markdown-body pre {
-  margin: 6px 0;
-  padding: 10px;
-  background: color-mix(in srgb, var(--oc-bg) 60%, transparent);
-  border: 1px solid var(--vscode-widget-border, var(--oc-border));
-  border-radius: 6px;
+  margin: 4px 0;
+  padding: 8px 9px;
+  background: color-mix(in srgb, var(--oc-bg) 56%, transparent);
+  border: 1px solid color-mix(in srgb, var(--oc-border) 50%, transparent);
+  border-radius: 8px;
   overflow-x: auto;
 }
 
@@ -2970,11 +3259,64 @@ body {
   color: var(--oc-text-soft);
 }
 
+/* Read previews can contain large code blocks, so keep the renderer boxed
+   inside the preview card and let the inner code pane scroll instead of
+   expanding the activity row. */
+.oc-read-preview {
+  min-width: 0;
+  max-width: 100%;
+  margin-top: 6px;
+}
+
+.oc-read-preview .markdown-body {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.oc-read-preview .markdown-body p,
+.oc-read-preview .markdown-body ul,
+.oc-read-preview .markdown-body ol {
+  margin-top: 0.2em;
+  margin-bottom: 0.2em;
+}
+
+.oc-read-preview .markdown-body pre {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  overflow: auto;
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+.oc-read-preview .markdown-body pre code {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* Final assistant response bodies are already wrapped by the outer response
+   card. Remove the extra top gap introduced by the first markdown heading or
+   paragraph so the content sits flush with that shell. */
+.oc-response-body-block .markdown-body > :first-child {
+  margin-top: 0 !important;
+}
+
 .oc-refined-event-summary {
   font-weight: 400;
   color: var(--oc-text);
   display: block;
-  margin-bottom: 4px;
+  margin-bottom: 0;
   font-size: 12px;
 }
 
@@ -3009,6 +3351,34 @@ body {
   isolation: isolate;
 }
 
+.oc-refined-file-link-inline {
+  flex: 0 1 auto;
+  max-width: min(72%, 560px);
+  min-width: 0;
+  justify-content: flex-start;
+}
+
+.oc-refined-file-link-plain {
+  gap: 5px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--oc-text-soft);
+}
+
+.oc-refined-file-link-plain:hover {
+  background: transparent;
+  border-color: transparent;
+  color: var(--vscode-editor-foreground, var(--oc-text));
+}
+
+.oc-refined-file-link-plain svg {
+  opacity: 0.8;
+}
+
 .oc-refined-file-link-tooltip {
   position: absolute;
   left: 0;
@@ -3037,6 +3407,11 @@ body {
   opacity: 1;
 }
 
+.oc-refined-file-link-tooltip-below {
+  top: calc(100% + 6px);
+  bottom: auto;
+}
+
 .oc-refined-file-link-tooltip::after {
   content: "";
   position: absolute;
@@ -3052,6 +3427,12 @@ body {
     black 6%
   );
   transform: rotate(45deg) translateY(-4px);
+}
+
+.oc-refined-file-link-tooltip-below::after {
+  top: -4px;
+  bottom: auto;
+  transform: rotate(225deg) translateY(4px);
 }
 
 .oc-refined-file-link-with-tooltip:hover .oc-refined-file-link-tooltip,
@@ -3240,6 +3621,7 @@ body {
   gap: 2px;
 }
 
+
 /* Compact diff preview - technical precision styling */
 .oc-compact-diff-preview {
   margin-top: 8px;
@@ -3377,9 +3759,9 @@ body {
 .oc-refined-activity-details {
   margin-top: 6px;
   padding: 8px;
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--oc-bg) 30%, transparent);
-  border: 1px solid var(--vscode-widget-border, var(--oc-border));
+  border-radius: 10px;
+  background: var(--oc-surface-fill-soft);
+  border-color: var(--oc-surface-border);
 }
 
 /* Enhanced tool/cmd badges in details - minimal */
@@ -3436,18 +3818,15 @@ body {
 /* Bash command block styling */
 .oc-bash-command-block {
   margin: 6px 0 3px;
-  border-radius: 8px;
+  border-radius: 10px;
   overflow: hidden;
-  background: var(
-    --vscode-editorWidget-background,
-    var(--vscode-sideBar-background, transparent)
-  );
-  border: 1px solid var(--vscode-widget-border, var(--oc-border));
+  background: var(--oc-surface-fill);
+  border-color: var(--oc-surface-border);
 }
 
 .oc-bash-command-code {
   margin: 0;
-  padding: 7px 9px;
+  padding: 8px 10px;
   overflow: visible;
   background: var(--vscode-list-hoverBackground, transparent);
   display: flex;
@@ -3497,23 +3876,225 @@ body {
 
 /* Search block styling — terminal-style block for grep/search/glob queries */
 .oc-search-block {
-  margin: 6px 0 2px;
-  border-radius: 8px;
+  margin: 2px 0 1px;
+  border-radius: 10px;
   overflow: hidden;
-  background: var(
-    --vscode-editorWidget-background,
-    var(--vscode-sideBar-background, transparent)
-  );
-  border: 1px solid var(--vscode-widget-border, var(--oc-border));
+  background: var(--oc-surface-fill-soft);
+  border-color: var(--oc-surface-border);
+}
+
+/* Shared timeline soft-frame override. This intentionally forces a very faint
+   border style for compact timeline previews so the base component styles
+   cannot reintroduce a bright outline. */
+.oc-timeline-soft-frame {
+  border-color: var(--oc-surface-border) !important;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 2%, transparent),
+    0 1px 0 color-mix(in srgb, black 6%, transparent) !important;
+}
+
+.oc-timeline-soft-frame__header {
+  border-bottom-color: var(--oc-surface-divider) !important;
+  background: transparent;
+}
+
+.oc-timeline-soft-frame__body {
+  border-color: var(--oc-surface-divider) !important;
+  background: var(--oc-surface-panel);
+}
+
+.oc-timeline-soft-frame .oc-todo-row + .oc-todo-row {
+  border-top: 1px solid var(--oc-surface-divider) !important;
+}
+
+/* Timeline-specific override for collapsed search/grep previews.
+   This intentionally wins over the base block styles so the preview never
+   falls back to the heavier frame again.
+   The outer preview card supplies the visible border; the inner SearchBlock
+   should stay borderless so we do not draw two nested cards. */
+.oc-search-block--timeline-compact {
+  margin: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.oc-search-block--timeline-compact .oc-search-block-header {
+  border-bottom-color: var(--oc-surface-divider) !important;
+  background: transparent !important;
+}
+
+.oc-search-block--timeline-compact .oc-search-block-output {
+  border-top-color: var(--oc-surface-divider) !important;
+  background: transparent !important;
+}
+
+.oc-search-block--timeline-compact .oc-search-block-code {
+  background: transparent !important;
+}
+
+.oc-search-block--timeline-compact .oc-search-block-output pre {
+  background: transparent !important;
+}
+
+.oc-diff-preview-step {
+  padding: 6px 8px 8px;
+}
+
+.oc-diff-preview-step__excerpt {
+  margin-top: 6px;
+}
+
+/* Shared compact timeline caret used by collapsed previews.
+   This keeps the affordance subtle and consistent across search/glob/read-like cards. */
+.oc-timeline-caret {
+  border: 1px solid var(--oc-surface-border);
+  background: color-mix(in srgb, var(--oc-panel-soft) 78%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 1.5%, transparent),
+    0 1px 0 color-mix(in srgb, black 7%, transparent);
+}
+
+.oc-timeline-caret:hover {
+  border-color: color-mix(in srgb, var(--oc-accent) 18%, var(--oc-surface-border));
+  background: color-mix(in srgb, var(--oc-panel-soft) 86%, var(--oc-accent) 5%);
+}
+
+/*
+ * Scope all generic border utility classes used inside the activity timeline
+ * to the shared soft divider tokens so the same "strong white line" cannot
+ * reappear in individual cards.
+ */
+.oc-timeline-surface :is(.border-oc-border, .border-oc-border-soft) {
+  border-color: var(--oc-surface-border) !important;
+}
+
+.oc-timeline-surface :is(.border-b.border-oc-border, .border-b.border-oc-border-soft) {
+  border-bottom-color: var(--oc-surface-divider) !important;
+}
+
+.oc-timeline-surface :is(.border-t.border-oc-border, .border-t.border-oc-border-soft) {
+  border-top-color: var(--oc-surface-divider) !important;
+}
+
+/*
+ * Compact activity timeline scope.
+ * Apply this to activity stepper containers so titles, helper text, and the
+ * markdown renderer all inherit the same smaller scale.
+ */
+.oc-activity-timeline-compact {
+  --oc-activity-step-font-size: 11px;
+  --oc-activity-step-line-height: 1.34;
+  --oc-activity-step-title-size: 11px;
+  --oc-activity-step-meta-size: 11px;
+  --oc-activity-step-gap: 0.25rem;
+}
+
+.oc-activity-timeline-compact .oc-refined-stepper-item > :first-child {
+  margin-right: 0.375rem;
+}
+
+.oc-activity-timeline-compact .oc-refined-stepper-item > :last-child {
+  padding-bottom: 0.125rem;
+}
+
+.oc-activity-timeline-compact .oc-activity-step-surface {
+  font-size: var(--oc-activity-step-font-size);
+  line-height: var(--oc-activity-step-line-height);
+}
+
+.oc-activity-timeline-compact
+  .oc-activity-step-surface
+  :is(.oc-activity-step-title, .oc-activity-step-section-label) {
+  font-size: var(--oc-activity-step-title-size) !important;
+  line-height: 1.15;
+}
+
+.oc-activity-timeline-compact
+  .oc-activity-step-surface
+  :is(.oc-activity-step-meta, .oc-activity-step-summary, .oc-activity-step-detail, .oc-activity-step-label) {
+  font-size: var(--oc-activity-step-meta-size) !important;
+  line-height: 1.3;
+}
+
+.oc-activity-timeline-compact
+  :is(.oc-refined-event-summary, .oc-refined-file-link, .oc-refined-file-link-plain) {
+  font-size: var(--oc-activity-step-font-size) !important;
+  line-height: var(--oc-activity-step-line-height);
+}
+
+.oc-activity-timeline-compact .oc-activity-step-surface .markdown-body {
+  font-size: inherit !important;
+  line-height: inherit !important;
+}
+
+.oc-activity-timeline-compact .oc-activity-step-surface .oc-refined-event-content {
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.oc-activity-timeline-compact .oc-activity-step-surface .oc-refined-event-content .markdown-body {
+  font-size: inherit !important;
+  line-height: inherit !important;
+}
+
+.oc-activity-timeline-compact .oc-refined-event-label {
+  padding: 2px 6px;
+  min-width: 56px;
+  font-size: var(--oc-activity-step-font-size);
+  line-height: 1.15;
+}
+
+.oc-activity-timeline-compact .oc-refined-meta-badge {
+  padding: 2px 6px;
+  font-size: var(--oc-activity-step-font-size);
+}
+
+.oc-activity-timeline-compact .oc-refined-event-content {
+  margin-top: 4px;
+  padding: 6px 8px;
+  font-size: var(--oc-activity-step-font-size);
+  line-height: 1.34;
+}
+
+.oc-activity-timeline-compact .oc-refined-event-content .markdown-body {
+  font-size: inherit !important;
+  line-height: inherit !important;
+}
+
+.oc-activity-timeline-compact .oc-reasoning-row {
+  gap: 0.3rem;
+  min-height: 18px;
+  font-size: 11px;
+}
+
+.oc-activity-timeline-compact .oc-reasoning-row-label {
+  font-size: 11px;
+}
+
+.oc-activity-timeline-compact .oc-reasoning-body {
+  margin-top: 4px;
+  padding: 6px 8px;
+  font-size: 11px;
+  line-height: 1.38;
+}
+
+.oc-activity-timeline-compact .oc-reasoning-body .markdown-body {
+  font-size: inherit !important;
+  line-height: inherit !important;
+}
+
+.oc-search-block--timeline-compact .oc-search-block-code {
+  background: transparent !important;
 }
 
 .oc-search-block-header {
   display: flex;
   align-items: flex-start;
   flex-wrap: wrap;
-  gap: 6px;
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--vscode-widget-border, var(--oc-border));
+  gap: 4px;
+  padding: 4px 7px;
+  border-bottom: 1px solid var(--oc-surface-divider);
   background: transparent;
 }
 
@@ -3527,7 +4108,7 @@ body {
     Consolas,
     monospace
   );
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -3547,7 +4128,7 @@ body {
     Consolas,
     monospace
   );
-  font-size: 11px;
+  font-size: 10px;
   color: var(--vscode-descriptionForeground, var(--oc-text-secondary));
 }
 
@@ -3557,9 +4138,9 @@ body {
 
 .oc-search-block-code {
   margin: 0;
-  padding: 7px 9px;
+  padding: 6px 7px;
   overflow-x: hidden;
-  background: var(--vscode-list-hoverBackground, transparent);
+  background: var(--oc-surface-panel);
 }
 
 .oc-search-block-code code {
@@ -3572,8 +4153,8 @@ body {
     Consolas,
     monospace
   );
-  font-size: 11px;
-  line-height: 1.5;
+  font-size: 10px;
+  line-height: 1.42;
   color: var(--vscode-editor-foreground, var(--oc-text));
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -3582,6 +4163,37 @@ body {
   border: none;
   border-radius: 0;
   padding: 0;
+}
+
+/* Search block output container styling displayed below the search pattern query block */
+.oc-search-block-output {
+  padding: 6px 7px;
+  border-top: 1px solid var(--oc-surface-divider);
+  background: var(--oc-surface-panel);
+}
+
+/* Pre-formatted block for search results output */
+.oc-search-block-output pre {
+  margin: 0;
+  font-family: var(
+    --vscode-editor-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
+  font-size: 10px;
+  line-height: 1.4;
+  /* Muted text color for execution output secondary details */
+  color: var(--vscode-descriptionForeground, var(--oc-text-secondary));
+}
+
+/* Code block wrapping and breaking rules within search output */
+.oc-search-block-output code {
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 
 /* Command code block styling */
@@ -4283,8 +4895,8 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 18px;
+  height: 18px;
   flex-shrink: 0;
   border-radius: 999px;
   border: 1px solid color-mix(in srgb, var(--oc-border) 82%, transparent);
@@ -4293,8 +4905,8 @@ body {
 
 /* Pending state */
 .oc-step-indicator-pending {
-  width: 11px;
-  height: 11px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background-color: color-mix(in srgb, var(--oc-accent) 80%, white 20%);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--oc-accent) 20%, transparent);

@@ -17,9 +17,7 @@
 
 export type StructuredResponseType =
   | "message"
-  | "implementation_plan"
-  | "question"
-  | "progress_update";
+  | "implementation_plan";
 
 export type StructuredOutputSchema = {
   type: "json_schema";
@@ -39,75 +37,25 @@ export const structuredOutputSchema: StructuredOutputSchema = {
   schema: {
     type: "object",
     description:
-      "Return a JSON object with a responseType field. Use 'message' for normal responses, 'implementation_plan' for multi-step plans with a plan object (plan.file is required and must be a markdown filepath; you MUST create/write this markdown file before finalizing whenever you can edit files. If the file is not already written, include the full markdown in plan.content so the extension can persist it), 'question' for any final assistant turn whose intent is to ask the user a question or present choices, or 'progress_update' for execution steps. If the intent is a question, responseType MUST be 'question' and the question payload MUST be in the top-level question object. If files were modified in this turn, include top-level fileChanges with per-file diff data (diffExcerpt.lines preferred, plus diffStats). If emitting subagent/background-task payloads through compatible fields, include a stable background task id as 'backgroundTaskId' (for example 'bg_123abc') and subagent role hints as 'agentRole' (or 'agentType') such as 'explorer' or 'librarian'.",
+      "Return a JSON object with a type field. Use 'message' for normal responses or 'implementation_plan' for multi-step plans with a plan object (plan.file is required and must be a markdown filepath; you MUST create/write this markdown file before finalizing whenever you can edit files. If the file is not already written, include the full markdown in plan.content so the extension can persist it). If emitting subagent/background-task payloads through compatible fields, include a stable background task id as 'backgroundTaskId' (for example 'bg_123abc') and subagent role hints as 'agentRole' (or 'agentType') such as 'explorer' or 'librarian'.",
     additionalProperties: false,
-    required: ["responseType"],
+    required: ["type"],
     properties: {
-      responseType: {
+      type: {
         type: "string",
-        enum: ["message", "implementation_plan", "question", "progress_update"],
+        enum: ["message", "implementation_plan"],
         description:
-          "Response type: 'message' for normal text, 'implementation_plan' for plans (must include plan.file and ensure the file is created/writable), 'question' for a final user-input prompt that completes this assistant turn and is shown as a popover; use this whenever the assistant is asking the user to choose or clarify, 'progress_update' for steps",
+          "Response type: 'message' for normal text, 'implementation_plan' for plans (must include plan.file and ensure the file is created/writable)",
       },
 
-      message: {
+      text: {
         type: "string",
         description: "User-facing text response for normal replies",
       },
 
-      fileChanges: {
-        type: "array",
-        description:
-          "Top-level per-file diff payload for this turn. Include when files were created/modified/deleted, even when responseType='message'.",
-        items: {
-          type: "object",
-          properties: {
-            file: {
-              type: "string",
-              description: "File path that changed.",
-            },
-            kind: {
-              type: "string",
-              enum: ["file_edit", "file_create", "file_delete", "file_move", "other"],
-              description: "Optional file-change kind.",
-            },
-            diffStats: {
-              type: "object",
-              description: "Total line counts for this file diff.",
-              properties: {
-                added: { type: "number", description: "Lines added." },
-                deleted: { type: "number", description: "Lines deleted." },
-              },
-            },
-            diffExcerpt: {
-              type: "object",
-              description:
-                "Compact diff preview for this file. Prefer 3-10 representative lines, prefixed with + / - / context.",
-              properties: {
-                header: { type: "string", description: "Optional hunk/file header." },
-                lines: {
-                  type: "array",
-                  items: { type: "string" },
-                  description: "Diff lines with + / - / context prefixes.",
-                },
-                added: { type: "number", description: "Optional total additions." },
-                deleted: { type: "number", description: "Optional total deletions." },
-              },
-            },
-          },
-          required: ["file"],
-        },
-      },
-
-      reasoning: {
-        type: "array",
-        items: { type: "string" },
-        description: "Optional thinking trace for UI timeline",
-      },
-
       plan: {
         type: "object",
-        description: "Implementation plan payload. For responseType='implementation_plan', include a full markdown filepath in plan.file. The assistant should write that file to disk; if not yet written, include full markdown in plan.content so the extension can create it.",
+        description: "Implementation plan payload. For type='implementation_plan', include a full markdown filepath in plan.file. The assistant should write that file to disk; if not yet written, include full markdown in plan.content so the extension can create it.",
         properties: {
           title: { type: "string", description: "Plan title" },
           file: { type: "string", description: "Required for implementation_plan: full markdown file path (absolute or workspace-relative). This is the file that should be created/written." },
@@ -122,88 +70,6 @@ export const structuredOutputSchema: StructuredOutputSchema = {
           },
         },
         required: ["title", "file"],
-      },
-
-      question: {
-        type: "object",
-        description: "Question/choice payload. This is terminal for the assistant turn like an implementation_plan response: render it as the final assistant message and show the question popover; do not keep the turn open waiting for input.",
-        properties: {
-          question: { type: "string", description: "Question text to display" },
-          type: {
-            type: "string",
-            enum: ["question", "confirm", "quick_actions"],
-            description: "Interaction type",
-          },
-          options: {
-            type: "array",
-            description: "Available choices for the user. For responseType='question' and type='question', provide at least two choices unless custom free-form input is explicitly enabled by the host. Each option.value must be the exact answer text to send back to the assistant on selection (human-readable, not snake_case/id slugs).",
-            items: {
-              type: "object",
-              properties: {
-                label: { type: "string", description: "Option label" },
-                value: { type: "string", description: "Answer text that should be sent back if selected. Use natural language text (e.g. 'English only'), not identifiers like 'english_only'." },
-              },
-              required: ["label"],
-            },
-          },
-        },
-        required: ["question"],
-      },
-
-      progressUpdates: {
-        type: "array",
-        description: "Execution progress steps. For bash/shell commands, include BOTH the command text in 'command' field AND the terminal output (stdout/stderr) in 'output' field when status is 'done' or 'error'. For file_edit operations, ALWAYS include file path and diff payload (diffExcerpt.lines preferred, plus diffStats).",
-        items: {
-          type: "object",
-          properties: {
-            title: { type: "string", description: "Step title" },
-            status: {
-              type: "string",
-              enum: ["pending", "done", "error"],
-              description: "Step status",
-            },
-            command: {
-              type: "string",
-              description: "Command text for bash/shell operations (e.g., 'npm run build'). REQUIRED for bash steps.",
-            },
-            output: {
-              type: "string",
-              description: "Terminal output (stdout/stderr) from command execution. INCLUDE this for bash steps when status is 'done' or 'error' - show what the command printed to the terminal.",
-            },
-            kind: {
-              type: "string",
-              enum: ["tool_call", "file_edit", "command", "read", "search", "other"],
-              description: "Kind of activity - use 'file_edit' for file modifications, 'command' for shell operations, 'tool_call' for tool invocations. When kind='file_edit' and status is done/error, include file and diffExcerpt.lines.",
-            },
-            file: {
-              type: "string",
-              description: "File path for file_edit operations (e.g., 'src/utils/helpers.ts'). REQUIRED for file_edit steps.",
-            },
-            diffStats: {
-              type: "object",
-              description: "Diff statistics for file edits - provides quick overview of changes",
-              properties: {
-                added: { type: "number", description: "Number of lines added" },
-                deleted: { type: "number", description: "Number of lines deleted" },
-              },
-            },
-            diffExcerpt: {
-              type: "object",
-              description: "Compact diff preview showing representative code changes (3-10 lines). REQUIRED for file_edit steps in done/error status when possible. Each line should be prefixed with '+' for additions, '-' for deletions, or no prefix for context lines.",
-              properties: {
-                header: { type: "string", description: "Diff header (e.g., file path, hunk headers like '@@ -1,3 +1,4 @@')" },
-                lines: {
-                  type: "array",
-                  items: { type: "string" },
-                  description: "Diff lines - prefix with + for additions, - for deletions. Example: ['@@ -1,3 +1,4 @@', '- old code', '+ new code', '  context']",
-                },
-                added: { type: "number", description: "Total additions across entire diff" },
-                deleted: { type: "number", description: "Total deletions across entire diff" },
-              },
-            },
-          },
-          required: ["title", "status"],
-        },
       },
     },
   },

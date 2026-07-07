@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 
 import './index.css';
 import ChatShell from './ChatShell';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 const rootEl = document.getElementById('root');
 if (!rootEl) {
@@ -11,6 +12,8 @@ if (!rootEl) {
 
 createRoot(rootEl).render(
   <StrictMode>
-    <ChatShell />
+    <ErrorBoundary>
+      <ChatShell />
+    </ErrorBoundary>
   </StrictMode>,
 );

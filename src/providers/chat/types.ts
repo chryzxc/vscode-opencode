@@ -14,6 +14,7 @@ import type {
  */
 export type QueuedPrompt = {
   id: string;
+  clientRequestId?: string;
   sessionId: string;
   createdAt: number;
   text: string;
@@ -213,7 +214,11 @@ export type StructuredInteractiveEvent =
  * Structured assistant output containing various response types
  */
 export type StructuredAssistantOutput = {
+  type?: StructuredResponseType | string;
+  text?: string;
+  /** @deprecated legacy alias kept for compatibility while the schema migrates to `type`. */
   responseType?: StructuredResponseType | string;
+  /** @deprecated legacy alias kept for compatibility while the schema migrates to `text`. */
   message?: string;
   raw?: Record<string, unknown>;
   /**
@@ -304,21 +309,6 @@ export type StructuredAssistantOutput = {
     files?: any[]; // To match ImplementationPlan structure
     fileCount?: number;
   };
-  question?: {
-    type?: string;
-    id?: string;
-    title?: string;
-    question?: string;
-    multiSelect?: boolean;
-    allowCustomInput?: boolean;
-    options?: Array<{ id?: string; label?: string; value?: string; description?: string }>;
-    actions?: Array<{ id?: string; label?: string; value?: string; description?: string }>;
-    confirmLabel?: string;
-    cancelLabel?: string;
-    dismissLabel?: string;
-    message?: string;
-    content?: string;
-  };
 };
 
 /**
@@ -328,9 +318,9 @@ export const STRUCTURED_RESPONSE_TYPES = new Set(
   (
     (
       (structuredOutputSchema as any).schema?.properties as {
-        responseType?: { enum?: string[] };
+        type?: { enum?: string[] };
       }
-    )?.responseType?.enum ?? []
+    )?.type?.enum ?? []
   ).map((value: string) => value.toLowerCase()),
 );
 

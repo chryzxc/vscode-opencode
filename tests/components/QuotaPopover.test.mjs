@@ -41,7 +41,7 @@ test('QuotaPopover uses app state', () => {
 
   assert.match(
     popoverBody,
-    /useAppState\(\)/,
+    /useAppState\(/,
     'Should use app state'
   );
   assert.match(
@@ -371,7 +371,7 @@ test('QuotaPopover shows platform status badges', () => {
   );
   assert.match(
     popoverBody,
-    /variant=["']destructive["']/,
+    /variant=["']error["']/,
     'Should render error badge'
   );
   assert.match(

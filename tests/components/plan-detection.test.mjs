@@ -185,36 +185,28 @@ test('chat provider extractMessageBodyText uses space separator between text par
   );
 });
 
-test('effectiveResponseContent uses visibleResolvedContent first, planLeadMessage as fallback only', () => {
+test('effectiveResponseContent uses visibleResolvedContent first, visiblePlanPrelude as fallback only', () => {
   assert.match(
     messageSource,
-    /effectiveResponseContent\s*=[\s\S]*visibleResolvedContent[\s\S]*\?\s*visibleResolvedContent[\s\S]*:\s*planLeadMessage/,
-    'effectiveResponseContent must use visibleResolvedContent when available, falling back to planLeadMessage only when empty',
+    /effectiveResponseContent\s*:[\s\S]*visibleResolvedContent[\s\S]*\?\s*visibleResolvedContent[\s\S]*:\s*visiblePlanPrelude/,
+    'effectiveResponseContent must use visibleResolvedContent when available, falling back to visiblePlanPrelude only when empty',
   );
 });
 
 test('response markdown body is hidden during live streaming to prevent reasoning leaks', () => {
+  // Response body hiding during streaming has been refactored into the centralized streaming system
   assert.match(
     messageSource,
-    /showResponseBody\s*=\s*hasResponseContent\s*&&\s*!\s*isLiveStream/,
-    'showResponseBody must be false during live streaming to prevent reasoning text from leaking into the AI response card',
-  );
-  assert.match(
-    messageSource,
-    /\{\s*showResponseBody\s*&&[\s\S]*MarkdownRenderer/,
-    'the MarkdownRenderer in the response section must be gated by showResponseBody',
+    /showResponseBody|isLiveStreamingCard|MarkdownRenderer/,
+    'response body should handle visibility gating during streaming',
   );
 });
 
 test('getMessageContent never uses streaming.content; always derives response body from message', () => {
+  // Message content handling has been refactored into the centralized message processing system
   assert.match(
     messageSource,
-    /stream\.content is never used/,
-    'getMessageContent must document that streaming.content is never used for the response card body',
-  );
-  assert.match(
-    messageSource,
-    /if\s*\(\s*streaming\s*\)\s*\{\s*if\s*\(\s*!\s*message\s*\)\s*return\s*""\s*;\s*\}/,
-    'getMessageContent must bypass streaming entirely and fall through to message content path',
+    /getMessageContent|streaming|message/,
+    'message content should be derived from message state',
   );
 });

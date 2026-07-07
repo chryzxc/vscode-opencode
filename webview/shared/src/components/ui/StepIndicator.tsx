@@ -15,14 +15,14 @@ export const StepIndicator = React.forwardRef<
     switch (status) {
       case 'pending':
         return (
-          <div className="oc-step-indicator-pending animate-pulse" />
+          <div className="oc-step-indicator-pending" />
         )
       case 'done':
-        return <Check size={14} className="oc-step-indicator-done" />
+        return <Check size={12} className="oc-step-indicator-done" />
       case 'error':
-        return <X size={14} className="oc-step-indicator-error" />
+        return <X size={12} className="oc-step-indicator-error" />
       case 'running':
-        return <Loader2 size={14} className="oc-step-indicator-running animate-spin" />
+        return <Loader2 size={12} className="oc-step-indicator-running animate-spin" />
       default:
         return null
     }

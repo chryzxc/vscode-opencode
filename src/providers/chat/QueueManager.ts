@@ -32,6 +32,7 @@ export class QueueManager {
     retryWithoutStructuredOutput?: boolean,
     structuredFallbackReason?: string,
     userFacingText?: string,
+    sendMeta?: { interactiveSubmit?: boolean; clientRequestId?: string },
   ) => Promise<void>;
   private handleStopRequest: () => void;
   private getCurrentSessionId: () => string | undefined;
@@ -49,6 +50,7 @@ export class QueueManager {
       retryWithoutStructuredOutput?: boolean,
       structuredFallbackReason?: string,
       userFacingText?: string,
+      sendMeta?: { interactiveSubmit?: boolean; clientRequestId?: string },
     ) => Promise<void>,
   ): void {
     this.handleSendMessage = fn;
@@ -330,6 +332,7 @@ export class QueueManager {
           false,
           undefined,
           prompt.userFacingText,
+          { clientRequestId: prompt.clientRequestId },
         );
         this.logger.endFeatureFlow(flow, { status: 'completed', id });
       } else {
@@ -352,6 +355,7 @@ export class QueueManager {
         false,
         undefined,
         prompt.userFacingText,
+        { clientRequestId: prompt.clientRequestId },
       );
       this.logger.endFeatureFlow(flow, { status: 'completed', index });
     } else {
@@ -461,6 +465,7 @@ export class QueueManager {
           false,
           undefined,
           prompt.userFacingText,
+          { clientRequestId: prompt.clientRequestId },
         );
       },
       () => {

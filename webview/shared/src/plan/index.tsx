@@ -11,5 +11,5 @@ if (!rootEl) {
 createRoot(rootEl).render(
   <StrictMode>
     <PlanShell />
-  </StrictMode>
+  </StrictMode>,
 );

@@ -139,6 +139,10 @@ function createDeferred<T>() {
 class SessionServiceStub {
   listSessionsResult: SessionRecord[] = [];
   loadSessionMessagesResult: HistoryMessage[] | null = [];
+  getMessagesResult: HistoryMessage[] | null = [];
+  loadCentralizedSessionDataResult: { rawSdkEventPayloads: unknown[] } = {
+    rawSdkEventPayloads: [],
+  };
   readonly calls: string[];
 
   constructor(calls: string[]) {
@@ -159,6 +163,18 @@ class SessionServiceStub {
     this.calls.push("sessionService.loadSessionMessages");
     assert.equal(typeof sessionId, "string");
     return this.loadSessionMessagesResult;
+  }
+
+  async getMessages(sessionId: string): Promise<HistoryMessage[] | null> {
+    this.calls.push("sessionService.getMessages");
+    assert.equal(typeof sessionId, "string");
+    return this.getMessagesResult;
+  }
+
+  async loadCentralizedSessionData(sessionId: string): Promise<{ rawSdkEventPayloads: unknown[] }> {
+    this.calls.push("sessionService.loadCentralizedSessionData");
+    assert.equal(typeof sessionId, "string");
+    return this.loadCentralizedSessionDataResult;
   }
 
   async deleteSession(sessionId: string): Promise<void> {
@@ -230,6 +246,11 @@ class CompactionManagerStub {
   }
 
   async sendPersistedCompactionViewState(sessionId: string): Promise<void> {
+    this.calls.push("compactionManager.sendPersistedCompactionViewState");
+    this.sentSessionIds.push(sessionId);
+  }
+
+  async sendCompactionViewStateForMessages(sessionId: string): Promise<void> {
     this.calls.push("compactionManager.sendPersistedCompactionViewState");
     this.sentSessionIds.push(sessionId);
   }
@@ -430,7 +451,7 @@ describe("SessionHandler", () => {
         { id: "msg-2", role: "assistant", content: "processed world" },
       ];
 
-      harness.sessionService.loadSessionMessagesResult = rawMessages;
+      harness.sessionService.getMessagesResult = rawMessages;
       harness.historyProcessor.processedMessages = processedMessages;
       harness.sessionService.switchSession = async (sessionId: string) => {
         harness.calls.push("sessionService.switchSession");
@@ -469,6 +490,7 @@ describe("SessionHandler", () => {
         type: "chatHistory",
         sessionId: "session-1",
         messages: processedMessages,
+        rawSdkEventPayloads: [],
       });
 
       const processingUpdates = harness
@@ -483,12 +505,13 @@ describe("SessionHandler", () => {
       assert.deepEqual(harness.calls, [
         "postMessage:sessionsListUpdate",
         "sessionService.switchSession",
-        "sessionService.loadSessionMessages",
+        "sessionService.loadCentralizedSessionData",
+        "sessionService.getMessages",
         "historyProcessor.processHistoryMessages",
         "subagentPersistence.syncSubagentSnapshotForSession",
-        "compactionManager.sendPersistedCompactionViewState",
         "modelAndAgentManager.applySessionSettings",
         "postMessage:chatHistory",
+        "compactionManager.sendPersistedCompactionViewState",
         "setCurrentSessionId:session-1",
         "postMessage:sessionsListUpdate",
       ]);
@@ -496,11 +519,13 @@ describe("SessionHandler", () => {
 
     it("treats null message history as an empty chat history payload", async () => {
       const harness = createHarness();
-      harness.sessionService.loadSessionMessagesResult = null;
+      harness.sessionService.getMessagesResult = null;
 
       await harness.handler.handleLoadSession({ sessionId: "session-2" });
 
-      assert.equal(harness.historyProcessor.processCalls.length, 0);
+      assert.deepEqual(harness.historyProcessor.processCalls, [
+        { rawMessages: [], sessionId: "session-2" },
+      ]);
       assert.deepEqual(harness.subagentPersistence.syncCalls, [
         { sessionId: "session-2", messages: [] },
       ]);
@@ -510,6 +535,7 @@ describe("SessionHandler", () => {
           type: "chatHistory",
           sessionId: "session-2",
           messages: [],
+          rawSdkEventPayloads: [],
         },
       );
     });

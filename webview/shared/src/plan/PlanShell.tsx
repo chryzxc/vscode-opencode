@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { MessageSquare, Pencil, Play, Quote, Trash2, X } from "lucide-react";
+import { marked } from "marked";
 
 import type { PlanComment } from "@/chat/lib/types";
 import { Badge } from "@/components/ui/badge";
@@ -7,8 +8,8 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 
 import { MarkdownRenderer } from "../components/MarkdownRenderer";
-import { renderMarkdown } from "./markdownRenderer";
-import { getFilename, toWorkspaceRelativePath } from "@/utils";
+import { toWorkspaceRelativePath } from "@/utils";
+import vscode from "@/chat/lib/vscode";
 
 interface PlanEnvelope {
   raw?: string;
@@ -82,8 +83,6 @@ declare global {
   }
 }
 
-import vscode from "@/chat/lib/vscode";
-
 export default function PlanShell() {
   const envelope = window.__PLAN_DATA__;
   const rawPlan = envelope?.raw ?? "";
@@ -97,20 +96,16 @@ export default function PlanShell() {
 
   const [executing, setExecuting] = useState(false);
   const [proceedError, setProceedError] = useState<string | null>(null);
-
   const [comments, setComments] = useState<PlanComment[]>(
     envelope?.comments ?? [],
   );
-
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState("");
-
   const [commentsPanelOpen, setCommentsPanelOpen] = useState(false);
   const [activeCommentId, setActiveCommentId] = useState<string | null>(null);
   const [positionedComments, setPositionedComments] = useState<
     PositionedComment[]
   >([]);
-
   const planSurfaceRef = useRef<HTMLDivElement | null>(null);
   const planContentRef = useRef<HTMLDivElement | null>(null);
   const [pendingAnchor, setPendingAnchor] = useState<
@@ -121,7 +116,6 @@ export default function PlanShell() {
   );
   const [commentText, setCommentText] = useState("");
 
-  // Listen for commentsUpdated messages from the extension
   useEffect(() => {
     function handler(e: MessageEvent) {
       const data = e.data as
@@ -142,7 +136,6 @@ export default function PlanShell() {
     return () => window.removeEventListener("message", handler);
   }, []);
 
-  // Expose postAddComment / postUpdateComment / postDeleteComment globals
   useEffect(() => {
     window.postAddComment = (comment: PlanComment) =>
       vscode?.postMessage({ type: "addComment", comment, planId });
@@ -165,7 +158,7 @@ export default function PlanShell() {
     window.__pendingPlanAnchor = pendingAnchor ?? null;
   }, [pendingAnchor]);
 
-  const renderedHtml = renderMarkdown(displayedPlan);
+  const renderedHtml = marked(displayedPlan) as string;
 
   function focusPlanAnchor(commentId: string) {
     const container = planContentRef.current;
@@ -206,7 +199,6 @@ export default function PlanShell() {
     }, 180);
   }
 
-  // Text selection → floating popover
   useEffect(() => {
     function computeAnchorFromSelection() {
       const sel = window.getSelection();
@@ -237,14 +229,8 @@ export default function PlanShell() {
         return;
       }
 
-      // We capture surrounding text (parent paragraph/div) to disambiguate highlights later.
       const surroundingText =
         sel.getRangeAt(0).commonAncestorContainer.textContent || "";
-
-      // We calculate line numbers relative to the raw markdown for the LLM prompt,
-      // but note that this index-search on raw markdown can be brittle if
-      // the selection comes from a formatted text block (e.g. bold/italic).
-      // We keep it as a best-effort fallback, but the highlight system now uses text context.
       const idx = rawPlan.indexOf(selectedText);
       const startLine =
         idx !== -1 ? rawPlan.slice(0, idx).split("\n").length - 1 : 0;
@@ -255,7 +241,6 @@ export default function PlanShell() {
 
       setPendingAnchor({ startLine, endLine, selectedText, surroundingText });
 
-      // Position popover near the selection
       try {
         const range = sel.getRangeAt(0);
         const rect = range.getBoundingClientRect();
@@ -267,8 +252,6 @@ export default function PlanShell() {
 
     function handleSelectionChange() {
       const activeEl = document.activeElement;
-      // If the user is typing/clicking inside the popover (textarea or buttons),
-      // the selection might collapse, but we shouldn't dismiss the popover.
       if (
         activeEl &&
         (activeEl.tagName === "INPUT" ||
@@ -279,7 +262,6 @@ export default function PlanShell() {
       }
 
       const sel = window.getSelection();
-      // Only hide the popover when the selection is cleared
       if (!sel || sel.isCollapsed) {
         setPendingAnchor(null);
         setPopoverPos(null);
@@ -302,15 +284,10 @@ export default function PlanShell() {
     };
   }, [rawPlan]);
 
-  // Inline highlights for comments
   useEffect(() => {
     const container = planContentRef.current;
     const surface = planSurfaceRef.current;
     if (!container || !surface) return;
-    const commentOrder = new Map<string, number>();
-    comments.forEach((comment, idx) => {
-      commentOrder.set(comment.id, idx + 1);
-    });
 
     function clearAnchorState() {
       const elements = container.querySelectorAll("[data-plan-comment-anchor]");
@@ -432,10 +409,6 @@ export default function PlanShell() {
       });
     }
 
-    // Reset: The markdown renders clean via React, but we might want to be explicit
-    // if we were mutating the same DOM. Since renderedHtml is a dependency of this
-    // fragment's parent, it's mostly handled.
-
     const walk = (node: Node) => {
       if (node.nodeType === Node.TEXT_NODE) {
         const text = node.nodeValue || "";
@@ -448,17 +421,12 @@ export default function PlanShell() {
         )
           return;
 
-        // Try to find any comment that matches this text node
-        // We use a simple approach: if the exact selectedText is present, we wrap it.
-        // NOTE: This might highlight multiple occurrences if the text is generic.
         for (const comment of comments) {
           const needle = comment.anchor.selectedText;
           if (!needle) continue;
 
           const idx = text.indexOf(needle);
           if (idx !== -1) {
-            // Disambiguation check: if the comment has surroundingText, verify that
-            // this text node's environment matches that context.
             if (comment.anchor.surroundingText) {
               const context =
                 (parent as HTMLElement).innerText || parent.textContent || "";
@@ -487,9 +455,6 @@ export default function PlanShell() {
             if (after) fragment.appendChild(document.createTextNode(after));
 
             parent.replaceChild(fragment, node);
-            // After replacement, we stop processing this node but the fragment might contain
-            // more text that needs processing (if we had multiple comments in one node).
-            // For simplicity, we just process one highlight per node per pass.
             break;
           }
         }
@@ -509,9 +474,9 @@ export default function PlanShell() {
         const anchorEl = findCommentAnchorElement(comment);
         if (!anchorEl) return;
         const anchorRect = anchorEl.getBoundingClientRect();
-        const surfaceRect = planSurfaceRef.current.getBoundingClientRect();
+        const surfaceRect = planSurfaceRef.current!.getBoundingClientRect();
         let top =
-          anchorRect.top - surfaceRect.top + planSurfaceRef.current.scrollTop - 2;
+          anchorRect.top - surfaceRect.top + planSurfaceRef.current!.scrollTop - 2;
         while (seenTops.some((value) => Math.abs(value - top) < 28)) {
           top += 28;
         }
@@ -573,10 +538,8 @@ export default function PlanShell() {
 
   return (
     <div className="plan-view-shell flex h-screen min-h-0 flex-col overflow-hidden bg-[var(--vscode-editor-background)] text-[var(--vscode-editor-foreground)]">
-      {/* ─── Header ─────────────────────────────────────────────────────── */}
       <header className="flex-shrink-0 border-b border-[var(--vscode-panel-border)] bg-[linear-gradient(180deg,var(--vscode-sideBar-background,var(--vscode-editor-background))_0%,color-mix(in_srgb,var(--vscode-sideBar-background,var(--vscode-editor-background))_92%,var(--vscode-focusBorder)_8%)_100%)] px-5 py-3.5">
         <div className="flex items-center justify-between gap-3">
-          {/* Left: title + description */}
           <div className="min-w-0 flex-1">
             <div className="mb-1 flex items-center">
               <h1 className="line-clamp-2 text-sm font-semibold leading-tight">{planTitle}</h1>
@@ -592,7 +555,6 @@ export default function PlanShell() {
             )}
           </div>
 
-          {/* Right: Comments + Proceed buttons */}
           <div className="flex items-center gap-2 flex-shrink-0">
             <Button
               variant="outline"
@@ -637,7 +599,6 @@ export default function PlanShell() {
         ) : null}
       </header>
 
-      {/* ─── Main scroll area ────────────────────────────────────────────── */}
       <main className="min-h-0 flex-1 overflow-y-auto px-6 pb-12 pt-5">
         {displayedPlan.trim() ? (
           <div
@@ -674,7 +635,6 @@ export default function PlanShell() {
         )}
       </main>
 
-      {/* ─── Floating comment popover ─────────────────────────────────── */}
       {popoverPos && pendingAnchor && (
         <div
           style={{
@@ -733,7 +693,6 @@ export default function PlanShell() {
         </div>
       )}
 
-      {/* ─── Comments panel (slide-in overlay) ──────────────────────────── */}
       <div
         style={{
           position: "fixed",
@@ -747,7 +706,6 @@ export default function PlanShell() {
         }}
         className="flex flex-col border-l border-[var(--vscode-panel-border)] bg-[linear-gradient(180deg,color-mix(in_srgb,var(--vscode-sideBar-background,var(--vscode-editor-background))_92%,var(--vscode-focusBorder)_8%)_0%,var(--vscode-sideBar-background,var(--vscode-editor-background))_100%)] shadow-2xl"
       >
-        {/* Panel header */}
         <div className="sticky top-0 z-10 border-b border-[var(--vscode-panel-border)] bg-[color-mix(in_srgb,var(--vscode-sideBar-background,var(--vscode-editor-background))_90%,var(--vscode-focusBorder)_10%)] px-4 py-3 backdrop-blur-sm">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold tracking-tight">
@@ -772,7 +730,6 @@ export default function PlanShell() {
           </p>
         </div>
 
-        {/* Panel body */}
         <div className="flex-1 space-y-4 overflow-y-auto p-4 pb-8">
           {comments.length === 0 ? (
             <div className="mt-12 flex h-full flex-col items-center justify-center space-y-3 pb-12 text-center opacity-80">
@@ -892,7 +849,6 @@ export default function PlanShell() {
             })
           )}
         </div>
-
       </div>
     </div>
   );

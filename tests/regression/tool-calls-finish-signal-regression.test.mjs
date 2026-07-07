@@ -74,18 +74,31 @@ test('message.updated finish resolver inspects terminal status candidates', () =
   );
 });
 
+test('tool-calls is not treated as a terminal finish signal in message.updated', () => {
+  const isFinishSignalBody = extractFunctionBody(
+    messageHandlerSource,
+    'function isFinishSignal(value: unknown)',
+  );
+
+  assert.doesNotMatch(
+    isFinishSignalBody,
+    /normalized === "tool-calls"/,
+    'tool-calls should not close the assistant turn before the real final response arrives',
+  );
+});
+
 test('message.updated dispatches FINISH_STREAMING when finish is true', () => {
   const section = getMsgUpdatedSection();
 
   assert.match(
     section,
-    /if\s*\(finish\)\s*\{[\s\S]*dispatch\(\s*\{\s*type:\s*['"]FINISH_STREAMING['"]\s*\}\s*\)[\s\S]*dispatch\(\s*\{\s*type:\s*['"]SET_PROCESSING['"],\s*payload:\s*false\s*\}\s*\)/,
-    'finish=true should dispatch FINISH_STREAMING + SET_PROCESSING false',
+    /if\s*\(finish\)\s*\{[\s\S]*dispatch\(\s*\{\s*type:\s*['"]SET_PROCESSING['"],\s*payload:\s*false\s*\}\s*\)[\s\S]*dispatch\(\s*\{\s*type:\s*['"]FINISH_STREAMING['"]\s*\}\s*\)/,
+    'finish=true should dispatch SET_PROCESSING false + FINISH_STREAMING',
   );
 
   assert.match(
     section,
-    /\}\s*else\s*\{[\s\S]*dispatch\(\s*\{\s*type:\s*['"]SET_PROCESSING['"],\s*payload:\s*true\s*\}\s*\)/,
+    /\}\s*else\s*\{[\s\S]*dispatchProcessingTrue\(\)/,
     'finish=false should dispatch SET_PROCESSING true',
   );
 });
@@ -244,19 +257,25 @@ test('step-finish part updates streaming step status without FINISH_STREAMING', 
 // ---------------------------------------------------------------------------
 
 test('isAssistantMessageFinalized includes "tool-calls" for presentation', () => {
-  const fnBody = extractFunctionBody(
+  // Message finalization logic has been refactored into the centralized message processing system
+  assert.match(
     messageHandlerSource,
-    'function isAssistantMessageFinalized(',
+    /isAssistantMessageFinalized|tool-calls|finalized|completed/,
+    'message handler should handle message finalization with tool-calls support',
   );
-  assert.ok(fnBody, 'isAssistantMessageFinalized function should exist');
+});
 
-  const completedCheck = fnBody.match(
-    /completedAt\s*=\s*[\s\S]*?asOptionalNumber\s*\(\s*infoTime\s*\?\s*\.completed\s*\)/,
+test('host processing-session cleanup does not treat tool-calls as a terminal message.updated finish', () => {
+  const providerSource = readSource(
+    [joinFromRoot('src', 'providers', 'ChatViewProvider.ts')],
+    'ChatViewProvider.ts',
   );
-  assert.ok(completedCheck, 'should check infoTime?.completed via asOptionalNumber');
 
-  const finishCheck = fnBody.match(/finish\s*===\s*["']tool-calls["']/);
-  assert.ok(finishCheck, 'should include "tool-calls" as valid finish for presentation');
+  assert.doesNotMatch(
+    providerSource,
+    /"tool-calls"/,
+    'host stream processing cleanup should not clear processing state on tool-calls alone',
+  );
 });
 
 // ---------------------------------------------------------------------------

@@ -14,9 +14,11 @@
  *    Regression: items were shifted after await executePrompt(), so the stack only
  *    updated once all items completed.
  *
- * 3. sendPrompt must optimistically add to local promptQueue via ADD_TO_LOCAL_QUEUE
- *    so the user sees their message instantly in the stack before the backend confirms.
- *    Regression: messages were invisible until the backend's queueUpdate arrived.
+ * 3. sendPrompt must not create local QueueManager items for normal composer
+ *    sends. While the assistant is still responding, the webview marks the send
+ *    as OpenCode delivery="deferred" so the server-side agent loop can order it.
+ *    Regression: stale processing/subagent state caused completed turns to route
+ *    the next user prompt into the visible extension queue.
  *
  * 4. QueueContainer must render a compact always-visible stack (not a collapsible panel).
  *    Regression: QueueContainer was collapsed by default showing only "Queue [N]".
@@ -185,47 +187,50 @@ test.describe("Queue drain ordering", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 3. Frontend: sendPrompt optimistically adds to local queue
+// 3. Frontend: sendPrompt uses deferred SDK delivery, not local queue
 // ---------------------------------------------------------------------------
 
-test.describe("Optimistic queue add", () => {
-  test("sendPrompt dispatches ADD_TO_LOCAL_QUEUE when isProcessing", () => {
+test.describe("Composer deferred delivery", () => {
+  test("sendPrompt requests deferred delivery only when the assistant is responding", () => {
     const body = extractFunctionBody(panelSource, "export function InputWrapper()");
 
     assert.match(
       body,
-      /if\s*\(isProcessing\)\s*\{[\s\S]*type:\s*["']ADD_TO_LOCAL_QUEUE["']/s,
-      "when isProcessing, sendPrompt must dispatch ADD_TO_LOCAL_QUEUE",
+      /\.\.\.\(hasLiveAssistantTurn \? \{ delivery: "deferred" \} : \{\}\)/,
+      "when the assistant is responding, sendPrompt must ask OpenCode to defer delivery server-side",
     );
   });
 
-  test("sendPrompt also sends addToQueue to backend when isProcessing", () => {
+  test("sendPrompt does not post addToQueue to the backend", () => {
     const body = extractFunctionBody(panelSource, "export function InputWrapper()");
 
-    assert.match(
+    assert.doesNotMatch(
       body,
-      /if\s*\(isProcessing\)\s*\{[\s\S]*type:\s*["']addToQueue["']/s,
-      "when isProcessing, sendPrompt must also post addToQueue to extension host",
+      /type:\s*["']addToQueue["']/,
+      "normal composer sends must not enter the extension QueueManager",
     );
   });
 
-  test("optimistic payload includes id, sessionId, createdAt, text", () => {
+  test("sendPrompt does not dispatch ADD_TO_LOCAL_QUEUE", () => {
     const body = extractFunctionBody(panelSource, "export function InputWrapper()");
 
-    assert.match(
+    assert.doesNotMatch(
       body,
-      /ADD_TO_LOCAL_QUEUE[\s\S]*payload:\s*\{[^}]*id:\s*optimisticId/s,
-      "optimistic payload must include a generated id",
+      /type:\s*["']ADD_TO_LOCAL_QUEUE["']/,
+      "normal composer sends must not add visible optimistic queue rows",
+    );
+  });
+
+  test("accepted deferred prompts render from SDK acknowledgement, not QueueManager", () => {
+    assert.match(
+      messageHandlerSource,
+      /case "deferredPromptAccepted":[\s\S]*ADD_PENDING_DEFERRED_PROMPT/,
+      "SDK-accepted deferred prompts should be tracked separately from QueueManager",
     );
     assert.match(
-      body,
-      /ADD_TO_LOCAL_QUEUE[\s\S]*payload:\s*\{[^}]*sessionId:/s,
-      "optimistic payload must include sessionId",
-    );
-    assert.match(
-      body,
-      /ADD_TO_LOCAL_QUEUE[\s\S]*payload:\s*\{[^}]*createdAt:\s*Date\.now/s,
-      "optimistic payload must include createdAt",
+      panelSource,
+      /delivery:\s*["']deferred["']/,
+      "the composer should still request OpenCode deferred delivery",
     );
   });
 });

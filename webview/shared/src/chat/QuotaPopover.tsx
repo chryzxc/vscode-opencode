@@ -6,14 +6,18 @@
 
 import { useEffect, useRef } from 'react';
 import { X, Calendar, CalendarRange, Clock, Award, RefreshCw } from 'lucide-react';
-import { useAppDispatch, useAppState } from './lib/store';
+import { useAppDispatch, useAppState, shallowEqual } from './lib/store';
 import vscode from './lib/vscode';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import './QuotaPopover.css';
 
 export function QuotaPopover() {
-  const { quotaData, isQuotaPopoverOpen, quotaIsRefreshing } = useAppState();
+  const { quotaData, isQuotaPopoverOpen, quotaIsRefreshing } = useAppState((s) => ({
+    quotaData: s.quotaData,
+    isQuotaPopoverOpen: s.isQuotaPopoverOpen,
+    quotaIsRefreshing: s.quotaIsRefreshing
+  }), shallowEqual);
   const dispatch = useAppDispatch();
   const popoverRef = useRef<HTMLDivElement>(null);
 

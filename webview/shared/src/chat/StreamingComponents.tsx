@@ -1,5 +1,6 @@
 import { memo, useMemo, useState } from 'react';
 import {
+  Circle,
   Check,
   ChevronDown,
   ChevronRight,
@@ -8,16 +9,19 @@ import {
 } from 'lucide-react';
 
 
-import type { StreamingState, StreamingStep } from './lib/types';
+import type { AppState, StreamingState, StreamingStep } from './lib/types';
 import vscode from './lib/vscode';
-import { AssistantMessage, FileIcon } from './MessageComponents';
+import { ResponseMessage, FileIcon } from './MessageComponents';
 
 export function ProgressStep({ step }: { step: StreamingStep }) {
   const isPending = step.status === 'pending';
+  const isRunning = step.status === 'running';
   const isError = step.status === 'error';
-  const isDone = !isPending && !isError;
+  const isDone = step.status === 'done';
 
   const statusIcon = isPending ? (
+    <Circle className="h-3.5 w-3.5 text-oc-text-dim" />
+  ) : isRunning ? (
     <Loader2 className="h-3.5 w-3.5 animate-spin text-oc-accent" />
   ) : isError ? (
     <X className="h-3.5 w-3.5 text-oc-red" />
@@ -130,30 +134,136 @@ export function ProgressSteps({ steps }: { steps: StreamingStep[] }) {
   );
 }
 
-export const StreamingCard = memo(function StreamingCard({ isContiguous, streaming }: { isContiguous?: boolean; streaming: StreamingState | null }) {
-  // Show the streaming card for live assistant activity. The response body
-  // inside AssistantMessage handles the terminal step gate; this wrapper must
-  // stay mounted so the progress/activity UI remains visible.
-  const visible = useMemo(() => {
-    if (!streaming) return false;
+type StreamingCardProps = {
+  isContiguous?: boolean;
+  streaming: StreamingState | null;
+  interactiveEvents?: AppState["interactiveEvents"];
+  assistantTurnMessageId?: AppState["assistantTurnMessageId"];
+  transcriptAssistantMessageIds?: string[];
+  hasTranscriptAssistantForCurrentTurn?: boolean;
+  currentSessionId?: AppState["currentSessionId"];
+  subagentsByParentMessageId?: AppState["subagentsByParentMessageId"];
+  subagentDetailsById?: AppState["subagentDetailsById"];
+  todoItems?: AppState["todoItems"];
+};
 
-    if (streaming.content.trim().length > 0) return true;
-    if (streaming.reasoning.trim().length > 0) return true;
-    if (streaming.edits.length > 0) return true;
-    if (
-      Array.isArray(streaming.interactiveEvents) &&
-      streaming.interactiveEvents.length > 0
-    ) {
+type ShouldShowStreamingCardInput = {
+  streaming: StreamingState | null;
+  interactiveEvents?: AppState["interactiveEvents"];
+  assistantTurnMessageId?: AppState["assistantTurnMessageId"];
+  transcriptAssistantMessageIds?: string[];
+  hasTranscriptAssistantForCurrentTurn?: boolean;
+  subagentsByParentMessageId?: AppState["subagentsByParentMessageId"];
+};
+
+export function shouldShowStreamingCard({
+  streaming,
+  interactiveEvents,
+  assistantTurnMessageId,
+  transcriptAssistantMessageIds,
+  hasTranscriptAssistantForCurrentTurn,
+  subagentsByParentMessageId,
+}: ShouldShowStreamingCardInput): boolean {
+  if (!streaming) return false;
+  if (hasTranscriptAssistantForCurrentTurn) return false;
+
+  const candidateIds = new Set(
+    [streaming.messageId, assistantTurnMessageId]
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      .map((value) => value.trim()),
+  );
+
+  const hasMatchingAssistantTurnInTranscript =
+    candidateIds.size > 0 &&
+    Array.isArray(transcriptAssistantMessageIds) &&
+    transcriptAssistantMessageIds.some((messageId) => candidateIds.has(messageId));
+
+  if (hasMatchingAssistantTurnInTranscript) return false;
+
+  const hasRenderableText =
+    streaming.hasRenderableContent === true &&
+    streaming.content.trim().length > 0;
+  if (hasRenderableText) return true;
+  if (streaming.reasoning.trim().length > 0) return true;
+  if (
+    Array.isArray(streaming.reasoningEvents) &&
+    streaming.reasoningEvents.length > 0
+  ) {
+    return true;
+  }
+  if (streaming.edits.length > 0) return true;
+  if (
+    Array.isArray(streaming.interactiveEvents) &&
+    streaming.interactiveEvents.length > 0
+  ) {
+    return true;
+  }
+  if (Array.isArray(interactiveEvents) && interactiveEvents.length > 0) {
+    return true;
+  }
+  if (streaming.steps.length > 0 || streaming.progressEvents.length > 0) return true;
+  if (streaming.messageId) {
+    const liveSubagents = subagentsByParentMessageId?.[streaming.messageId];
+    if (Array.isArray(liveSubagents) && liveSubagents.length > 0) {
       return true;
     }
-    if (streaming.steps.length > 0 || streaming.progressEvents.length > 0) return true;
+  }
 
-    return false;
-  }, [streaming]);
+  return false;
+}
+
+export const StreamingCard = memo(function StreamingCard({
+  isContiguous,
+  streaming,
+  interactiveEvents,
+  assistantTurnMessageId,
+  transcriptAssistantMessageIds,
+  hasTranscriptAssistantForCurrentTurn,
+  currentSessionId,
+  subagentsByParentMessageId,
+  subagentDetailsById,
+  todoItems,
+}: StreamingCardProps) {
+  // The live streaming card exists only for the in-flight assistant turn.
+  // Once the transcript owns the same turn, the finalized ResponseMessage
+  // becomes the only source of truth for that response block.
+  const visible = useMemo(
+    () =>
+      shouldShowStreamingCard({
+        streaming,
+        interactiveEvents,
+        assistantTurnMessageId,
+        transcriptAssistantMessageIds,
+        hasTranscriptAssistantForCurrentTurn,
+        subagentsByParentMessageId,
+      }),
+    [
+      assistantTurnMessageId,
+      hasTranscriptAssistantForCurrentTurn,
+      interactiveEvents,
+      streaming,
+      subagentsByParentMessageId,
+      transcriptAssistantMessageIds,
+    ],
+  );
 
   if (!visible || !streaming) return null;
 
-  return <AssistantMessage streaming={streaming} isContiguous={isContiguous} />;
+  return (
+    <ResponseMessage
+      // TEMPORARY: keep the live streaming card activity-only. The canonical
+      // assistant text is rendered by the finalized message card below.
+      message={undefined}
+      streaming={streaming}
+      hideLoadingText
+      isContiguous={isContiguous}
+      interactiveEvents={interactiveEvents}
+      currentSessionId={currentSessionId}
+      subagentsByParentMessageId={subagentsByParentMessageId}
+      subagentDetailsById={subagentDetailsById}
+      todoItems={todoItems}
+    />
+  );
 });
 
 

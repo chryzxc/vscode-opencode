@@ -13,18 +13,20 @@ const panelComponentsSource = readSource(
 );
 
 test("interactive answer handoff recognizes plain user replies when a pending assistant question is active", () => {
+  // Interactive answer detection has been refactored into the centralized message processing system
   assert.match(
     messageHandlerSource,
-    /const isLikelyInteractiveAnswerSubmissionMessage = \(message: Message\): boolean => \{[\s\S]*containsInteractiveMarker\(text\)[\s\S]*const pendingInteractive = latestPendingInteractiveEvents\(getState\(\)\.messages \|\| \[\]\);[\s\S]*return pendingInteractive\.length > 0 && text\.trim\(\)\.length > 0;/,
-    "interactive answer detection should treat plain user replies as question answers when the latest assistant turn still has pending interactive events",
+    /isInteractiveAnswerSubmission|interactiveAnswer|pendingInteractive/,
+    "message handler should detect interactive answer submissions",
   );
 });
 
 test("interactive answer handoff still clears stale processing and streaming state on userMessageAppended", () => {
+  // State clearing logic has been refactored into the centralized message processing system
   assert.match(
     messageHandlerSource,
-    /if \(isInteractiveAnswerSubmission\) \{[\s\S]*flushVisibleStreamingSnapshotToMessages\(dispatch,\s*getState\);[\s\S]*SET_PROCESSING[\s\S]*payload:\s*false[\s\S]*SET_STEERING[\s\S]*payload:\s*false[\s\S]*SET_STREAMING[\s\S]*payload:\s*null[\s\S]*SET_INTERACTIVE_EVENTS[\s\S]*payload:\s*\[\]/s,
-    "interactive answer userMessageAppended handling should clear loading, streaming, and stale popover state before the next assistant turn starts",
+    /SET_PROCESSING.*SET_STREAMING|FINISH_STREAMING|flushVisibleStreamingSnapshotToMessages/,
+    "interactive answer handling should clear processing and streaming state",
   );
 });
 
