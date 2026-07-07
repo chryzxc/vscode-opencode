@@ -634,6 +634,10 @@ function normalizedCentralizedEventRichness(event: UnknownRecord): number {
     if (typeof info.id === "string" && info.id.trim()) score += 2;
     if (typeof info.role === "string" && info.role.trim()) score += 1;
     if (typeof info.time !== "undefined") score += 1;
+    // Events carrying file-change diffs (info.summary.diffs) are richer
+    // and must survive deduplication over duplicates without diff data.
+    const summary = asRecord(info.summary);
+    if (Array.isArray(summary?.diffs) && summary.diffs.length > 0) score += 5;
   }
 
   return score;
@@ -1262,17 +1266,33 @@ function resolveMessageUpdatedFinishSignal(
     return true;
   }
 
+  // Explicit error payloads mean the message is no longer processing.
+  if (info?.error || payload.error || properties?.error) {
+    return true;
+  }
+
+  // If the payload explicitly includes a completion timestamp, it's finished.
+  if (asRecord(info?.time)?.completed) {
+    return true;
+  }
+
   // Fallbacks for providers that emit terminal status only on message/part/state
   // records. Without this, UI can remain in loading even after the final content
   // has already arrived.
   const statusCandidates = [
     payload.status,
     payload.state,
+    payload.reason,
     properties?.status,
+    properties?.reason,
     asRecord(properties?.state)?.status,
+    asRecord(properties?.state)?.reason,
     asRecord(properties?.message)?.status,
+    asRecord(properties?.message)?.reason,
     asRecord(properties?.part)?.status,
+    asRecord(properties?.part)?.reason,
     asRecord(payload.message)?.status,
+    asRecord(payload.message)?.reason,
   ];
   return statusCandidates.some((candidate) => isFinishSignal(candidate));
 }
@@ -4754,6 +4774,10 @@ function getCanonicalStructuredMessageText(message: Message | UnknownRecord): st
 }
 
 function latestUserMessageText(state: AppState): string {
+  if (!state.messages || state.messages.length === 0) {
+    return '';
+  }
+
   for (let i = state.messages.length - 1; i >= 0; i -= 1) {
     const msg = state.messages[i];
     const role = msg.role ?? msg.info?.role;
@@ -6241,10 +6265,11 @@ function mergeAssistantReplacement(existing: Message, incoming: Message): Messag
 }
 
 function replaceMatchingAssistantTurn(
-  messages: Message[],
+  messages: Message[] | undefined,
   incoming: Message,
   candidateIds: Array<string | null | undefined>,
 ): Message[] {
+  const safeMessages = messages || [];
   const ids = new Set(candidateIds.map((id) => asString(id)).filter(Boolean));
   if (ids.size === 0) {
     streamDebug("Timeline: assistant turn append without ID", {
@@ -6257,11 +6282,11 @@ function replaceMatchingAssistantTurn(
         Array.isArray(incoming.progressEvents) ? incoming.progressEvents : [],
       ),
     });
-    return [...messages, incoming];
+    return [...safeMessages, incoming];
   }
 
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
+  for (let index = safeMessages.length - 1; index >= 0; index -= 1) {
+    const message = safeMessages[index];
     if (!isAssistantHistoryMessage(message)) {
       continue;
     }
@@ -6269,7 +6294,7 @@ function replaceMatchingAssistantTurn(
     if (!id || !ids.has(id)) {
       continue;
     }
-    const next = [...messages];
+    const next = [...safeMessages];
     streamDebug("Timeline: assistant turn matched and replacing", {
       matchedId: id,
       candidateIds: Array.from(ids),
@@ -6303,7 +6328,7 @@ function replaceMatchingAssistantTurn(
       Array.isArray(incoming.progressEvents) ? incoming.progressEvents : [],
     ),
   });
-  return [...messages, incoming];
+  return [...safeMessages, incoming];
 }
 
 // Updated handler to use modular system
@@ -6363,12 +6388,14 @@ function syncSubagentMapsIntoMessages(
       };
 
   const messageIds = new Set<string>();
-  state.messages.forEach((message) => {
-    const messageId = getMessageId(message);
-    if (messageId) {
-      messageIds.add(messageId);
-    }
-  });
+  if (state.messages && state.messages.length > 0) {
+    state.messages.forEach((message) => {
+      const messageId = getMessageId(message);
+      if (messageId) {
+        messageIds.add(messageId);
+      }
+    });
+  }
 
   // Rebind orphaned summary groups (usually keyed by transient streaming IDs)
   // to the latest assistant message for the same session so cards survive
@@ -6393,7 +6420,7 @@ function syncSubagentMapsIntoMessages(
 
   const updatedMessages: Message[] = [];
   let hasChanges = false;
-  const nextMessages = state.messages.map((message) => {
+  const nextMessages = (state.messages || []).map((message) => {
     const messageId = getMessageId(message);
     if (!messageId) {
       return message;
@@ -6481,12 +6508,14 @@ function filterSubagentMapsForActiveSession(
   }
 
   const currentMessageIds = new Set<string>();
-  state.messages.forEach((message) => {
-    const messageId = getMessageId(message);
-    if (messageId) {
-      currentMessageIds.add(messageId);
-    }
-  });
+  if (state.messages && state.messages.length > 0) {
+    state.messages.forEach((message) => {
+      const messageId = getMessageId(message);
+      if (messageId) {
+        currentMessageIds.add(messageId);
+      }
+    });
+  }
   const streamingMessageId = state.streaming?.messageId || null;
 
   const filteredSummariesByParentMessageId: Record<string, SubagentSummary[]> = {};
@@ -8291,8 +8320,15 @@ function handleStreamEvent(
   dispatch: Dispatch<AppAction>,
   getState: () => AppState,
   payload: UnknownRecord,
-  terminalErrorReached: boolean
+  terminalErrorReached: boolean,
+  shouldSuppressProcessingBootstrap: boolean = false
 ): void {
+  const dispatchProcessingTrue = () => {
+    if (!shouldSuppressProcessingBootstrap) {
+      dispatchProcessingTrue();
+    }
+  };
+
   // Log every stream event for comprehensive debugging
   const eventType = asString(payload.type) || asString(payload.event) || asString(payload.kind);
   logger.debug(`Handling Stream Event: ${eventType}`, {
@@ -8589,8 +8625,51 @@ function handleStreamEvent(
   // build/assistant response. Keep the stream moving, but avoid duplicating
   // the prompt echo in the conversation list.
   if (hasSystemPatternEvent) {
-    dispatch({ type: "SET_PROCESSING", payload: true });
+    dispatchProcessingTrue();
     return;
+  }
+
+  // Stray event guard: If this event carries a messageId that belongs to a different
+  // response than the one currently streaming (e.g. from a background task or a stale
+  // previous turn), we must drop the stream-mutating portion of the event to prevent
+  // it from bleeding into the active UI streaming card.
+  const isStrayEvent = (() => {
+    if (!messageId) return false;
+    const currentStreamingMessageId = getState().streaming?.messageId;
+    if (!currentStreamingMessageId) return false;
+    if (messageId === currentStreamingMessageId) return false;
+    
+    // Some events explicitly bootstrap a new turn (like streamStart, or message.updated
+    // which has its own re-keying logic). Those are not "stray", they are the start
+    // of a *new* streaming sequence.
+    if (normalizedEventType === "start" || normalizedEventType === "streamStart") return false;
+    if (normalizedEventType === "message.updated") return false;
+    
+    return true;
+  })();
+
+  if (isStrayEvent) {
+    logger.debug(`Suppressing stray stream event for inactive message ID`, {
+      normalizedEventType,
+      eventMessageId: messageId,
+      activeStreamingMessageId: getState().streaming?.messageId,
+    });
+    // For purely streaming UI events, we just drop them.
+    // For lifecycle events like 'message.completed' or 'finish', we don't want them
+    // to accidentally close the ACTIVE assistant turn. We should just early return.
+    const isPurelyStreamEvent = [
+      'contentDelta', 'content', 'text-delta', 'text',
+      'reasoningDelta', 'reasoning', 'thinking',
+      'stepStart', 'stepUpdate', 'stepDone', 'stepError',
+      'edit', 'fileEdit',
+      'message.part.updated', 'message.part.added', 'message.part.created',
+      'finish', 'done', 'message.completed', 'session.completed',
+      'error', 'session.error'
+    ].includes(normalizedEventType);
+    
+    if (isPurelyStreamEvent) {
+       return;
+    }
   }
 
   switch (normalizedEventType) {
@@ -8621,7 +8700,7 @@ function handleStreamEvent(
           break;
         }
         logger.debug(`No part data, setting processing=true`);
-        dispatch({ type: 'SET_PROCESSING', payload: true });
+        dispatchProcessingTrue();
         break;
       }
 
@@ -8639,10 +8718,29 @@ function handleStreamEvent(
       const wasStreamInactiveAtPartStart = currentStreamingState?.isActive === false;
       let terminalTurnClosed = false;
 
-      // Detect start of reasoning part sequence
-      const isReasoning = currentPartType === 'reasoning' || currentStructuredKind === 'thinking';
-      if (isReasoning) {
-        logger.debug('Starting reasoning part sequence - will drop all content');
+      // Detect start of reasoning part sequence.
+      // Also handle raw message.part.delta events where field="reasoning"/"thinking":
+      // these carry the reasoning delta in properties.delta (not part.reasoning) and
+      // properties.field (not part.type), so currentPartType is empty and the normal
+      // reasoning detection misses them entirely — causing delta chunks to be mistakenly
+      // routed to the content pipeline instead of the reasoning timeline.
+      const deltaField = asString(properties?.field).trim().toLowerCase();
+      const isRawDeltaReasoningField =
+        eventType === "message.part.delta" &&
+        (deltaField === "reasoning" || deltaField === "thinking");
+      const isReasoning = currentPartType === 'reasoning' || currentStructuredKind === 'thinking' || isRawDeltaReasoningField;
+      
+      // Only emit the "enter reasoning sequence" signal when we first detect a
+      // reasoning part. For raw delta events this fires on every chunk, so guard
+      // it with isInReasoningPart to avoid redundant dispatches that would
+      // unnecessarily reset the reasoning string to '' on every chunk.
+      if (isReasoning && !isInReasoningPart) {
+        logger.debug('Starting reasoning part sequence - will drop all content', {
+          partType: currentPartType,
+          structuredKind: currentStructuredKind,
+          isRawDeltaReasoningField,
+          deltaField,
+        });
         dispatch({ type: 'UPDATE_STREAMING_REASONING', payload: { reasoning: '', append: false, inReasoningPart: true } });
       }
 
@@ -8831,7 +8929,7 @@ function handleStreamEvent(
                 payload: { reasoning: reasoningLeak, append: true, delta: isDeltaReasoningChunk },
               });
             }
-            dispatch({ type: "SET_PROCESSING", payload: true });
+            dispatchProcessingTrue();
             break;
           }
 
@@ -8854,12 +8952,12 @@ function handleStreamEvent(
                 payload: { reasoning: reasoningLeak, append: true, delta: isDeltaReasoningChunk },
               });
             }
-            dispatch({ type: "SET_PROCESSING", payload: true });
+            dispatchProcessingTrue();
             break;
           }
           // Ignore id-like echoes that can appear before assistant output begins.
           if (isOpaqueIdLike(candidateChunk.trim())) {
-            dispatch({ type: "SET_PROCESSING", payload: true });
+            dispatchProcessingTrue();
             break;
           }
           const contentEmpty = !streamingState || !streamingState.content.trim();
@@ -8883,7 +8981,7 @@ function handleStreamEvent(
               !!deltaChunk,
             );
             if (!contentPatch) {
-              dispatch({ type: "SET_PROCESSING", payload: true });
+              dispatchProcessingTrue();
               break;
             }
             const candidateContent = contentPatch.append
@@ -8895,7 +8993,7 @@ function handleStreamEvent(
                 type: "UPDATE_STREAMING_REASONING",
                 payload: { reasoning: contentPatch.content, append: contentPatch.append },
               });
-              dispatch({ type: "SET_PROCESSING", payload: true });
+              dispatchProcessingTrue();
               break;
             }
             streamDebug("Stream: message part updated chunk", {
@@ -9262,11 +9360,11 @@ function handleStreamEvent(
       }
 
       if (wasStreamInactiveAtPartStart && isTerminalProgressPart(part, partType)) {
-        dispatch({ type: "SET_PROCESSING", payload: true });
+        dispatchProcessingTrue();
         break;
       }
 
-      dispatch({ type: 'SET_PROCESSING', payload: true });
+      dispatchProcessingTrue();
       break;
     }
     case 'message.updated': {
@@ -9276,7 +9374,7 @@ function handleStreamEvent(
         asRichString(properties?.text) ||
         asRichString(properties?.content);
       if (updatedText && hasSystemMessagePatternInText(updatedText)) {
-        dispatch({ type: "SET_PROCESSING", payload: true });
+        dispatchProcessingTrue();
         break;
       }
       // Some providers can emit final assistant updates with role mislabels.
@@ -9477,7 +9575,7 @@ function handleStreamEvent(
                   payload: { reasoning: deferredReasoning, append: true },
                 });
               }
-              dispatch({ type: "SET_PROCESSING", payload: true });
+              dispatchProcessingTrue();
               break;
             }
             if (mixedMessage) {
@@ -9577,7 +9675,9 @@ function handleStreamEvent(
         dispatch({ type: "SET_PROCESSING", payload: false });
         dispatch({ type: "FINISH_STREAMING" });
       } else {
-        dispatch({ type: 'SET_PROCESSING', payload: true });
+        if (eventRole !== "user") {
+          dispatchProcessingTrue();
+        }
       }
       break;
     }
@@ -9699,7 +9799,7 @@ function handleStreamEvent(
             ...startMetadata,
           },
       });
-      dispatch({ type: 'SET_PROCESSING', payload: true });
+      dispatchProcessingTrue();
       break;
     }
     case 'contentDelta':
@@ -9707,11 +9807,11 @@ function handleStreamEvent(
     case 'text':
     case 'text-delta': {
       if (eventRole && eventRole !== "assistant") {
-        dispatch({ type: "SET_PROCESSING", payload: true });
+        dispatchProcessingTrue();
         break;
       }
       if (structuredKind && structuredKind !== "message") {
-        dispatch({ type: "SET_PROCESSING", payload: true });
+        dispatchProcessingTrue();
         break;
       }
       const chunk =
@@ -9743,7 +9843,7 @@ function handleStreamEvent(
               });
             }
           }
-          dispatch({ type: "SET_PROCESSING", payload: true });
+          dispatchProcessingTrue();
           break;
         }
         const contentEmpty = !streamingState || !streamingState.content.trim();
@@ -10125,7 +10225,7 @@ function handleStreamEvent(
       }
 
       if (consumed) {
-        dispatch({ type: "SET_PROCESSING", payload: true });
+        dispatchProcessingTrue();
       }
       break;
     }
@@ -10305,12 +10405,14 @@ function remapSubagentsToFinalMessageId(
 
   const state = getState();
   const persistedMessageIds = new Set<string>();
-  state.messages.forEach((message) => {
-    const messageId = getMessageId(message);
-    if (messageId) {
-      persistedMessageIds.add(messageId);
-    }
-  });
+  if (state.messages && state.messages.length > 0) {
+    state.messages.forEach((message) => {
+      const messageId = getMessageId(message);
+      if (messageId) {
+        persistedMessageIds.add(messageId);
+      }
+    });
+  }
   const uniqueSourceIds = Array.from(
     new Set(
       sourceMessageIds.filter(
@@ -11306,9 +11408,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           try {
             terminalErrorReached = false;
             const centralizedMessages = asArray(data.messages, isMessage);
-            const rawHistoryMessages = Array.isArray((data as UnknownRecord).rawMessages)
-              ? [...((data as UnknownRecord).rawMessages as unknown[])]
-              : [];
             const rawSdkEventPayloads = Array.isArray((data as UnknownRecord).rawSdkEventPayloads)
               ? [...((data as UnknownRecord).rawSdkEventPayloads as unknown[])]
               : [];
@@ -11321,13 +11420,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             // panel and timeline parsing, but it must not be merged back into
             // the render list here or we reintroduce duplicate / incomplete turns.
             const sourceMessages = centralizedMessages;
-            dispatch({
-              type: "SET_RAW_MESSAGES",
-              payload: {
-                sessionId: historySessionId || asString(data.sessionId) || "",
-                messages: rawHistoryMessages,
-              },
-            });
             if (rawSdkEventPayloads.length > 0) {
               dispatch({
                 type: "SET_RAW_SDK_EVENT_PAYLOADS",
@@ -12268,6 +12360,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               scopedGetState,
               payload,
               terminalErrorReached,
+              shouldSuppressProcessingBootstrap,
             );
             dispatch({
               type: "SET_SESSION_STREAMING",
@@ -12278,7 +12371,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             });
             break;
           }
-          handleStreamEvent(dispatch, getState, payload, terminalErrorReached);
+          handleStreamEvent(dispatch, getState, payload, terminalErrorReached, shouldSuppressProcessingBootstrap);
           const streamingAfter = getState().streaming;
           if (streamingAfter) {
             latestStreamingSnapshot = streamingAfter;
@@ -12291,6 +12384,21 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             streamEventType === "session.completed"
           ) {
             const stateNow = getState();
+
+            // Extract properties and check for finish signal to turn off loading state
+            const properties = asRecord(payload.properties);
+            const finish = resolveMessageUpdatedFinishSignal(payload, properties);
+
+            if (finish) {
+              // Turn off loading state but don't end the AI turn
+              dispatch({ type: "SET_PROCESSING", payload: false });
+
+              logger.info("Stream event: Processing finish signal detected, turning off loading state", {
+                streamEventType,
+                finish,
+                sessionId: eventSessionId || activeSessionId || null,
+              });
+            }
           }
           break;
         }
@@ -12523,7 +12631,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           if (!context.file) {
             break;
           }
-          const selected = getState().selectedContexts;
+          const selected = getState().selectedContexts || [];
 
           let nextSelected = [...selected];
 
@@ -12545,7 +12653,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           break;
         }
         case "clearAutoContext": {
-          const selected = getState().selectedContexts;
+          const selected = getState().selectedContexts || [];
           const nextSelected = selected.filter((c) => !c.isAuto);
           if (nextSelected.length !== selected.length) {
             dispatch({ type: "SET_SELECTED_CONTEXTS", payload: nextSelected });

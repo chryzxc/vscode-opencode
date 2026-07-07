@@ -407,6 +407,81 @@ describe('error message reducer state', () => {
   });
 });
 
+describe('streaming reasoning reducer state', () => {
+  it('groups interleaved delta reasoning chunks by part id for live updates', () => {
+    const seededState = appReducer(initialState, {
+      type: 'SET_STREAMING',
+      payload: {
+        messageId: 'msg-reasoning',
+        content: '',
+        hasRenderableContent: false,
+        reasoning: '',
+        reasoningEvents: [],
+        steps: [],
+        progressEvents: [],
+        edits: [],
+        isActive: true,
+      },
+    });
+
+    const firstChunk = appReducer(seededState, {
+      type: 'UPDATE_STREAMING_REASONING',
+      payload: {
+        reasoning: 'The',
+        append: true,
+        partID: 'part-1',
+        messageID: 'msg-reasoning',
+        delta: true,
+      },
+    });
+
+    const interleavedPart = appReducer(firstChunk, {
+      type: 'UPDATE_STREAMING_REASONING',
+      payload: {
+        reasoning: 'Plan',
+        append: true,
+        partID: 'part-2',
+        messageID: 'msg-reasoning',
+        delta: true,
+      },
+    });
+
+    const nextState = appReducer(interleavedPart, {
+      type: 'UPDATE_STREAMING_REASONING',
+      payload: {
+        reasoning: 'ory',
+        append: true,
+        partID: 'part-1',
+        messageID: 'msg-reasoning',
+        delta: true,
+      },
+    });
+
+    assert.deepStrictEqual(
+      nextState.streaming?.reasoningEvents.map((event) => ({
+        partID: event.partID,
+        messageID: event.messageID,
+        text: event.text,
+        delta: event.delta,
+      })),
+      [
+        {
+          partID: 'part-1',
+          messageID: 'msg-reasoning',
+          text: 'Theory',
+          delta: true,
+        },
+        {
+          partID: 'part-2',
+          messageID: 'msg-reasoning',
+          text: 'Plan',
+          delta: true,
+        },
+      ],
+    );
+  });
+});
+
 describe('assistant turn pending lifecycle', () => {
   it('clears a stale inactive streaming snapshot when a new assistant turn starts', () => {
     const seededState = {

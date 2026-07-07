@@ -160,11 +160,9 @@ export class SessionHandler {
       const centralizedSessionData = await this.sessionService.loadCentralizedSessionData(
         sessionId,
       );
-      const rawMessages = centralizedSessionData.rawMessages;
       const rawSdkEventPayloads = centralizedSessionData.rawSdkEventPayloads;
-      const fallbackMessages = rawMessages.length > 0
-        ? rawMessages
-        : await this.sessionService.loadSessionMessages(sessionId);
+      const rawMessages = await this.sessionService.getMessages(sessionId);
+      const fallbackMessages = Array.isArray(rawMessages) ? rawMessages : [];
       const messages = await this.historyProcessor.processHistoryMessages(
         fallbackMessages,
         sessionId,
@@ -177,7 +175,6 @@ export class SessionHandler {
         type: "chatHistory",
         sessionId,
         messages,
-        rawMessages: fallbackMessages,
         rawSdkEventPayloads,
       });
       await this.compactionManager.sendCompactionViewStateForMessages(

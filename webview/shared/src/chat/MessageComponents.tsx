@@ -99,6 +99,7 @@ import type {
   StreamingState,
   StreamingStep,
   StructuredFileChange,
+  CentralizedSessionDiffEvent,
   SubagentConversationEvent,
   SubagentDetail,
   SubagentSummary,
@@ -733,9 +734,10 @@ function TerminalBlockWithOutput({
   event: DisplayEvent;
   messageContent: string;
 }) {
-  // Use activityDetail.command first as it contains the full unmodified command
-  // Fall back to event.summary only if command is not available
-  const command = event.activityDetail?.command || event.summary;
+  // Use input.command as the authoritative command field
+  const command = (
+    (event.activityDetail?.input as Record<string, unknown> | undefined)?.["command"] as string
+  ) || event.activityDetail?.command || event.summary;
 
   // Try to extract bash output from message content
   // Look for text after the command that looks like terminal output
@@ -1191,6 +1193,7 @@ function interactiveChoiceTextsFromMessage(message?: Message): string[] {
     addChoiceText(rec.message);
   };
 
+  const question = asRecord(structured?.question) || asRecord(structured);
   const questionChoices = [
     ...(Array.isArray(question?.options) ? question.options : []),
     ...(Array.isArray(question?.choices) ? question.choices : []),
@@ -3555,10 +3558,6 @@ function progressItemsFromRawResponseParts(
     const partMessageID = firstNonEmptyString(
       asString(partRec.messageID),
       asString(partRec.messageId),
-      asString(event.messageID),
-      asString(event.messageId),
-      asString(eventProperties?.messageID),
-      asString(eventProperties?.messageId),
     );
 
     if (toolName !== "read" && !callID && !id) {
@@ -6267,7 +6266,7 @@ export const UserMessage = memo(function UserMessage({ message }: { message?: Me
 
   if (isPlanProceedMessageContent(content)) {
     return (
-    <div className="oc-message-enter mb-3.5 flex justify-end" style={DEFERRED_CHAT_CARD_STYLE}>
+    <div className="oc-message-enter mt-6 mb-3.5 flex justify-end" style={DEFERRED_CHAT_CARD_STYLE}>
         <div className="flex w-fit max-w-[78%] flex-col items-end gap-2">
           <div className="oc-plan-approved-badge flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-oc-xs">
             <Check className="h-3.5 w-3.5" />
@@ -6284,7 +6283,7 @@ export const UserMessage = memo(function UserMessage({ message }: { message?: Me
   }
 
   return (
-      <div className="oc-message-enter mb-3.5 flex flex-col gap-1.5" style={DEFERRED_CHAT_CARD_STYLE}>
+      <div className="oc-message-enter mt-6 mb-3.5 flex flex-col gap-1.5" style={DEFERRED_CHAT_CARD_STYLE}>
       {(content || hasImages) ? (
         <div className="flex items-end justify-end gap-1.5">
           <div className="w-fit max-w-[78%]">
@@ -6963,6 +6962,7 @@ function ResponseMessageInner({
   messages,
   currentSessionId,
   hideFileChangesSection,
+  centralizedDiffEvent,
   subagentsByParentMessageId,
   subagentDetailsById,
   todoItems = [],
@@ -6972,6 +6972,7 @@ function ResponseMessageInner({
   onSetBlockExpanded,
   blockSize = 1,
   isHiddenByBlock = false,
+  blockHasInlineAbort = false,
 }: {
   message?: Message;
   streaming?: StreamingState;
@@ -6981,6 +6982,7 @@ function ResponseMessageInner({
   messages?: Message[];
   currentSessionId?: AppState["currentSessionId"];
   hideFileChangesSection?: boolean;
+  centralizedDiffEvent?: CentralizedSessionDiffEvent;
   subagentsByParentMessageId?: AppState["subagentsByParentMessageId"];
   subagentDetailsById?: AppState["subagentDetailsById"];
   todoItems?: AppState["todoItems"];
@@ -7738,6 +7740,73 @@ const centralizedRawResponse = message?.rawResponse;
           activityTimelineTurnMessageId
         ? stickyTimelineDisplayEventsRef.current.events
         : visibleDisplayEvents;
+        
+  const hasStickyTimelineActivity = timelineDisplayEvents.length > 0;
+  const canCollapseCompletedAssistantTurn =
+    cardMessage?.aborted !== true &&
+    !isCurrentCardLiveAssistantTurn &&
+    !(assistantTurnPending && isLatestAssistantMessage && isAfterLatestUserMessage) &&
+    hasStickyTimelineActivity;
+  const effectiveExpanded =
+    typeof isBlockExpanded === "boolean" ? isBlockExpanded : viewState.showExpandedActivityTimeline;
+  const isAssistantTurnCollapsed =
+    canCollapseCompletedAssistantTurn &&
+    !effectiveExpanded;
+
+  const { blockTokens, blockDuration } = useMemo(() => {
+    if (!isAssistantTurnCollapsed || !blockGroupKey || !messages || blockSize === undefined || blockSize <= 1) {
+      return { blockTokens: undefined, blockDuration: undefined };
+    }
+    
+    let sumInput = 0;
+    let sumOutput = 0;
+    let sumReasoning = 0;
+    let sumRead = 0;
+    let sumWrite = 0;
+    let sumDuration = 0;
+    let hasTokens = false;
+    let hasDuration = false;
+
+    let currentKey = "initial";
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i];
+      const role = msg.role ?? msg.info?.role;
+      if (role === "user") {
+        currentKey = firstNonEmptyString(msg.info?.id, msg.id) ?? `user:${i}`;
+      } else if (role === "assistant" && currentKey === blockGroupKey) {
+        const rawEvents = normalizeCentralizedEventPayloads(msg.rawSdkEventPayloads);
+        const scopeIds = buildAssistantScopeMessageIds({
+          message: msg,
+          assistantMessageId: msg.info?.id ?? msg.id,
+        });
+        const t = getTokenInfo(rawEvents, scopeIds);
+        const d = getDuration(rawEvents, scopeIds);
+        
+        if (t) {
+          hasTokens = true;
+          sumInput += t.input ?? 0;
+          sumOutput += t.output ?? 0;
+          sumReasoning += t.reasoning ?? 0;
+          sumRead += t.cache?.read ?? 0;
+          sumWrite += t.cache?.write ?? 0;
+        }
+        if (typeof d === "number") {
+          hasDuration = true;
+          sumDuration += d;
+        }
+      }
+    }
+
+    const blockTokens: CentralizedTokenInfo | undefined = hasTokens ? {
+      input: sumInput,
+      output: sumOutput,
+      reasoning: sumReasoning,
+      cache: (sumRead > 0 || sumWrite > 0) ? { read: sumRead, write: sumWrite } : undefined
+    } : undefined;
+    const blockDuration: number | undefined = hasDuration ? sumDuration : undefined;
+    return { blockTokens, blockDuration };
+  }, [isAssistantTurnCollapsed, blockGroupKey, messages, blockSize]);
+
   const responseBodyRawSdkEventPayloads = useMemo(
     () =>
       normalizedCentralizedRawSdkEventPayloads.filter(
@@ -7836,7 +7905,21 @@ const centralizedRawResponse = message?.rawResponse;
         }
         groups.push({ type: "commentary", event });
       } else {
+        const isQuestionEvent =
+          (event.label ?? "").trim().toLowerCase() === "question" ||
+          (event.activityDetail?.tool ?? "").trim().toLowerCase() === "question";
+
+        if (isQuestionEvent && currentActivity.length > 0) {
+          groups.push({ type: "activity", events: currentActivity });
+          currentActivity = [];
+        }
+
         currentActivity.push(event);
+
+        if (isQuestionEvent) {
+          groups.push({ type: "activity", events: currentActivity });
+          currentActivity = [];
+        }
       }
     }
     if (currentActivity.length > 0) {
@@ -8051,7 +8134,7 @@ const centralizedRawResponse = message?.rawResponse;
 		const activeSessionId = currentSessionId;
 		const filtered = formattedSubagents.filter((subagent) => {
 			// Check if in active session
-			if (activeSessionId && subagent.summary.parentSessionId !== activeSessionId) {
+			if (activeSessionId && subagent.parentSessionId !== activeSessionId) {
 				return false;
 			}
 			// Check if belongs to current message
@@ -8059,9 +8142,9 @@ const centralizedRawResponse = message?.rawResponse;
 				return true;
 			}
 			// More flexible message ID matching to handle different ID formats
-			return subagent.summary.parentMessageId === messageId ||
-			       subagent.summary.id === messageId ||
-			       messageId.includes(subagent.summary.parentMessageId);
+			return subagent.parentMessageId === messageId ||
+			       subagent.id === messageId ||
+			       (subagent.parentMessageId && messageId.includes(subagent.parentMessageId));
 		});
 
 		return filtered;
@@ -8092,7 +8175,7 @@ const centralizedRawResponse = message?.rawResponse;
     }
     const detail =
       (subagentDetailsById?.[selected.id] as SubagentDetail | undefined) ||
-      (selected as SubagentDetail);
+      (selected as unknown as SubagentDetail);
     const childSessionId = detail.childSessionId || selected.childSessionId;
     const parentSessionId = detail.parentSessionId || selected.parentSessionId;
     const parentMessageId = detail.parentMessageId || selected.parentMessageId;
@@ -8131,7 +8214,7 @@ const centralizedRawResponse = message?.rawResponse;
     }
     const detail =
       (subagentDetailsById?.[selected.id] as SubagentDetail | undefined) ||
-      (selected as SubagentDetail);
+      (selected as unknown as SubagentDetail);
     const childSessionId = detail.childSessionId || selected.childSessionId;
     const parentSessionId = detail.parentSessionId || selected.parentSessionId;
     const parentMessageId = detail.parentMessageId || selected.parentMessageId;
@@ -8255,20 +8338,24 @@ const centralizedRawResponse = message?.rawResponse;
     () => getLegacyMetricsDiagnostics(message, streaming),
     [message, streaming],
   );
-  const tokens = getTokenInfo(
+  const baseTokens = getTokenInfo(
     normalizedCentralizedRawSdkEventPayloads,
     assistantScopeMessageIds,
   );
+  const baseDuration = getDuration(
+    normalizedCentralizedRawSdkEventPayloads,
+    assistantScopeMessageIds,
+  );
+
+  const tokens = isAssistantTurnCollapsed && blockTokens ? blockTokens : baseTokens;
+  const duration = isAssistantTurnCollapsed && blockDuration !== undefined ? blockDuration : baseDuration;
+
   const inputTok = tokens?.input ?? 0;
   const outputTok = tokens?.output ?? 0;
   const reasoningTok = tokens?.reasoning ?? 0;
   const cache = tokens?.cache;
   const cacheRead = cache?.read ?? 0;
   const cacheWrite = cache?.write ?? 0;
-  const duration = getDuration(
-    normalizedCentralizedRawSdkEventPayloads,
-    assistantScopeMessageIds,
-  );
   const hasMetrics =
     inputTok > 0 ||
     outputTok > 0 ||
@@ -8489,12 +8576,24 @@ const responseBodyChunks = useMemo(() => {
       }),
     [cardMessage, planPrelude, shouldShowPlanCard, visibleResponseBodyChunks],
   );
-  const showAssistantResponseHeader = hasPrimaryResponseBody;
+  // VISUAL PRESENTATION OF COLLAPSED STATES:
+  // For non-last messages in an activity timeline block (i.e. messages that are hidden 
+  // when the block is collapsed, but visible when expanded), we do NOT show the
+  // full AI response header (which contains the model name and aggregated metrics).
+  // This keeps the UI cleaner and avoids repetitive headers for every step.
+  const showAssistantResponseHeader = hasPrimaryResponseBody && isLastInBlock;
   const isAborted = cardMessage?.aborted === true;
-  const interruptedPresentation =
+  const effectiveInterruptedPresentation =
     cardMessage?.interruptedPresentation ||
     cardMessage?.info?.interruptedPresentation ||
     (isAborted ? "inline" : undefined);
+    
+  // If the block is collapsed, the aborted card might be hidden. 
+  // We inherit the block's inline abort state so the visible card can render it.
+  const interruptedPresentation = 
+    isAssistantTurnCollapsed && blockHasInlineAbort 
+      ? "inline" 
+      : effectiveInterruptedPresentation;
   const structuredRetryError =
     !!cardMessage?.error &&
     (cardMessage.retryWithoutStructuredOutput === true ||
@@ -8524,20 +8623,9 @@ const responseBodyChunks = useMemo(() => {
   // instead of hiding it behind a live-stream flag.
   // Use the sticky timeline snapshot, not the ephemeral live array, so rows
   // already painted in the UI remain visible through hydration rerenders.
-  const hasStickyTimelineActivity = timelineDisplayEvents.length > 0;
-  const canCollapseCompletedAssistantTurn =
-    !isAborted &&
-    !isCurrentCardLiveAssistantTurn &&
-    !(assistantTurnPending && isLatestAssistantMessage && isAfterLatestUserMessage) &&
-    hasStickyTimelineActivity;
   // Drive the collapsed state from the shared block-level prop when available
   // (so all non-last cards in the block toggle together), otherwise fall back
   // to the local viewState for standalone or legacy usage.
-  const effectiveExpanded =
-    typeof isBlockExpanded === "boolean" ? isBlockExpanded : viewState.showExpandedActivityTimeline;
-  const isAssistantTurnCollapsed =
-    canCollapseCompletedAssistantTurn &&
-    !effectiveExpanded;
   const visibleStepsCount = timelineDisplayEvents.filter((event) => {
     const labelLower = (event.label || "").trim().toLowerCase();
     const isLifecycleMarkerEvent =
@@ -8672,6 +8760,20 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
     return () => root.removeEventListener("click", onClick);
   }, []);
 
+  const isVisuallyEmpty =
+    !hasVisibleResponseSectionContent &&
+    !showAssistantResponseHeader &&
+    questionPreludeGroups.length === 0 &&
+    !(isLastInBlock && blockSize !== undefined && blockSize > 1 && isBlockExpanded) &&
+    !(!isAssistantTurnCollapsed && canCollapseCompletedAssistantTurn && !(blockSize !== undefined && blockSize > 1)) &&
+    interruptedPresentation !== "inline" &&
+    !showLegacyErrorBanner &&
+    !showDisplayErrorBanner &&
+    message?.retryState !== "retrying_without_structured_output" &&
+    (hideFileChangesSection || !shouldShowFileChanges) &&
+    (!centralizedDiffEvent?.files || centralizedDiffEvent.files.length === 0) &&
+    (!subagents || subagents.length === 0);
+
   const responseEnterClass = streaming
     ? "oc-assistant-streaming-enter"
     : "oc-assistant-response-enter";
@@ -8681,7 +8783,7 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
     <div
       id={messageId ? `msg-${messageId}` : undefined}
       data-message-id={messageId || undefined}
-      className={`oc-message-enter ${responseEnterClass} ${isContiguous ? "mb-2.5 mt-2" : "mb-3.5"}${isHiddenByBlock ? " hidden" : ""}`}
+      className={`oc-message-enter ${responseEnterClass} ${isContiguous ? "mb-2.5 mt-2" : "mb-3.5"}${isHiddenByBlock || isVisuallyEmpty ? " hidden" : ""}`}
       style={DEFERRED_CHAT_CARD_STYLE}
     >
       <div
@@ -8746,9 +8848,9 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
                       </div>
                     )}
                     {typeof duration === "number" && (
-                      <div className="flex items-center gap-1" title={`Duration: ${duration.toFixed(1)} seconds`}>
+                      <div className="flex items-center gap-1" title={`Duration: ${formatDuration(duration * 1000)}`}>
                         <Clock className="h-2.5 w-2.5 opacity-70" />
-                        <span className="tabular-nums">{duration.toFixed(1)}s</span>
+                        <span className="tabular-nums">{formatDuration(duration * 1000)}</span>
                       </div>
                     )}
                   </div>
@@ -8776,6 +8878,17 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
                       className="oc-response-body-block"
                       variant="bare"
                     />
+                  );
+                }
+
+                if (group.type === "commentary") {
+                  return (
+                    <div key={`question-prelude-commentary-${groupIdx}`} className="px-1 mb-2 mt-1">
+                      <ResponseMessageBody
+                        content={[group.event.summary]}
+                        className="oc-response-commentary-block"
+                      />
+                    </div>
                   );
                 }
 
@@ -8946,17 +9059,21 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
                         }
 
                         const isGlobSearch = labelLower === "glob";
+                        const isEditLike =
+                          labelLower === "edit" ||
+                          labelLower === "modify" ||
+                          labelLower === "patch" ||
+                          labelLower === "write" ||
+                          labelLower === "apply_patch";
                         const showDiffPreviewLocal =
-                          (labelLower === "edit" ||
-                            labelLower === "modify" ||
-                            labelLower === "patch" ||
-                            labelLower === "write" ||
-                            labelLower === "apply_patch") &&
+                          isEditLike &&
                           (
                             !!event.activityDetail?.diffExcerpt ||
                             !!(event.activityDetail?.input as Record<string, unknown> | undefined)?.patchText ||
                             !!(event.activityDetail?.input as Record<string, unknown> | undefined)?.patch ||
                             !!(event.activityDetail?.input as Record<string, unknown> | undefined)?.diff ||
+                            !!(event.activityDetail?.metadata as Record<string, unknown> | undefined)?.diff ||
+                            !!(event.activityDetail?.metadata as Record<string, unknown> | undefined)?.filediff ||
                             !!event.diffStats
                           );
 
@@ -9090,36 +9207,42 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
                                             })()}
                                             {/* Event source and internal badges intentionally hidden */}
 
-                                            {(labelLower === "read" || isGlobSearch) && event.filePath && !isUrl(event.filePath) && (
-                                              <button
-                                                type="button"
-                                                className="oc-refined-file-link oc-refined-file-link-with-tooltip oc-refined-file-link-inline oc-refined-file-link-plain"
-                                                onClick={() =>
-                                                  vscode.postMessage({
-                                                    type: "openFile",
-                                                    file: event.filePath!,
-                                                  })
-                                                }
-                                              >
-                                                <FileIcon
-                                                  filePath={event.filePath}
-                                                  isDirectory={isDirectoryActivityPath(event.filePath, event.activityDetail)}
-                                                />
-                                                <span className="truncate">
-                                                  {event.filePath}
-                                                </span>
-                                                <span className="oc-refined-file-link-tooltip oc-refined-file-link-tooltip-below" role="tooltip">
-                                                  {event.filePath}
-                                                </span>
-                                              </button>
-                                            )}
+                                            {(() => {
+                                              const fp = event.filePath || 
+                                                         (event.activityDetail?.input as Record<string, unknown> | undefined)?.filePath as string ||
+                                                         (event.activityDetail?.metadata as Record<string, any> | undefined)?.filediff?.file as string;
+                                              const shouldShowFileLink = labelLower === "read" || isGlobSearch || isEditLike;
+                                              return shouldShowFileLink && fp && !isUrl(fp) ? (
+                                                <button
+                                                  type="button"
+                                                  className="oc-refined-file-link oc-refined-file-link-with-tooltip oc-refined-file-link-inline oc-refined-file-link-plain"
+                                                  onClick={() =>
+                                                    vscode.postMessage({
+                                                      type: "openFile",
+                                                      file: fp,
+                                                    })
+                                                  }
+                                                >
+                                                  <FileIcon
+                                                    filePath={fp}
+                                                    isDirectory={isDirectoryActivityPath(fp, event.activityDetail)}
+                                                  />
+                                                  <span className="truncate">
+                                                    {fp.split(/[\\/]/).pop() || fp}
+                                                  </span>
+                                                  <span className="oc-refined-file-link-tooltip oc-refined-file-link-tooltip-below" role="tooltip">
+                                                    {fp}
+                                                  </span>
+                                                </button>
+                                              ) : null;
+                                            })()}
                                           </div>
 
                                           <div className="flex flex-col gap-1 w-full">
-                                              {/* For read and todowrite events, skip the generic summary block here — they have their own custom UI below.
+                                              {/* For read, todowrite, and edit events, skip the generic summary block here — they have their own custom UI below.
                                                   For all other events, render the file link or summary as usual. */}
-                                              {labelLower !== "read" && labelLower !== "todowrite" && visibleSummary && (
-                                                event.filePath && !isUrl(event.filePath) && !isCallStyleActivityLabel(event.label) ? (
+                                              {labelLower !== "read" && labelLower !== "todowrite" && !isEditLike && visibleSummary && (
+                                                event.filePath && !isUrl(event.filePath) && event.label !== "bash" && !isCallStyleActivityLabel(event.label) ? (
                                                 SEARCH_LABELS.has(event.label) ? (
                                                   <DetailedSearchActivityPreview
                                                     event={event}
@@ -9390,7 +9513,27 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
                   />
                 </div>
               )}
-
+              {!isStreamingActive && !hasCopyableResponseContent && (
+                <div className="mt-2 flex items-center justify-start">
+                  {/* For intermediate messages without copyable text,
+                      we move the timestamp inside the response bubble.
+                      We also omit the copy button here to keep the UI clean. */}
+                  {(() => {
+                    const ts = formatMessageTime(getMessageTimestamp(cardMessage));
+                    return ts ? (
+                      <span className="oc-text-secondary text-[10px] tabular-nums opacity-70 flex items-center gap-1">
+                        <span>{ts}</span>
+                        {typeof duration === "number" && (
+                          <>
+                            <span className="opacity-40">·</span>
+                            <span>{formatDuration(duration * 1000)}</span>
+                          </>
+                        )}
+                      </span>
+                    ) : null;
+                  })()}
+                </div>
+              )}
             </section>
           )}
 
@@ -9450,6 +9593,8 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
         {!isStreamingActive &&
           showResponseSection &&
           hasCopyableResponseContent && (
+          // For the main text response (messages with copyable content),
+          // we render the copy button and the timestamp outside the response bubble.
           <div className="mt-1 flex items-center justify-start gap-1.5">
             <button
               type="button"
@@ -9471,7 +9616,7 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
                   {typeof duration === "number" && (
                     <>
                       <span className="opacity-40">·</span>
-                      <span>{duration.toFixed(1)}s</span>
+                      <span>{formatDuration(duration * 1000)}</span>
                     </>
                   )}
                 </span>
@@ -9592,6 +9737,16 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
               structuredFileChanges={fileChanges || []}
               changeSummary={messageChangeSummary}
               messageId={firstNonEmptyString(messageChangeSummary?.messageId, messageId) || null}
+              sessionId={currentSessionId}
+            />
+          </div>
+        )}
+
+        {centralizedDiffEvent?.files?.length > 0 && (
+          <div className="mt-4">
+            <FileChangesSection
+              structuredFileChanges={[]}
+              centralizedDiffEvent={centralizedDiffEvent}
               sessionId={currentSessionId}
             />
           </div>
@@ -9780,8 +9935,6 @@ export const FileChangesSection = memo(function FileChangesSection({
   const totalAdded = fileChanges.reduce((sum, file) => sum + file.added, 0);
   const totalDeleted = fileChanges.reduce((sum, file) => sum + file.deleted, 0);
 
-  const visibleChanges = fileChanges.slice(0, 12);
-
   const undoMessageId = summaryMessageId;
 
   const handleUndo = () => {
@@ -9847,7 +10000,7 @@ export const FileChangesSection = memo(function FileChangesSection({
   const toggleExpanded = (file: string) => {
     const key = normalizePath(file);
     const hasLocalPreview = !!fetchedPreviewByFile[key];
-    const current = visibleChanges.find(
+    const current = fileChanges.find(
       (change) => normalizePath(change.file) === key,
     );
     const hasExistingPreview =
@@ -9873,11 +10026,11 @@ export const FileChangesSection = memo(function FileChangesSection({
   }
 
   return (
-    <div className="mx-4 overflow-hidden rounded-lg border border-oc-border-soft bg-oc-panel">
+    <div className="overflow-hidden rounded-lg border border-oc-border bg-oc-panel">
       <div className="flex flex-wrap items-center justify-between gap-2 px-2.5 py-1.5">
-        <div className="flex min-w-0 items-center gap-1.5 text-[10px] text-oc-text">
-          <FileCode className="h-3 w-3 shrink-0 oc-readable-accent" />
-          <span className="font-medium tracking-[0.01em] text-oc-text-soft">
+        <div className="flex min-w-0 items-center gap-1.5 text-[13px] text-oc-text-soft">
+          <FileCode className="h-4 w-4 shrink-0 oc-readable-accent" />
+          <span className="tracking-[0.01em] text-oc-text-soft">
             {filesChanged} {filesChanged === 1 ? "file" : "files"} changed
           </span>
           {(totalAdded > 0 || totalDeleted > 0) && (
@@ -9889,29 +10042,29 @@ export const FileChangesSection = memo(function FileChangesSection({
             type="button"
             onClick={handleUndo}
             disabled={!undoMessageId}
-            className="inline-flex items-center gap-1 rounded-md border border-oc-border-soft bg-white/[0.025] px-1.5 py-0.5 text-[10px] oc-text-secondary transition-colors hover:border-oc-border hover:bg-white/[0.05] hover:text-oc-text-soft"
+            className="inline-flex items-center gap-1 rounded-md border border-oc-border bg-white/[0.025] px-2 py-1 text-[13px] oc-text-secondary transition-colors hover:border-oc-border-strong hover:bg-white/[0.05] hover:text-oc-text-soft"
             title={
               undoMessageId
                 ? "Undo changes from this assistant message"
                 : "Undo unavailable: no message identifier for this change set"
             }
           >
-            <Undo2 className="h-2.5 w-2.5" />
+            <Undo2 className="h-3.5 w-3.5" />
             Undo
           </button>
           <button
             type="button"
             onClick={handleReview}
-            className="inline-flex items-center gap-1 rounded-md border border-oc-border-soft bg-white/[0.025] px-1.5 py-0.5 text-[10px] oc-text-secondary transition-colors hover:border-oc-border hover:bg-white/[0.05] hover:text-oc-text-soft"
+            className="inline-flex items-center gap-1 rounded-md border border-oc-border bg-white/[0.025] px-2 py-1 text-[13px] oc-text-secondary transition-colors hover:border-oc-border-strong hover:bg-white/[0.05] hover:text-oc-text-soft"
           >
-            <ArrowUpRight className="h-2.5 w-2.5" />
+            <ArrowUpRight className="h-3.5 w-3.5" />
             Review
           </button>
         </div>
       </div>
-      <div className="border-t border-oc-border-soft">
+      <div className="border-t border-oc-border max-h-[300px] overflow-y-auto">
         <div className="space-y-0.5 p-1">
-          {visibleChanges.map((fileChange) => {
+          {fileChanges.map((fileChange) => {
             const fetchedPreview = fetchedPreviewByFile[normalizePath(fileChange.file)];
             const previewExcerpt = fetchedPreview
               ? {
@@ -9931,12 +10084,12 @@ export const FileChangesSection = memo(function FileChangesSection({
             return (
               <div
                 key={normalizePath(fileChange.file)}
-                className="overflow-hidden rounded-md border border-oc-border-soft transition-colors hover:border-oc-border"
+                className="overflow-hidden rounded-sm transition-colors"
               >
-                <div className="flex items-center justify-between px-2.5 py-0.5 hover:bg-white/[0.02] transition-colors">
+                <div className="flex items-center justify-between px-2.5 py-1 hover:bg-white/[0.04] transition-colors">
                   <button
                     type="button"
-                    className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+                    className="group flex min-w-0 flex-1 items-center gap-1.5 text-left"
                     onClick={() =>
                       vscode.postMessage({
                         type: "openDiff",
@@ -9954,21 +10107,21 @@ export const FileChangesSection = memo(function FileChangesSection({
                       className="shrink-0 text-oc-text-soft hover:text-oc-text transition-colors"
                     >
                       {isExpanded ? (
-                        <ChevronDown className="h-2.5 w-2.5" />
+                        <ChevronDown className="h-4 w-4" />
                       ) : (
-                        <ChevronRight className="h-2.5 w-2.5" />
+                        <ChevronRight className="h-4 w-4" />
                       )}
                     </button>
-                    <FileText className="h-2.5 w-2.5 shrink-0 text-oc-text-soft" />
-                    <span className="truncate text-[10px] font-medium text-oc-text">{filename}</span>
+                    <FileIcon filePath={fileChange.file} className="h-4 w-4 shrink-0" />
+                    <span className="truncate text-[13px] text-oc-text-soft group-hover:text-oc-text transition-colors">{filename}</span>
                     {compactDirname && (
-                      <span className="hidden truncate text-[9px] font-medium text-oc-text-soft sm:inline">
+                      <span className="hidden truncate text-[11px] text-oc-text-soft sm:inline">
                         {compactDirname}
                       </span>
                     )}
                   </button>
 
-                  <div className="flex flex-shrink-0 items-center gap-1.5 text-[11px] font-medium">
+                  <div className="flex flex-shrink-0 items-center gap-1.5 text-[13px]">
                     {fileChange.added > 0 && (
                       <span className="text-oc-green">+{fileChange.added}</span>
                     )}
@@ -9979,7 +10132,7 @@ export const FileChangesSection = memo(function FileChangesSection({
                 </div>
 
                 {isExpanded && hasPreview ? (
-                  <div className="border-t border-oc-border-soft bg-black/10">
+                  <div className="border-t border-oc-border bg-black/10 max-h-[300px] overflow-y-auto">
                     <ActivityDiffExcerpt
                       excerpt={{
                         header: previewExcerpt?.header,
@@ -9988,7 +10141,7 @@ export const FileChangesSection = memo(function FileChangesSection({
                     />
                   </div>
                 ) : isExpanded && !hasPreview ? (
-                  <div className="border-t border-oc-border-soft px-2.5 py-1.5 text-[11px] text-oc-text-soft italic">
+                  <div className="border-t border-oc-border px-2.5 py-1.5 text-[13px] text-oc-text-soft italic">
                     Diff preview unavailable for this file in the current payload.
                   </div>
                 ) : null}
@@ -9998,11 +10151,6 @@ export const FileChangesSection = memo(function FileChangesSection({
         </div>
       </div>
 
-      {fileChanges.length > visibleChanges.length ? (
-        <div className="border-t border-oc-border-soft px-3 py-1 text-[10px] text-oc-text-soft text-center">
-          Showing {visibleChanges.length} of {fileChanges.length} changed files
-        </div>
-      ) : null}
     </div>
   );
 });
@@ -10017,7 +10165,7 @@ function areResponseMessagePropsEqual(
     prevProps.hideLoadingText === nextProps.hideLoadingText &&
     prevProps.isContiguous === nextProps.isContiguous &&
     prevProps.interactiveEvents === nextProps.interactiveEvents &&
-    prevProps.messages === nextProps.messages &&
+    prevProps.messages?.length === nextProps.messages?.length &&
     prevProps.currentSessionId === nextProps.currentSessionId &&
     prevProps.hideFileChangesSection === nextProps.hideFileChangesSection &&
     prevProps.todoItems === nextProps.todoItems &&
@@ -10037,18 +10185,18 @@ export const ResponseMessage = memo(function ResponseMessage({
   interactiveEvents,
   messages,
   currentSessionId,
-  // Note: subagentsByParentMessageId and subagentDetailsById are kept for compatibility
-  // but the component now uses custom hooks internally
   subagentsByParentMessageId,
   subagentDetailsById,
   todoItems,
   hideFileChangesSection,
+  centralizedDiffEvent,
   blockGroupKey,
   isLastInBlock,
   isBlockExpanded,
   onSetBlockExpanded,
   blockSize,
   isHiddenByBlock,
+  blockHasInlineAbort,
 }: {
   message?: Message;
   streaming?: StreamingState;
@@ -10058,6 +10206,7 @@ export const ResponseMessage = memo(function ResponseMessage({
   messages?: Message[];
   currentSessionId?: AppState["currentSessionId"];
   hideFileChangesSection?: boolean;
+  centralizedDiffEvent?: CentralizedSessionDiffEvent;
   subagentsByParentMessageId?: AppState["subagentsByParentMessageId"];
   subagentDetailsById?: AppState["subagentDetailsById"];
   todoItems?: AppState["todoItems"];
@@ -10067,6 +10216,7 @@ export const ResponseMessage = memo(function ResponseMessage({
   onSetBlockExpanded?: (expanded: boolean) => void;
   blockSize?: number;
   isHiddenByBlock?: boolean;
+  blockHasInlineAbort?: boolean;
 }) {
   return (
     <ResponseMessageInner
@@ -10078,6 +10228,7 @@ export const ResponseMessage = memo(function ResponseMessage({
       messages={messages}
       currentSessionId={currentSessionId}
       hideFileChangesSection={hideFileChangesSection}
+      centralizedDiffEvent={centralizedDiffEvent}
       subagentsByParentMessageId={subagentsByParentMessageId}
       subagentDetailsById={subagentDetailsById}
       todoItems={todoItems}
@@ -10087,6 +10238,7 @@ export const ResponseMessage = memo(function ResponseMessage({
       onSetBlockExpanded={onSetBlockExpanded}
       blockSize={blockSize}
       isHiddenByBlock={isHiddenByBlock}
+      blockHasInlineAbort={blockHasInlineAbort}
     />
   );
 }, areResponseMessagePropsEqual);

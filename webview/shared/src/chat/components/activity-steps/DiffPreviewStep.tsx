@@ -3,6 +3,8 @@ import { createPortal } from "react-dom";
 
 import { ChevronDown, Copy, Diff, FileCode2, X } from "lucide-react";
 
+import { cn } from "../../../utils";
+
 import { ActivityDiffExcerpt } from "../ActivityDiffExcerpt";
 import { ActivityStepStatusChip } from "./ActivityStepStatusChip";
 
@@ -73,6 +75,8 @@ function extractPatchText(detail?: ActivityDetail): string {
     input.diff,
     input.diffText,
     input.patch_text,
+    (detail?.metadata as Record<string, any>)?.filediff?.patch,
+    (detail?.metadata as Record<string, any>)?.diff,
     detail?.output,
   ];
 
@@ -102,15 +106,7 @@ function parsePatchTextToExcerpt(patchText?: string): DiffExcerpt | undefined {
     return undefined;
   }
 
-  const header =
-    lines.find((line) =>
-      line.startsWith("@@") ||
-      line.startsWith("diff --git") ||
-      line.startsWith("Index:") ||
-      line.startsWith("*** Update File:") ||
-      line.startsWith("*** Add File:") ||
-      line.startsWith("*** Delete File:"),
-    ) || undefined;
+  const header = lines.find((line) => line.startsWith("@@")) || undefined;
 
   const diffLines = lines.filter(
     (line) =>
@@ -118,7 +114,11 @@ function parsePatchTextToExcerpt(patchText?: string): DiffExcerpt | undefined {
       !line.startsWith("*** End Patch") &&
       !line.startsWith("*** Update File:") &&
       !line.startsWith("*** Add File:") &&
-      !line.startsWith("*** Delete File:"),
+      !line.startsWith("*** Delete File:") &&
+      !line.startsWith("Index: ") &&
+      !line.startsWith("===================================================================") &&
+      !line.startsWith("--- ") &&
+      !line.startsWith("+++ "),
   );
 
   const previewLines = diffLines.slice(0, 40);
@@ -222,83 +222,50 @@ function DiffPreviewModal({
           </button>
         </div>
 
-        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-oc-border-soft bg-oc-bg/20 p-3">
+        <div className="flex shrink-0 items-center justify-between border-b border-oc-border-soft bg-oc-bg/20 px-4 py-2">
+          <div className="flex items-center gap-3 text-xs">
+            <span className={diffChipClass("add")}>
+              +{Math.max(0, diffStats?.added ?? excerpt?.added ?? 0)} added
+            </span>
+            <span className={diffChipClass("del")}>
+              -{Math.max(0, diffStats?.deleted ?? excerpt?.deleted ?? 0)} deleted
+            </span>
+          </div>
           <button
             type="button"
             onClick={handleCopy}
-            className="inline-flex items-center gap-2 rounded-md border border-oc-border bg-oc-bg-soft px-3 py-1.5 text-xs font-medium oc-text-secondary transition-colors hover:bg-oc-panel hover:text-foreground"
+            className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium oc-text-secondary transition-colors hover:bg-oc-panel hover:text-foreground"
           >
-            <Copy className="h-3.5 w-3.5" />
-            <span>{copied ? "Copied" : "Copy Details"}</span>
+            <Copy className="h-3 w-3" />
+            <span>{copied ? "Copied" : "Copy"}</span>
           </button>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto p-3">
-          <div className="grid gap-3 lg:grid-cols-[1fr_0.95fr]">
-            <section className="rounded-lg border border-oc-border-soft bg-oc-bg/20 p-3">
-              <div className="mb-2 flex flex-wrap items-center gap-2">
-                <span className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-oc-border-soft bg-oc-bg-soft text-oc-text-secondary">
-                  <Diff className="h-3 w-3" />
-                </span>
-                <span className="text-[10px] font-semibold uppercase tracking-[0.18em] oc-text-secondary">
-                  Diff Summary
-                </span>
-              </div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-4 bg-[#0d1117]">
+          {activityDetail?.summary ? (
+            <div className="mb-4 rounded border border-oc-border-soft bg-oc-panel-soft/40 px-3 py-2 text-xs text-oc-text-soft">
+              {activityDetail.summary}
+            </div>
+          ) : null}
 
-              <div className="space-y-2 text-[11px] leading-relaxed">
-                <div>
-                  <span className="oc-text-secondary">File:</span>{" "}
-                  <span className="font-medium text-oc-text-soft">
-                    {compactPath(filePath) || "Unavailable"}
-                  </span>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className={diffChipClass("add")}>
-                    +{Math.max(0, diffStats?.added ?? excerpt?.added ?? 0)}
-                  </span>
-                  <span className={diffChipClass("del")}>
-                    -{Math.max(0, diffStats?.deleted ?? excerpt?.deleted ?? 0)}
-                  </span>
-                  <span className={diffChipClass("neutral")}>
-                    {countLines(excerpt).changed} changed
-                  </span>
-                </div>
-                {activityDetail?.summary ? (
-                  <div className="rounded-md border border-oc-border-soft bg-oc-panel-soft/40 px-2.5 py-2 text-[11px] text-oc-text-soft">
-                    {activityDetail.summary}
-                  </div>
-                ) : null}
-                {activityDetail?.output ? (
-                  <div className="rounded-md border border-oc-border-soft bg-oc-panel-soft/40 px-2.5 py-2 text-[10px] leading-relaxed oc-text-secondary">
-                    {activityDetail.output}
-                  </div>
-                ) : null}
-              </div>
-            </section>
+          {excerpt ? (
+            <ActivityDiffExcerpt
+              excerpt={{
+                header: excerpt.header,
+                lines: excerpt.lines || [],
+              }}
+            />
+          ) : (
+            <div className="rounded border border-oc-border-soft bg-oc-panel-soft/40 px-3 py-2 text-xs oc-text-secondary">
+              No diff excerpt available.
+            </div>
+          )}
 
-            <section className="rounded-lg border border-oc-border-soft bg-oc-bg/20 p-3">
-              <div className="mb-2 flex items-center gap-2">
-                <span className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-oc-border-soft bg-oc-bg-soft text-oc-text-secondary">
-                  <FileCode2 className="h-3 w-3" />
-                </span>
-                <span className="text-[10px] font-semibold uppercase tracking-[0.18em] oc-text-secondary">
-                  Diff Excerpt
-                </span>
-              </div>
-              {excerpt ? (
-                <ActivityDiffExcerpt
-                  excerpt={{
-                    header: excerpt.header,
-                    lines: excerpt.lines || [],
-                  }}
-                />
-              ) : (
-                <div className="rounded-md border border-oc-border-soft bg-oc-panel-soft/40 px-2.5 py-2 text-[11px] oc-text-secondary">
-                  No diff excerpt available.
-                </div>
-              )}
-            </section>
-          </div>
+          {activityDetail?.output && activityDetail.output !== activityDetail.summary ? (
+            <div className="mt-4 rounded border border-oc-border-soft bg-oc-panel-soft/40 px-3 py-2 font-mono text-[10px] leading-relaxed oc-text-secondary">
+              {activityDetail.output}
+            </div>
+          ) : null}
         </div>
       </div>
     </div>,
@@ -347,62 +314,28 @@ export function DiffPreviewStep({
       <button
         type="button"
         onClick={() => setIsModalOpen(true)}
-        className="oc-timeline-surface oc-timeline-soft-frame group relative block w-full overflow-hidden text-left transition-colors"
+        className="group relative block w-full text-left transition-colors"
         aria-label={`Open ${summaryTitle} details`}
       >
-        <div className="oc-diff-preview-step">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0 flex-1 space-y-1">
-              <div className="flex flex-wrap items-center gap-1.5">
-                <span className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-oc-border-soft bg-oc-bg-soft text-oc-text-secondary">
-                  <Diff className="h-3 w-3" />
-                </span>
-                <span className="oc-activity-step-label font-mono font-semibold uppercase tracking-[0.18em] text-oc-text-secondary">
-                  diff
-                </span>
-                {status ? <ActivityStepStatusChip status={status} /> : null}
-                {source === "raw_debug" ? (
-                  <span className="oc-activity-step-meta rounded-full border border-oc-border-soft bg-oc-bg/30 px-2 py-0.5 font-mono uppercase tracking-[0.12em] oc-text-secondary">
-                    raw
-                  </span>
-                ) : null}
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                {previewPath ? (
-                  <span className="font-medium text-oc-text-soft">
-                    {previewPath}
-                  </span>
-                ) : null}
-                <span className={diffChipClass(added > 0 ? "add" : "neutral")}>
-                  +{added}
-                </span>
-                <span className={diffChipClass(deleted > 0 ? "del" : "neutral")}>
-                  -{deleted}
-                </span>
-              </div>
-
-              <div className="oc-diff-preview-step__excerpt relative">
-                {derivedExcerpt ? (
-                  <div
-                    className={cn(
-                      "relative overflow-hidden rounded-lg",
-                      shouldCollapseExcerpt ? "max-h-[180px]" : "max-h-none",
-                    )}
-                  >
-                    <ActivityDiffExcerpt excerpt={derivedExcerpt} />
-                    {shouldCollapseExcerpt ? (
-                      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-oc-bg via-oc-bg/90 to-transparent" />
-                    ) : null}
-                  </div>
-                ) : null}
-              </div>
+        <div className="overflow-hidden rounded-md transition-colors hover:bg-white/[0.02]">
+          {derivedExcerpt ? (
+            <div
+              className={cn(
+                "relative overflow-hidden",
+                shouldCollapseExcerpt ? "max-h-[180px]" : "max-h-none",
+              )}
+            >
+              <ActivityDiffExcerpt excerpt={derivedExcerpt} />
+              {shouldCollapseExcerpt ? (
+                <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-oc-bg via-oc-bg/90 to-transparent flex items-end justify-center pb-2">
+                   <div className="rounded-full bg-oc-bg-soft px-2 py-0.5 text-[10px] text-oc-text-soft shadow-sm border border-oc-border-soft flex items-center gap-1">
+                     <ChevronDown className="h-3 w-3" />
+                     <span>View full diff</span>
+                   </div>
+                </div>
+              ) : null}
             </div>
-
-            <div className="oc-timeline-caret pointer-events-none mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full">
-              <ChevronDown className="h-3 w-3 oc-text-secondary" />
-            </div>
-          </div>
+          ) : null}
         </div>
       </button>
 

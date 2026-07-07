@@ -67,8 +67,9 @@ const CENTRALIZED_DEBUG_STRIP_FORMAT_PATHS = [
  * frames, explicit message.part.delta event types) via
  * shouldIncludeCentralizedDebugPayload(). Semantic stream events like
  * question.asked, message.completed, session.completed, tool activity, and
- * non-reasoning message.part.updated lifecycle payloads must remain persisted
- * even when they carry a delta field or do not appear in a narrow allowlist.
+ * non-delta lifecycle payloads must remain persisted even when they do not
+ * appear in a narrow allowlist. delta-bearing message.part.updated lifecycle
+ * payloads are excluded so centralized hydration only keeps stable snapshots.
  * Live-only UI events such as tui.toast.show and reasoning chunk frames are
  * excluded separately so they do not bloat hydrated centralized data.
  *
@@ -206,13 +207,47 @@ function hasReasoningLikeChunk(payload: Record<string, unknown>): boolean {
   return reasoningFields.some((value) => asString(value).trim().length > 0);
 }
 
+function hasDeltaProperty(payload: Record<string, unknown>): boolean {
+  const properties = asRecord(payload.properties);
+  const part = asRecord(properties?.part) ?? asRecord(payload.part);
+  const syncEvent = asRecord(payload.syncEvent);
+  const syncData = asRecord(syncEvent?.data);
+  const payloadRecord = asRecord(payload.payload);
+
+  return [
+    payload.delta,
+    properties?.delta,
+    part?.delta,
+    syncData?.delta,
+    asRecord(syncData?.part)?.delta,
+    payloadRecord?.delta,
+    asRecord(payloadRecord?.properties)?.delta,
+    asRecord(asRecord(payloadRecord?.properties)?.part)?.delta,
+  ].some((value) => typeof value === "string" && value.length > 0);
+}
+
+function isPatchPart(payload: Record<string, unknown>): boolean {
+  const properties = asRecord(payload.properties);
+  const part = asRecord(properties?.part) ?? asRecord(payload.part);
+  const syncEvent = asRecord(payload.syncEvent);
+  const syncData = asRecord(syncEvent?.data);
+  const syncPart = asRecord(syncData?.part);
+  const payloadRecord = asRecord(payload.payload);
+  const payloadProperties = asRecord(payloadRecord?.properties);
+  const payloadPart = asRecord(payloadProperties?.part) ?? asRecord(payloadRecord?.part);
+
+  return [part, syncPart, payloadPart].some(
+    (p) => asString(p?.type).trim().toLowerCase() === "patch",
+  );
+}
+
 function isEphemeralCentralizedPayload(payload: Record<string, unknown>): boolean {
   const eventType = normalizedCentralizedEventType(payload);
   if (eventType !== "message.part.updated") {
     return false;
   }
 
-  return hasReasoningLikeChunk(payload);
+  return hasReasoningLikeChunk(payload) || hasDeltaProperty(payload) || isPatchPart(payload);
 }
 
 export type CentralizedDebugPayloadDisposition =

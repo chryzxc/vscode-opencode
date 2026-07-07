@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Archive, X } from "lucide-react";
 
 import { AppProvider, shallowEqual, useAppDispatch, useAppState } from "./lib/store";
@@ -69,7 +69,7 @@ import {
 } from "./MessageComponents";
 import { SkillInstallerModal } from "./SkillInstallerModal";
 import { SessionModal } from "./components/SessionModal";
-import type { CentralizedSessionDiffEvent, Message } from "./lib/types";
+import type { AppState, CentralizedSessionDiffEvent, Message } from "./lib/types";
 
 function firstNonEmptyString(...values: unknown[]): string | undefined {
   for (const value of values) {
@@ -801,41 +801,73 @@ function buildCentralizedRenderMessages(rawSdkEventPayloads: unknown[]): Message
     if (duplicateGroup.length < 2) {
       continue;
     }
-    // Prefer the latest duplicate as the visible canonical bubble because the
-    // centralized tape often emits the final, fully wired user/assistant pair
-    // after an earlier optimistic echo. Older ids are retained as aliases.
-    const canonical = [...duplicateGroup].sort((left, right) => {
-      const leftCreated = typeof left.createdAt === "number" ? left.createdAt : left.rawIndex;
-      const rightCreated = typeof right.createdAt === "number" ? right.createdAt : right.rawIndex;
-      if (leftCreated !== rightCreated) {
-        return rightCreated - leftCreated;
+
+    // Split exact text matches by timestamp to avoid merging completely distinct
+    // turns (e.g. typing "continue" twice separated by minutes). Optimistic
+    // echoes and sync re-hydrations will have identical or very close timestamps.
+    const clusters: Array<typeof duplicateGroup> = [];
+    for (const descriptor of duplicateGroup) {
+      let matchedCluster = false;
+      for (const cluster of clusters) {
+        const cCreatedAt = cluster[0].createdAt;
+        if (typeof cCreatedAt === "number" && typeof descriptor.createdAt === "number") {
+          if (Math.abs(cCreatedAt - descriptor.createdAt) < 5000) {
+            cluster.push(descriptor);
+            matchedCluster = true;
+            break;
+          }
+        } else {
+          // Fallback for edge cases missing timestamps
+          cluster.push(descriptor);
+          matchedCluster = true;
+          break;
+        }
       }
-      return right.rawIndex - left.rawIndex;
-    })[0];
-    const canonicalAssistantIds =
-      assistantDescriptorIdsByParent.get(canonical.messageId) ?? [];
-    for (const duplicate of duplicateGroup) {
-      if (duplicate.messageId === canonical.messageId) {
+      if (!matchedCluster) {
+        clusters.push([descriptor]);
+      }
+    }
+
+    for (const cluster of clusters) {
+      if (cluster.length < 2) {
         continue;
       }
-      canonicalUserIdByDuplicateId.set(duplicate.messageId, canonical.messageId);
-      addCoalescedId(canonical.messageId, duplicate.messageId);
+      // Prefer the latest duplicate as the visible canonical bubble because the
+      // centralized tape often emits the final, fully wired user/assistant pair
+      // after an earlier optimistic echo. Older ids are retained as aliases.
+      const canonical = [...cluster].sort((left, right) => {
+        const leftCreated = typeof left.createdAt === "number" ? left.createdAt : left.rawIndex;
+        const rightCreated = typeof right.createdAt === "number" ? right.createdAt : right.rawIndex;
+        if (leftCreated !== rightCreated) {
+          return rightCreated - leftCreated;
+        }
+        return right.rawIndex - left.rawIndex;
+      })[0];
+      const canonicalAssistantIds =
+        assistantDescriptorIdsByParent.get(canonical.messageId) ?? [];
+      for (const duplicate of cluster) {
+        if (duplicate.messageId === canonical.messageId) {
+          continue;
+        }
+        canonicalUserIdByDuplicateId.set(duplicate.messageId, canonical.messageId);
+        addCoalescedId(canonical.messageId, duplicate.messageId);
 
-      const duplicateAssistantIds =
-        assistantDescriptorIdsByParent.get(duplicate.messageId) ?? [];
-      if (canonicalAssistantIds.length > 0 && duplicateAssistantIds.length > 0) {
-        duplicateAssistantIds.forEach((duplicateAssistantId, index) => {
-          const canonicalAssistantId =
-            canonicalAssistantIds[Math.min(index, canonicalAssistantIds.length - 1)];
-          if (!canonicalAssistantId) {
-            return;
-          }
-          canonicalAssistantIdByDuplicateId.set(
-            duplicateAssistantId,
-            canonicalAssistantId,
-          );
-          addCoalescedId(canonicalAssistantId, duplicateAssistantId);
-        });
+        const duplicateAssistantIds =
+          assistantDescriptorIdsByParent.get(duplicate.messageId) ?? [];
+        if (canonicalAssistantIds.length > 0 && duplicateAssistantIds.length > 0) {
+          duplicateAssistantIds.forEach((duplicateAssistantId, index) => {
+            const canonicalAssistantId =
+              canonicalAssistantIds[Math.min(index, canonicalAssistantIds.length - 1)];
+            if (!canonicalAssistantId) {
+              return;
+            }
+            canonicalAssistantIdByDuplicateId.set(
+              duplicateAssistantId,
+              canonicalAssistantId,
+            );
+            addCoalescedId(canonicalAssistantId, duplicateAssistantId);
+          });
+        }
       }
     }
   }
@@ -1117,60 +1149,80 @@ type CentralizedTranscriptProjection = {
   conversationEntries: ConversationRenderEntry[];
 };
 
+/**
+ * Extract file-change diffs from centralized tape events.  Handles both
+ * live SSE events (type:"session.diff" / "message.updated") and hydrated
+ * sync-wrapped events (type:"sync" → syncEvent.data.info).  Uses the
+ * centralized helpers getCentralizedEventType / getCentralizedEventInfo
+ * so callers never need to unwrap sync envelopes themselves.
+ *
+ * For message.updated events the diffs live at info.summary.diffs —
+ * these are emitted by the server when an assistant turn produces file
+ * changes and are persisted into the centralized tape for every session.
+ */
 function parseCentralizedSessionDiffEvent(
   payload: unknown,
   rawIndex: number,
 ): CentralizedSessionDiffEvent | null {
   const event = asRecord(payload);
-  if (!event || firstNonEmptyString(event.type) !== "session.diff") {
-    return null;
-  }
+  if (!event) return null;
 
+  const eventType = getCentralizedEventType(event);
   const properties = asRecord(event.properties);
-  const rawDiffs = Array.isArray(properties?.diff)
-    ? properties.diff
-    : Array.isArray(event.diff)
-      ? event.diff
-      : [];
-  const files = rawDiffs
-    .map((item) => asRecord(item))
-    .filter((item): item is Record<string, unknown> => !!item)
-    .map((item) => ({
-      file: firstNonEmptyString(item.file) ?? "",
-      patch: firstNonEmptyString(item.patch),
-      additions:
-        typeof item.additions === "number"
-          ? item.additions
-          : typeof item.additions === "string"
-            ? Number(item.additions)
-            : undefined,
-      deletions:
-        typeof item.deletions === "number"
-          ? item.deletions
-          : typeof item.deletions === "string"
-            ? Number(item.deletions)
-            : undefined,
-      status: firstNonEmptyString(item.status),
-    }))
-    .filter((item) => item.file.length > 0);
+  const info = getCentralizedEventInfo(event);
+  const syncData = asRecord(asRecord(event.syncEvent)?.data);
 
-  if (files.length === 0) {
-    return null;
+  const resolveSessionId = () =>
+    firstNonEmptyString(
+      properties?.sessionID, properties?.sessionId,
+      syncData?.sessionID, syncData?.sessionId,
+      event.sessionId, event.sessionID,
+    );
+
+  if (eventType === "session.diff") {
+    const rawDiffs = Array.isArray(properties?.diff)
+      ? properties.diff
+      : Array.isArray(event.diff)
+        ? event.diff
+        : Array.isArray(syncData?.diff)
+          ? syncData.diff
+          : [];
+    const files = rawDiffs
+      .map((item) => asRecord(item))
+      .filter((item): item is Record<string, unknown> => !!item)
+      .map((item) => ({
+        file: firstNonEmptyString(item.file) ?? "",
+        patch: firstNonEmptyString(item.patch),
+        additions: typeof item.additions === "number" ? item.additions : typeof item.additions === "string" ? Number(item.additions) : undefined,
+        deletions: typeof item.deletions === "number" ? item.deletions : typeof item.deletions === "string" ? Number(item.deletions) : undefined,
+        status: firstNonEmptyString(item.status),
+      }))
+      .filter((item) => item.file.length > 0);
+    if (files.length === 0) return null;
+    const eventTime = typeof properties?.time === "number" ? properties.time : typeof syncData?.time === "number" ? syncData.time : typeof event.time === "number" ? event.time : undefined;
+    return { id: firstNonEmptyString(event.id), sessionId: resolveSessionId(), createdAt: eventTime, files };
   }
 
-  const eventTime =
-    typeof properties?.time === "number"
-      ? properties.time
-      : typeof event.time === "number"
-        ? event.time
-        : undefined;
+  if (eventType === "message.updated") {
+    const summary = asRecord(info?.summary);
+    const diffs = summary?.diffs;
+    if (!Array.isArray(diffs) || diffs.length === 0) return null;
+    const files = diffs
+      .map((item) => asRecord(item))
+      .filter((item): item is Record<string, unknown> => !!item)
+      .map((item) => ({
+        file: firstNonEmptyString(item.file) ?? "",
+        patch: firstNonEmptyString(item.patch),
+        additions: typeof item.additions === "number" ? item.additions : typeof item.additions === "string" ? Number(item.additions) : undefined,
+        deletions: typeof item.deletions === "number" ? item.deletions : typeof item.deletions === "string" ? Number(item.deletions) : undefined,
+        status: firstNonEmptyString(item.status),
+      }))
+      .filter((item) => item.file.length > 0);
+    if (files.length === 0) return null;
+    return { id: firstNonEmptyString(event.id), sessionId: resolveSessionId(), createdAt: undefined, files };
+  }
 
-  return {
-    id: firstNonEmptyString(event.id),
-    sessionId: firstNonEmptyString(properties?.sessionID, event.sessionId),
-    createdAt: eventTime,
-    files,
-  };
+  return null;
 }
 
 function buildCentralizedSessionDiffFingerprint(
@@ -1196,6 +1248,13 @@ function buildCentralizedSessionDiffFingerprint(
     sessionId: firstNonEmptyString(diff.sessionId),
     files: fileFingerprint,
   });
+}
+
+export function buildCentralizedConversationEntries(
+  rawSdkEventPayloads: unknown[],
+): ConversationRenderEntry[] {
+  return buildCentralizedTranscriptProjection(rawSdkEventPayloads)
+    .conversationEntries;
 }
 
 function buildCentralizedTranscriptProjection(
@@ -1324,7 +1383,122 @@ function buildCentralizedTranscriptProjection(
       });
     });
 
-  buildMessageConversationEntries(renderMessageEntries).forEach((entry) => {
+  const userEntries = renderMessageEntries
+    .filter((entry) => entry.role === "user")
+    .sort((left, right) => {
+      if (left.rawOrder !== right.rawOrder) return left.rawOrder - right.rawOrder;
+      return left.index - right.index;
+    });
+
+  const userEntryByOwnedId = new Map<string, (typeof renderMessageEntries)[number]>();
+  for (const entry of userEntries) {
+    for (const id of entry.ids) {
+      if (!userEntryByOwnedId.has(id)) {
+        userEntryByOwnedId.set(id, entry);
+      }
+    }
+  }
+
+  const assistantParentIdByMessageId = new Map<string, string>();
+  for (let rawIndex = 0; rawIndex < normalizedRawSdkEventPayloads.length; rawIndex += 1) {
+    const event = asRecord(normalizedRawSdkEventPayloads[rawIndex]);
+    if (!event) {
+      continue;
+    }
+    const info = getCentralizedEventInfo(event);
+    const part = getCentralizedEventPart(event);
+    const messageId = firstNonEmptyString(
+      info?.id,
+      info?.messageID,
+      info?.messageId,
+      part?.messageID,
+      part?.messageId,
+    );
+    const role = firstNonEmptyString(info?.role)?.toLowerCase();
+    const parentId = firstNonEmptyString(info?.parentID, info?.parentId);
+    if (messageId && role === "assistant" && parentId) {
+      assistantParentIdByMessageId.set(messageId, parentId);
+    }
+  }
+
+  const centralizedAssistantTurnIndex: CentralizedAssistantTurnIndex = {
+    assistantParentIdByMessageId,
+    firstRawIndexByMessageId,
+  };
+
+  const assistantEntriesByUserPrimaryId = new Map<
+    string,
+    Array<(typeof renderMessageEntries)[number]>
+  >();
+  for (const entry of renderMessageEntries) {
+    if (entry.role !== "assistant") {
+      continue;
+    }
+    const parentId = getCentralizedAssistantParentId(entry.message, centralizedAssistantTurnIndex);
+    const parentUserEntry = parentId ? userEntryByOwnedId.get(parentId) : undefined;
+    const parentUserPrimaryId = parentUserEntry?.ids[0];
+    if (!parentUserPrimaryId) {
+      continue;
+    }
+    const siblings = assistantEntriesByUserPrimaryId.get(parentUserPrimaryId);
+    if (siblings) {
+      siblings.push(entry);
+      continue;
+    }
+    assistantEntriesByUserPrimaryId.set(parentUserPrimaryId, [entry]);
+  }
+
+  const orderedMessageEntries: typeof renderMessageEntries = [];
+  const emittedMessageIndexes = new Set<number>();
+  const pushMessageEntry = (entry: (typeof renderMessageEntries)[number] | undefined): void => {
+    if (!entry || emittedMessageIndexes.has(entry.index)) {
+      return;
+    }
+    emittedMessageIndexes.add(entry.index);
+    orderedMessageEntries.push(entry);
+  };
+
+  const entriesByRawOrder = [...renderMessageEntries].sort((left, right) => {
+    if (left.rawOrder !== right.rawOrder) return left.rawOrder - right.rawOrder;
+    return left.index - right.index;
+  });
+
+  for (const entry of entriesByRawOrder) {
+    if (emittedMessageIndexes.has(entry.index)) {
+      continue;
+    }
+
+    if (entry.role !== "user") {
+      pushMessageEntry(entry);
+      continue;
+    }
+
+    pushMessageEntry(entry);
+    const assistantEntries = assistantEntriesByUserPrimaryId
+      .get(entry.ids[0] ?? "")
+      ?.sort((left, right) => {
+        if (left.rawOrder !== right.rawOrder) return left.rawOrder - right.rawOrder;
+        return left.index - right.index;
+      });
+    assistantEntries?.forEach((assistantEntry) => {
+      pushMessageEntry(assistantEntry);
+    });
+  }
+
+  const builtConversationEntries: ConversationRenderEntry[] = [];
+  for (let index = 0; index < orderedMessageEntries.length; index += 1) {
+    const entry = orderedMessageEntries[index];
+    builtConversationEntries.push({
+      kind: "message",
+      key: `message:${entry.ids[0] ?? entry.index}`,
+      message: entry.message,
+      messageIndex: entry.index,
+      order: index * 10,
+      renderKind: entry.renderKind,
+    });
+  }
+
+  builtConversationEntries.forEach((entry) => {
     if (entry.kind !== "message") {
       return;
     }
@@ -1430,8 +1604,54 @@ type StreamViewportState = {
   unseenUpdateCount: number;
 };
 
+type ScrollRenderViewport = {
+  scrollTop: number;
+  viewportHeight: number;
+};
+
+type VirtualizedConversationWindow = {
+  startIndex: number;
+  endIndex: number;
+  topPaddingHeight: number;
+  bottomPaddingHeight: number;
+  shouldVirtualize: boolean;
+};
+
 const AUTO_FOLLOW_THRESHOLD_PX = 96;
 const WEBVIEW_BOOTSTRAP_CACHE_KEY = "opencode.chat.bootstrap.v1";
+const WEBVIEW_BOOTSTRAP_MAX_EVENT_PAYLOADS = 400;
+const VIRTUALIZED_TRANSCRIPT_MIN_ENTRIES = 250;
+const VIRTUALIZED_TRANSCRIPT_OVERSCAN_PX = 1400;
+const COMPACTION_DIVIDER_ESTIMATED_HEIGHT = 72;
+
+function buildWebviewBootstrapSnapshot(params: {
+  currentSessionId: string | null;
+  rawSdkEventPayloadsBySessionId: Record<string, unknown[]>;
+}): {
+  currentSessionId: string | null;
+  rawSdkEventPayloadsBySessionId: Record<string, unknown[]>;
+} {
+  const { currentSessionId, rawSdkEventPayloadsBySessionId } = params;
+  if (!currentSessionId) {
+    return {
+      currentSessionId: null,
+      rawSdkEventPayloadsBySessionId: {},
+    };
+  }
+
+  const currentSessionPayloads = Array.isArray(rawSdkEventPayloadsBySessionId[currentSessionId])
+    ? rawSdkEventPayloadsBySessionId[currentSessionId]
+    : [];
+
+  return {
+    currentSessionId,
+    rawSdkEventPayloadsBySessionId: currentSessionPayloads.length > 0
+      ? {
+          [currentSessionId]: currentSessionPayloads.slice(-WEBVIEW_BOOTSTRAP_MAX_EVENT_PAYLOADS),
+        }
+      : {},
+  };
+}
 
 function formatCompactionTime(at?: number): string | undefined {
   if (typeof at !== "number") {
@@ -1521,6 +1741,521 @@ function SessionLoadingSpinner() {
   );
 }
 
+type ConversationTranscriptProps = {
+  blockExpandedState: Map<string, boolean>;
+  compactionDividerIndex?: number;
+  currentSessionId: string | null;
+  diffByBlockKey: Map<string, CentralizedSessionDiffEvent>;
+  hasLiveAssistantTurn: boolean;
+  interactiveEvents: AppState["interactiveEvents"];
+  isCompressed: boolean;
+  isProcessing: boolean;
+  lastCompactedAt?: number;
+  renderMessages: Message[];
+  resolveAgentColor: (agentId?: string) => string;
+  selectedAgent: string;
+  streaming: AppState["streaming"];
+  subagentDetailsById: AppState["subagentDetailsById"];
+  subagentsByParentMessageId: AppState["subagentsByParentMessageId"];
+  todoItems: AppState["todoItems"];
+  visibleConversationEntries: ConversationRenderEntry[];
+  scrollViewport: ScrollRenderViewport;
+  onSetBlockExpanded: (blockKey: string, expanded: boolean) => void;
+};
+
+function getTranscriptEntryContainIntrinsicSize(entry: ConversationRenderEntry): string {
+  if (entry.kind !== "message") {
+    return "56px";
+  }
+
+  const role = firstNonEmptyString(entry.message.role, entry.message.info?.role)?.toLowerCase();
+  if (role === "assistant") {
+    return "320px";
+  }
+  if (role === "user") {
+    return "120px";
+  }
+  return "160px";
+}
+
+function estimateConversationEntryHeight(entry: ConversationRenderEntry): number {
+  if (entry.kind === "assistant.abort") {
+    return 56;
+  }
+  if (entry.kind === "session.diff") {
+    return 0;
+  }
+  const role = firstNonEmptyString(entry.message.role, entry.message.info?.role)?.toLowerCase();
+  const renderKind = entry.renderKind;
+  if (renderKind === "user" || role === "user") {
+    return 120;
+  }
+  if (renderKind === "system") {
+    return 88;
+  }
+  if (renderKind === "permission") {
+    return 104;
+  }
+  if (renderKind === "background-task-reminder") {
+    return 92;
+  }
+  return 320;
+}
+
+function findFirstPrefixIndexAtOrAbove(prefixHeights: number[], value: number): number {
+  let low = 0;
+  let high = prefixHeights.length - 1;
+
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (prefixHeights[mid] < value) {
+      low = mid + 1;
+    } else {
+      high = mid;
+    }
+  }
+
+  return low;
+}
+
+function buildVirtualizedConversationWindow(params: {
+  entryPrefixHeights: number[];
+  totalEntries: number;
+  scrollViewport: ScrollRenderViewport;
+}): VirtualizedConversationWindow {
+  const { entryPrefixHeights, totalEntries, scrollViewport } = params;
+  const { scrollTop, viewportHeight } = scrollViewport;
+
+  if (
+    totalEntries < VIRTUALIZED_TRANSCRIPT_MIN_ENTRIES ||
+    viewportHeight <= 0 ||
+    entryPrefixHeights.length !== totalEntries + 1
+  ) {
+    return {
+      startIndex: 0,
+      endIndex: totalEntries,
+      topPaddingHeight: 0,
+      bottomPaddingHeight: 0,
+      shouldVirtualize: false,
+    };
+  }
+
+  const overscan = Math.max(VIRTUALIZED_TRANSCRIPT_OVERSCAN_PX, viewportHeight);
+  const windowTop = Math.max(0, scrollTop - overscan);
+  const windowBottom = scrollTop + viewportHeight + overscan;
+  const totalHeight = entryPrefixHeights[totalEntries] ?? 0;
+
+  const startIndex = Math.max(
+    0,
+    Math.min(
+      totalEntries,
+      findFirstPrefixIndexAtOrAbove(entryPrefixHeights, windowTop) - 1,
+    ),
+  );
+  const endIndex = Math.max(
+    startIndex,
+    Math.min(
+      totalEntries,
+      findFirstPrefixIndexAtOrAbove(
+        entryPrefixHeights,
+        Math.min(windowBottom, totalHeight),
+      ),
+    ),
+  );
+
+  return {
+    startIndex,
+    endIndex,
+    topPaddingHeight: entryPrefixHeights[startIndex] ?? 0,
+    bottomPaddingHeight: Math.max(
+      0,
+      totalHeight - (entryPrefixHeights[endIndex] ?? totalHeight),
+    ),
+    shouldVirtualize: true,
+  };
+}
+
+const MemoizedConversationTranscript = memo(function ConversationTranscript({
+  blockExpandedState,
+  compactionDividerIndex,
+  currentSessionId,
+  diffByBlockKey,
+  hasLiveAssistantTurn,
+  interactiveEvents,
+  isCompressed,
+  isProcessing,
+  lastCompactedAt,
+  renderMessages,
+  resolveAgentColor,
+  selectedAgent,
+  streaming,
+  subagentDetailsById,
+  subagentsByParentMessageId,
+  todoItems,
+  visibleConversationEntries,
+  scrollViewport,
+  onSetBlockExpanded,
+}: ConversationTranscriptProps) {
+  const measuredEntryHeightsRef = useRef<Map<string, number>>(new Map());
+  const observedEntryNodesRef = useRef<Map<string, HTMLDivElement>>(new Map());
+  const resizeObserverRef = useRef<ResizeObserver | null>(null);
+  const [measuredHeightsVersion, setMeasuredHeightsVersion] = useState(0);
+
+  useEffect(() => {
+    if (typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const observer = new ResizeObserver((entries) => {
+      let changed = false;
+
+      for (const resizeEntry of entries) {
+        const target = resizeEntry.target as HTMLDivElement;
+        const entryKey = target.dataset.virtualEntryKey;
+        if (!entryKey) {
+          continue;
+        }
+
+        const nextHeight = Math.ceil(
+          resizeEntry.borderBoxSize && resizeEntry.borderBoxSize.length > 0
+            ? resizeEntry.borderBoxSize[0].blockSize
+            : resizeEntry.contentRect.height,
+        );
+        if (!Number.isFinite(nextHeight) || nextHeight <= 0) {
+          continue;
+        }
+        if (measuredEntryHeightsRef.current.get(entryKey) === nextHeight) {
+          continue;
+        }
+        measuredEntryHeightsRef.current.set(entryKey, nextHeight);
+        changed = true;
+      }
+
+      if (changed) {
+        setMeasuredHeightsVersion((current) => current + 1);
+      }
+    });
+
+    resizeObserverRef.current = observer;
+    return () => {
+      observer.disconnect();
+      resizeObserverRef.current = null;
+      observedEntryNodesRef.current.clear();
+    };
+  }, []);
+
+  const attachMeasuredEntryNode = useCallback((entryKey: string, node: HTMLDivElement | null) => {
+    const observer = resizeObserverRef.current;
+    const previousNode = observedEntryNodesRef.current.get(entryKey);
+    if (previousNode && previousNode !== node && observer) {
+      observer.unobserve(previousNode);
+    }
+
+    if (!node) {
+      observedEntryNodesRef.current.delete(entryKey);
+      return;
+    }
+
+    observedEntryNodesRef.current.set(entryKey, node);
+    node.dataset.virtualEntryKey = entryKey;
+
+    const measuredHeight = Math.ceil(node.getBoundingClientRect().height);
+    if (
+      Number.isFinite(measuredHeight) &&
+      measuredHeight > 0 &&
+      measuredEntryHeightsRef.current.get(entryKey) !== measuredHeight
+    ) {
+      measuredEntryHeightsRef.current.set(entryKey, measuredHeight);
+      setMeasuredHeightsVersion((current) => current + 1);
+    }
+
+    observer?.observe(node);
+  }, []);
+
+  const entryBlockKeys: string[] = [];
+  let currentBlockKey = "initial";
+  const assistantBlockEntries: Array<{ index: number; key: string }> = [];
+  for (let i = 0; i < visibleConversationEntries.length; i++) {
+    const entry = visibleConversationEntries[i];
+    if (entry.kind === "message") {
+      const role = entry.message.role ?? entry.message.info?.role;
+      if (role === "user") {
+        currentBlockKey =
+          firstNonEmptyString(entry.message.info?.id, entry.message.id) ??
+          `user:${i}`;
+      } else if (role === "assistant") {
+        assistantBlockEntries.push({ index: i, key: currentBlockKey });
+      }
+    }
+    entryBlockKeys.push(currentBlockKey);
+  }
+
+  const isAbsoluteLastInBlockByIndex = new Map<number, boolean>();
+  const lastTextIndexByKey = new Map<string, number>();
+  for (let pos = 0; pos < assistantBlockEntries.length; pos++) {
+    const { index, key } = assistantBlockEntries[pos];
+    const messageEntry = visibleConversationEntries[index];
+    if (messageEntry.kind !== "message") {
+      continue;
+    }
+    const message = messageEntry.message;
+    const hasText = Boolean(
+      message.content || message.text || message.info?.content || message.info?.text,
+    );
+    if (hasText) {
+      lastTextIndexByKey.set(key, index);
+    }
+  }
+  const isLastTextInBlockByIndex = new Map<number, boolean>();
+
+  for (let pos = 0; pos < assistantBlockEntries.length; pos++) {
+    const { index, key } = assistantBlockEntries[pos];
+    const prevKey = pos > 0 ? assistantBlockEntries[pos - 1].key : null;
+    const nextKey =
+      pos < assistantBlockEntries.length - 1
+        ? assistantBlockEntries[pos + 1].key
+        : null;
+
+    const isAbsoluteLast = nextKey !== key;
+
+    const isMultiCardBlock = prevKey === key || nextKey === key;
+    isAbsoluteLastInBlockByIndex.set(index, isMultiCardBlock ? isAbsoluteLast : false);
+
+    const lastTextIndex = lastTextIndexByKey.get(key);
+    let isLastText = false;
+    if (isMultiCardBlock) {
+      if (lastTextIndex !== undefined) {
+        isLastText = index === lastTextIndex;
+      } else {
+        isLastText = isAbsoluteLast;
+      }
+    }
+    isLastTextInBlockByIndex.set(index, isLastText);
+  }
+
+  const blockSizeByKey = new Map<string, number>();
+  const blockHasInlineAbortByKey = new Map<string, boolean>();
+  for (const { key, index } of assistantBlockEntries) {
+    blockSizeByKey.set(key, (blockSizeByKey.get(key) ?? 0) + 1);
+    const entry = visibleConversationEntries[index];
+    if (
+      entry.kind === "message" &&
+      entry.message.aborted === true &&
+      entry.message.interruptedPresentation === "inline"
+    ) {
+      blockHasInlineAbortByKey.set(key, true);
+    }
+  }
+
+  const { entryPrefixHeights, messageCountPrefix } = useMemo(() => {
+    const prefixHeights = new Array<number>(visibleConversationEntries.length + 1).fill(0);
+    const messagePrefix = new Array<number>(visibleConversationEntries.length + 1).fill(0);
+    let messageCountSeen = 0;
+
+    for (let index = 0; index < visibleConversationEntries.length; index += 1) {
+      const entry = visibleConversationEntries[index];
+      const hasDividerBefore =
+        !isCompressed &&
+        typeof compactionDividerIndex === "number" &&
+        compactionDividerIndex === messageCountSeen;
+      const measuredHeight = measuredEntryHeightsRef.current.get(entry.key);
+      const estimatedHeight =
+        typeof measuredHeight === "number"
+          ? measuredHeight
+          : estimateConversationEntryHeight(entry) +
+            (hasDividerBefore ? COMPACTION_DIVIDER_ESTIMATED_HEIGHT : 0);
+      prefixHeights[index + 1] = prefixHeights[index] + estimatedHeight;
+      messagePrefix[index + 1] =
+        messagePrefix[index] + (entry.kind === "message" ? 1 : 0);
+
+      if (entry.kind === "message") {
+        messageCountSeen += 1;
+      }
+    }
+
+    return {
+      entryPrefixHeights: prefixHeights,
+      messageCountPrefix: messagePrefix,
+    };
+  }, [visibleConversationEntries, measuredHeightsVersion, isCompressed, compactionDividerIndex]);
+
+  const transcriptWindow = useMemo(
+    () =>
+      buildVirtualizedConversationWindow({
+        entryPrefixHeights,
+        totalEntries: visibleConversationEntries.length,
+        scrollViewport,
+      }),
+    [entryPrefixHeights, visibleConversationEntries.length, scrollViewport],
+  );
+  const renderedConversationEntries = transcriptWindow.shouldVirtualize
+    ? visibleConversationEntries.slice(
+        transcriptWindow.startIndex,
+        transcriptWindow.endIndex,
+      )
+    : visibleConversationEntries;
+  let messageCountSeen = messageCountPrefix[transcriptWindow.startIndex] ?? 0;
+
+  return (
+    <>
+      {transcriptWindow.topPaddingHeight > 0 ? (
+        <div
+          aria-hidden="true"
+          style={{ height: `${transcriptWindow.topPaddingHeight}px` }}
+        />
+      ) : null}
+      {renderedConversationEntries.map((entry, sliceIndex) => {
+        const entryIndex = transcriptWindow.startIndex + sliceIndex;
+        const dividerHere = !isCompressed && compactionDividerIndex === messageCountSeen;
+
+        if (entry.kind === "message") {
+          const message = entry.message;
+          const index = entry.messageIndex;
+          const role = message.role ?? message.info?.role ?? "user";
+          const previousIndex = index - 1;
+          const previousMessage =
+            previousIndex >= 0 ? renderMessages[previousIndex] : undefined;
+          const isContiguous =
+            role === "assistant" &&
+            previousMessage?.role === "assistant" &&
+            (previousMessage.info?.agent === message.info?.agent ||
+              (!previousMessage.info?.agent && !message.info?.agent));
+
+          let messageNode: JSX.Element | null;
+          if (entry.renderKind === "user") {
+            messageNode = <UserMessage message={message} />;
+          } else if (entry.renderKind === "background-task-reminder") {
+            messageNode = (
+              <BackgroundTaskReminderMessage
+                message={message}
+                messages={renderMessages}
+              />
+            );
+          } else if (entry.renderKind === "system") {
+            const systemAgentId =
+              message.info?.agent ?? streaming?.agent ?? selectedAgent;
+
+            messageNode = (
+              <SystemMessage
+                content={message.content ?? message.text ?? ""}
+                accentColor={resolveAgentColor(systemAgentId)}
+              />
+            );
+          } else if (entry.renderKind === "permission") {
+            messageNode = <PermissionCard perm={message} />;
+          } else {
+            const blockGroupKey = entryBlockKeys[entryIndex];
+            const isAbsoluteLastInBlock =
+              isAbsoluteLastInBlockByIndex.get(entryIndex) ?? false;
+            const isLastTextInBlock = isLastTextInBlockByIndex.get(entryIndex) ?? false;
+            const blockSize = blockSizeByKey.get(blockGroupKey) ?? 1;
+            const isLiveBlock =
+              hasLiveAssistantTurn && blockGroupKey === entryBlockKeys[entryBlockKeys.length - 1];
+            const isBlockExpanded =
+              blockExpandedState.get(blockGroupKey) ?? (isLiveBlock ? true : false);
+            const isLastInBlock = isBlockExpanded ? isAbsoluteLastInBlock : isLastTextInBlock;
+            const isHiddenByBlock = blockSize > 1 && !isLastInBlock && !isBlockExpanded;
+
+            messageNode = (
+              <ResponseMessage
+                message={message}
+                isContiguous={isContiguous}
+                interactiveEvents={interactiveEvents}
+                messages={renderMessages}
+                currentSessionId={currentSessionId}
+                hideFileChangesSection={diffByBlockKey.size > 0}
+                centralizedDiffEvent={
+                  isLastInBlock &&
+                  blockGroupKey &&
+                  !(isLiveBlock && (isProcessing || streaming?.isActive))
+                    ? diffByBlockKey.get(blockGroupKey)
+                    : undefined
+                }
+                subagentsByParentMessageId={subagentsByParentMessageId}
+                subagentDetailsById={subagentDetailsById}
+                todoItems={todoItems}
+                blockGroupKey={blockGroupKey}
+                isLastInBlock={isLastInBlock}
+                isBlockExpanded={isBlockExpanded}
+                blockSize={blockSize}
+                isHiddenByBlock={isHiddenByBlock}
+                blockHasInlineAbort={blockHasInlineAbortByKey.get(blockGroupKey)}
+                onSetBlockExpanded={(expanded: boolean) =>
+                  onSetBlockExpanded(blockGroupKey, expanded)
+                }
+              />
+            );
+          }
+
+          messageCountSeen += 1;
+
+          return (
+            <div
+              key={entry.key}
+              ref={(node) => attachMeasuredEntryNode(entry.key, node)}
+            >
+              {dividerHere ? <CompactionDivider at={lastCompactedAt} /> : null}
+              <div
+                style={{
+                  contentVisibility: "auto",
+                  containIntrinsicSize: getTranscriptEntryContainIntrinsicSize(entry),
+                }}
+              >
+                {messageNode}
+              </div>
+            </div>
+          );
+        }
+
+        if (entry.kind === "assistant.abort") {
+          return (
+            <div
+              key={entry.key}
+              ref={(node) => attachMeasuredEntryNode(entry.key, node)}
+            >
+              {dividerHere ? <CompactionDivider at={lastCompactedAt} /> : null}
+              <div
+                style={{
+                  contentVisibility: "auto",
+                  containIntrinsicSize: getTranscriptEntryContainIntrinsicSize(entry),
+                }}
+              >
+                <div className="px-4">
+                  <div className="mt-2 flex items-center justify-center">
+                    <div className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 py-1 text-[10px] font-medium tracking-wide text-amber-400">
+                      <div className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse" />
+                      <span>Interrupted</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        }
+
+        if (entry.kind === "session.diff") {
+          return null;
+        }
+
+        return (
+          <div
+            key={entry.key}
+            ref={(node) => attachMeasuredEntryNode(entry.key, node)}
+          >
+            {dividerHere ? <CompactionDivider at={lastCompactedAt} /> : null}
+          </div>
+        );
+      })}
+      {transcriptWindow.bottomPaddingHeight > 0 ? (
+        <div
+          aria-hidden="true"
+          style={{ height: `${transcriptWindow.bottomPaddingHeight}px` }}
+        />
+      ) : null}
+    </>
+  );
+});
+
 function ChatContent() {
   const state = useAppState(
     (appState) => ({
@@ -1562,6 +2297,10 @@ function ChatContent() {
   const [streamViewport, setStreamViewport] = useState<StreamViewportState>({
     isFollowing: true,
     unseenUpdateCount: 0,
+  });
+  const [scrollRenderViewport, setScrollRenderViewport] = useState<ScrollRenderViewport>({
+    scrollTop: 0,
+    viewportHeight: 0,
   });
   const [showSkillInstaller, setShowSkillInstaller] = useState(false);
   const [dismissedCompatibilityWarningSignature, setDismissedCompatibilityWarningSignature] =
@@ -1672,10 +2411,10 @@ function ChatContent() {
       return;
     }
     try {
-      const nextSnapshot = {
+      const nextSnapshot = buildWebviewBootstrapSnapshot({
         currentSessionId: state.currentSessionId,
         rawSdkEventPayloadsBySessionId: state.rawSdkEventPayloadsBySessionId,
-      };
+      });
       window.sessionStorage.setItem(
         WEBVIEW_BOOTSTRAP_CACHE_KEY,
         JSON.stringify(nextSnapshot),
@@ -1813,9 +2552,19 @@ function ChatContent() {
     let rafId: number | null = null;
     const updateViewportState = () => {
       rafId = null;
+      const nextScrollTop = root.scrollTop;
+      const nextViewportHeight = root.clientHeight;
       const nearBottom =
-        root.scrollHeight - root.scrollTop - root.clientHeight <=
+        root.scrollHeight - nextScrollTop - nextViewportHeight <=
         AUTO_FOLLOW_THRESHOLD_PX;
+      setScrollRenderViewport((prev) =>
+        prev.scrollTop === nextScrollTop && prev.viewportHeight === nextViewportHeight
+          ? prev
+          : {
+              scrollTop: nextScrollTop,
+              viewportHeight: nextViewportHeight,
+            },
+      );
       setStreamViewport((prev) => {
         if (nearBottom) {
           if (prev.isFollowing && prev.unseenUpdateCount === 0) {
@@ -1835,10 +2584,23 @@ function ChatContent() {
       }
       rafId = requestAnimationFrame(updateViewportState);
     };
+    updateViewportState();
+
+    let resizeObserver: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver(() => {
+        if (rafId !== null) {
+          cancelAnimationFrame(rafId);
+        }
+        rafId = requestAnimationFrame(updateViewportState);
+      });
+      resizeObserver.observe(root);
+    }
 
     root.addEventListener("scroll", onScroll, { passive: true });
     return () => {
       root.removeEventListener("scroll", onScroll);
+      resizeObserver?.disconnect();
       if (rafId !== null) {
         cancelAnimationFrame(rafId);
       }
@@ -1975,10 +2737,43 @@ function ChatContent() {
   // 2. AI is still responding and the assistant turn has not finalized yet.
   // FIXED: Use hasRenderableContent from SDK instead of checking content length
   const hasRenderableStreamingContent = Boolean(state.streaming?.hasRenderableContent);
+
+  let isLastAssistantMessageFinished = false;
+  // 1. Check centralized tape first (source of truth for finished streams)
+  for (let i = renderMessages.length - 1; i >= 0; i--) {
+    const message = renderMessages[i];
+    if (message.info?.role === "assistant" || message.role === "assistant") {
+      // Check normalized aborted flag first
+      if (message.aborted === true || message.info?.aborted === true) {
+        isLastAssistantMessageFinished = true;
+      } else {
+        // buildCentralizedRenderMessages does NOT copy `finish` or `time.completed` into the normalized
+        // message.info, so we must scan the raw event payloads attached to the message.
+        const rawEvents = (message as any).rawSdkEventPayloads;
+        if (Array.isArray(rawEvents)) {
+          for (const raw of rawEvents) {
+            const rawInfo = raw?.properties?.info || raw?.info;
+            if (rawInfo?.finish === "stop" || rawInfo?.finish === "length" || rawInfo?.time?.completed) {
+              isLastAssistantMessageFinished = true;
+              break;
+            }
+          }
+        }
+      }
+      break;
+    }
+  }
+
+  const isAiResponseBlockFinished = Boolean(
+    (state.streaming && !state.streaming.isActive) ||
+    isLastAssistantMessageFinished
+  );
+
   const showAiResponseLoading =
     !state.isLoadingSession && // Direct state check to avoid timing issues
     hasLiveAssistantTurn &&
-    !state.isCompacting;
+    !state.isCompacting &&
+    !isAiResponseBlockFinished;
 
   // Enforce minimum display duration for loading state
   // This ensures users can perceive the loading indicator even when content arrives quickly
@@ -2016,12 +2811,20 @@ function ChatContent() {
     () =>
       centralizedSessionRawSdkEventPayloads.some((payload) => {
         const event = asRecord(payload);
-        return event && firstNonEmptyString(event.type) === "session.diff";
+        if (!event) return false;
+        const type = getCentralizedEventType(event);
+        if (type === "session.diff") return true;
+        if (type === "message.updated") {
+          const info = getCentralizedEventInfo(event);
+          const summary = asRecord(info?.summary);
+          return Array.isArray(summary?.diffs) && summary.diffs.length > 0;
+        }
+        return false;
       }),
     [centralizedSessionRawSdkEventPayloads],
   );
   const conversationEntries = transcriptProjection.conversationEntries;
-  const visibleConversationEntries = useMemo(() => {
+  const baseVisibleConversationEntries = useMemo(() => {
     let messageCount = 0;
     const visible: ConversationRenderEntry[] = [];
 
@@ -2036,6 +2839,60 @@ function ChatContent() {
 
     return visible;
   }, [conversationEntries, isCompressed, visibleStartIndex]);
+
+  const visibleConversationEntries = useMemo(() => {
+    if (visiblePendingUserMessages.length === 0) {
+      return baseVisibleConversationEntries;
+    }
+
+    const sortedPending = [...visiblePendingUserMessages].sort(
+      (a, b) => a.createdAt - b.createdAt,
+    );
+    const combined: ConversationRenderEntry[] = [];
+    let pendingIdx = 0;
+
+    for (const entry of baseVisibleConversationEntries) {
+      let entryTime = 0;
+      if (entry.kind === "message") {
+        entryTime = getCanonicalMessageCreatedAt(entry.message);
+      } else if (entry.kind === "session.diff") {
+        entryTime = entry.diff.createdAt ?? 0;
+      }
+
+      while (
+        pendingIdx < sortedPending.length &&
+        entryTime > 0 &&
+        sortedPending[pendingIdx].createdAt < entryTime
+      ) {
+        const pending = sortedPending[pendingIdx];
+        combined.push({
+          kind: "message",
+          key: `pending-user:${pending.id}`,
+          message: pendingUserMessageToMessage(pending),
+          messageIndex: -1,
+          order: 0,
+          renderKind: "user",
+        });
+        pendingIdx++;
+      }
+      combined.push(entry);
+    }
+
+    while (pendingIdx < sortedPending.length) {
+      const pending = sortedPending[pendingIdx];
+      combined.push({
+        kind: "message",
+        key: `pending-user:${pending.id}`,
+        message: pendingUserMessageToMessage(pending),
+        messageIndex: -1,
+        order: 0,
+        renderKind: "user",
+      });
+      pendingIdx++;
+    }
+
+    return combined;
+  }, [baseVisibleConversationEntries, visiblePendingUserMessages]);
   const visibleMessages = useMemo(
     () =>
       visibleConversationEntries
@@ -2045,6 +2902,39 @@ function ChatContent() {
         .map((entry) => entry.message),
     [visibleConversationEntries],
   );
+  const hasVisibleCentralizedSessionDiffEntries = useMemo(
+    () => visibleConversationEntries.some((entry) => entry.kind === "session.diff"),
+    [visibleConversationEntries],
+  );
+  // Group session.diff entries by the preceding user-message ID (block key).
+  // Each AI-response block between two user messages gets its own diff card
+  // rendered at the bottom of the last (non-collapsed) assistant message.
+  // When a block has multiple diffs their files are merged into one card.
+  const diffByBlockKey = useMemo(() => {
+    const map = new Map<string, CentralizedSessionDiffEvent>();
+    let currentBlockKey = "initial";
+    for (let i = 0; i < visibleConversationEntries.length; i++) {
+      const e = visibleConversationEntries[i];
+      if (e.kind === "message") {
+        const role = firstNonEmptyString(e.message.role, e.message.info?.role);
+        if (role === "user") {
+          currentBlockKey = firstNonEmptyString(e.message.info?.id, e.message.id) ?? `user:${i}`;
+        }
+      }
+      if (e.kind === "session.diff") {
+        const diff = (e as any).diff as CentralizedSessionDiffEvent | undefined;
+        if (diff && Array.isArray(diff.files) && diff.files.length > 0) {
+          const existing = map.get(currentBlockKey);
+          if (existing) {
+            map.set(currentBlockKey, { ...existing, files: [...existing.files, ...diff.files] });
+          } else {
+            map.set(currentBlockKey, diff);
+          }
+        }
+      }
+    }
+    return map;
+  }, [visibleConversationEntries]);
   const hasTranscriptAssistantForCurrentTurn = useMemo(() => {
     let lastUserEntryIndex = -1;
     for (let index = 0; index < visibleConversationEntries.length; index += 1) {
@@ -2316,249 +3206,27 @@ function ChatContent() {
 
           <CentralizedDebugPanel />
 
-          {(() => {
-            let messageCountSeen = 0;
-
-            // Step 1 — assign a blockGroupKey to every entry in a single pass.
-            // The key is the ID of the last user message seen before each entry,
-            // so all assistant cards that appear between the same two user
-            // messages share one key and collapse/expand as a single unit.
-            const entryBlockKeys: string[] = [];
-            let currentBlockKey = "initial";
-            // Also collect assistant entry positions for step 2.
-            const assistantBlockEntries: Array<{ index: number; key: string }> = [];
-            for (let i = 0; i < visibleConversationEntries.length; i++) {
-              const e = visibleConversationEntries[i];
-              if (e.kind === "message") {
-                const eRole = e.message.role ?? e.message.info?.role;
-                if (eRole === "user") {
-                  currentBlockKey =
-                    firstNonEmptyString(e.message.info?.id, e.message.id) ??
-                    `user:${i}`;
-                } else if (eRole === "assistant") {
-                  // Record the position now, after currentBlockKey has been set
-                  // by the preceding user message.
-                  assistantBlockEntries.push({ index: i, key: currentBlockKey });
-                }
-              }
-              entryBlockKeys.push(currentBlockKey);
-            }
-
-            // Step 2 — compute block visibility roles for each assistant
-            // entry by looking ONLY at adjacent ASSISTANT entries.
-            // System messages, permission cards, and other non-assistant entries
-            // share the block key but must NOT count as siblings — otherwise a
-            // single AI card that follows a system message would be incorrectly
-            // tagged as "last in a multi-card block" and lose its collapse button.
-            const isFirstInBlockByIndex = new Map<number, boolean>();
-            const isAbsoluteLastInBlockByIndex = new Map<number, boolean>();
-            
-            // Track the last entry that has text for each block key.
-            // Why: In a multi-card block (e.g. multiple tool calls followed by a final response),
-            // collapsing the block hides all the intermediate "timeline-only" cards.
-            // If the absolute last card in the block has no text (e.g. just another tool call or a void completion),
-            // and we hid the previous card (which actually contained the final text), the user would see a collapsed
-            // block with NO textual response. To prevent this, we identify the LAST card in the block that ACTUALLY
-            // has text, and treat THAT card as the "visible" anchor when collapsed.
-            const lastTextIndexByKey = new Map<string, number>();
-            for (let pos = 0; pos < assistantBlockEntries.length; pos++) {
-              const { index, key } = assistantBlockEntries[pos];
-              const msg = visibleConversationEntries[index].message;
-              const hasText = Boolean(msg.content || msg.text || msg.info?.content || msg.info?.text);
-              if (hasText) {
-                lastTextIndexByKey.set(key, index);
-              }
-            }
-            const isLastTextInBlockByIndex = new Map<number, boolean>();
-
-            for (let pos = 0; pos < assistantBlockEntries.length; pos++) {
-              const { index, key } = assistantBlockEntries[pos];
-              const prevKey = pos > 0 ? assistantBlockEntries[pos - 1].key : null;
-              const nextKey =
-                pos < assistantBlockEntries.length - 1
-                  ? assistantBlockEntries[pos + 1].key
-                  : null;
-              
-              // First in block: no preceding assistant card with the same key.
-              const isFirst = prevKey !== key;
-              const isAbsoluteLast = nextKey !== key;
-              isFirstInBlockByIndex.set(index, isFirst);
-
-              // Only apply multi-card logic if the block has more than 1 card
-              const isMultiCardBlock = prevKey === key || nextKey === key;
-              isAbsoluteLastInBlockByIndex.set(index, isMultiCardBlock ? isAbsoluteLast : false);
-
-              // Find the logical last entry for this block when collapsed
-              const lastTextIndex = lastTextIndexByKey.get(key);
-              let isLastText = false;
-              if (isMultiCardBlock) {
-                if (lastTextIndex !== undefined) {
-                  isLastText = index === lastTextIndex;
-                } else {
-                  isLastText = isAbsoluteLast; // fallback to absolute last if no text
-                }
-              }
-              isLastTextInBlockByIndex.set(index, isLastText);
-            }
-
-            // Count assistant cards per block so components can distinguish
-            // single-card blocks (collapse individually) from multi-card blocks
-            // (collapse as a unified group).
-            const blockSizeByKey = new Map<string, number>();
-            for (const { key } of assistantBlockEntries) {
-              blockSizeByKey.set(key, (blockSizeByKey.get(key) ?? 0) + 1);
-            }
-
-            const renderedEntries = visibleConversationEntries.map((entry, entryIndex) => {
-              const dividerHere = !isCompressed && compactionDividerIndex === messageCountSeen;
-              if (entry.kind === "message") {
-                const msg = entry.message;
-                const idx = entry.messageIndex;
-                const role = msg.role ?? msg.info?.role ?? "user";
-                const prevIdx = idx - 1;
-                const prevMsg =
-                  prevIdx >= 0 ? renderMessages[prevIdx] : undefined;
-                const isContiguous =
-                  role === "assistant" &&
-                  prevMsg?.role === "assistant" &&
-                  (prevMsg.info?.agent === msg.info?.agent ||
-                    (!prevMsg.info?.agent && !msg.info?.agent));
-                /**
-                 * Render invariant: never clear a centralized transcript card.
-                 *
-                 * During live streaming the StreamingCard may still be visible while
-                 * the centralized tape is catching up. Once the tape has produced a
-                 * transcript message, this branch must keep that message mounted and
-                 * let StreamingCard suppress its own live-only duplicate. Do not add
-                 * a `messageNode = null` branch here; that recreates the flicker where
-                 * an already-rendered assistant block disappears mid-stream.
-                 */
-                let messageNode: JSX.Element | null;
-                if (entry.renderKind === "user") {
-                  messageNode = <UserMessage message={msg} />;
-                } else if (entry.renderKind === "background-task-reminder") {
-                  messageNode = (
-                    <BackgroundTaskReminderMessage
-                      message={msg}
-                      messages={renderMessages}
-                    />
-                  );
-                } else if (entry.renderKind === "system") {
-                  const systemAgentId =
-                    msg.info?.agent ?? state.streaming?.agent ?? state.selectedAgent;
-
-                  messageNode = (
-                    <SystemMessage
-                      content={msg.content ?? msg.text ?? ""}
-                      accentColor={resolveAgentColor(systemAgentId)}
-                    />
-                  );
-                } else if (entry.renderKind === "permission") {
-                  messageNode = <PermissionCard perm={msg} />;
-                } else {
-                  // All assistant cards between the same two user messages
-                  // share a blockGroupKey (the preceding user message ID).
-                  const blockGroupKey = entryBlockKeys[entryIndex];
-
-                  // isFirstInBlock was pre-computed above
-                  const isFirstInBlock = isFirstInBlockByIndex.get(entryIndex) ?? true;
-                  const isAbsoluteLastInBlock = isAbsoluteLastInBlockByIndex.get(entryIndex) ?? false;
-                  const isLastTextInBlock = isLastTextInBlockByIndex.get(entryIndex) ?? false;
-
-                  // Total number of assistant cards in this block.
-                  const blockSize = blockSizeByKey.get(blockGroupKey) ?? 1;
-
-                  // The active block defaults to expanded while the AI is responding.
-                  // When the AI finishes responding, it defaults to false (collapsed).
-                  const isLiveBlock = hasLiveAssistantTurn && blockGroupKey === entryBlockKeys[entryBlockKeys.length - 1];
-                  const isBlockExpanded = blockExpandedState.get(blockGroupKey) ?? (isLiveBlock ? true : false);
-
-                  // The card that acts as the "last" card for UI purposes depends on whether the block is expanded!
-                  // If expanded, the absolute last card gets the "Collapse" button.
-                  // If collapsed, the last card WITH TEXT gets the "[X earlier steps collapsed]" pill (so it remains visible).
-                  const isLastInBlock = isBlockExpanded ? isAbsoluteLastInBlock : isLastTextInBlock;
-
-                  // Non-last cards in a multi-card block are hidden entirely
-                  // when the block is collapsed. Only the "last" card remains
-                  // visible as the "final AI response".
-                  const isHiddenByBlock = blockSize > 1 && !isLastInBlock && !isBlockExpanded;
-
-                  messageNode = (
-                    <ResponseMessage
-                      message={msg}
-                      isContiguous={isContiguous}
-                      interactiveEvents={state.interactiveEvents}
-                      messages={renderMessages}
-                      currentSessionId={state.currentSessionId}
-                      hideFileChangesSection={hasCentralizedSessionDiffEntries}
-                      subagentsByParentMessageId={state.subagentsByParentMessageId}
-                      subagentDetailsById={state.subagentDetailsById}
-                      todoItems={state.todoItems}
-                      blockGroupKey={blockGroupKey}
-                      isLastInBlock={isLastInBlock}
-                      isBlockExpanded={isBlockExpanded}
-                      blockSize={blockSize}
-                      isHiddenByBlock={isHiddenByBlock}
-                      onSetBlockExpanded={(expanded: boolean) =>
-                        handleSetBlockExpanded(blockGroupKey, expanded)
-                      }
-                    />
-                  );
-                }
-
-                /**
-                 * CRITICAL: Do not hide assistant messages during rehydration or
-                 * streaming.
-                 *
-                 * Assistant messages contain the canonical response body, subagent cards,
-                 * and other centralized content. Never unmount one after it has rendered;
-                 * the live StreamingCard can hide itself when the transcript owns the turn.
-                 */
-                messageCountSeen += 1;
-
-                return (
-                  <Fragment key={entry.key}>
-                    {dividerHere ? <CompactionDivider at={state.lastCompactedAt} /> : null}
-                    {messageNode}
-                  </Fragment>
-                );
-              }
-
-              if (entry.kind === "assistant.abort") {
-                return (
-                  <Fragment key={entry.key}>
-                    {dividerHere ? <CompactionDivider at={state.lastCompactedAt} /> : null}
-                    <div className="px-4">
-                      <div className="mt-2 flex items-center justify-center">
-                        <div className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 py-1 text-[10px] font-medium tracking-wide text-amber-400">
-                          <div className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse" />
-                          <span>Interrupted</span>
-                        </div>
-                      </div>
-                    </div>
-                  </Fragment>
-                );
-              }
-
-              return (
-                <Fragment key={entry.key}>
-                  {dividerHere ? <CompactionDivider at={state.lastCompactedAt} /> : null}
-                  <FileChangesSection
-                    structuredFileChanges={[]}
-                    centralizedDiffEvent={entry.diff}
-                    sessionId={state.currentSessionId}
-                  />
-                </Fragment>
-              );
-            });
-            const pendingEntries = visiblePendingUserMessages.map((pendingMessage) => (
-              <UserMessage
-                key={`pending-user:${pendingMessage.id}`}
-                message={pendingUserMessageToMessage(pendingMessage)}
-              />
-            ));
-            return [...renderedEntries, ...pendingEntries];
-          })()}
+          <MemoizedConversationTranscript
+            blockExpandedState={blockExpandedState}
+            compactionDividerIndex={compactionDividerIndex}
+            currentSessionId={state.currentSessionId}
+            diffByBlockKey={diffByBlockKey}
+            hasLiveAssistantTurn={hasLiveAssistantTurn}
+            interactiveEvents={state.interactiveEvents}
+            isCompressed={isCompressed}
+            isProcessing={state.isProcessing}
+            lastCompactedAt={state.lastCompactedAt}
+            onSetBlockExpanded={handleSetBlockExpanded}
+            renderMessages={renderMessages}
+            resolveAgentColor={resolveAgentColor}
+            selectedAgent={state.selectedAgent}
+            streaming={state.streaming}
+            subagentDetailsById={state.subagentDetailsById}
+            subagentsByParentMessageId={state.subagentsByParentMessageId}
+            todoItems={state.todoItems}
+            visibleConversationEntries={visibleConversationEntries}
+            scrollViewport={scrollRenderViewport}
+          />
 
               {!isCompressed && compactionDividerIndex === renderMessages.length ? (
                 <CompactionDivider at={state.lastCompactedAt} />

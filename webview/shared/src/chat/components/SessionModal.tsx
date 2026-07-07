@@ -3,7 +3,7 @@ import { X, Search, MessageSquare, Plus, Loader2, Edit, Trash2, Check, History }
 import { createPortal } from "react-dom";
 
 import { Button } from "@/components/ui/button";
-import { useAppState, useAppDispatch } from "../lib/store";
+import { useAppState, useAppDispatch, shallowEqual } from "../lib/store";
 import vscode from "../lib/vscode";
 
 type SessionModalProps = {
@@ -17,7 +17,12 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
     currentSessionId,
     processingSessionIds,
     rawSdkEventPayloadsBySessionId,
-  } = useAppState();
+  } = useAppState((s) => ({
+    sessionsList: s.sessionsList,
+    currentSessionId: s.currentSessionId,
+    processingSessionIds: s.processingSessionIds,
+    rawSdkEventPayloadsBySessionId: s.rawSdkEventPayloadsBySessionId,
+  }), shallowEqual);
   const dispatch = useAppDispatch();
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [newTitle, setNewTitle] = useState("");

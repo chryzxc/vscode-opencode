@@ -26,6 +26,54 @@ function eventTypeMatches(value: unknown, expected: string): boolean {
   return eventType === expected || eventType.startsWith(`${expected}.`);
 }
 
+function getEventInfo(event: Record<string, unknown>): Record<string, unknown> | null {
+  const properties = asRecord(event.properties);
+  return asRecord(properties?.info) ?? asRecord(event.info);
+}
+
+function isAbortLikeSignal(value: unknown): boolean {
+  const normalized = firstNonEmptyString(value)?.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  return (
+    normalized.includes('messageabortederror') ||
+    normalized === 'aborted' ||
+    normalized.endsWith(': aborted') ||
+    normalized.includes('aborterror')
+  );
+}
+
+function isCentralizedAbortEvent(event: Record<string, unknown>): boolean {
+  const eventType = asString(event.type).trim();
+  if (
+    !eventTypeMatches(eventType, 'session.error') &&
+    !eventTypeMatches(eventType, 'error') &&
+    !eventTypeMatches(eventType, 'message.updated')
+  ) {
+    return false;
+  }
+
+  const properties = asRecord(event.properties);
+  const info = getEventInfo(event);
+  const errorRec =
+    asRecord(properties?.error) ??
+    asRecord(event.error) ??
+    asRecord(info?.error);
+  const errorData = asRecord(errorRec?.data);
+
+  return (
+    info?.aborted === true ||
+    errorRec?.aborted === true ||
+    isAbortLikeSignal(errorRec?.name) ||
+    isAbortLikeSignal(errorRec?.message) ||
+    isAbortLikeSignal(errorData?.message) ||
+    isAbortLikeSignal(properties?.message) ||
+    isAbortLikeSignal(event.message)
+  );
+}
+
 export function latestSessionStatusTypeFromCentralizedTape(
   rawSdkEventPayloads?: unknown[],
 ): string | null {
@@ -243,6 +291,33 @@ export function latestAssistantMessageIdFromCentralizedTape(
   return null;
 }
 
+function latestAssistantTurnStartIndex(
+  rawSdkEventPayloads: unknown[],
+  latestAssistantMessageId: string,
+): number {
+  for (let index = rawSdkEventPayloads.length - 1; index >= 0; index -= 1) {
+    const event = asRecord(rawSdkEventPayloads[index]);
+    if (!event) {
+      continue;
+    }
+
+    const properties = asRecord(event.properties);
+    const info = getEventInfo(event);
+    const part = asRecord(properties?.part) ?? asRecord(event.part);
+    const infoId = firstNonEmptyString(info?.id, info?.messageID, info?.messageId);
+    const partId = firstNonEmptyString(part?.messageID, part?.messageId);
+
+    if (
+      (eventTypeMatches(event.type, 'message.updated') && infoId === latestAssistantMessageId) ||
+      partId === latestAssistantMessageId
+    ) {
+      return index;
+    }
+  }
+
+  return -1;
+}
+
 export function hasCompletedAssistantReplyInCentralizedTape(
   rawSdkEventPayloads?: unknown[],
 ): boolean {
@@ -252,6 +327,11 @@ export function hasCompletedAssistantReplyInCentralizedTape(
     return false;
   }
 
+  const latestAssistantStartIndex = latestAssistantTurnStartIndex(
+    rawSdkEventPayloads,
+    latestAssistantMessageId,
+  );
+
   for (let index = rawSdkEventPayloads.length - 1; index >= 0; index -= 1) {
     const event = asRecord(rawSdkEventPayloads[index]);
     if (!event) {
@@ -259,7 +339,7 @@ export function hasCompletedAssistantReplyInCentralizedTape(
     }
 
     const properties = asRecord(event.properties);
-    const info = asRecord(properties?.info) ?? asRecord(event.info);
+    const info = getEventInfo(event);
     const part = asRecord(properties?.part) ?? asRecord(event.part);
 
     if (
@@ -279,6 +359,21 @@ export function hasCompletedAssistantReplyInCentralizedTape(
       firstNonEmptyString(part?.messageID, part?.messageId) ===
         latestAssistantMessageId
     ) {
+      return true;
+    }
+
+    if (!isCentralizedAbortEvent(event)) {
+      continue;
+    }
+
+    if (
+      firstNonEmptyString(info?.id, info?.messageID, info?.messageId) ===
+      latestAssistantMessageId
+    ) {
+      return true;
+    }
+
+    if (latestAssistantStartIndex >= 0 && index >= latestAssistantStartIndex) {
       return true;
     }
   }

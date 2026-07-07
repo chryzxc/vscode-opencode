@@ -24,6 +24,8 @@ import {
 } from "./generated/centralizedDebugPayloadFilter";
 import type { CentralizedToastNotification } from "./toastEvents";
 
+const globalQuestionRequestIDMap = new Map<string, { requestID: string, questionIndex?: number }>();
+
 import type {
   Agent,
   AppState,
@@ -70,7 +72,6 @@ export const initialState: AppState = {
   currentSessionId: null,
   messages: [],
   messagesBySessionId: {},
-  rawMessagesBySessionId: {},
   rawSdkEventPayloadsBySessionId: {},
   liveToastNotificationsBySessionId: {},
   promptQueue: [],
@@ -187,7 +188,6 @@ export type AppAction =
   | { type: "SET_SELECTED_AGENT"; payload: string }
   | { type: "SET_AGENTS_LIST"; payload: Agent[] }
   | { type: "SET_MESSAGES"; payload: Message[] }
-  | { type: "SET_RAW_MESSAGES"; payload: { sessionId: string; messages: unknown[] } }
   | {
     type: "SET_RAW_SDK_EVENT_PAYLOADS";
     payload: { sessionId: string; events: unknown[] };
@@ -2345,6 +2345,38 @@ function isDuplicateReasoningChunk(candidate: string, existing: string): boolean
   );
 }
 
+function findStreamingReasoningEventIndex(
+  reasoningEvents: ReasoningEvent[],
+  payload: StreamingReasoningPayload,
+): number {
+  const partID = typeof payload.partID === "string" ? payload.partID.trim() : "";
+  const messageID =
+    typeof payload.messageID === "string" ? payload.messageID.trim() : "";
+
+  if (partID) {
+    for (let index = reasoningEvents.length - 1; index >= 0; index -= 1) {
+      if ((reasoningEvents[index]?.partID ?? "").trim() === partID) {
+        return index;
+      }
+    }
+    return -1;
+  }
+
+  if (messageID) {
+    const matchingIndexes: number[] = [];
+    for (let index = reasoningEvents.length - 1; index >= 0; index -= 1) {
+      if ((reasoningEvents[index]?.messageID ?? "").trim() === messageID) {
+        matchingIndexes.push(index);
+      }
+    }
+    if (matchingIndexes.length === 1) {
+      return matchingIndexes[0];
+    }
+  }
+
+  return -1;
+}
+
 type ReasoningMergeResult = {
   reasoning: string;
   eventChunk?: string;
@@ -2822,17 +2854,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           resolvedAnchors.compactionDividerAfterMessageId,
       };
     }
-    case "SET_RAW_MESSAGES": {
-      return {
-        ...state,
-        rawMessagesBySessionId: pruneSessionCache({
-          ...(state.rawMessagesBySessionId ?? {}),
-          [action.payload.sessionId]: Array.isArray(action.payload.messages)
-            ? [...action.payload.messages]
-            : [],
-        }, action.payload.sessionId),
-      };
-    }
     case "SET_RAW_SDK_EVENT_PAYLOADS": {
       const rawEvents = Array.isArray(action.payload.events) ? action.payload.events : [];
       const events = dedupeCentralizedDebugPayloads(
@@ -3293,24 +3314,48 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       const chunk = merged.eventChunk?.trim() ?? "";
       let reasoningEvents = state.streaming.reasoningEvents;
       if (chunk.length > 0) {
+        const matchingIndex = findStreamingReasoningEventIndex(
+          reasoningEvents,
+          action.payload,
+        );
         const lastEvent =
           reasoningEvents.length > 0
             ? reasoningEvents[reasoningEvents.length - 1]
             : undefined;
+        const matchedEvent =
+          matchingIndex >= 0 ? reasoningEvents[matchingIndex] : undefined;
+        const targetEvent = matchedEvent ?? lastEvent;
         if (
-          lastEvent &&
-          (merged.replaceLastEvent ||
-            isDuplicateReasoningChunk(chunk, lastEvent.text))
+          targetEvent &&
+          (
+            matchingIndex >= 0 ||
+            merged.replaceLastEvent ||
+            isDuplicateReasoningChunk(chunk, targetEvent.text)
+          )
         ) {
+          const existingText = targetEvent.text;
+          const nextText =
+            matchingIndex >= 0
+              ? action.payload.delta
+                ? `${existingText}${action.payload.reasoning}`
+                : mergeStreamingReasoning(
+                  existingText,
+                  action.payload.reasoning,
+                  action.payload.append,
+                ).reasoning
+              : chunk;
+          const replaceIndex =
+            matchingIndex >= 0 ? matchingIndex : reasoningEvents.length - 1;
           reasoningEvents = [
-            ...reasoningEvents.slice(0, -1),
+            ...reasoningEvents.slice(0, replaceIndex),
             {
-              ...lastEvent,
-              text: chunk,
-              partID: action.payload.partID ?? lastEvent.partID,
-              messageID: action.payload.messageID ?? lastEvent.messageID,
-              delta: action.payload.delta ?? lastEvent.delta,
+              ...targetEvent,
+              text: nextText,
+              partID: action.payload.partID ?? targetEvent.partID,
+              messageID: action.payload.messageID ?? targetEvent.messageID,
+              delta: action.payload.delta ?? targetEvent.delta,
             },
+            ...reasoningEvents.slice(replaceIndex + 1),
           ];
         } else {
           reasoningEvents = appendWithCap(
@@ -4033,6 +4078,27 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         if (seenKeys.has(key)) return false;
         seenKeys.add(key);
         return true;
+      }).map((event) => {
+        if (event.type === "question") {
+          const key = interactiveEventContentKeyLocal(event);
+          if (event.requestID) {
+            // Store the requestID persistently in case state gets cleared
+            console.error(`[DEBUG][STORE] Storing persistent requestID for key ${key}: ${event.requestID}`);
+            globalQuestionRequestIDMap.set(key, { requestID: event.requestID, questionIndex: event.questionIndex });
+          } else {
+            // Restore from the persistent map
+            const preserved = globalQuestionRequestIDMap.get(key);
+            console.error(`[DEBUG][STORE] Looking up persistent requestID for key ${key}. Found:`, preserved);
+            if (preserved) {
+              return {
+                ...event,
+                requestID: preserved.requestID,
+                questionIndex: preserved.questionIndex,
+              };
+            }
+          }
+        }
+        return event;
       });
       const streaming = state.streaming
         ? {
@@ -4168,7 +4234,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
   }
 }
 
-export const AppStateContext = createContext<AppState | undefined>(undefined);
 export const AppDispatchContext = createContext<React.Dispatch<AppAction> | undefined>(undefined);
 type AppStore = {
   getState: () => AppState;
@@ -4239,11 +4304,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   return React.createElement(
     AppStoreContext.Provider,
     { value: store },
-    React.createElement(
-      AppStateContext.Provider,
-      { value: state },
-      React.createElement(AppDispatchContext.Provider, { value: dispatch }, children),
-    ),
+    React.createElement(AppDispatchContext.Provider, { value: dispatch }, children),
   );
 }
 
@@ -4257,13 +4318,12 @@ export function useAppState<T>(
   isEqual: EqualityFn<T> = Object.is,
 ): AppState | T {
   const store = useContext(AppStoreContext);
-  const stateContext = useContext(AppStateContext);
   const selectionRef = useRef<AppState | T | undefined>(undefined);
   const hasSelectionRef = useRef(false);
   const selectorRef = useRef(selector);
   selectorRef.current = selector;
 
-  if (!store || !stateContext) {
+  if (!store) {
     throw new Error("useAppState must be used within AppProvider");
   }
 

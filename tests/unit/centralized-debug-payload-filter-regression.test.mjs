@@ -21,6 +21,10 @@ const generated = readSource(
   ],
   "generated centralizedDebugPayloadFilter.ts",
 );
+const sessionServiceSource = readSource(
+  [joinFromRoot("src", "services", "SessionService.ts")],
+  "SessionService.ts",
+);
 
 test("centralized debug payload filter keeps step-start and step-finish event types", () => {
   assert.doesNotMatch(
@@ -78,15 +82,25 @@ test("centralized debug payload filter keeps step-start and step-finish event ty
     /normalizedCentralizedEventType\(payload\)[\s\S]*message\.part\.updated[\s\S]*hasReasoningLikeChunk\(payload\)/,
     "generated centralized debug payload filter should also exclude reasoning-only part updates",
   );
-  assert.doesNotMatch(
+  assert.match(
     source,
-    /function hasStreamingDelta\(/,
-    "shared centralized debug payload filter should not blanket-drop payloads just because they carry delta fields",
+    /function hasDeltaProperty\(/,
+    "shared centralized debug payload filter should detect delta-bearing payloads explicitly",
   );
-  assert.doesNotMatch(
+  assert.match(
     generated,
-    /function hasStreamingDelta\(/,
-    "generated centralized debug payload filter should stay aligned and avoid blanket delta-field filtering",
+    /function hasDeltaProperty\(/,
+    "generated centralized debug payload filter should stay aligned with delta detection",
+  );
+  assert.match(
+    source,
+    /message\.part\.updated[\s\S]*hasReasoningLikeChunk\(payload\)\s*\|\|\s*hasDeltaProperty\(payload\)/,
+    "shared centralized debug payload filter should exclude message.part.updated chunks when they carry a delta property",
+  );
+  assert.match(
+    generated,
+    /message\.part\.updated[\s\S]*hasReasoningLikeChunk\(payload\)\s*\|\|\s*hasDeltaProperty\(payload\)/,
+    "generated centralized debug payload filter should also exclude delta-bearing message.part.updated chunks",
   );
   assert.match(
     source,
@@ -158,7 +172,7 @@ test("generated centralized debug filter stays aligned with source for /global/e
   );
 });
 
-test("centralized session persistence is permissive for meaningful non-delta events", () => {
+test("centralized session persistence uses the shared helper and excludes delta-bearing payloads", () => {
   assert.doesNotMatch(
     source,
     /const CENTRALIZED_SESSION_PERSISTED_EVENT_TYPES = new Set\(/,
@@ -176,13 +190,13 @@ test("centralized session persistence is permissive for meaningful non-delta eve
   );
   assert.match(
     source,
-    /non-reasoning message\.part\.updated lifecycle payloads must remain persisted[\s\S]*carry a delta field/,
-    "source filter should document that non-reasoning message.part.updated payloads are not excluded solely for carrying delta fields",
+    /delta-bearing message\.part\.updated lifecycle[\s\S]*payloads are excluded/,
+    "source filter should document that delta-bearing message.part.updated payloads are excluded from persistence",
   );
   assert.match(
     generated,
-    /non-reasoning message\.part\.updated lifecycle payloads must remain persisted[\s\S]*carry a delta field/,
-    "generated filter should document the same non-reasoning message.part.updated delta-field persistence rule",
+    /delta-bearing message\.part\.updated lifecycle[\s\S]*payloads are excluded/,
+    "generated filter should document the same delta-bearing message.part.updated exclusion rule",
   );
   assert.match(
     source,
@@ -193,5 +207,10 @@ test("centralized session persistence is permissive for meaningful non-delta eve
     generated,
     /Live-only UI events such as tui\.toast\.show and reasoning chunk frames are[\s\S]*excluded separately/,
     "generated filter should document the same live-only exclusions",
+  );
+  assert.match(
+    sessionServiceSource,
+    /private shouldPersistRawSdkEventPayload\(event: unknown\): boolean \{\s*return shouldPersistCentralizedSessionEventPayload\(event\);\s*\}/,
+    "SessionService should defer raw centralized persistence decisions to the shared centralized payload helper",
   );
 });

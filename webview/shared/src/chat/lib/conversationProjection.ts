@@ -84,6 +84,7 @@ export function buildMessageConversationEntries(
     return left.index - right.index;
   });
 
+  let visibleIndex = 0;
   for (let index = 0; index < orderedEntries.length; index += 1) {
     const entry = orderedEntries[index];
     if (entry.renderKind === "hidden") {
@@ -95,9 +96,10 @@ export function buildMessageConversationEntries(
       key: `message:${messageId}`,
       message: entry.message,
       messageIndex: entry.index,
-      order: index * 10,
+      order: visibleIndex * 10,
       renderKind: entry.renderKind,
     });
+    visibleIndex++;
   }
 
   return conversationEntries;

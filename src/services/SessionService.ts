@@ -58,6 +58,7 @@ import { restoreCheckpointIfPresent } from "./CheckpointRestore";
 import {
   getCentralizedDebugPayloadIdentity,
   sanitizeCentralizedDebugPayload,
+  shouldPersistCentralizedSessionEventPayload,
 } from "../shared/centralizedDebugPayloadFilter";
 
 const log = createLogger(LoggingCategories.SESSION_SERVICE);
@@ -1251,9 +1252,6 @@ export class SessionService {
   /** In-memory cache of raw SDK event payloads by session for atomic appends */
   private rawSdkEventPayloadCache = new Map<string, unknown[]>();
 
-  /** In-memory cache of raw SDK message payloads by session */
-  private rawMessageCache = new Map<string, unknown[]>();
-
   /** Per-session debounce timer for raw SDK event payload persistence */
   private rawSdkEventPersistTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -1269,7 +1267,7 @@ export class SessionService {
   }
 
   private shouldPersistRawSdkEventPayload(event: unknown): boolean {
-    return !!event;
+    return shouldPersistCentralizedSessionEventPayload(event);
   }
 
   private describeRawSdkEventPayloadForLog(event: unknown): Record<string, unknown> {
@@ -1336,9 +1334,6 @@ export class SessionService {
 
   /** Prefix for storing messages per session (appended with session ID) */
   private static readonly MESSAGES_PREFIX = "opencode.session.messages.";
-
-  /** Prefix for storing raw SDK payloads per session (appended with session ID) */
-  private static readonly RAW_MESSAGES_PREFIX = "opencode.session.raw-messages.";
 
   /** Prefix for storing raw SDK event payloads per session (appended with session ID) */
   private static readonly RAW_SDK_EVENT_PAYLOADS_PREFIX =
@@ -1764,10 +1759,13 @@ export class SessionService {
     // Memory fix: evict in-memory caches for the deleted session so data
     // doesn't accumulate indefinitely for sessions that no longer exist.
     this.rawSdkEventPayloadCache.delete(sessionId);
-    this.rawMessageCache.delete(sessionId);
     this.sessionHistory = this.sessionHistory.filter((s) => s.id !== sessionId);
     await this.context.workspaceState.update(
       `${SessionService.MESSAGES_PREFIX}${sessionId}`,
+      undefined,
+    );
+    await this.context.workspaceState.update(
+      `opencode.session.raw-messages.${sessionId}`,
       undefined,
     );
     this.persistState();
@@ -2063,24 +2061,6 @@ export class SessionService {
   }
 
   /**
-   * Saves raw SDK payloads for a specific session to local workspace storage.
-   *
-   * This intentionally preserves the original payload shape as much as possible
-   * so debug and recovery flows can inspect the untouched SDK data.
-   */
-  async saveSessionRawMessages(
-    sessionId: string,
-    messages: unknown[],
-  ): Promise<void> {
-    const persisted = Array.isArray(messages) ? [...messages] : [];
-    this.rawMessageCache.set(sessionId, persisted);
-    await this.context.workspaceState.update(
-      `${SessionService.RAW_MESSAGES_PREFIX}${sessionId}`,
-      persisted,
-    );
-  }
-
-  /**
    * Loads messages for a specific session from local storage.
    *
    * **Fallback Behavior:**
@@ -2107,22 +2087,6 @@ export class SessionService {
       `${SessionService.MESSAGES_PREFIX}${sessionId}`,
     );
     return Array.isArray(value) ? value : [];
-  }
-
-  /**
-   * Loads raw SDK payloads for a specific session from local workspace storage.
-   */
-  async loadSessionRawMessages(sessionId: string): Promise<unknown[]> {
-    const cached = this.rawMessageCache.get(sessionId);
-    if (Array.isArray(cached)) {
-      return [...cached];
-    }
-    const value = this.context.workspaceState.get<unknown[]>(
-      `${SessionService.RAW_MESSAGES_PREFIX}${sessionId}`,
-    );
-    const raw = Array.isArray(value) ? value : [];
-    this.rawMessageCache.set(sessionId, [...raw]);
-    return raw;
   }
 
   /**
@@ -2176,25 +2140,23 @@ export class SessionService {
   }
 
   /**
-   * Convenience method that loads both raw messages and raw SDK event payloads
-   * for a session in parallel.
+   * Loads centralized session event data for a session.
    *
    * Called from ChatViewProvider and SessionHandler when rehydrating a session
    * into the webview chat UI (chatHistory message).
    *
    * @param sessionId - The ID of the session to load data for
-   * @returns Object containing rawMessages and rawSdkEventPayloads arrays
+   * @returns Object containing centralized raw SDK event payloads
    */
   async loadCentralizedSessionData(sessionId: string): Promise<{
-    rawMessages: unknown[];
     rawSdkEventPayloads: unknown[];
   }> {
-    // Load both data sources in parallel for efficiency
-    const [rawMessages, rawSdkEventPayloads] = await Promise.all([
-      this.loadSessionRawMessages(sessionId),
-      this.loadSessionRawSdkEventPayloads(sessionId),
-    ]);
-    return { rawMessages, rawSdkEventPayloads };
+    void this.context.workspaceState.update(
+      `opencode.session.raw-messages.${sessionId}`,
+      undefined,
+    );
+    const rawSdkEventPayloads = await this.loadSessionRawSdkEventPayloads(sessionId);
+    return { rawSdkEventPayloads };
   }
 
 
@@ -2262,17 +2224,6 @@ export class SessionService {
       });
     }
     await this.saveSessionMessages(sessionId, messages);
-  }
-
-  async appendRawMessage(sessionId: string, message: unknown): Promise<void> {
-    const messages = await this.loadSessionRawMessages(sessionId);
-    messages.push(message);
-    log.debug("Appending raw message to session", {
-      sessionId,
-      newTotal: messages.length,
-      role: (message as Record<string, unknown>)?.role,
-    });
-    await this.saveSessionRawMessages(sessionId, messages);
   }
 
   async appendRawSdkEventPayload(sessionId: string, event: unknown): Promise<void> {
@@ -2423,7 +2374,6 @@ export class SessionService {
     // Memory fix: release in-memory caches — data has been flushed to disk
     // above and the service is being torn down.
     this.rawSdkEventPayloadCache.clear();
-    this.rawMessageCache.clear();
   }
 
   private async mergeMessagesForSessionAliases(

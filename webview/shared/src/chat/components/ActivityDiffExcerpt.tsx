@@ -119,24 +119,6 @@ function DiffLine({
         {isHeader ? line : line.slice(1)}
       </div>
 
-      {!isHeader && (
-        <button
-          type="button"
-          title="Copy line"
-          onClick={handleCopy}
-          className={cn(
-            "absolute right-1 top-0.5 flex h-3.5 w-3.5 items-center justify-center rounded",
-            "opacity-0 transition-opacity group-hover:opacity-100",
-            "oc-text-secondary hover:bg-oc-bg hover:text-oc-text",
-          )}
-        >
-          {copied ? (
-            <Check className="h-2.5 w-2.5 text-oc-green" />
-          ) : (
-            <Copy className="h-2.5 w-2.5" />
-          )}
-        </button>
-      )}
     </div>
   );
 }

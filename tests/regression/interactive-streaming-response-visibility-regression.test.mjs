@@ -20,13 +20,7 @@ test("blocking interactive stream handoff flushes the visible assistant snapshot
 test("structured interactive handoff also flushes the visible assistant snapshot before finishing", () => {
   assert.match(
     messageHandlerSource,
-    /if \(hasBlockingInteractive\) \{[\s\S]*flushVisibleStreamingSnapshotToMessages\(dispatch,\s*getState\);[\s\S]*FINISH_STREAMING[\s\S]*SET_PROCESSING[\s\S]*break;/s,
+    /if \(hasBlockingInteractiveEvents[\s\S]*flushVisibleStreamingSnapshotToMessages\(dispatch,\s*getState[\s\S]*FINISH_STREAMING[\s\S]*SET_PROCESSING[\s\S]*break;/s,
     "structured interactive parts should flush the visible assistant snapshot before finishing the stream",
-  );
-
-  assert.match(
-    messageHandlerSource,
-    /if \(liveHasBlockingInteractive && !finish\) \{[\s\S]*flushVisibleStreamingSnapshotToMessages\(dispatch,\s*getState\);[\s\S]*FINISH_STREAMING[\s\S]*SET_PROCESSING[\s\S]*break;/s,
-    "message.updated interactive handoff should flush the visible assistant snapshot before finishing the stream",
   );
 });

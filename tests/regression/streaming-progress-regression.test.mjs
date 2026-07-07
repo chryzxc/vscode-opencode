@@ -188,7 +188,7 @@ test('late terminal edit/tool activity does not reactivate a finished stream', (
   );
   assert.match(
     streamBody,
-    /const wasStreamInactiveAtPartStart = currentStreamingState\?\.isActive === false;[\s\S]*if \(wasStreamInactiveAtPartStart && isTerminalProgressPart\(part, partType\)\) \{[\s\S]*type: "SET_PROCESSING", payload: false[\s\S]*break;[\s\S]*\}[\s\S]*type:\s*'SET_PROCESSING', payload: true/s,
+    /const wasStreamInactiveAtPartStart = currentStreamingState\?\.isActive === false;[\s\S]*if \(wasStreamInactiveAtPartStart && isTerminalProgressPart\(part, partType\)\) \{[\s\S]*type: "SET_PROCESSING", payload: false[\s\S]*break;[\s\S]*\}[\s\S]*dispatchProcessingTrue\(\)/s,
     'late terminal edit/tool parts should keep processing false instead of reopening the inactive stream',
   );
   assert.match(

@@ -808,7 +808,6 @@ export interface AppState {
   currentSessionId: string | null;
   messages: Message[];
   messagesBySessionId?: Record<string, Message[]>;
-  rawMessagesBySessionId?: Record<string, unknown[]>;
   rawSdkEventPayloadsBySessionId?: Record<string, unknown[]>;
   liveToastNotificationsBySessionId?: Record<string, import("./toastEvents").CentralizedToastNotification[]>;
   promptQueue: QueueItem[];

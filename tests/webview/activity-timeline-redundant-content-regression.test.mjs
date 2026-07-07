@@ -46,7 +46,7 @@ test("activity timeline suppresses summary blocks when summary matches the title
   );
   assert.match(
     messageComponentsSource,
-    /\{labelLower !== "read" && labelLower !== "todowrite" && visibleSummary && \(/,
+    /\{labelLower !== "read" && labelLower !== "todowrite" && !isEditLike && visibleSummary && \(/,
     "generic activity summary rendering should skip rows whose visible summary was suppressed",
   );
 });
@@ -64,7 +64,7 @@ test("compress activity rows show topic inline and hide the lower summary block"
   );
   assert.match(
     messageComponentsSource,
-    /\{compressTopic \?\s*\(\s*<span className="text-oc-text-soft text-xs truncate max-w-\[min\(42ch,60vw\)\]">/s,
+    /\{compressTopic \?\s*\(\s*<span className="oc-activity-step-meta truncate max-w-\[min\(42ch,60vw\)\] text-oc-text-soft">/s,
     "compress topic should render inline beside the title instead of at the far edge",
   );
 });

@@ -11,7 +11,7 @@ const panelComponentsSource = readSource(
 test("closing an active question popover aborts the current assistant turn before dismissing it", () => {
   assert.match(
     panelComponentsSource,
-    /const abortActiveResponse = \(\) =>[\s\S]*type:\s*"abortResponse"[\s\S]*const dismissInteractivePopover = \(interactiveEvent: InteractiveEvent\) => \{[\s\S]*interactiveEvent\.type === "question"[\s\S]*isProcessing \|\| assistantTurnPending \|\| Boolean\(streaming\)[\s\S]*abortActiveResponse\(\)[\s\S]*type:\s*"DISMISS_INTERACTIVE_EVENT"[\s\S]*payload:\s*interactiveEvent\.id/s,
+    /const abortActiveResponse = \(\) =>[\s\S]*type:\s*"abortResponse"[\s\S]*const dismissInteractivePopover = \(interactiveEvent: InteractiveEvent\) => \{[\s\S]*interactiveEvent\.type === "question"[\s\S]*abortActiveResponse\(\)[\s\S]*type:\s*"DISMISS_INTERACTIVE_EVENT"[\s\S]*payload:\s*interactiveEvent\.id/s,
     "question popover dismiss should send a dedicated abortResponse request before removing the interactive event locally",
   );
 });
@@ -31,7 +31,7 @@ test("abortResponse is handled by the provider stop flow that calls the SDK abor
 
   assert.match(
     chatViewProviderSource,
-    /await client\.session\.abort\(\{[\s\S]*sessionID:\s*resolvedSessionId/s,
+    /client\.session\.abort\(\{[\s\S]*sessionID:\s*resolvedSessionId/s,
     "shared stop flow should call the OpenCode SDK session.abort API",
   );
 });

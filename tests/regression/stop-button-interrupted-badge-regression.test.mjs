@@ -34,7 +34,7 @@ test("stopRequestHandled finalizes aborted assistant turns without stale interac
 test("assistant renderer still shows the Interrupted badge for aborted turns", () => {
   assert.match(
     messageComponentsSource,
-    /const interruptedPresentation =[\s\S]*\(isAborted \? "inline" : undefined\)[\s\S]*interruptedPresentation === "inline"[\s\S]*!hasQuestionLikeInteractiveContent\(cardMessage\)[\s\S]*Interrupted/s,
+    /const (?:effectiveI|i)nterruptedPresentation =[\s\S]*\(isAborted \? "inline" : undefined\)[\s\S]*interruptedPresentation === "inline"[\s\S]*!hasQuestionLikeInteractiveContent\(cardMessage\)[\s\S]*Interrupted/s,
     "renderer should follow one interrupted-presentation field instead of separate aborted and detached-badge conditions",
   );
 });

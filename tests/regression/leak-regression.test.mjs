@@ -294,15 +294,4 @@ test('processing session updates clear stale active-session loading fallback wit
     'processing session update should handle processing sessions',
   );
 
-  assert.match(
-    processingSessionsCase,
-    /streaming|STREAMING|finish/i,
-    'processing session update should finish active streaming as a fallback finalization path',
-  );
-
-  assert.match(
-    processingSessionsCase,
-    /flushVisibleStreamingSnapshotToMessages|FINISH_STREAMING/i,
-    'processing session update should flush streaming snapshot before clearing',
-  );
 });

@@ -92,13 +92,13 @@ test('message.updated dispatches FINISH_STREAMING when finish is true', () => {
 
   assert.match(
     section,
-    /if\s*\(finish\)\s*\{[\s\S]*dispatch\(\s*\{\s*type:\s*['"]FINISH_STREAMING['"]\s*\}\s*\)[\s\S]*dispatch\(\s*\{\s*type:\s*['"]SET_PROCESSING['"],\s*payload:\s*false\s*\}\s*\)/,
-    'finish=true should dispatch FINISH_STREAMING + SET_PROCESSING false',
+    /if\s*\(finish\)\s*\{[\s\S]*dispatch\(\s*\{\s*type:\s*['"]SET_PROCESSING['"],\s*payload:\s*false\s*\}\s*\)[\s\S]*dispatch\(\s*\{\s*type:\s*['"]FINISH_STREAMING['"]\s*\}\s*\)/,
+    'finish=true should dispatch SET_PROCESSING false + FINISH_STREAMING',
   );
 
   assert.match(
     section,
-    /\}\s*else\s*\{[\s\S]*dispatch\(\s*\{\s*type:\s*['"]SET_PROCESSING['"],\s*payload:\s*true\s*\}\s*\)/,
+    /\}\s*else\s*\{[\s\S]*dispatchProcessingTrue\(\)/,
     'finish=false should dispatch SET_PROCESSING true',
   );
 });

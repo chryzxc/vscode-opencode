@@ -41,7 +41,7 @@ test('QuotaPopover uses app state', () => {
 
   assert.match(
     popoverBody,
-    /useAppState\(\)/,
+    /useAppState\(/,
     'Should use app state'
   );
   assert.match(

@@ -5,6 +5,7 @@ import {
   hasActiveAssistantTurnContext,
   hasActiveAssistantReplyInCentralizedTape,
   hasBusySessionStatusInCentralizedTape,
+  hasCompletedAssistantReplyInCentralizedTape,
   isAssistantRespondingInCurrentSession,
 } from './sessionProcessing';
 
@@ -118,6 +119,80 @@ describe('isAssistantRespondingInCurrentSession', () => {
         },
       },
     ]);
+
+    assert.strictEqual(result, false);
+  });
+
+  it('treats a message-scoped abort marker as a completed assistant reply', () => {
+    const result = hasCompletedAssistantReplyInCentralizedTape([
+      {
+        id: 'evt_1',
+        type: 'message.updated',
+        properties: {
+          info: {
+            id: 'msg_1',
+            role: 'assistant',
+          },
+        },
+      },
+      {
+        id: 'evt_2',
+        type: 'message.updated',
+        properties: {
+          info: {
+            id: 'msg_1',
+            role: 'assistant',
+            aborted: true,
+          },
+        },
+      },
+    ]);
+
+    assert.strictEqual(result, true);
+  });
+
+  it('does not keep the session loading after a session-level abort lands for the latest assistant turn', () => {
+    const freshTimestamp = Date.now();
+    const result = isAssistantRespondingInCurrentSession(
+      false,
+      'ses_1',
+      [],
+      false,
+      false,
+      true,
+      [
+        {
+          id: 'evt_1',
+          type: 'message.updated',
+          properties: {
+            info: {
+              id: 'msg_1',
+              role: 'assistant',
+              time: { created: freshTimestamp },
+            },
+          },
+        },
+        {
+          id: 'evt_2',
+          type: 'session.error',
+          properties: {
+            error: {
+              name: 'MessageAbortedError',
+              message: 'MessageAbortedError: Aborted',
+            },
+            time: freshTimestamp + 1,
+          },
+        },
+        {
+          id: 'evt_3',
+          type: 'session.status',
+          properties: {
+            status: { type: 'busy' },
+            time: freshTimestamp + 2,
+          },
+        },
+      ],
+    );
 
     assert.strictEqual(result, false);
   });

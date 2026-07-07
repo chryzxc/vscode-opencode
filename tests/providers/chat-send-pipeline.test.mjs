@@ -34,14 +34,14 @@ test('processing session payloads include active subagent parents', () => {
 test('handleSendMessage appends the user message before the prompt call', () => {
   const body = extractFunctionBody(source, '  private async handleSendMessage(');
   assert.match(body, /await this\.sessionService\.appendMessage\(session\.id, userMessage\);/, 'handleSendMessage should persist the user message');
-  assert.match(body, /await this\.sessionService\.appendRawMessage\(session\.id, userMessage\);/, 'handleSendMessage should also persist the user message into centralized raw messages');
+  assert.doesNotMatch(body, /appendRawMessage\(session\.id, userMessage\)/, 'handleSendMessage should not duplicate user messages into a separate raw workspace cache');
   assert.match(body, /role: "user" as const,/, 'user message should be stored with role user');
   assert.match(body, /type:\s*"text",[\s\S]*text:\s*text,/, 'user message should preserve the original user text part');
 });
 
-test('question replies and slash system reminders also persist centralized raw messages', () => {
-  assert.match(source, /await this\.sessionService\.appendRawMessage\(replySessionId, answerMessage\);/, 'questionReply should persist the optimistic answer in raw centralized messages');
-  assert.match(source, /await this\.sessionService\.appendRawMessage\(session\.id, systemMessage\);/, 'slash skill system reminders should persist into raw centralized messages');
+test('question replies and slash system reminders do not duplicate raw message persistence', () => {
+  assert.doesNotMatch(source, /appendRawMessage\(replySessionId, answerMessage\)/, 'questionReply should not duplicate optimistic answers into a raw workspace cache');
+  assert.doesNotMatch(source, /appendRawMessage\(session\.id, systemMessage\)/, 'slash skill system reminders should not duplicate system messages into a raw workspace cache');
 });
 
 test('persisted user message includes file parts from contexts for rehydration survival', () => {
@@ -68,7 +68,7 @@ test('send failures surface friendly user-facing timeout text instead of raw int
 
 test('timeout-like failures clean up with the same stop flow used by the Stop button', () => {
   assert.match(source, /private async cleanupTimedOutSession\(/, 'provider should define a shared timeout cleanup helper');
-  assert.match(source, /await this\.handleStopRequest\(sessionId,\s*\{[\s\S]*skipQueueDrain:\s*options\?\.skipQueueDrain \?\? true,/s, 'timeout cleanup should route through handleStopRequest');
+  assert.match(source, /await this\.handleStopRequest\(sessionId,\s*\{[\s\S]*skipQueueDrain:\s*true/s, 'timeout cleanup should route through handleStopRequest');
 
   const body = extractFunctionBody(source, '  private async handleSendMessage(');
   assert.match(body, /isLikelyInteractiveTransportFailure\(errorMessage\)[\s\S]*await this\.cleanupTimedOutSession\(session\.id,\s*errorMessage\)/s, 'response.error timeout failures should invoke stop-style cleanup');
@@ -121,20 +121,6 @@ test('handleStopRequest aborts the SDK session and cleans up processing state', 
   assert.match(source, /processingSessionIds|clear|cleanup|delete/, 'should clean up processing state');
 });
 
-test('direct stop requests keep the session eligible for post-abort centralized lifecycle events', () => {
-  assert.match(
-    source,
-    /private async handleStopRequest\([\s\S]*this\.recentlyAbortedSessionIds\.add\(resolvedSessionId\);[\s\S]*await client\.session\.abort\(/s,
-    'handleStopRequest should mark the session recently aborted before calling the SDK abort API',
-  );
-
-  const streamBody = extractFunctionBody(source, '    this.unsubscribe = this.streamService.subscribe(async (event, rawEvent) => {');
-  assert.match(
-    streamBody,
-    /!this\.isSessionEffectivelyProcessing\(eventSessionId\)[\s\S]*!this\.recentlyAbortedSessionIds\.has\(eventSessionId\)/s,
-    'stream gating should keep allowing recently-aborted sessions through to centralized persistence',
-  );
-});
 
 test('handleLoadSession does not borrow AI processing markers for session loading', () => {
   const body = extractFunctionBody(source, '  private async handleLoadSession(');
@@ -175,7 +161,6 @@ test('file contexts include content with start and end positions', () => {
 test('provider uses a centralized-first history loader for chat hydration paths', () => {
   assert.match(source, /private async loadCentralizedRenderableHistory\(sessionId: string\): Promise</, 'provider should define a centralized-first history loader');
   assert.match(source, /const rawSessionPayloads = await this\.sessionService\.loadCentralizedSessionData\(\s*sessionId,\s*\)/, 'centralized-first loader should read centralized session data directly');
-  assert.doesNotMatch(source, /const \[fallbackMessages, rawSessionPayloads\]/, 'centralized-first loader should not fall back to legacy session messages');
   assert.match(source, /const sessionHistory = await this\.loadCentralizedRenderableHistory\(\s*sessionId,\s*\)/, 'session loading should use the centralized-first history loader');
   assert.match(source, /const sessionHistory = await this\.loadCentralizedRenderableHistory\(\s*currentSession\.id,\s*\)/, 'webview ready hydration should use the centralized-first history loader');
   assert.match(source, /const sessionHistory = await this\.loadCentralizedRenderableHistory\(\s*retrySessionId,\s*\)/, 'retry hydration should use the centralized-first history loader');

@@ -48,8 +48,6 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { shallowEqual, useAppDispatch, useAppState } from "./lib/store";
-import { getInteractiveEventsFromRawSdkEventPayloads } from "./lib/rawResponse";
-import { normalizeCentralizedEventPayloads } from "./lib/messageHandler";
 import { PENDING_CURRENT_SESSION_KEY } from "./lib/pendingUserMessages";
 import vscode from "./lib/vscode";
 import type {
@@ -179,6 +177,11 @@ function getSlashTrigger(input: string, cursor: number): SlashTrigger | null {
     return null;
   }
 
+  // If the slash is too far away, it's not a slash command.
+  if (cursor - slashIndex > 100) {
+    return null;
+  }
+
   // Trigger slash commands only when "/" starts a token (start or whitespace).
   if (slashIndex > 0 && !/\s/.test(beforeCursor[slashIndex - 1])) {
     return null;
@@ -210,6 +213,11 @@ export function getMentionTrigger(input: string, cursor: number): MentionTrigger
   const beforeCursor = input.slice(0, cursor);
   const mentionIndex = beforeCursor.lastIndexOf("@");
   if (mentionIndex < 0) {
+    return null;
+  }
+
+  // If the @ is too far away, it's not a mention.
+  if (cursor - mentionIndex > 100) {
     return null;
   }
 
@@ -921,11 +929,11 @@ export function ActiveTaskPanel() {
         {(
           <MiniSection title="Context">
             {/* Token usage bar */}
-            <div className="mb-3">
-              <div className="mb-1.5 flex flex-col gap-1.5">
+            <div className="mb-2 rounded-md border border-oc-border-soft bg-oc-panel-soft p-2 transition-colors hover:border-oc-border">
+              <div className="mb-1.5 flex flex-col gap-1">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-1.5">
-                    <span className="text-xs font-semibold text-[var(--oc-text-soft)] uppercase tracking-wider">
+                    <span className="text-xs font-semibold text-[var(--oc-text-soft)] uppercase tracking-wider opacity-90">
                       Tokens Used
                     </span>
                     {hasCompactionBaseline && (
@@ -945,8 +953,8 @@ export function ActiveTaskPanel() {
                     {pct}%
                   </div>
                 </div>
-                <div className="flex items-center gap-1.5 opacity-70">
-                  <span className="font-medium tabular-nums text-[11px] text-[var(--oc-text-soft)]">
+                <div className="flex items-center gap-1.5 opacity-80">
+                  <span className="font-medium tabular-nums text-[10px] text-[var(--oc-text-soft)]">
                     {contextUsedTokens.toLocaleString()} /{" "}
                     <span
                       title={
@@ -968,9 +976,9 @@ export function ActiveTaskPanel() {
                   )}
                 </div>
               </div>
-              <div className="h-1 w-full overflow-hidden rounded-full bg-oc-border">
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-oc-border shadow-inner">
                 <div
-                  className="h-full rounded-full transition-all duration-300"
+                  className="h-full rounded-full transition-all duration-500 ease-out"
                   style={{
                     width: `${pct}%`,
                     background:
@@ -978,18 +986,18 @@ export function ActiveTaskPanel() {
                         ? "linear-gradient(90deg, #f0883e, #f85149)"
                         : pct > 50
                           ? "linear-gradient(90deg, #d29922, #f0883e)"
-                          : "linear-gradient(90deg, #a1a1aa, #c4c4c8)",
+                          : "linear-gradient(90deg, var(--oc-accent-soft), var(--oc-accent))",
                   }}
                 />
               </div>
             </div>
 
             {/* Compaction Controls */}
-            <div className="mb-4">
+            <div className="mb-2 rounded-md border border-oc-border-soft bg-oc-panel-soft px-2.5 py-1.5 transition-colors hover:border-oc-border">
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
-                  <span className="text-xs text-[var(--oc-text-soft)] opacity-80">
-                    Session compaction
+                  <span className="text-[10px] uppercase tracking-wider font-medium text-[var(--oc-text-soft)] opacity-90">
+                    Session Compaction
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
@@ -1031,55 +1039,54 @@ export function ActiveTaskPanel() {
                 </div>
               </div>
               {!isCompacting && compactionError ? (
-                <div className="mt-1.5 text-[10px] text-oc-red">
+                <div className="mt-1 text-[10px] text-oc-red font-medium">
                   {compactionError}
                 </div>
               ) : null}
               {!isCompacting && !compactionError && compactionNotice ? (
-                <div className="mt-1.5 text-[10px] oc-text-secondary">
+                <div className="mt-1 text-[10px] oc-text-secondary">
                   {compactionNotice}
                 </div>
               ) : null}
             </div>
 
-            <div className="mb-2 h-px w-full bg-oc-border opacity-50" />
 
             {/* Detailed Token Stats */}
-            <div className="space-y-1.5 text-xs">
-              <div className="flex items-center justify-between">
-                <span className="text-[var(--oc-text-soft)] opacity-80">Input</span>
-                <span className="font-medium tabular-nums text-[var(--oc-text-soft)]">
+            <div className="grid grid-cols-2 gap-1.5 text-xs">
+              <div className="flex flex-col gap-0.5 rounded-md border border-oc-border-soft bg-oc-panel-soft p-1.5 transition-colors hover:border-oc-border">
+                <span className="text-[9px] uppercase tracking-wider text-[var(--oc-text-soft)] opacity-70">Input</span>
+                <span className="font-semibold tabular-nums text-[var(--oc-text-soft)]">
                   {contextStats.input.toLocaleString()}
                 </span>
               </div>
-              <div className="flex items-center justify-between">
-                <span className="text-[var(--oc-text-soft)] opacity-80">Output</span>
-                <span className="font-medium tabular-nums text-[var(--oc-text-soft)]">
+              <div className="flex flex-col gap-0.5 rounded-md border border-oc-border-soft bg-oc-panel-soft p-1.5 transition-colors hover:border-oc-border">
+                <span className="text-[9px] uppercase tracking-wider text-[var(--oc-text-soft)] opacity-70">Output</span>
+                <span className="font-semibold tabular-nums text-[var(--oc-text-soft)]">
                   {contextStats.output.toLocaleString()}
                 </span>
               </div>
-              <div className="flex items-center justify-between">
-                <span className="text-[var(--oc-text-soft)] opacity-80">Cache hits</span>
+              <div className="flex flex-col gap-0.5 rounded-md border border-oc-border-soft bg-oc-panel-soft p-1.5 transition-colors hover:border-oc-border">
+                <span className="text-[9px] uppercase tracking-wider text-[var(--oc-text-soft)] opacity-70">Cache hits</span>
                 <span
-                  className={`font-medium tabular-nums transition-colors duration-300 ${contextStats.read > 0
-                      ? "text-oc-green font-semibold"
+                  className={`font-semibold tabular-nums transition-colors duration-300 ${contextStats.read > 0
+                      ? "text-oc-green"
                       : "text-[var(--oc-text-soft)]"
                     }`}
                 >
                   {contextStats.read.toLocaleString()}
                 </span>
               </div>
-              <div className="flex items-center justify-between">
-                <span className="text-[var(--oc-text-soft)] opacity-80">
+              <div className="flex flex-col gap-0.5 rounded-md border border-oc-border-soft bg-oc-panel-soft p-1.5 transition-colors hover:border-oc-border">
+                <span className="text-[9px] uppercase tracking-wider text-[var(--oc-text-soft)] opacity-70">
                   Cache writes
                 </span>
-                <span className="font-medium tabular-nums text-[var(--oc-text-soft)]">
+                <span className="font-semibold tabular-nums text-[var(--oc-text-soft)]">
                   {contextStats.write.toLocaleString()}
                 </span>
               </div>
-              <div className="flex items-center justify-between pt-1 border-t border-oc-border mt-2">
-                <span className="text-[var(--oc-text-soft)] opacity-80">Duration</span>
-                <span className="font-medium tabular-nums text-[var(--oc-text-soft)]">
+              <div className="col-span-2 flex items-center justify-between rounded-md border border-oc-border-soft bg-oc-panel-soft px-2 py-1.5 transition-colors hover:border-oc-border">
+                <span className="text-[9px] uppercase tracking-wider text-[var(--oc-text-soft)] opacity-70">Duration</span>
+                <span className="font-semibold tabular-nums text-[var(--oc-text-soft)]">
                   {formatDuration(sessionStats.duration)}
                 </span>
               </div>
@@ -1088,20 +1095,20 @@ export function ActiveTaskPanel() {
         )}
 
         <MiniSection title="Runtime">
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
-            <div className="flex items-center justify-between col-span-2">
-              <span className="text-[var(--oc-text-soft)] opacity-80">
+          <div className="flex flex-col gap-1.5 text-xs">
+            <div className="flex items-center justify-between rounded-md border border-oc-border-soft bg-oc-panel-soft px-2 py-1.5 transition-colors hover:border-oc-border">
+              <span className="text-[10px] uppercase tracking-wider font-medium text-[var(--oc-text-soft)] opacity-90">
                 OpenCode TUI
               </span>
-              <span className="font-medium text-xs text-[var(--oc-text-soft)] opacity-70">
+              <span className="font-mono text-[10px] font-medium text-[var(--oc-text-soft)] opacity-70">
                 {runtimeTuiVersion}
               </span>
             </div>
-            <div className="flex items-center justify-between col-span-2">
-              <span className="text-[var(--oc-text-soft)] opacity-80">
+            <div className="flex items-center justify-between rounded-md border border-oc-border-soft bg-oc-panel-soft px-2 py-1.5 transition-colors hover:border-oc-border">
+              <span className="text-[10px] uppercase tracking-wider font-medium text-[var(--oc-text-soft)] opacity-90">
                 OpenCode SDK
               </span>
-              <span className="font-medium text-xs text-[var(--oc-text-soft)] opacity-70">
+              <span className="font-mono text-[10px] font-medium text-[var(--oc-text-soft)] opacity-70">
                 {runtimeSdkVersion}
               </span>
             </div>
@@ -1109,43 +1116,43 @@ export function ActiveTaskPanel() {
         </MiniSection>
 
         <MiniSection title="Session">
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
-            <div className="flex items-center justify-between col-span-2">
-              <span className="text-[var(--oc-text-soft)] opacity-80">ID</span>
-              <span className="font-medium text-xs text-[var(--oc-text-soft)] opacity-70">
+          <div className="grid grid-cols-2 gap-1.5 text-xs">
+            <div className="col-span-2 flex items-center justify-between rounded-md border border-oc-border-soft bg-oc-panel-soft px-2 py-1.5 transition-colors hover:border-oc-border">
+              <span className="text-[10px] uppercase tracking-wider font-medium text-[var(--oc-text-soft)] opacity-90">ID</span>
+              <span className="font-mono text-[10px] font-medium text-[var(--oc-text-soft)] opacity-70">
                 {currentSessionId ? currentSessionId.slice(0, 16) : "—"}
               </span>
             </div>
-            <div className="flex items-center justify-between">
-              <span className="text-[var(--oc-text-soft)] opacity-80">
+            <div className="flex flex-col gap-0.5 rounded-md border border-oc-border-soft bg-oc-panel-soft p-1.5 transition-colors hover:border-oc-border">
+              <span className="text-[9px] uppercase tracking-wider text-[var(--oc-text-soft)] opacity-70">
                 Messages
               </span>
-              <span className="font-medium tabular-nums text-[var(--oc-text-soft)]">
+              <span className="font-semibold tabular-nums text-[var(--oc-text-soft)]">
                 {messageCount}
               </span>
             </div>
-            <div className="flex items-center justify-between">
-              <span className="text-[var(--oc-text-soft)] opacity-80">
-                Date started
-              </span>
-              <span
-                className={`font-medium tabular-nums ${isActive ? "text-oc-accent" : "text-[var(--oc-text-soft)]"
-                  }`}
-              >
-                {startedLabel}
-              </span>
-            </div>
-            <div className="flex items-center justify-between col-span-2">
-              <span className="text-[var(--oc-text-soft)] opacity-80">
+            <div className="flex flex-col gap-0.5 rounded-md border border-oc-border-soft bg-oc-panel-soft p-1.5 transition-colors hover:border-oc-border">
+              <span className="text-[9px] uppercase tracking-wider text-[var(--oc-text-soft)] opacity-70">
                 Status
               </span>
               <span
-                className={`font-medium text-xs uppercase tracking-wider font-semibold ${isActive
-                    ? "text-oc-accent"
+                className={`font-semibold text-[10px] uppercase tracking-wider ${isActive
+                    ? "text-oc-accent animate-pulse"
                     : "text-[var(--oc-text-soft)] opacity-70"
                   }`}
               >
                 {isActive ? "ACTIVE" : "IDLE"}
+              </span>
+            </div>
+            <div className="col-span-2 flex items-center justify-between rounded-md border border-oc-border-soft bg-oc-panel-soft px-2 py-1.5 transition-colors hover:border-oc-border">
+              <span className="text-[10px] uppercase tracking-wider font-medium text-[var(--oc-text-soft)] opacity-90">
+                Date started
+              </span>
+              <span
+                className={`font-medium tabular-nums ${isActive ? "text-oc-accent" : "text-[var(--oc-text-soft)] opacity-80"
+                  }`}
+              >
+                {startedLabel}
               </span>
             </div>
           </div>
@@ -1899,6 +1906,7 @@ export function InputWrapper() {
     dismissedInteractiveEventKeys,
     contextUsagePct,
     assistantTurnPending,
+    messages,
   } = useAppState(
     (state) => ({
       inputValue: state.inputValue,
@@ -1906,6 +1914,7 @@ export function InputWrapper() {
       isExecutingQueue: state.isExecutingQueue,
       isSteering: state.isSteering,
       streaming: state.streaming,
+      messages: state.messages,
       currentSessionId: state.currentSessionId,
       processingSessionIds: state.processingSessionIds,
       executingQueueSessionIds: state.executingQueueSessionIds,
@@ -1950,6 +1959,7 @@ export function InputWrapper() {
     assistantTurnPending,
   );
 
+  const prevInputLengthRef = useRef(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const textareaHasValue = inputValue.length > 0;
   const textareaMinRows = 2;
@@ -1961,6 +1971,16 @@ export function InputWrapper() {
       return;
     }
 
+    // We do NOT want to shrink the text area while executing a queue items
+    if (!textareaHasValue && textarea.scrollHeight <= textareaMinRows * 20) {
+      textarea.style.height = "auto";
+      textarea.style.maxHeight = "none";
+      textarea.style.minHeight = "44px";
+      textarea.style.overflowY = "hidden";
+      prevInputLengthRef.current = inputValue.length;
+      return;
+    }
+
     const computed = window.getComputedStyle(textarea);
     const lineHeight = Number.parseFloat(computed.lineHeight) || 20;
     const paddingTop = Number.parseFloat(computed.paddingTop) || 0;
@@ -1968,14 +1988,44 @@ export function InputWrapper() {
     const borderTop = Number.parseFloat(computed.borderTopWidth) || 0;
     const borderBottom = Number.parseFloat(computed.borderBottomWidth) || 0;
     const chrome = paddingTop + paddingBottom + borderTop + borderBottom;
+
     const minHeight = lineHeight * textareaMinRows + chrome;
     const maxHeight = lineHeight * textareaMaxRows + chrome;
 
     textarea.style.maxHeight = `${maxHeight}px`;
     textarea.style.minHeight = `${minHeight}px`;
-    textarea.style.height = "auto";
-    textarea.style.height = `${Math.min(textarea.scrollHeight + borderTop + borderBottom, maxHeight)}px`;
-    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
+
+    // Fast path for large text to avoid expensive scrollHeight calculation
+    // and layout thrashing (setting height="auto" causes a full reflow)
+    if (inputValue.length > 2000) {
+      textarea.style.height = `${maxHeight}px`;
+      textarea.style.overflowY = "auto";
+      prevInputLengthRef.current = inputValue.length;
+      return;
+    }
+
+    const isShrinking = inputValue.length < prevInputLengthRef.current;
+    prevInputLengthRef.current = inputValue.length;
+
+    // Setting height to "auto" forces a synchronous layout reflow which causes lag during rapid typing.
+    // We only need to reset it to "auto" if the content might have shrunk.
+    // If it's growing, just setting height to scrollHeight works fine because scrollHeight naturally expands.
+    if (isShrinking || inputValue === "") {
+      textarea.style.height = "auto";
+    }
+
+    const newHeight = Math.min(textarea.scrollHeight + borderTop + borderBottom, maxHeight);
+    const newHeightPx = `${newHeight}px`;
+    
+    // Only write to DOM if it actually changed to prevent style invalidation
+    if (textarea.style.height !== newHeightPx) {
+      textarea.style.height = newHeightPx;
+    }
+    
+    const newOverflow = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
+    if (textarea.style.overflowY !== newOverflow) {
+      textarea.style.overflowY = newOverflow;
+    }
   }, [inputValue, textareaHasValue, textareaMaxRows]);
 
   const [currentInteractiveIndex, setCurrentInteractiveIndex] = useState(0);
@@ -1995,24 +2045,31 @@ export function InputWrapper() {
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
   const commandsRequestedRef = useRef(false);
   const suggestionsContainerRef = useRef<HTMLDivElement>(null);
-  const centralizedRawSdkEventPayloads = useMemo(() => {
-    return currentSessionId &&
-      Array.isArray(rawSdkEventPayloadsBySessionId?.[currentSessionId])
-      ? rawSdkEventPayloadsBySessionId[currentSessionId]
-      : [];
-  }, [currentSessionId, rawSdkEventPayloadsBySessionId]);
-  // Normalize the centralized tape once here so the interactive-events panel
-  // also reads from the same canonical event shape as the conversation view.
-  const normalizedCentralizedRawSdkEventPayloads = useMemo(
-    () => normalizeCentralizedEventPayloads(centralizedRawSdkEventPayloads),
-    [centralizedRawSdkEventPayloads],
-  );
   const composerInteractiveEvents = useMemo(() => {
+    let events: InteractiveEvent[] = [];
+
+    // 1. Top-level interactive events (out-of-band questions, etc.)
+    if (Array.isArray(interactiveEvents)) {
+      events = [...events, ...interactiveEvents];
+    }
+
+    // 2. Interactive events from currently streaming response
+    if (streaming?.isActive && Array.isArray(streaming.interactiveEvents)) {
+      events = [...events, ...streaming.interactiveEvents];
+    } else {
+      // 3. If not streaming, fallback to interactive events from the latest assistant message,
+      // but ONLY if the assistant is the absolute last speaker in the conversation.
+      const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null;
+      if (lastMsg?.role === "assistant" && Array.isArray(lastMsg.interactiveEvents)) {
+        events = [...events, ...lastMsg.interactiveEvents];
+      }
+    }
+
     return filterDismissedInteractiveEvents(
-      getInteractiveEventsFromRawSdkEventPayloads(normalizedCentralizedRawSdkEventPayloads),
+      events,
       dismissedInteractiveEventKeys,
     );
-  }, [normalizedCentralizedRawSdkEventPayloads, dismissedInteractiveEventKeys]);
+  }, [messages, streaming, interactiveEvents, dismissedInteractiveEventKeys]);
 
   const filteredCommands = useMemo(() => {
     if (!slashTrigger) {
@@ -2381,9 +2438,8 @@ export function InputWrapper() {
     // being sent now. Deferred prompts already have their own queue UI, and
     // rendering them as transcript messages can move them ahead of the turn
     // that is still in progress.
-    const isDeferredDelivery = hasLiveAssistantTurn;
     const pendingSessionId = sessionId ?? PENDING_CURRENT_SESSION_KEY;
-    if (!isDeferredDelivery) {
+    if (!hasLiveAssistantTurn) {
       dispatch({
         type: "ADD_PENDING_USER_MESSAGE",
         payload: {
@@ -2407,7 +2463,7 @@ export function InputWrapper() {
       contexts: currentContexts,
       agent: currentAgent,
       images: currentAttachments,
-      ...(isDeferredDelivery ? { delivery: "deferred" } : {}),
+      ...(hasLiveAssistantTurn ? { delivery: "deferred" } : {}),
       ...(hasPendingQuestion ? { interactiveSubmit: true } : {}),
     });
 
@@ -2521,6 +2577,7 @@ export function InputWrapper() {
     eventId: string,
     eventType: string,
   ) => {
+    console.error(`[DEBUG-UI] submitInteractiveResponse clicked:`, { text, eventId, eventType });
     const nextAnswers = {
       ...pendingAnswers,
       [eventId]: { text, eventType },
@@ -2540,8 +2597,12 @@ export function InputWrapper() {
   const submitBatchResponses = (
     answers: Record<string, { text: string | string[]; eventType: string }>,
   ) => {
+    console.error("[DEBUG] submitBatchResponses starting. input answers:", answers);
+    console.error("[DEBUG] submitBatchResponses displayInteractiveEvents:", displayInteractiveEvents);
+    
     const batch = Object.entries(answers).map(([eventId, data]) => {
       const event = displayInteractiveEvents.find((e) => e.id === eventId);
+      console.error(`[DEBUG] event lookup for id ${eventId}:`, event);
       const questionText =
         event?.type === "question" || event?.type === "confirm"
           ? event.question
@@ -2616,11 +2677,16 @@ export function InputWrapper() {
 
     // Route question answers through questionReply and non-question events
     // (confirm, quick_actions, message) through the normal sendMessage path.
-    const hasQuestionEvents = batch.some((resp) => resp.requestID);
-    const canReplyToSdkQuestion =
-      hasQuestionEvents &&
-      batch.every((resp) => typeof resp.requestID === "string" && resp.requestID.length > 0);
+    const canReplyToSdkQuestion = batch.some((resp) => resp.eventType === "question" || resp.eventType === "confirm");
+      
+    console.error("[DEBUG-UI] canReplyToSdkQuestion evaluated:", {
+      canReplyToSdkQuestion,
+      eventTypes: batch.map(b => b.eventType),
+      batchRequestIDs: batch.map(b => b.requestID)
+    });
+    
     if (canReplyToSdkQuestion) {
+      console.error("[DEBUG-UI] Dispatching questionReply message to host");
       dispatch({ type: "SET_PROCESSING", payload: false });
       dispatch({ type: "SET_STEERING", payload: false });
       dispatch({ type: "SET_STREAMING", payload: null });
@@ -2642,6 +2708,7 @@ export function InputWrapper() {
         text: displayText,
       });
     } else {
+      console.error("[DEBUG-UI] Dispatching normal sendMessage message to host");
       const clientRequestId =
         typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
           ? crypto.randomUUID()
@@ -2676,9 +2743,7 @@ export function InputWrapper() {
     });
 
   const dismissInteractivePopover = (interactiveEvent: InteractiveEvent) => {
-    const shouldAbortActiveResponse =
-      interactiveEvent.type === "question" &&
-      (isProcessing || assistantTurnPending || Boolean(streaming));
+    const shouldAbortActiveResponse = interactiveEvent.type === "question";
 
     if (shouldAbortActiveResponse) {
       abortActiveResponse();
@@ -3786,7 +3851,7 @@ export function QuotaMonitor() {
 
 // TodoPanel - displays todo items in right panel
 export function TodoPanel() {
-  const { todoItems } = useAppState();
+  const todoItems = useAppState((s) => s.todoItems);
   const [open, setOpen] = useState(true);
 
   const sortedTodoItems = useMemo(() => {
