@@ -10,6 +10,40 @@ import * as vscode from "vscode";
 import type { StructuredOutputProcessor } from "./StructuredOutputProcessor";
 import type { StructuredAssistantOutput } from "./types";
 
+/**
+ * Lift image data-URLs from any `file` parts (mime: image/*) into the
+ * top-level `message.images` array. Idempotent — preserves existing entries.
+ *
+ * The opencode SDK v2 sends image attachments as separate `file` parts
+ * inside `message.parts`. Several consumers (dedupe keys, message bubble
+ * renderer) read from `message.images`, so we normalize here to ensure
+ * parity regardless of which hydration path produced the message.
+ */
+export function liftImagePartsIntoMessageImages<
+  T extends { parts?: Array<{ type?: string; mime?: string; url?: string }>; images?: unknown[] },
+>(message: T): T {
+  if (!message) return message;
+  const parts = Array.isArray(message.parts) ? message.parts : [];
+  const partImageUrls: string[] = [];
+  for (const part of parts) {
+    if (!part) continue;
+    const type = typeof part.type === "string" ? part.type.toLowerCase() : "";
+    const mime = typeof part.mime === "string" ? part.mime.toLowerCase() : "";
+    const url = typeof part.url === "string" ? part.url : "";
+    if (type === "file" && mime.startsWith("image/") && url) {
+      partImageUrls.push(url);
+    }
+  }
+  if (partImageUrls.length === 0) {
+    return message;
+  }
+  const existing = Array.isArray(message.images)
+    ? message.images.filter((u): u is string => typeof u === "string")
+    : [];
+  const merged = Array.from(new Set([...existing, ...partImageUrls]));
+  return { ...message, images: merged };
+}
+
 export class HistoryProcessor {
   constructor(
     private workspaceState: vscode.Memento,
@@ -279,7 +313,7 @@ export class HistoryProcessor {
     const deduped = this.dedupeMirrorHistoryMessages(dedupedUserMessages);
     const mergedActivity = this.mergeAdjacentAssistantActivityMessages(deduped);
     const merged = this.mergeConsecutiveAssistantBursts(mergedActivity);
-    return this.cleanupGarbledEventMessages(merged);
+    return this.cleanupGarbledEventMessages(merged).map(liftImagePartsIntoMessageImages);
   }
 
   private cleanupGarbledEventMessages(messages: any[]): any[] {

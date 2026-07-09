@@ -4291,6 +4291,22 @@ function isExplicitFileAttachmentPart(part: MessagePart): boolean {
   return (hasPathLikeSource || hasFilename) && !hasTextPayload;
 }
 
+function collectImageUrlsFromParts(message?: Message): string[] {
+  if (!message?.parts) return [];
+  const urls: string[] = [];
+  for (const part of message.parts) {
+    const rec = part as Record<string, unknown> | null | undefined;
+    if (!rec) continue;
+    const type = typeof rec.type === "string" ? rec.type.toLowerCase() : "";
+    const mime = typeof rec.mime === "string" ? rec.mime.toLowerCase() : "";
+    const url = typeof rec.url === "string" ? rec.url : "";
+    if (type === "file" && mime.startsWith("image/") && url) {
+      urls.push(url);
+    }
+  }
+  return urls;
+}
+
 function normalizedUserMessageText(message?: Message): string {
   const raw =
     message?.content ?? message?.text ?? messageBodyFromParts(message?.parts);
@@ -6227,7 +6243,13 @@ export const UserMessage = memo(function UserMessage({ message }: { message?: Me
     typeof rawUserText === "string" ? rawUserText : "",
   );
   const fileChips = Array.from(new Set([...explicitFileChips, ...inferredFileChips]));
-  const hasImages = Array.isArray(message?.images) && message.images.length > 0;
+  const effectiveImages = Array.from(
+    new Set([
+      ...((message?.images ?? []).filter((src): src is string => typeof src === "string")),
+      ...collectImageUrlsFromParts(message),
+    ]),
+  );
+  const hasImages = effectiveImages.length > 0;
 
   useEffect(() => {
     const root = userMessageRef.current;
@@ -6304,7 +6326,7 @@ export const UserMessage = memo(function UserMessage({ message }: { message?: Me
               </div>
               {hasImages && (
                 <div className="mt-2 flex flex-wrap gap-1">
-                  {(message.images ?? []).map((src: string, index: number) => (
+                  {effectiveImages.map((src: string, index: number) => (
                     <button
                       key={src}
                       type="button"
