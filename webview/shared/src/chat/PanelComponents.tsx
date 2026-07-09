@@ -12,6 +12,7 @@ import {
   ChevronRight,
   ChevronUp,
   Edit,
+  FileText,
   History,
   Loader2,
   Lock,
@@ -2501,9 +2502,39 @@ export const InputWrapper = memo(function InputWrapper() {
     setSlashTrigger(null);
   };
 
+  // When a text paste exceeds this many characters, convert it to a .txt
+  // attachment instead of inserting into the textarea. Keeps the message bubble
+  // readable. Tune this constant to adjust the cutoff.
+  const PASTE_TEXT_ATTACHMENT_THRESHOLD = 2000;
+
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const items = e.clipboardData?.items;
     if (!items) return;
+
+    // Large text paste → auto-convert to a .txt attachment. Only convert when
+    // the paste is "pure text" — i.e. no image item accompanies it — so image
+    // pastes keep flowing through the existing image branch below.
+    const pastedText = e.clipboardData.getData("text/plain") ?? "";
+    if (
+      pastedText.length >= PASTE_TEXT_ATTACHMENT_THRESHOLD &&
+      !Array.from(items).some((it) => it.type.startsWith("image/"))
+    ) {
+      e.preventDefault();
+      const dataUrl = `data:text/plain;charset=utf-8,${encodeURIComponent(pastedText)}`;
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      const filename = `pasted-snippet-${stamp}.txt`;
+      dispatch({
+        type: "ADD_ATTACHMENT",
+        payload: {
+          id: crypto.randomUUID(),
+          dataUrl,
+          filename,
+          mimeType: "text/plain",
+        },
+      });
+      return;
+    }
+
     let pastedImage = false;
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
@@ -3157,7 +3188,10 @@ export const InputWrapper = memo(function InputWrapper() {
                     <span className="truncate max-w-[140px]">{a.filename}</span>
                   </button>
                 ) : (
-                  <span className="truncate max-w-[140px]">{a.filename}</span>
+                  <span className="flex items-center gap-1 truncate max-w-[140px]">
+                    <FileText className="h-3 w-3 shrink-0 opacity-70" />
+                    <span className="truncate">{a.filename}</span>
+                  </span>
                 )}
                 <button
                   type="button"
