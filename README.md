@@ -306,8 +306,6 @@ or add them to `settings.json`.
 | `opencode.persistSessions`        | `boolean` | `true`   | Persist chat sessions across VS Code restarts.                          |
 | `opencode.autoCompact`            | `boolean` | `true`   | Compact a session automatically when context usage nears the threshold. |
 | `opencode.autoCompactThreshold`   | `number`  | `0.9`    | Fraction of model context usage that triggers auto-compaction.          |
-| `opencode.requestTimeout`         | `number`  | `120000` | Request timeout in milliseconds.                                        |
-| `opencode.complexQueryMultiplier` | `number`  | `1.5`    | Timeout multiplier for prompts with heavier context.                    |
 
 ### Logging Settings
 
@@ -328,7 +326,6 @@ or add them to `settings.json`.
   "opencode.persistSessions": true,
   "opencode.autoCompact": true,
   "opencode.autoCompactThreshold": 0.9,
-  "opencode.requestTimeout": 120000,
   "opencode.logging.level": "debug",
   "opencode.logging.enableFile": true
 }

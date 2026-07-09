@@ -1,4 +1,4 @@
-import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { Archive, X } from "lucide-react";
 
 import { AppProvider, shallowEqual, useAppDispatch, useAppState } from "./lib/store";
@@ -1901,6 +1901,22 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const [measuredHeightsVersion, setMeasuredHeightsVersion] = useState(0);
 
+  // Ref-based callback cache to keep onSetBlockExpanded references stable across renders.
+  // The parent's onSetBlockExpanded is useCallback([], []) so it's already stable, but the
+  // per-blockGroup wrapper arrow created in the map loop was new every render, completely
+  // breaking React.memo on ResponseMessage for every assistant card.
+  const onSetBlockExpandedRef = useRef(onSetBlockExpanded);
+  onSetBlockExpandedRef.current = onSetBlockExpanded;
+  const blockGroupHandlerCacheRef = useRef<Map<string, (expanded: boolean) => void>>(new Map());
+  const getBlockGroupExpandHandler = (blockGroupKey: string) => {
+    let handler = blockGroupHandlerCacheRef.current.get(blockGroupKey);
+    if (!handler) {
+      handler = (expanded: boolean) => onSetBlockExpandedRef.current(blockGroupKey, expanded);
+      blockGroupHandlerCacheRef.current.set(blockGroupKey, handler);
+    }
+    return handler;
+  };
+
   useEffect(() => {
     if (typeof ResizeObserver === "undefined") {
       return;
@@ -2237,9 +2253,7 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
                 blockSize={blockSize}
                 isHiddenByBlock={isHiddenByBlock}
                 blockHasInlineAbort={blockHasInlineAbortByKey.get(blockGroupKey)}
-                onSetBlockExpanded={(expanded: boolean) =>
-                  onSetBlockExpanded(blockGroupKey, expanded)
-                }
+                onSetBlockExpanded={getBlockGroupExpandHandler(blockGroupKey)}
               />
             );
           }
@@ -2384,10 +2398,11 @@ function ChatContent() {
   const previousReceivedInitStateRef = useRef(state.receivedInitState);
   const previousStreamingActiveRef = useRef(Boolean(state.streaming?.isActive));
   const didHydrateBootstrapRef = useRef(false);
-  // Throttle "unseen updates" increments while the user is scrolled away from the
-  // bottom. Stream events can arrive dozens of times per second, and incrementing
-  // this counter for every tick causes avoidable React work during manual scrolling.
-  const lastUnseenIncrementAtRef = useRef(0);
+  // Baseline renderMessages.length captured when isFollowing flips to false.
+  // "Jump to latest (N)" renders N = currentLength - baseline. null = recapture
+  // on next entry to the not-following branch. Replaces a throttled +1 timer
+  // that counted stream ticks rather than actual new canonical messages.
+  const unseenBaselineMessageCountRef = useRef<number | null>(null);
   // Throttle follow-mode scroll writes to roughly one frame (33ms ~= 30fps).
   // Writing scrollTop on every tiny stream mutation can fight user input and create
   // visible hitching. A small throttle preserves "stick to bottom" behavior without
@@ -2490,11 +2505,36 @@ function ChatContent() {
     Array.isArray(state.rawSdkEventPayloadsBySessionId?.[state.currentSessionId])
       ? state.rawSdkEventPayloadsBySessionId[state.currentSessionId]
       : [];
+
+  const [throttledPayloads, setThrottledPayloads] = useState(centralizedSessionRawSdkEventPayloads);
+  const projectionThrottleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (centralizedSessionRawSdkEventPayloads === throttledPayloads) return;
+    if (projectionThrottleRef.current !== null) return;
+    projectionThrottleRef.current = setTimeout(() => {
+      projectionThrottleRef.current = null;
+      startTransition(() => {
+        setThrottledPayloads(centralizedSessionRawSdkEventPayloads);
+      });
+    }, 100);
+  }, [centralizedSessionRawSdkEventPayloads, throttledPayloads]);
+
+  useEffect(() => {
+    return () => {
+      if (projectionThrottleRef.current !== null) {
+        clearTimeout(projectionThrottleRef.current);
+      }
+    };
+  }, []);
+
   const transcriptProjection = useMemo(
-    () => buildCentralizedTranscriptProjection(centralizedSessionRawSdkEventPayloads),
-    [centralizedSessionRawSdkEventPayloads],
+    () => buildCentralizedTranscriptProjection(throttledPayloads),
+    [throttledPayloads],
   );
+  const deferredTranscriptProjection = useDeferredValue(transcriptProjection);
   const renderMessages = transcriptProjection.renderMessages;
+  const deferredRenderMessages = deferredTranscriptProjection.renderMessages;
   const pendingUserMessages = useMemo(() => {
     const bySessionId = state.pendingUserMessagesBySessionId ?? {};
     const sessionKey = state.currentSessionId ?? PENDING_CURRENT_SESSION_KEY;
@@ -2552,6 +2592,7 @@ function ChatContent() {
         }
       });
     } else if (justFinishedAiResponse) {
+      unseenBaselineMessageCountRef.current = null;
       setStreamViewport((prev) =>
         prev.unseenUpdateCount === 0
           ? prev
@@ -2622,6 +2663,7 @@ function ChatContent() {
               viewportHeight: nextViewportHeight,
             },
       );
+      const wasFollowing = streamViewportRef.current.isFollowing;
       setStreamViewport((prev) => {
         if (nearBottom) {
           if (prev.isFollowing && prev.unseenUpdateCount === 0) {
@@ -2634,6 +2676,9 @@ function ChatContent() {
         }
         return { ...prev, isFollowing: false };
       });
+      if (wasFollowing && !nearBottom) {
+        unseenBaselineMessageCountRef.current = null;
+      }
     };
     const onScroll = () => {
       if (rafId !== null) {
@@ -2687,18 +2732,22 @@ function ChatContent() {
     }
 
     if (state.streaming?.isActive) {
-      const now = Date.now();
-      // When user is not following, we still surface activity via the "Jump to latest"
-      // badge. Throttle count updates so the badge reflects progress without creating
-      // a render storm on high-frequency stream bursts.
-      if (now - lastUnseenIncrementAtRef.current < 120) {
+      // Count = currentLength - baseline. renderMessages.length grows only on
+      // new canonical messages, so token updates don't inflate the badge. null
+      // baseline = first entry after unfollow: capture then skip (delta is 0).
+      if (unseenBaselineMessageCountRef.current === null) {
+        unseenBaselineMessageCountRef.current = renderMessages.length;
         return;
       }
-      lastUnseenIncrementAtRef.current = now;
-      setStreamViewport((prev) => ({
-        ...prev,
-        unseenUpdateCount: Math.min(prev.unseenUpdateCount + 1, 999),
-      }));
+      const delta = Math.max(
+        0,
+        renderMessages.length - unseenBaselineMessageCountRef.current,
+      );
+      setStreamViewport((prev) =>
+        prev.unseenUpdateCount === delta
+          ? prev
+          : { ...prev, unseenUpdateCount: delta },
+      );
     }
   }, [renderMessages, state.streaming]);
 
@@ -2950,6 +2999,7 @@ function ChatContent() {
 
     return combined;
   }, [baseVisibleConversationEntries, visiblePendingUserMessages]);
+  const deferredVisibleConversationEntries = useDeferredValue(visibleConversationEntries);
   const visibleMessages = useMemo(
     () =>
       visibleConversationEntries
@@ -3044,6 +3094,7 @@ function ChatContent() {
   }, [errorToasts]);
 
   const jumpToLatest = () => {
+    unseenBaselineMessageCountRef.current = null;
     setStreamViewport({ isFollowing: true, unseenUpdateCount: 0 });
     const root = messagesScrollRef.current;
     if (root) {
@@ -3274,14 +3325,14 @@ function ChatContent() {
             isProcessing={state.isProcessing}
             lastCompactedAt={state.lastCompactedAt}
             onSetBlockExpanded={handleSetBlockExpanded}
-            renderMessages={renderMessages}
+            renderMessages={deferredRenderMessages}
             resolveAgentColor={resolveAgentColor}
             selectedAgent={state.selectedAgent}
             streaming={state.streaming}
             subagentDetailsById={state.subagentDetailsById}
             subagentsByParentMessageId={state.subagentsByParentMessageId}
             todoItems={state.todoItems}
-            visibleConversationEntries={visibleConversationEntries}
+            visibleConversationEntries={deferredVisibleConversationEntries}
             scrollViewport={scrollRenderViewport}
           />
 

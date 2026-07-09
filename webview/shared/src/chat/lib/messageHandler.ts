@@ -1,4 +1,4 @@
-import type { Dispatch } from 'react';
+import { startTransition, type Dispatch } from 'react';
 
 import type { AppAction } from './store';
 import { appReducer, hasSystemMessagePatternInText } from './store';
@@ -12375,24 +12375,28 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                   break;
               }
             };
-            handleStreamEvent(
-              scopedDispatch,
-              scopedGetState,
-              payload,
-              terminalErrorReached,
-              shouldSuppressProcessingBootstrap,
-              markAssistantTurnClosed
-            );
-            dispatch({
-              type: "SET_SESSION_STREAMING",
-              payload: {
-                sessionId: eventSessionId,
-                streaming: scopedState.streaming,
-              },
+            startTransition(() => {
+              handleStreamEvent(
+                scopedDispatch,
+                scopedGetState,
+                payload,
+                terminalErrorReached,
+                shouldSuppressProcessingBootstrap,
+                markAssistantTurnClosed
+              );
+              dispatch({
+                type: "SET_SESSION_STREAMING",
+                payload: {
+                  sessionId: eventSessionId,
+                  streaming: scopedState.streaming,
+                },
+              });
             });
             break;
           }
-          handleStreamEvent(dispatch, getState, payload, terminalErrorReached, shouldSuppressProcessingBootstrap, markAssistantTurnClosed);
+          startTransition(() => {
+            handleStreamEvent(dispatch, getState, payload, terminalErrorReached, shouldSuppressProcessingBootstrap, markAssistantTurnClosed);
+          });
           const streamingAfter = getState().streaming;
           if (streamingAfter) {
             latestStreamingSnapshot = streamingAfter;
@@ -12420,6 +12424,31 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                 sessionId: eventSessionId || activeSessionId || null,
               });
             }
+          }
+          break;
+        }
+        case "streamEventBatch": {
+          const events = Array.isArray(data.events) ? data.events : [];
+          startTransition(() => {
+            for (const item of events) {
+              const evtPayload = asRecord(item.event) ?? item;
+              const evtType = asString(evtPayload.type) || asString(evtPayload.event) || "unknown";
+              const disposition = getCentralizedDebugPayloadDisposition(evtPayload);
+              if (disposition !== "excluded-noise" && evtType !== "server.heartbeat") {
+                dispatch({
+                  type: "APPEND_RAW_SDK_EVENT_PAYLOAD",
+                  payload: {
+                    sessionId: item.sessionId ?? getState().currentSessionId ?? null,
+                    event: evtPayload,
+                  },
+                });
+              }
+              handleStreamEvent(dispatch, getState, evtPayload, terminalErrorReached, false, markAssistantTurnClosed);
+            }
+          });
+          const streamingAfter = getState().streaming;
+          if (streamingAfter) {
+            latestStreamingSnapshot = streamingAfter;
           }
           break;
         }

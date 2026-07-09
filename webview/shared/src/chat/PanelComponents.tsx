@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   AlertCircle,
@@ -308,7 +308,7 @@ function filterDismissedInteractiveEvents(
   );
 }
 
-export function StickyHeader() {
+export const StickyHeader = memo(function StickyHeader() {
   const {
     currentSessionId,
     isSessionModalOpen,
@@ -394,9 +394,9 @@ export function StickyHeader() {
       </div>
     </div>
   );
-}
+});
 
-export function HistorySidebar() {
+export const HistorySidebar = memo(function HistorySidebar() {
   const {
     isSidebarOpen,
   } = useAppState(
@@ -456,7 +456,7 @@ export function HistorySidebar() {
       </div>
     </aside>
   );
-}
+});
 
 // ─── MiniSection ──────────────────────────────────────────────────────────────
 function MiniSection({
@@ -582,7 +582,7 @@ function TodoChecklistIcon({ status }: { status: TodoItem["status"] }) {
 }
 
 // ─── ActiveTaskPanel ──────────────────────────────────────────────────────────
-export function ActiveTaskPanel() {
+export const ActiveTaskPanel = memo(function ActiveTaskPanel() {
   const {
     sessionStats,
     streaming,
@@ -1160,9 +1160,9 @@ export function ActiveTaskPanel() {
       </div>
     </div>
   );
-}
+});
 
-export function MobileRightSummary() {
+export const MobileRightSummary = memo(function MobileRightSummary() {
   const {
     isProcessing: globalIsProcessing,
     currentSessionId,
@@ -1300,9 +1300,9 @@ export function MobileRightSummary() {
       </div>
     </div>
   );
-}
+});
 
-export function ModelDropdown() {
+export const ModelDropdown = memo(function ModelDropdown() {
   const {
     availableModels,
     selectedModel,
@@ -1632,9 +1632,9 @@ export function ModelDropdown() {
       )}
     </div>
   );
-}
+});
 
-export function AgentDropdown() {
+export const AgentDropdown = memo(function AgentDropdown() {
   const {
     availableAgents,
     selectedAgent,
@@ -1761,9 +1761,9 @@ export function AgentDropdown() {
       )}
     </div>
   );
-}
+});
 
-export function QueueContainer() {
+export const QueueContainer = memo(function QueueContainer() {
   const {
     promptQueue,
     processingSessionIds,
@@ -1875,8 +1875,8 @@ export function QueueContainer() {
       })}
     </div>
   );
-}
-export function InputWrapper() {
+});
+export const InputWrapper = memo(function InputWrapper() {
   const {
     inputValue,
     isProcessing: globalIsProcessing,
@@ -3470,9 +3470,9 @@ export function InputWrapper() {
       </div>
     </>
   );
-}
+});
 
-export function ThinkingLevelControl() {
+export const ThinkingLevelControl = memo(function ThinkingLevelControl() {
   const { thinkingLevel, thinkingDropdownOpen, modelCapability } = useAppState(
     (state) => ({
       thinkingLevel: state.thinkingLevel,
@@ -3612,9 +3612,9 @@ export function ThinkingLevelControl() {
       )}
     </div>
   );
-}
+});
 
-export function QuotaMonitor() {
+export const QuotaMonitor = memo(function QuotaMonitor() {
   const { quotaData, quotaIsRefreshing } = useAppState(
     (state) => ({
       quotaData: state.quotaData,
@@ -3850,10 +3850,10 @@ export function QuotaMonitor() {
       ) : null}
     </div>
   );
-}
+});
 
 // TodoPanel - displays todo items in right panel
-export function TodoPanel() {
+export const TodoPanel = memo(function TodoPanel() {
   const todoItems = useAppState((s) => s.todoItems);
   const [open, setOpen] = useState(true);
 
@@ -4009,10 +4009,10 @@ export function TodoPanel() {
       ) : null}
     </div>
   );
-}
+});
 
 // McpPanel - displays MCP (Model Context Protocol) server status with live data from OpenCode SDK
-export function McpPanel() {
+export const McpPanel = memo(function McpPanel() {
   const [open, setOpen] = useState(true);
   const [expandedServers, setExpandedServers] = useState<Set<string>>(
     new Set(),
@@ -4205,10 +4205,10 @@ export function McpPanel() {
       ) : null}
     </div>
   );
-}
+});
 
 // LspPanel - displays Language Server Protocol status with live data from OpenCode SDK
-export function LspPanel() {
+export const LspPanel = memo(function LspPanel() {
   const [open, setOpen] = useState(true);
   const { lspServers } = useAppState(
     (state) => ({ lspServers: state.lspServers }),
@@ -4307,10 +4307,10 @@ export function LspPanel() {
       ) : null}
     </div>
   );
-}
+});
 
 // SkillsPanel - displays slash command skills from the OpenCode SDK command catalog
-export function SkillsPanel() {
+export const SkillsPanel = memo(function SkillsPanel() {
   const [open, setOpen] = useState(true);
   const [expandedSkills, setExpandedSkills] = useState<Set<string>>(new Set());
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -4474,10 +4474,10 @@ export function SkillsPanel() {
       ) : null}
     </div>
   );
-}
+});
 
 // AgentsPanel - displays installed agents/skills with live data from OpenCode SDK
-export function AgentsPanel() {
+export const AgentsPanel = memo(function AgentsPanel() {
   const [open, setOpen] = useState(true);
   const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set());
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -4647,7 +4647,7 @@ export function AgentsPanel() {
       ) : null}
     </div>
   );
-}
+});
 
 type ConfigPrimitive = string | number | boolean | null;
 
@@ -4782,7 +4782,7 @@ function updateAtPath(obj: unknown, path: string[], value: unknown): unknown {
   return value;
 }
 
-export function SettingsModal({
+export const SettingsModal = memo(function SettingsModal({
   isOpen,
   onClose,
   initialContent,
@@ -5168,9 +5168,9 @@ export function SettingsModal({
       </div>
     </div>
   );
-}
+});
 
-export function SettingsPanel() {
+export const SettingsPanel = memo(function SettingsPanel() {
   const { opencodeConfig, opencodeConfigSaveStatus, availableModels } = useAppState(
     (state) => ({
       opencodeConfig: state.opencodeConfig,
@@ -5334,6 +5334,6 @@ export function SettingsPanel() {
       />
     </div>
   );
-}
+});
 
 export { ConfigSidebar } from './ConfigSidebar';

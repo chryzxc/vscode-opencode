@@ -4284,9 +4284,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(appReducer, initialState);
   const stateRef = useRef(state);
   const listenersRef = useRef(new Set<() => void>());
+  const rafIdRef = useRef<number | null>(null);
   stateRef.current = state;
 
   useLayoutEffect(() => {
+    const isStreaming = stateRef.current.streaming?.isActive;
+
+    if (isStreaming) {
+      if (rafIdRef.current === null) {
+        rafIdRef.current = requestAnimationFrame(() => {
+          rafIdRef.current = null;
+          listenersRef.current.forEach((listener) => listener());
+        });
+      }
+      return;
+    }
+
+    if (rafIdRef.current !== null) {
+      cancelAnimationFrame(rafIdRef.current);
+      rafIdRef.current = null;
+    }
     listenersRef.current.forEach((listener) => listener());
   }, [state]);
 

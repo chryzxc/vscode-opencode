@@ -236,24 +236,6 @@
           "maximum": 0.99,
           "description": "Fraction of model context limit at which auto-compaction fires (0.9 = 90%)"
         },
-        "opencode.requestTimeout": {
-          "type": "number",
-          "default": 60000,
-          "minimum": 10000,
-          "maximum": 600000,
-          "description": "Request timeout in milliseconds for API calls (default: 60s, min: 10s, max: 10min)",
-          "scope": "window",
-          "order": 10
-        },
-        "opencode.complexQueryMultiplier": {
-          "type": "number",
-          "default": 1.5,
-          "minimum": 1,
-          "maximum": 3,
-          "description": "Timeout multiplier for complex queries with multiple files or contexts (default: 1.5x)",
-          "scope": "window",
-          "order": 11
-        },
         "opencode.debug.suppressConsoleOutput": {
           "type": "boolean",
           "default": false,

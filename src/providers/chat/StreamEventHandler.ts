@@ -21,6 +21,8 @@ export class StreamEventHandler {
   private streamStartTime?: number;
   private eventCount = 0;
   private lastEventTime?: number;
+  private pendingEvents: Array<{ enrichedEvent: any; event: any; sessionId: string | undefined }> = [];
+  private flushRafId: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private structuredOutputProcessor: StructuredOutputProcessor,
@@ -173,17 +175,56 @@ export class StreamEventHandler {
       });
     }
 
-    this.postMessage({
-      type: "streamEvent",
-      event: enrichedEvent || event,
-      sessionId,
-    });
+    // Buffer event for batched delivery. During active streaming this
+    // coalesces high-frequency text chunks (30-60/sec) into ~1 postMessage
+    // per animation frame, preventing the VS Code webview IPC boundary from
+    // becoming a scroll-jank bottleneck.
+    const isTerminal =
+      eventType === "message.completed" ||
+      eventType === "session.completed" ||
+      eventType === "message.error";
+
+    this.pendingEvents.push({ enrichedEvent, event, sessionId });
+
+    if (isTerminal) {
+      this.flushPendingEvents();
+    } else if (this.flushRafId === null) {
+      this.flushRafId = setTimeout(() => this.flushPendingEvents(), 16);
+    }
 
     if (sessionId) {
       void this.sessionService.appendRawSdkEventPayload(
         sessionId,
         rawEvent ? { ...(rawEvent as Record<string, unknown>), sessionId } : { ...event, sessionId },
       );
+    }
+  }
+
+  private flushPendingEvents(): void {
+    if (this.flushRafId !== null) {
+      clearTimeout(this.flushRafId);
+      this.flushRafId = null;
+    }
+
+    const batch = this.pendingEvents;
+    if (batch.length === 0) return;
+    this.pendingEvents = [];
+
+    if (batch.length === 1) {
+      const { enrichedEvent, event, sessionId } = batch[0];
+      this.postMessage({
+        type: "streamEvent",
+        event: enrichedEvent || event,
+        sessionId,
+      });
+    } else {
+      this.postMessage({
+        type: "streamEventBatch",
+        events: batch.map(({ enrichedEvent, event, sessionId }) => ({
+          event: enrichedEvent || event,
+          sessionId,
+        })),
+      });
     }
   }
 
@@ -194,6 +235,11 @@ export class StreamEventHandler {
     this.streamStartTime = Date.now();
     this.eventCount = 0;
     this.lastEventTime = Date.now();
+    this.pendingEvents = [];
+    if (this.flushRafId !== null) {
+      clearTimeout(this.flushRafId);
+      this.flushRafId = null;
+    }
 
     const correlationId = this.logger.startFeatureFlow('ai-stream', {
       sessionId,
@@ -211,6 +257,7 @@ export class StreamEventHandler {
    * End stream with logging
    */
   endStream(sessionId: string, messageId: string, success: boolean): void {
+    this.flushPendingEvents();
     if (!this.streamStartTime) {
       this.logger.warn( 'Stream ended but never started', {
         sessionId,
