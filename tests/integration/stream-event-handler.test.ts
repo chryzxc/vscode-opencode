@@ -1,6 +1,6 @@
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { createTestLogger, captureMessages } from "./helpers/test-utils.js";
+import { createTestLogger, captureMessages, waitFor } from "./helpers/test-utils.js";
 
 function createStubStructuredOutputProcessor() {
   return {
@@ -63,6 +63,21 @@ function createStubGeminiTokenTracker() {
   };
 }
 
+function createStubSessionService() {
+  const appendedRawSdkEvents: Array<{ sessionId: string; payload: any }> = [];
+  const flushedSessions: string[] = [];
+  return {
+    appendRawSdkEventPayload: async (sessionId: string, payload: any) => {
+      appendedRawSdkEvents.push({ sessionId, payload });
+    },
+    flushRawSdkEventPayloads: async (sessionId: string) => {
+      flushedSessions.push(sessionId);
+    },
+    _appendedRawSdkEvents: appendedRawSdkEvents,
+    _flushedSessions: flushedSessions,
+  };
+}
+
 function createSubagentTracker() {
   const calls: any[] = [];
   return {
@@ -83,6 +98,7 @@ function createStreamEventHandler() {
   const compactionManager = createStubCompactionManager();
   const diagnosticsLogger = createStubDiagnosticsLogger();
   const geminiTokenTracker = createStubGeminiTokenTracker();
+  const sessionService = createStubSessionService();
   const subagentTracker = createSubagentTracker();
 
   const handler = new StreamEventHandler(
@@ -91,7 +107,7 @@ function createStreamEventHandler() {
     compactionManager,
     diagnosticsLogger,
     geminiTokenTracker,
-    subagentTracker,
+    sessionService as any,
     logger,
   );
 
@@ -103,6 +119,7 @@ function createStreamEventHandler() {
     compactionManager,
     diagnosticsLogger,
     geminiTokenTracker,
+    sessionService,
     subagentTracker,
   };
 }
@@ -116,7 +133,7 @@ describe("StreamEventHandler", () => {
       handler.setGetCurrentSessionId(() => "session-1");
 
       await handler.handleStreamEvent({
-        type: "message.part.updated",
+        type: "message.completed",
         properties: {
           sessionID: "session-1",
           messageID: "msg-1",
@@ -152,18 +169,20 @@ describe("StreamEventHandler", () => {
     });
 
     it("extracts sessionId from multiple locations", async () => {
-      const { handler } = createStreamEventHandler();
+      const { handler, sessionService } = createStreamEventHandler();
       const { postMessage, getMessages } = captureMessages();
       handler.setPostMessage(postMessage);
       handler.setGetCurrentSessionId(() => "fallback-session");
 
       await handler.handleStreamEvent({
-        type: "message.part.updated",
-        properties: { sessionId: "from-properties" },
+        type: "message.completed",
+        properties: { sessionID: "from-properties" },
       });
 
       const msg1 = getMessages().find((m: any) => m.type === "streamEvent");
       assert.equal(msg1.sessionId, "from-properties");
+      assert.equal(sessionService._appendedRawSdkEvents[0].sessionId, "from-properties");
+      assert.equal(sessionService._appendedRawSdkEvents[0].payload.sessionId, "from-properties");
     });
 
     it("falls back to getCurrentSessionId when event has no sessionId", async () => {
@@ -173,7 +192,7 @@ describe("StreamEventHandler", () => {
       handler.setGetCurrentSessionId(() => "fallback-session");
 
       await handler.handleStreamEvent({
-        type: "message.part.updated",
+        type: "message.completed",
         properties: {},
       });
 
@@ -264,6 +283,34 @@ describe("StreamEventHandler", () => {
       assert.equal(diagnosticsLogger._calls.length, 1);
     });
 
+    it("batches non-terminal events and preserves each event session", async () => {
+      const { handler, sessionService } = createStreamEventHandler();
+      const { postMessage, getMessagesByType } = captureMessages();
+      handler.setPostMessage(postMessage);
+      handler.setGetCurrentSessionId(() => "fallback-session");
+
+      await handler.handleStreamEvent({
+        type: "message.part.updated",
+        properties: { sessionId: "session-a", part: { type: "text", text: "A" } },
+      });
+      await handler.handleStreamEvent({
+        type: "message.part.updated",
+        properties: { sessionID: "session-b", part: { type: "text", text: "B" } },
+      });
+
+      await waitFor(() => getMessagesByType("streamEventBatch").length === 1);
+
+      const batch = getMessagesByType("streamEventBatch")[0] as any;
+      assert.deepEqual(
+        batch.events.map((entry: any) => entry.sessionId),
+        ["session-a", "session-b"],
+      );
+      assert.deepEqual(
+        sessionService._appendedRawSdkEvents.map((entry) => entry.sessionId),
+        ["session-a", "session-b"],
+      );
+    });
+
     it("persists subagent updates when subagentsDelta is present", async () => {
       const { handler, subagentPersistence } = createStreamEventHandler();
       const { postMessage } = captureMessages();
@@ -306,8 +353,8 @@ describe("StreamEventHandler", () => {
 
       handler.startStream("session-1", "msg-1");
 
-      const infoLogs = logger.getEntriesByLevel("info");
-      const startLog = infoLogs.find((e: any) => e.message === "AI stream started");
+      const debugLogs = logger.getEntriesByLevel("debug");
+      const startLog = debugLogs.find((e: any) => e.message === "AI stream started");
       assert.ok(startLog, "should log 'AI stream started'");
       assert.equal(startLog.context?.sessionId, "session-1");
       assert.equal(startLog.context?.messageId, "msg-1");
@@ -319,8 +366,8 @@ describe("StreamEventHandler", () => {
       handler.startStream("session-1", "msg-1");
       handler.endStream("session-1", "msg-1", true);
 
-      const infoLogs = logger.getEntriesByLevel("info");
-      const endLog = infoLogs.find((e: any) => e.message === "AI stream ended");
+      const debugLogs = logger.getEntriesByLevel("debug");
+      const endLog = debugLogs.find((e: any) => e.message === "AI stream ended");
       assert.ok(endLog, "should log 'AI stream ended'");
       assert.equal(endLog.context?.sessionId, "session-1");
       assert.equal(endLog.context?.success, true);
@@ -328,7 +375,7 @@ describe("StreamEventHandler", () => {
     });
 
     it("logs performance metrics on stream end", () => {
-      const { handler, logger } = createStreamEventHandler();
+      const { handler, logger, sessionService } = createStreamEventHandler();
 
       handler.startStream("session-1", "msg-1");
       handler.endStream("session-1", "msg-1", true);
@@ -336,6 +383,7 @@ describe("StreamEventHandler", () => {
       const perfLogs = logger.getEntries().filter((e: any) => e.level === "performance");
       assert.ok(perfLogs.length >= 1, "should have performance log");
       assert.equal(perfLogs[0].message, "ai-stream");
+      assert.deepEqual(sessionService._flushedSessions, ["session-1"]);
     });
 
     it("warns when endStream called without startStream", () => {
@@ -372,8 +420,8 @@ describe("StreamEventHandler", () => {
         interactiveEvents: [],
       });
 
-      const infoLogs = logger.getEntriesByLevel("info");
-      const log = infoLogs.find((e: any) => e.message === "Structured output processed");
+      const debugLogs = logger.getEntriesByLevel("debug");
+      const log = debugLogs.find((e: any) => e.message === "Structured output processed");
       assert.ok(log, "should log structured output processing");
       assert.equal(log.context?.responseType, "implementation_plan");
       assert.equal(log.context?.hasPlan, true);

@@ -16,7 +16,7 @@ test("ChatShell routes large transcript rendering through a memoized transcript 
   );
   assert.match(
     chatShellSource,
-    /<MemoizedConversationTranscript[\s\S]*visibleConversationEntries=\{visibleConversationEntries\}/,
+    /<MemoizedConversationTranscript[\s\S]*visibleConversationEntries=\{(?:deferredVisibleConversationEntries|visibleConversationEntries)\}/,
     "chat shell should render centralized conversation entries through the memoized transcript component",
   );
   assert.match(
@@ -54,6 +54,16 @@ test("ChatShell virtualizes very large conversation lists", () => {
     chatShellSource,
     /function buildVirtualizedConversationWindow\(/,
     "chat shell should compute a bounded transcript window for large conversations",
+  );
+  assert.match(
+    chatShellSource,
+    /const VIRTUALIZED_TRANSCRIPT_FALLBACK_VIEWPORT_PX = \d+;/,
+    "chat shell should virtualize before the first measured scroll viewport is available",
+  );
+  assert.doesNotMatch(
+    chatShellSource,
+    /viewportHeight <= 0/,
+    "large transcripts should not render the full list just because the first viewport measurement is pending",
   );
   assert.match(
     chatShellSource,

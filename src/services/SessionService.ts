@@ -2120,7 +2120,7 @@ export class SessionService {
   async loadSessionRawSdkEventPayloads(sessionId: string): Promise<unknown[]> {
     const cached = this.rawSdkEventPayloadCache.get(sessionId);
     if (Array.isArray(cached)) {
-      log.info("[CENTRALIZED-TAPE][SESSION] load_raw_sdk_events_cache_hit", {
+      log.debug("[CENTRALIZED-TAPE][SESSION] load_raw_sdk_events_cache_hit", {
         sessionId,
         count: cached.length,
       });
@@ -2131,7 +2131,7 @@ export class SessionService {
     );
     const raw = Array.isArray(value) ? value : [];
     this.rawSdkEventPayloadCache.set(sessionId, [...raw]);
-    log.info("[CENTRALIZED-TAPE][SESSION] load_raw_sdk_events_workspace_state", {
+    log.debug("[CENTRALIZED-TAPE][SESSION] load_raw_sdk_events_workspace_state", {
       sessionId,
       count: raw.length,
       hadStoredArray: Array.isArray(value),
@@ -2266,21 +2266,19 @@ export class SessionService {
   }
 
   async appendRawSdkEventPayload(sessionId: string, rawEvent: unknown): Promise<void> {
-    const event = this.truncateLargeStrings(this.cloneRawSdkEventPayload(rawEvent));
-    const eventSummary = this.describeRawSdkEventPayloadForLog(event);
-    log.info("[CENTRALIZED-TAPE][SESSION] append_received", {
-      sessionId,
-      ...eventSummary,
-    });
+    await this.appendRawSdkEventPayloads(sessionId, [rawEvent]);
+  }
 
-    if (!this.shouldPersistRawSdkEventPayload(event)) {
-      log.warn("[CENTRALIZED-TAPE][SESSION] append_rejected_by_filter", {
-        sessionId,
-        ...eventSummary,
-      });
+  async appendRawSdkEventPayloads(sessionId: string, rawEvents: unknown[]): Promise<void> {
+    if (!Array.isArray(rawEvents) || rawEvents.length === 0) {
       return;
     }
-    
+
+    log.debug("[CENTRALIZED-TAPE][SESSION] append_batch_received", {
+      sessionId,
+      count: rawEvents.length,
+    });
+
     let events = this.rawSdkEventPayloadCache.get(sessionId);
     let loadedFromState = false;
     if (!Array.isArray(events)) {
@@ -2290,7 +2288,7 @@ export class SessionService {
       events = Array.isArray(value) ? [...value] : [];
       this.rawSdkEventPayloadCache.set(sessionId, events);
       loadedFromState = true;
-      log.info("[CENTRALIZED-TAPE][SESSION] append_loaded_existing_events", {
+      log.debug("[CENTRALIZED-TAPE][SESSION] append_loaded_existing_events", {
         sessionId,
         loadedFromState,
         existingCount: events.length,
@@ -2298,46 +2296,72 @@ export class SessionService {
       });
     }
 
-    const sanitizedEvent = sanitizeCentralizedDebugPayload(event);
-    const snapshot = this.cloneRawSdkEventPayload(sanitizedEvent);
-    const eventIdentity = getCentralizedDebugPayloadIdentity(event);
-    let appendAction: "appended" | "replaced" | "duplicate-skipped" = "appended";
-    if (eventIdentity) {
-      const existingIndex = events.findIndex((existing) => {
-        return getCentralizedDebugPayloadIdentity(existing) === eventIdentity;
-      });
-      if (existingIndex >= 0) {
-        const existingEvent = events[existingIndex];
-        if (
-          rawSdkEventPersistenceRichness(snapshot) >=
-          rawSdkEventPersistenceRichness(existingEvent)
-        ) {
-          events[existingIndex] = snapshot;
-          appendAction = "replaced";
+    const identityIndex = new Map<string, number>();
+    for (let index = 0; index < events.length; index += 1) {
+      const identity = getCentralizedDebugPayloadIdentity(events[index]);
+      if (identity) {
+        identityIndex.set(identity, index);
+      }
+    }
+
+    let appended = 0;
+    let replaced = 0;
+    let duplicateSkipped = 0;
+    let rejected = 0;
+
+    for (const rawEvent of rawEvents) {
+      const event = this.truncateLargeStrings(this.cloneRawSdkEventPayload(rawEvent));
+      const eventSummary = this.describeRawSdkEventPayloadForLog(event);
+      if (!this.shouldPersistRawSdkEventPayload(event)) {
+        rejected += 1;
+        log.warn("[CENTRALIZED-TAPE][SESSION] append_rejected_by_filter", {
+          sessionId,
+          ...eventSummary,
+        });
+        continue;
+      }
+
+      const sanitizedEvent = sanitizeCentralizedDebugPayload(event);
+      const snapshot = this.cloneRawSdkEventPayload(sanitizedEvent);
+      const eventIdentity = getCentralizedDebugPayloadIdentity(event);
+      if (eventIdentity) {
+        const existingIndex = identityIndex.get(eventIdentity);
+        if (typeof existingIndex === "number") {
+          const existingEvent = events[existingIndex];
+          if (
+            rawSdkEventPersistenceRichness(snapshot) >=
+            rawSdkEventPersistenceRichness(existingEvent)
+          ) {
+            events[existingIndex] = snapshot;
+            replaced += 1;
+          } else {
+            duplicateSkipped += 1;
+          }
         } else {
-          appendAction = "duplicate-skipped";
+          identityIndex.set(eventIdentity, events.length);
+          events.push(snapshot);
+          appended += 1;
         }
       } else {
         events.push(snapshot);
+        appended += 1;
       }
-    } else {
-      events.push(snapshot);
     }
 
-    log.info("[CENTRALIZED-TAPE][SESSION] append_result", {
+    log.debug("[CENTRALIZED-TAPE][SESSION] append_batch_result", {
       sessionId,
-      action: appendAction,
+      appended,
+      replaced,
+      duplicateSkipped,
+      rejected,
       currentEventsLength: events.length,
       loadedFromState,
-      hasIdentity: !!eventIdentity,
-      eventIdentity: eventIdentity || undefined,
-      ...eventSummary,
     });
 
     const existingTimer = this.rawSdkEventPersistTimers.get(sessionId);
     if (existingTimer) {
       clearTimeout(existingTimer);
-      log.info("[CENTRALIZED-TAPE][SESSION] append_reset_flush_timer", {
+      log.debug("[CENTRALIZED-TAPE][SESSION] append_reset_flush_timer", {
         sessionId,
         currentEventsLength: events.length,
       });
@@ -2350,7 +2374,7 @@ export class SessionService {
         this.rawSdkEventPersistTimers.delete(sessionId);
       }, 250),
     );
-    log.info("[CENTRALIZED-TAPE][SESSION] append_scheduled_flush", {
+    log.debug("[CENTRALIZED-TAPE][SESSION] append_scheduled_flush", {
       sessionId,
       delayMs: 250,
       currentEventsLength: events.length,

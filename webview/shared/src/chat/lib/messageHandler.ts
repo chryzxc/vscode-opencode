@@ -12433,17 +12433,92 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             for (const item of events) {
               const evtPayload = asRecord(item.event) ?? item;
               const evtType = asString(evtPayload.type) || asString(evtPayload.event) || "unknown";
+              const envelopeSessionId =
+                asString(item.sessionId) ||
+                asString(item.sessionID);
+              const eventSessionId =
+                envelopeSessionId ||
+                asString(evtPayload.sessionId) ||
+                asString(evtPayload.sessionID) ||
+                asString(asRecord(evtPayload.properties)?.sessionId) ||
+                asString(asRecord(evtPayload.properties)?.sessionID);
+              const stateBeforeBatchEvent = getState();
+              const activeSessionId = stateBeforeBatchEvent.currentSessionId;
               const disposition = getCentralizedDebugPayloadDisposition(evtPayload);
               if (disposition !== "excluded-noise" && evtType !== "server.heartbeat") {
                 dispatch({
                   type: "APPEND_RAW_SDK_EVENT_PAYLOAD",
                   payload: {
-                    sessionId: item.sessionId ?? getState().currentSessionId ?? null,
+                    sessionId: eventSessionId || activeSessionId || null,
                     event: evtPayload,
                   },
                 });
               }
-              handleStreamEvent(dispatch, getState, evtPayload, terminalErrorReached, false, markAssistantTurnClosed);
+              if (
+                eventSessionId &&
+                activeSessionId &&
+                eventSessionId !== activeSessionId
+              ) {
+                let scopedState: AppState = {
+                  ...stateBeforeBatchEvent,
+                  currentSessionId: eventSessionId,
+                  isProcessing: true,
+                  streaming:
+                    stateBeforeBatchEvent.streamingBySessionId?.[eventSessionId] ??
+                    null,
+                };
+                const scopedGetState = () => scopedState;
+                const scopedDispatch: Dispatch<AppAction> = (action) => {
+                  switch (action.type) {
+                    case "SET_STREAMING":
+                    case "APPEND_SDK_EVENT_PAYLOAD":
+                    case "UPDATE_STREAMING_CONTENT":
+                    case "UPDATE_STREAMING_REASONING":
+                    case "SET_IN_REASONING_PART":
+                    case "SET_ASSISTANT_TURN_PENDING":
+                    case "ADD_STREAMING_STEP":
+                    case "UPDATE_STREAMING_STEP":
+                    case "ADD_STREAMING_EDIT":
+                    case "FINISH_STREAMING":
+                    case "SET_PROCESSING":
+                      scopedState = appReducer(scopedState, action);
+                      break;
+                    default:
+                      break;
+                  }
+                };
+                handleStreamEvent(
+                  scopedDispatch,
+                  scopedGetState,
+                  evtPayload,
+                  terminalErrorReached,
+                  false,
+                  markAssistantTurnClosed,
+                );
+                dispatch({
+                  type: "SET_SESSION_STREAMING",
+                  payload: {
+                    sessionId: eventSessionId,
+                    streaming: scopedState.streaming,
+                  },
+                });
+              } else {
+                handleStreamEvent(dispatch, getState, evtPayload, terminalErrorReached, false, markAssistantTurnClosed);
+              }
+
+              if (
+                evtType === "message.updated" ||
+                evtType === "message.completed" ||
+                evtType === "session.completed"
+              ) {
+                const finish = resolveMessageUpdatedFinishSignal(
+                  evtPayload,
+                  asRecord(evtPayload.properties),
+                );
+                if (finish) {
+                  dispatch({ type: "SET_PROCESSING", payload: false });
+                }
+              }
             }
           });
           const streamingAfter = getState().streaming;

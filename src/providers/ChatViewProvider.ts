@@ -286,6 +286,10 @@ export class ChatViewProvider
    *  cross-session event leakage when the user switches sessions while a
    *  response is still streaming from the server. */
   private activeStreamSessionId: string | undefined;
+  private pendingStreamWebviewEvents: Array<{ event: unknown; sessionId?: string }> = [];
+  private streamWebviewFlushTimer: ReturnType<typeof setTimeout> | undefined;
+  private pendingRawSdkPersistenceBySessionId = new Map<string, unknown[]>();
+  private rawSdkPersistenceFlushTimer: ReturnType<typeof setTimeout> | undefined;
   private currentTodoItems: unknown[] = [];
   private compatibilityWarningsOverride: CompatibilityResult[] | null = null;
 
@@ -331,6 +335,111 @@ export class ChatViewProvider
       hash = ((hash << 5) - hash + basis.charCodeAt(i)) | 0;
     }
     return `sdk-todo:${sessionId}:${index}:${Math.abs(hash)}`;
+  }
+
+  private enqueueStreamWebviewEvent(
+    event: unknown,
+    sessionId: string | undefined,
+    flushImmediately = false,
+  ): void {
+    this.pendingStreamWebviewEvents.push({ event, sessionId });
+
+    if (flushImmediately) {
+      this.flushStreamWebviewEvents();
+      return;
+    }
+
+    if (this.streamWebviewFlushTimer) {
+      return;
+    }
+
+    this.streamWebviewFlushTimer = setTimeout(() => {
+      this.flushStreamWebviewEvents();
+    }, 32);
+  }
+
+  private flushStreamWebviewEvents(): void {
+    if (this.streamWebviewFlushTimer) {
+      clearTimeout(this.streamWebviewFlushTimer);
+      this.streamWebviewFlushTimer = undefined;
+    }
+
+    const pending = this.pendingStreamWebviewEvents;
+    if (pending.length === 0) {
+      return;
+    }
+    this.pendingStreamWebviewEvents = [];
+
+    if (pending.length === 1) {
+      const item = pending[0];
+      this.view?.webview.postMessage({
+        type: "streamEvent",
+        event: item.event,
+        sessionId: item.sessionId,
+      });
+      return;
+    }
+
+    this.view?.webview.postMessage({
+      type: "streamEventBatch",
+      events: pending.map((item) => ({
+        event: item.event,
+        sessionId: item.sessionId,
+      })),
+    });
+  }
+
+  private enqueueRawSdkEventPersistence(
+    sessionId: string,
+    event: unknown,
+    flushImmediately = false,
+  ): void {
+    const pending = this.pendingRawSdkPersistenceBySessionId.get(sessionId) ?? [];
+    pending.push(event);
+    this.pendingRawSdkPersistenceBySessionId.set(sessionId, pending);
+
+    if (flushImmediately) {
+      this.flushRawSdkEventPersistence();
+      return;
+    }
+
+    if (this.rawSdkPersistenceFlushTimer) {
+      return;
+    }
+
+    this.rawSdkPersistenceFlushTimer = setTimeout(() => {
+      this.flushRawSdkEventPersistence();
+    }, 100);
+  }
+
+  private flushRawSdkEventPersistence(): void {
+    if (this.rawSdkPersistenceFlushTimer) {
+      clearTimeout(this.rawSdkPersistenceFlushTimer);
+      this.rawSdkPersistenceFlushTimer = undefined;
+    }
+
+    if (this.pendingRawSdkPersistenceBySessionId.size === 0) {
+      return;
+    }
+
+    const pendingBySession = this.pendingRawSdkPersistenceBySessionId;
+    this.pendingRawSdkPersistenceBySessionId = new Map<string, unknown[]>();
+
+    for (const [sessionId, events] of pendingBySession.entries()) {
+      if (events.length === 0) {
+        continue;
+      }
+      void this.sessionService.appendRawSdkEventPayloads(
+        sessionId,
+        events,
+      ).catch((error) => {
+        this.logger.error("[CENTRALIZED-TAPE][HOST] raw_event_store_append_failed", {
+          sessionId,
+          eventCount: events.length,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
   }
 
   /**
@@ -762,7 +871,6 @@ export class ChatViewProvider
       this.diagnosticsLogger,
       this.geminiTokenTracker,
       this.sessionService,
-      this.subagentTracker,
       logger,
     );
 
@@ -1468,13 +1576,9 @@ export class ChatViewProvider
         willSendToWebview: true
       });
 
-      // Step 2: Sync subagent state for the new session
-      const subagentSnapshotPayload =
-        await this.subagentPersistence.syncSubagentSnapshotForSession(
-          sessionId,
-          messages,
-        );
-      // Step 3: Log diagnostic information for debugging
+      this.subagentTracker.resetForSession(sessionId);
+
+      // Step 2: Log diagnostic information for debugging
       const planMessages = messages.filter((m: any) => m?.plan);
       log.debug('Sending messages to webview', {
         totalMessages: messages.length,
@@ -1487,7 +1591,7 @@ export class ChatViewProvider
         } : null
       });
 
-      // Step 4: Send chatHistory FIRST (before initState)
+      // Step 3: Send chatHistory FIRST (before initState)
       // This ensures the webview can detect the session switch properly
       this.view?.webview.postMessage({
         type: "chatHistory",
@@ -1501,12 +1605,8 @@ export class ChatViewProvider
         sessionId,
         messages,
       );
-      this.view?.webview.postMessage({
-        type: "subagentSnapshot",
-        ...subagentSnapshotPayload,
-      });
 
-      // Step 5: NOW send initState with the updated session ID
+      // Step 4: NOW send initState with the updated session ID
       // This comes AFTER chatHistory so the session switch is already detected
       this.maybeShowCompatibilityWarningNotice(this.getCompatibilityWarnings());
       this.view?.webview.postMessage({
@@ -2833,22 +2933,10 @@ export class ChatViewProvider
                 processingSessionIds: this.getEffectiveProcessingSessionIds(),
               });
               await this.sendPersistedCompactionViewState(currentSession.id);
-              const subagentSnapshotPayload =
-                await this.syncSubagentSnapshotForSession(
-                  currentSession.id,
-                  messages as any[],
-                );
-              this.view?.webview.postMessage({
-                type: "subagentSnapshot",
-                ...subagentSnapshotPayload,
-              });
+              this.subagentTracker.resetForSession(currentSession.id);
               this.sendQueueUpdate(currentSession.id);
             } else {
               this.subagentTracker.resetForSession(null);
-              this.view?.webview.postMessage({
-                type: "subagentSnapshot",
-                ...this.subagentTracker.getSnapshotPayload(),
-              });
             }
 
             await this.handleGetSessions();
@@ -3182,10 +3270,6 @@ export class ChatViewProvider
               messages: [],
               rawMessages: [],
               rawSdkEventPayloads: [],
-            });
-            this.view?.webview.postMessage({
-              type: "subagentSnapshot",
-              ...this.subagentTracker.getSnapshotPayload(),
             });
 
             // Non-blocking follow-up work:
@@ -3877,16 +3961,18 @@ export class ChatViewProvider
       const part = (properties?.part as Record<string, unknown> | undefined) || {};
       const eventKind = (part?.type as string | undefined) || "unknown";
       const streamEventSessionId = this.extractEventSessionId(event);
-      this.logger.error("[DEBUG][HOST] [CENTRALIZED-TAPE] stream_callback_received", {
-        eventType,
-        eventSessionId: streamEventSessionId,
-        activeStreamSessionId: this.activeStreamSessionId,
-        currentSessionId: this.currentSessionId,
-        processingSessionIds: Array.from(this.processingSessionIds),
-        source: typeof eventRec?.source === "string" ? eventRec.source : undefined,
-        partType: typeof part?.type === "string" ? part.type : undefined,
-        hasRawEvent: typeof rawEvent !== "undefined",
-      });
+      if (this.shouldVerboseStreamDebug()) {
+        this.logger.debug("[CENTRALIZED-TAPE][HOST] stream_callback_received", {
+          eventType,
+          eventSessionId: streamEventSessionId,
+          activeStreamSessionId: this.activeStreamSessionId,
+          currentSessionId: this.currentSessionId,
+          processingSessionIds: Array.from(this.processingSessionIds),
+          source: typeof eventRec?.source === "string" ? eventRec.source : undefined,
+          partType: typeof part?.type === "string" ? part.type : undefined,
+          hasRawEvent: typeof rawEvent !== "undefined",
+        });
+      }
 
       const isTerminalLifecycleEvent =
         eventType === "session.completed" ||
@@ -4164,69 +4250,73 @@ export class ChatViewProvider
         (typeof properties?.content === "string" && properties.content) ||
         undefined;
 
-      this.logger.info("[CHAT-STREAMING][KEY2] Forwarding stream event to webview", {
-        eventType: event.type || "unknown",
-        sessionId: resolvedSessionId,
-        activeStreamSessionId: this.activeStreamSessionId,
-        currentSessionId: this.currentSessionId,
-        messageId:
-          typeof info?.id === "string"
-            ? info.id
-            : typeof properties?.messageId === "string"
-              ? properties.messageId
-              : typeof properties?.messageID === "string"
-                ? properties.messageID
-                : undefined,
-        partType: typeof part?.type === "string" ? part.type : undefined,
-        hasStructuredOutput: Boolean((enrichedEvent as any)?.structuredOutput),
-        preview:
-          typeof preRenderPreview === "string"
-            ? preRenderPreview.slice(0, 160)
-            : undefined,
-      });
+      if (this.shouldVerboseStreamDebug()) {
+        this.logger.debug("[CHAT-STREAMING] queueing stream event for webview", {
+          eventType: event.type || "unknown",
+          sessionId: resolvedSessionId,
+          activeStreamSessionId: this.activeStreamSessionId,
+          currentSessionId: this.currentSessionId,
+          messageId:
+            typeof info?.id === "string"
+              ? info.id
+              : typeof properties?.messageId === "string"
+                ? properties.messageId
+                : typeof properties?.messageID === "string"
+                  ? properties.messageID
+                  : undefined,
+          partType: typeof part?.type === "string" ? part.type : undefined,
+          hasStructuredOutput: Boolean((enrichedEvent as any)?.structuredOutput),
+          preview:
+            typeof preRenderPreview === "string"
+              ? preRenderPreview.slice(0, 160)
+              : undefined,
+        });
+      }
 
-      this.view?.webview.postMessage({
-        type: "streamEvent",
-        event: { ...enrichedEvent, sessionId: resolvedSessionId },
-      });
+      const eventForWebview = { ...enrichedEvent, sessionId: resolvedSessionId };
+      const shouldFlushWebviewImmediately =
+        eventType === "question.asked" ||
+        eventType === "message.completed" ||
+        eventType === "session.completed" ||
+        eventType === "session.error" ||
+        eventType === "error" ||
+        eventType === "message.error" ||
+        (
+          eventType === "message.updated" &&
+          (() => {
+            const fin = info?.finish;
+            return fin === true || (typeof fin === "string" && ["true", "done", "stop", "complete", "completed", "success", "finished", "error"].includes(fin.trim().toLowerCase()));
+          })()
+        );
+      this.enqueueStreamWebviewEvent(
+        eventForWebview,
+        resolvedSessionId,
+        shouldFlushWebviewImmediately,
+      );
       if (resolvedSessionId) {
         const centralizedEventPayload = {
-          ...enrichedEvent,
+          ...eventForWebview,
           sessionId: resolvedSessionId,
         };
-        this.logger.info("[CENTRALIZED-TAPE][HOST] raw_event_before_store", {
-          sessionId: resolvedSessionId,
-          eventType: typeof (centralizedEventPayload as Record<string, unknown>)?.type === "string"
-            ? (centralizedEventPayload as Record<string, unknown>).type
-            : event.type || "unknown",
-          partType: typeof part?.type === "string" ? part.type : undefined,
-          rawSource: typeof rawEvent === "object" && rawEvent !== null
-            ? typeof (rawEvent as Record<string, unknown>).source === "string"
-              ? (rawEvent as Record<string, unknown>).source
-              : undefined
-            : undefined,
-        });
-        void this.sessionService.appendRawSdkEventPayload(
+        if (this.shouldVerboseStreamDebug()) {
+          this.logger.debug("[CENTRALIZED-TAPE][HOST] raw_event_before_store", {
+            sessionId: resolvedSessionId,
+            eventType: typeof (centralizedEventPayload as Record<string, unknown>)?.type === "string"
+              ? (centralizedEventPayload as Record<string, unknown>).type
+              : event.type || "unknown",
+            partType: typeof part?.type === "string" ? part.type : undefined,
+            rawSource: typeof rawEvent === "object" && rawEvent !== null
+              ? typeof (rawEvent as Record<string, unknown>).source === "string"
+                ? (rawEvent as Record<string, unknown>).source
+                : undefined
+              : undefined,
+          });
+        }
+        this.enqueueRawSdkEventPersistence(
           resolvedSessionId,
           centralizedEventPayload,
-        ).then(() => {
-          this.logger.info("[CENTRALIZED-TAPE][HOST] raw_event_store_append_completed", {
-            sessionId: resolvedSessionId,
-            eventType: typeof centralizedEventPayload.type === "string"
-              ? centralizedEventPayload.type
-              : event.type || "unknown",
-            partType: typeof part?.type === "string" ? part.type : undefined,
-          });
-        }).catch((error) => {
-          this.logger.error("[CENTRALIZED-TAPE][HOST] raw_event_store_append_failed", {
-            sessionId: resolvedSessionId,
-            eventType: typeof centralizedEventPayload.type === "string"
-              ? centralizedEventPayload.type
-              : event.type || "unknown",
-            partType: typeof part?.type === "string" ? part.type : undefined,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
+          shouldFlushWebviewImmediately,
+        );
       } else {
         this.logger.warn("[CENTRALIZED-TAPE][HOST] skipped_raw_event_without_session", {
           eventType: typeof (enrichedEvent as Record<string, unknown>)?.type === "string"
@@ -4384,6 +4474,8 @@ export class ChatViewProvider
         this.unsubscribe();
         this.unsubscribe = undefined;
       }
+      this.flushStreamWebviewEvents();
+      this.flushRawSdkEventPersistence();
       this.isBootstrappingWebview = false;
       this.hasInitializedWebview = false;
       this.sessionsListRequestVersion = 0;
@@ -4506,7 +4598,7 @@ export class ChatViewProvider
     rawSdkEventPayloads: unknown[];
     messages: any[];
   }> {
-    this.logger.info(`[loadCentralizedRenderableHistory] START sessionId=${sessionId}`);
+    this.logger.debug(`[loadCentralizedRenderableHistory] START sessionId=${sessionId}`);
     const start = Date.now();
     try {
       const rawSessionPayloads = await this.sessionService.loadCentralizedSessionData(
@@ -4517,20 +4609,20 @@ export class ChatViewProvider
         ? rawSessionPayloads.rawSdkEventPayloads
         : [];
       
-      this.logger.info(`[loadCentralizedRenderableHistory] Loaded ${rawArray.length} items from disk in ${Date.now() - start}ms`);
+      this.logger.debug(`[loadCentralizedRenderableHistory] Loaded ${rawArray.length} items from disk in ${Date.now() - start}ms`);
 
       const t1 = Date.now();
       const safeRawSdkEventPayloads = this.truncateLargeStrings(rawArray);
-      this.logger.info(`[loadCentralizedRenderableHistory] Truncated arrays in ${Date.now() - t1}ms`);
+      this.logger.debug(`[loadCentralizedRenderableHistory] Truncated arrays in ${Date.now() - t1}ms`);
 
       const t2 = Date.now();
       const messages = await this.processHistoryMessages(
         safeRawSdkEventPayloads,
         sessionId,
       );
-      this.logger.info(`[loadCentralizedRenderableHistory] Processed ${messages.length} messages in ${Date.now() - t2}ms`);
+      this.logger.debug(`[loadCentralizedRenderableHistory] Processed ${messages.length} messages in ${Date.now() - t2}ms`);
 
-      this.logger.info("[CENTRALIZED-TAPE][HOST] loaded_renderable_history", {
+      this.logger.debug("[CENTRALIZED-TAPE][HOST] loaded_renderable_history", {
         sessionId,
         rawSdkEventCount: safeRawSdkEventPayloads.length,
         renderableMessageCount: messages.length,
@@ -9771,6 +9863,8 @@ export class ChatViewProvider
       this.unsubscribe();
       this.unsubscribe = undefined;
     }
+    this.flushStreamWebviewEvents();
+    this.flushRawSdkEventPersistence();
     this.quotaService.off("quotaUpdate", this.handleQuotaUpdate);
     if (this.webviewMessageListener) {
       this.webviewMessageListener.dispose();

@@ -52,6 +52,42 @@ function createStubGeminiTokenTracker() {
   return { recordUsage: (m: string, u: any) => recordings.push({ m, u }), _recordings: recordings };
 }
 
+function createStubSessionService() {
+  const appendedRawSdkEvents: Array<{ sessionId: string; payload: any }> = [];
+  const flushedSessions: string[] = [];
+  return {
+    appendRawSdkEventPayload: async (sessionId: string, payload: any) => {
+      appendedRawSdkEvents.push({ sessionId, payload });
+    },
+    flushRawSdkEventPayloads: async (sessionId: string) => {
+      flushedSessions.push(sessionId);
+    },
+    _appendedRawSdkEvents: appendedRawSdkEvents,
+    _flushedSessions: flushedSessions,
+  };
+}
+
+function getStreamEntries(getMessagesByType: (type: string) => any[]): any[] {
+  const single = getMessagesByType("streamEvent").map((message) => ({
+    event: message.event,
+    sessionId: message.sessionId,
+  }));
+  const batched = getMessagesByType("streamEventBatch").flatMap((message) => message.events);
+  return [...single, ...batched];
+}
+
+function flattenStreamMessages(messages: any[]): any[] {
+  const entries: any[] = [];
+  for (const message of messages) {
+    if (message?.type === "streamEvent") {
+      entries.push({ event: message.event, sessionId: message.sessionId });
+    } else if (message?.type === "streamEventBatch" && Array.isArray(message.events)) {
+      entries.push(...message.events);
+    }
+  }
+  return entries;
+}
+
 function setupFlow() {
   const logger = createTestLogger();
   const planManager = createStubPlanManager();
@@ -63,6 +99,7 @@ function setupFlow() {
   const compactionManager = createStubCompactionManager();
   const diagnosticsLogger = createStubDiagnosticsLogger();
   const geminiTokenTracker = createStubGeminiTokenTracker();
+  const sessionService = createStubSessionService();
   const { postMessage, getMessages, getMessagesByType } = captureMessages();
 
   const streamHandler = new StreamEventHandler(
@@ -71,7 +108,7 @@ function setupFlow() {
     compactionManager,
     diagnosticsLogger,
     geminiTokenTracker,
-    subagentTracker,
+    sessionService as any,
     logger,
   );
   streamHandler.setPostMessage(postMessage);
@@ -84,6 +121,7 @@ function setupFlow() {
     subagentPersistence,
     compactionManager,
     geminiTokenTracker,
+    sessionService,
     getMessages,
     getMessagesByType,
     logger,
@@ -96,7 +134,7 @@ describe("cross-module flow", () => {
       const { streamHandler, getMessagesByType } = setupFlow();
 
       await streamHandler.handleStreamEvent({
-        type: "message.part.updated",
+        type: "message.completed",
         properties: {
           sessionID: "session-1",
           messageID: "msg-1",
@@ -113,7 +151,7 @@ describe("cross-module flow", () => {
       const { streamHandler, getMessagesByType } = setupFlow();
 
       await streamHandler.handleStreamEvent({
-        type: "message.part.updated",
+        type: "message.completed",
         properties: {
           sessionID: "session-1",
           messageID: "msg-2",
@@ -142,7 +180,7 @@ describe("cross-module flow", () => {
       const { streamHandler, getMessagesByType } = setupFlow();
 
       await streamHandler.handleStreamEvent({
-        type: "message.part.updated",
+        type: "message.completed",
         properties: {
           sessionID: "session-1",
           messageID: "msg-3",
@@ -189,7 +227,7 @@ describe("cross-module flow", () => {
       });
 
       await streamHandler.handleStreamEvent({
-        type: "message.part.updated",
+        type: "message.completed",
         properties: {
           sessionID: "session-1",
           messageID: "msg-1",
@@ -204,7 +242,7 @@ describe("cross-module flow", () => {
       const subtask = details[0] as any;
       assert.equal(subtask.latestActivity, "Explore the codebase");
       assert.equal(subtask.status, "pending");
-      assert.ok(getMessagesByType("streamEvent").length >= 1, "handler should forward events");
+      assert.ok(getStreamEntries(getMessagesByType).length >= 1, "handler should forward events");
     });
 
     it("binds child session and propagates through pipeline", async () => {
@@ -351,8 +389,141 @@ describe("cross-module flow", () => {
   });
 
   describe("multi-event streaming sequence", () => {
+    it("matches the chat stream lifecycle from chunks through terminal flush", async () => {
+      const {
+        streamHandler,
+        compactionManager,
+        geminiTokenTracker,
+        sessionService,
+        getMessages,
+        logger,
+      } = setupFlow();
+
+      streamHandler.startStream("session-1", "msg-exact");
+
+      await streamHandler.handleStreamEvent(
+        {
+          type: "message.part.updated",
+          properties: {
+            sessionID: "session-1",
+            messageID: "msg-exact",
+            part: { id: "part-text", type: "text", text: "Working" },
+          },
+        },
+        { source: "sdk", sequence: 1 },
+      );
+
+      await streamHandler.handleStreamEvent(
+        {
+          type: "message.part.updated",
+          properties: {
+            sessionID: "session-1",
+            messageID: "msg-exact",
+            part: {
+              id: "part-structured",
+              type: "text",
+              structured: {
+                type: "implementation_plan",
+                text: "Plan ready",
+                plan: {
+                  file: "./implementation_plan.md",
+                  title: "Exact Flow Plan",
+                },
+              },
+            },
+          },
+        },
+        { source: "sdk", sequence: 2 },
+      );
+
+      assert.equal(
+        getMessages().length,
+        0,
+        "non-terminal chunks should wait for the terminal event before posting",
+      );
+
+      await streamHandler.handleStreamEvent(
+        {
+          type: "message.updated",
+          properties: {
+            sessionID: "session-1",
+            messageID: "msg-exact",
+            usage: { inputTokens: 12, outputTokens: 8 },
+            info: { providerID: "openai", modelID: "gpt-5" },
+          },
+        },
+        { source: "sdk", sequence: 3 },
+      );
+
+      await streamHandler.handleStreamEvent(
+        {
+          type: "message.completed",
+          properties: {
+            sessionID: "session-1",
+            messageID: "msg-exact",
+            compaction: { status: "completed", originalCount: 20, compactedCount: 7 },
+          },
+        },
+        { source: "sdk", sequence: 4 },
+      );
+
+      const messages = getMessages();
+      assert.equal(messages.length, 1, "terminal event should flush one webview batch");
+      assert.equal(messages[0].type, "streamEventBatch");
+
+      const entries = flattenStreamMessages(messages);
+      assert.deepEqual(
+        entries.map((entry) => entry.event.type),
+        [
+          "message.part.updated",
+          "message.part.updated",
+          "message.updated",
+          "message.completed",
+        ],
+      );
+      assert.deepEqual(
+        entries.map((entry) => entry.sessionId),
+        ["session-1", "session-1", "session-1", "session-1"],
+      );
+      assert.equal(entries[1].event.hasStructuredOutput, true);
+      assert.equal(entries[1].event.structuredOutput.responseType, "implementation_plan");
+      assert.equal(entries[1].event.structuredOutput.plan.file, "./implementation_plan.md");
+
+      assert.deepEqual(geminiTokenTracker._recordings, [
+        {
+          m: "openai/gpt-5",
+          u: { inputTokens: 12, outputTokens: 8 },
+        },
+      ]);
+      assert.deepEqual(compactionManager._calls, [
+        { status: "completed", originalCount: 20, compactedCount: 7 },
+      ]);
+      assert.deepEqual(
+        sessionService._appendedRawSdkEvents.map((entry) => ({
+          sessionId: entry.sessionId,
+          sequence: entry.payload.sequence,
+          payloadSessionId: entry.payload.sessionId,
+        })),
+        [
+          { sessionId: "session-1", sequence: 1, payloadSessionId: "session-1" },
+          { sessionId: "session-1", sequence: 2, payloadSessionId: "session-1" },
+          { sessionId: "session-1", sequence: 3, payloadSessionId: "session-1" },
+          { sessionId: "session-1", sequence: 4, payloadSessionId: "session-1" },
+        ],
+      );
+
+      streamHandler.endStream("session-1", "msg-exact", true);
+
+      assert.deepEqual(sessionService._flushedSessions, ["session-1"]);
+      const performanceLog = logger
+        .getEntriesByLevel("performance")
+        .find((entry: any) => entry.message === "ai-stream");
+      assert.equal(performanceLog?.context?.eventCount, 4);
+      assert.equal(performanceLog?.context?.success, true);
+    });
+
     it("processes a complete message lifecycle", async () => {
-      const { streamHandler, subagentTracker, geminiTokenTracker, getMessagesByType, logger } = setupFlow();
+      const { streamHandler, subagentTracker, geminiTokenTracker, sessionService, getMessagesByType, logger } = setupFlow();
       subagentTracker.resetForSession("session-1");
 
       streamHandler.startStream("session-1", "msg-lifecycle");
@@ -393,11 +564,12 @@ describe("cross-module flow", () => {
 
       streamHandler.endStream("session-1", "msg-lifecycle", true);
 
-      assert.ok(getMessagesByType("streamEvent").length >= 3, "should have forwarded multiple events");
+      assert.ok(getStreamEntries(getMessagesByType).length >= 3, "should have forwarded multiple events");
       assert.equal(geminiTokenTracker._recordings.length, 1, "should have recorded token usage");
+      assert.deepEqual(sessionService._flushedSessions, ["session-1"]);
 
-      const startLog = logger.getEntriesByLevel("info").find((e: any) => e.message === "AI stream started");
-      const endLog = logger.getEntriesByLevel("info").find((e: any) => e.message === "AI stream ended");
+      const startLog = logger.getEntriesByLevel("debug").find((e: any) => e.message === "AI stream started");
+      const endLog = logger.getEntriesByLevel("debug").find((e: any) => e.message === "AI stream ended");
       assert.ok(startLog, "should log stream start");
       assert.ok(endLog, "should log stream end");
       assert.equal(endLog?.context?.success, true);

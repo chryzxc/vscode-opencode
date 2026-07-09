@@ -1887,7 +1887,6 @@ export const InputWrapper = memo(function InputWrapper() {
     currentSessionId,
     processingSessionIds,
     executingQueueSessionIds,
-    rawSdkEventPayloadsBySessionId,
     promptQueue,
     selectedFiles,
     selectedContexts,
@@ -1919,7 +1918,6 @@ export const InputWrapper = memo(function InputWrapper() {
       currentSessionId: state.currentSessionId,
       processingSessionIds: state.processingSessionIds,
       executingQueueSessionIds: state.executingQueueSessionIds,
-      rawSdkEventPayloadsBySessionId: state.rawSdkEventPayloadsBySessionId,
       promptQueue: state.promptQueue,
       selectedFiles: state.selectedFiles,
       selectedContexts: state.selectedContexts,
@@ -1962,6 +1960,11 @@ export const InputWrapper = memo(function InputWrapper() {
 
   const prevInputLengthRef = useRef(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const textareaMetricsRef = useRef<{
+    lineHeight: number;
+    chrome: number;
+    border: number;
+  } | null>(null);
   const textareaHasValue = inputValue.length > 0;
   const textareaMinRows = 2;
   const textareaMaxRows = textareaHasValue ? 8 : 3;
@@ -1982,16 +1985,24 @@ export const InputWrapper = memo(function InputWrapper() {
       return;
     }
 
-    const computed = window.getComputedStyle(textarea);
-    const lineHeight = Number.parseFloat(computed.lineHeight) || 20;
-    const paddingTop = Number.parseFloat(computed.paddingTop) || 0;
-    const paddingBottom = Number.parseFloat(computed.paddingBottom) || 0;
-    const borderTop = Number.parseFloat(computed.borderTopWidth) || 0;
-    const borderBottom = Number.parseFloat(computed.borderBottomWidth) || 0;
-    const chrome = paddingTop + paddingBottom + borderTop + borderBottom;
+    let metrics = textareaMetricsRef.current;
+    if (!metrics) {
+      const computed = window.getComputedStyle(textarea);
+      const lineHeight = Number.parseFloat(computed.lineHeight) || 20;
+      const paddingTop = Number.parseFloat(computed.paddingTop) || 0;
+      const paddingBottom = Number.parseFloat(computed.paddingBottom) || 0;
+      const borderTop = Number.parseFloat(computed.borderTopWidth) || 0;
+      const borderBottom = Number.parseFloat(computed.borderBottomWidth) || 0;
+      metrics = {
+        lineHeight,
+        chrome: paddingTop + paddingBottom + borderTop + borderBottom,
+        border: borderTop + borderBottom,
+      };
+      textareaMetricsRef.current = metrics;
+    }
 
-    const minHeight = lineHeight * textareaMinRows + chrome;
-    const maxHeight = lineHeight * textareaMaxRows + chrome;
+    const minHeight = metrics.lineHeight * textareaMinRows + metrics.chrome;
+    const maxHeight = metrics.lineHeight * textareaMaxRows + metrics.chrome;
 
     textarea.style.maxHeight = `${maxHeight}px`;
     textarea.style.minHeight = `${minHeight}px`;
@@ -2015,7 +2026,8 @@ export const InputWrapper = memo(function InputWrapper() {
       textarea.style.height = "auto";
     }
 
-    const newHeight = Math.min(textarea.scrollHeight + borderTop + borderBottom, maxHeight);
+    const scrollHeight = textarea.scrollHeight;
+    const newHeight = Math.min(scrollHeight + metrics.border, maxHeight);
     const newHeightPx = `${newHeight}px`;
     
     // Only write to DOM if it actually changed to prevent style invalidation
@@ -2023,7 +2035,7 @@ export const InputWrapper = memo(function InputWrapper() {
       textarea.style.height = newHeightPx;
     }
     
-    const newOverflow = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
+    const newOverflow = scrollHeight > maxHeight ? "auto" : "hidden";
     if (textarea.style.overflowY !== newOverflow) {
       textarea.style.overflowY = newOverflow;
     }
@@ -2121,14 +2133,16 @@ export const InputWrapper = memo(function InputWrapper() {
 
   useEffect(() => {
     if (mentionTrigger) {
-      vscode.postMessage({ type: "getMentions", query: mentionTrigger.query });
-    } else {
-      if (showFileSuggestions) {
-        dispatch({ type: "SET_SHOW_FILE_SUGGESTIONS", payload: false });
-      }
-      if (showMentionSuggestions) {
-        dispatch({ type: "SET_SHOW_MENTION_SUGGESTIONS", payload: false });
-      }
+      const timeoutId = window.setTimeout(() => {
+        vscode.postMessage({ type: "getMentions", query: mentionTrigger.query });
+      }, 120);
+      return () => window.clearTimeout(timeoutId);
+    }
+    if (showFileSuggestions) {
+      dispatch({ type: "SET_SHOW_FILE_SUGGESTIONS", payload: false });
+    }
+    if (showMentionSuggestions) {
+      dispatch({ type: "SET_SHOW_MENTION_SUGGESTIONS", payload: false });
     }
   }, [mentionTrigger?.query]);
 
@@ -2611,7 +2625,6 @@ export const InputWrapper = memo(function InputWrapper() {
     eventId: string,
     eventType: string,
   ) => {
-    console.error(`[DEBUG-UI] submitInteractiveResponse clicked:`, { text, eventId, eventType });
     const nextAnswers = {
       ...pendingAnswers,
       [eventId]: { text, eventType },
@@ -2631,12 +2644,8 @@ export const InputWrapper = memo(function InputWrapper() {
   const submitBatchResponses = (
     answers: Record<string, { text: string | string[]; eventType: string }>,
   ) => {
-    console.error("[DEBUG] submitBatchResponses starting. input answers:", answers);
-    console.error("[DEBUG] submitBatchResponses displayInteractiveEvents:", displayInteractiveEvents);
-    
     const batch = Object.entries(answers).map(([eventId, data]) => {
       const event = displayInteractiveEvents.find((e) => e.id === eventId);
-      console.error(`[DEBUG] event lookup for id ${eventId}:`, event);
       const questionText =
         event?.type === "question" || event?.type === "confirm"
           ? event.question

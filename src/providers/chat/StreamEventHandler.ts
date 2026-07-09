@@ -13,15 +13,17 @@ import type { CompactionManager } from "./CompactionManager";
 import type { DiagnosticsLogger } from "./DiagnosticsLogger";
 import type { GeminiTokenUsageTracker } from "../../services/GeminiTokenUsageTracker";
 import type { SessionService } from "../../services/SessionService";
-import type { SubagentTracker } from "../../services/SubagentTracker";
-import { LoggingCategories } from "../../utils/LoggingSchema";
+
+type PendingStreamEvent = {
+  enrichedEvent: any;
+  event: any;
+  sessionId: string | undefined;
+};
 
 export class StreamEventHandler {
-  private awaitingInteractiveAnswer = false;
   private streamStartTime?: number;
   private eventCount = 0;
-  private lastEventTime?: number;
-  private pendingEvents: Array<{ enrichedEvent: any; event: any; sessionId: string | undefined }> = [];
+  private pendingEvents: PendingStreamEvent[] = [];
   private flushRafId: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
@@ -31,7 +33,6 @@ export class StreamEventHandler {
     private diagnosticsLogger: DiagnosticsLogger,
     private geminiTokenTracker: GeminiTokenUsageTracker,
     private sessionService: SessionService,
-    private subagentTracker: SubagentTracker,
     private logger: ReturnType<typeof import("../../utils/Logger").createLogger>,
   ) {
     this.postMessage = () => {};
@@ -55,104 +56,33 @@ export class StreamEventHandler {
   async handleStreamEvent(event: any, rawEvent?: unknown): Promise<void> {
     if (!event) return;
 
-    const eventType = typeof event?.type === "string"
-      ? event.type
-      : typeof event?.event === "string"
-        ? event.event
-        : typeof event?.kind === "string"
-          ? event.kind
-          : "unknown";
-
-    // Only log important events, not every text chunk
-    const shouldLog = !eventType.includes("message.part") ||
-                       eventType === "message.completed" ||
-                       eventType === "session.completed" ||
-                       eventType === "session.created";
-
+    const eventType = this.getEventType(event);
+    const shouldLog = this.shouldLogEvent(eventType);
     const enrichedEvent = this.structuredOutputProcessor.enrichStreamEvent(event);
+    const properties = this.getEventProperties(enrichedEvent, event);
+    const info = properties?.info || {};
+    const sessionId = this.resolveEventSessionId(enrichedEvent, event, properties, info);
 
     this.diagnosticsLogger.logStreamEventDiagnostics(event, enrichedEvent);
-
-    const properties = enrichedEvent?.properties || event?.properties || {};
-    const info = properties?.info || {};
-    const sessionId =
-      enrichedEvent?.sessionId ||
-      event?.sessionId ||
-      properties?.sessionId ||
-      info?.sessionId ||
-      this.getCurrentSessionId();
+    this.eventCount += 1;
 
     if (shouldLog) {
-      this.logger.debug("[SOURCE] stream event received", {
-        sessionId: this.getCurrentSessionId(),
-        eventType,
-        eventKeys: event && typeof event === "object" ? Object.keys(event) : [],
-      });
-
-      if (shouldLog) {
-        this.logger.debug("Received stream event", {
-          type: eventType,
-          eventType,
-        });
-
-        // Log detailed info for session.created events to check for provider/model data
-        if (eventType === "session.created") {
-          this.logger.debug('===SUBAGENT_SPAWN=== [SESSION_CREATED] Stream event received', {
-            hasInfo: Boolean(info && typeof info === 'object'),
-            infoKeys: info ? Object.keys(info) : [],
-            hasProviderID: Boolean(info?.providerID),
-            hasModelID: Boolean(info?.modelID),
-            providerID: info?.providerID,
-            modelID: info?.modelID,
-            agentId: info?.agentId,
-            sessionId: sessionId,
-          });
-        }
-      }
+      this.logStreamEventReceived(event, eventType, info, sessionId);
     }
 
     // Handle compaction status
-    if (event?.type === "message.completed" && properties?.compaction) {
+    if (eventType === "message.completed" && properties?.compaction) {
       this.compactionManager.forwardCompactionStatusFromStreamEvent(properties.compaction);
     }
 
     // Handle subagent updates
-    if (properties?.subagentsDelta || enrichedEvent?.structured?.subagentsDelta) {
-      const subagentUpdate = properties?.subagentsDelta || enrichedEvent?.structured?.subagentsDelta;
-
-      // Log the raw subagent data from the stream
-      this.logger.debug('[SUBAGENT][STREAM] Raw subagent data received', {
-        hasSummaries: Boolean(subagentUpdate?.summariesByParentMessageId || subagentUpdate?.subagentsByParentMessageId),
-        hasDetails: Boolean(subagentUpdate?.detailsById || subagentUpdate?.subagentDetailsById),
-      });
-
-      // Log provider/model field presence in stream data
-      if (subagentUpdate?.detailsById || subagentUpdate?.subagentDetailsById) {
-        const detailsById = subagentUpdate.detailsById || subagentUpdate.subagentDetailsById;
-        const detailIds = Object.keys(detailsById);
-        this.logger.debug('===SUBAGENT_SPAWN=== [STREAM] Subagent update received', {
-          detailCount: detailIds.length,
-          detailIds: detailIds,
-        });
-        for (const detailId of detailIds.slice(0, 3)) {
-          const detail = detailsById[detailId];
-          this.logger.debug('===SUBAGENT_SPAWN=== [STREAM] Detail data', {
-            detailId,
-            hasProviderID: Boolean(detail?.providerID),
-            hasModelID: Boolean(detail?.modelID),
-            providerID: detail?.providerID,
-            modelID: detail?.modelID,
-            status: detail?.status,
-            agentId: detail?.agentId,
-          });
-        }
-      }
-
+    const subagentUpdate = this.getSubagentUpdate(properties, enrichedEvent);
+    if (subagentUpdate) {
+      this.logSubagentUpdate(subagentUpdate);
       await this.subagentPersistence.persistSubagentUpdateSnapshot(
         subagentUpdate,
-        this.getCurrentSessionId(),
-        // sessionService and postMessage will be provided by shell
-        {} as any,
+        sessionId ?? this.getCurrentSessionId(),
+        this.sessionService,
         this.postMessage,
       );
     }
@@ -179,25 +109,146 @@ export class StreamEventHandler {
     // coalesces high-frequency text chunks (30-60/sec) into ~1 postMessage
     // per animation frame, preventing the VS Code webview IPC boundary from
     // becoming a scroll-jank bottleneck.
-    const isTerminal =
-      eventType === "message.completed" ||
-      eventType === "session.completed" ||
-      eventType === "message.error";
-
     this.pendingEvents.push({ enrichedEvent, event, sessionId });
 
-    if (isTerminal) {
+    if (this.isTerminalEvent(eventType)) {
       this.flushPendingEvents();
     } else if (this.flushRafId === null) {
       this.flushRafId = setTimeout(() => this.flushPendingEvents(), 16);
     }
 
-    if (sessionId) {
-      void this.sessionService.appendRawSdkEventPayload(
-        sessionId,
-        rawEvent ? { ...(rawEvent as Record<string, unknown>), sessionId } : { ...event, sessionId },
-      );
+    this.persistRawSdkEventPayload(sessionId, event, rawEvent);
+  }
+
+  private getEventType(event: any): string {
+    if (typeof event?.type === "string") return event.type;
+    if (typeof event?.event === "string") return event.event;
+    if (typeof event?.kind === "string") return event.kind;
+    return "unknown";
+  }
+
+  private shouldLogEvent(eventType: string): boolean {
+    return (
+      !eventType.includes("message.part") ||
+      eventType === "message.completed" ||
+      eventType === "session.completed" ||
+      eventType === "session.created"
+    );
+  }
+
+  private getEventProperties(enrichedEvent: any, event: any): Record<string, any> {
+    return enrichedEvent?.properties || event?.properties || {};
+  }
+
+  private resolveEventSessionId(
+    enrichedEvent: any,
+    event: any,
+    properties: Record<string, any>,
+    info: Record<string, any>,
+  ): string | undefined {
+    return (
+      enrichedEvent?.sessionId ||
+      enrichedEvent?.sessionID ||
+      event?.sessionId ||
+      event?.sessionID ||
+      properties?.sessionId ||
+      properties?.sessionID ||
+      info?.sessionId ||
+      info?.sessionID ||
+      this.getCurrentSessionId()
+    );
+  }
+
+  private logStreamEventReceived(
+    event: any,
+    eventType: string,
+    info: Record<string, any>,
+    sessionId: string | undefined,
+  ): void {
+    this.logger.debug("[SOURCE] stream event received", {
+      sessionId: this.getCurrentSessionId(),
+      eventType,
+      eventKeys: event && typeof event === "object" ? Object.keys(event) : [],
+    });
+
+    this.logger.debug("Received stream event", {
+      type: eventType,
+      eventType,
+    });
+
+    if (eventType !== "session.created") {
+      return;
     }
+
+    this.logger.debug("===SUBAGENT_SPAWN=== [SESSION_CREATED] Stream event received", {
+      hasInfo: Boolean(info && typeof info === "object"),
+      infoKeys: info ? Object.keys(info) : [],
+      hasProviderID: Boolean(info?.providerID),
+      hasModelID: Boolean(info?.modelID),
+      providerID: info?.providerID,
+      modelID: info?.modelID,
+      agentId: info?.agentId,
+      sessionId,
+    });
+  }
+
+  private getSubagentUpdate(properties: Record<string, any>, enrichedEvent: any): any {
+    return properties?.subagentsDelta || enrichedEvent?.structured?.subagentsDelta;
+  }
+
+  private logSubagentUpdate(subagentUpdate: any): void {
+    this.logger.debug("[SUBAGENT][STREAM] Raw subagent data received", {
+      hasSummaries: Boolean(subagentUpdate?.summariesByParentMessageId || subagentUpdate?.subagentsByParentMessageId),
+      hasDetails: Boolean(subagentUpdate?.detailsById || subagentUpdate?.subagentDetailsById),
+    });
+
+    const detailsById = subagentUpdate?.detailsById || subagentUpdate?.subagentDetailsById;
+    if (!detailsById) {
+      return;
+    }
+
+    const detailIds = Object.keys(detailsById);
+    this.logger.debug("===SUBAGENT_SPAWN=== [STREAM] Subagent update received", {
+      detailCount: detailIds.length,
+      detailIds,
+    });
+
+    for (const detailId of detailIds.slice(0, 3)) {
+      const detail = detailsById[detailId];
+      this.logger.debug("===SUBAGENT_SPAWN=== [STREAM] Detail data", {
+        detailId,
+        hasProviderID: Boolean(detail?.providerID),
+        hasModelID: Boolean(detail?.modelID),
+        providerID: detail?.providerID,
+        modelID: detail?.modelID,
+        status: detail?.status,
+        agentId: detail?.agentId,
+      });
+    }
+  }
+
+  private isTerminalEvent(eventType: string): boolean {
+    return (
+      eventType === "message.completed" ||
+      eventType === "session.completed" ||
+      eventType === "message.error"
+    );
+  }
+
+  private persistRawSdkEventPayload(
+    sessionId: string | undefined,
+    event: any,
+    rawEvent?: unknown,
+  ): void {
+    if (!sessionId) {
+      return;
+    }
+
+    const payload =
+      rawEvent && typeof rawEvent === "object"
+        ? { ...(rawEvent as Record<string, unknown>), sessionId }
+        : { ...event, sessionId };
+    void this.sessionService.appendRawSdkEventPayload(sessionId, payload);
   }
 
   private flushPendingEvents(): void {
@@ -234,7 +285,6 @@ export class StreamEventHandler {
   startStream(sessionId: string, messageId: string): void {
     this.streamStartTime = Date.now();
     this.eventCount = 0;
-    this.lastEventTime = Date.now();
     this.pendingEvents = [];
     if (this.flushRafId !== null) {
       clearTimeout(this.flushRafId);
@@ -298,7 +348,6 @@ export class StreamEventHandler {
     // Reset state
     this.streamStartTime = undefined;
     this.eventCount = 0;
-    this.lastEventTime = undefined;
   }
 
   /**

@@ -887,11 +887,35 @@ export class StructuredOutputProcessor {
     rawRecord: Record<string, unknown>,
     normalizedRecord: Record<string, unknown>,
   ): StructuredAssistantOutput {
-    return {
-      ...(rawRecord as StructuredAssistantOutput),
+    const output: StructuredAssistantOutput = {
       ...(normalizedRecord as StructuredAssistantOutput),
       raw: rawRecord,
     };
+
+    const responseType = this.firstNonEmptyString(
+      output.type,
+      output.responseType,
+      rawRecord.type,
+      rawRecord.responseType,
+    );
+    if (responseType) {
+      output.type = responseType;
+      output.responseType = responseType;
+    }
+
+    const text = this.firstNonEmptyString(
+      output.text,
+      output.message,
+      rawRecord.text,
+      rawRecord.message,
+      rawRecord.content,
+    );
+    if (text) {
+      output.text = output.text ?? text;
+      output.message = output.message ?? text;
+    }
+
+    return output;
   }
 
   private salvageStructuredOutput(
@@ -1253,6 +1277,7 @@ export class StructuredOutputProcessor {
       sanitizedCanonicalRec.subagentsDelta = subagentsDeltaRaw;
     }
     const responseType = this.firstNonEmptyString(
+      sanitizedCanonicalRec.type,
       sanitizedCanonicalRec.responseType,
     );
     if (!responseType) {

@@ -157,13 +157,18 @@ test('ChatViewProvider.extractEventSessionId checks all SSE event locations', ()
 });
 
 test('ChatViewProvider stamps active sessionId onto every streamEvent forwarded to the webview', () => {
-    // Every postMessage for streamEvent must inject sessionId: this.currentSessionId so
-    // the webview filter always has a concrete value to compare against, even when the raw
-    // server event does not carry a session ID field.
+    // Every forwarded stream event must inject sessionId: resolvedSessionId so the
+    // webview filter always has a concrete value to compare against, even when the
+    // raw server event does not carry a session ID field.
     assert.match(
         chatViewProviderSource,
-        /type:\s*["']streamEvent["'][\s\S]{0,200}event:\s*\{\s*\.\.\.enrichedEvent\s*,\s*sessionId:\s*resolvedSessionId\s*\}/,
-        'streamEvent postMessage must spread enrichedEvent and add sessionId: resolvedSessionId',
+        /const\s+eventForWebview\s*=\s*\{\s*\.\.\.enrichedEvent\s*,\s*sessionId:\s*resolvedSessionId\s*\}/,
+        'stream events must spread enrichedEvent and add sessionId: resolvedSessionId before forwarding',
+    );
+    assert.match(
+        chatViewProviderSource,
+        /this\.enqueueStreamWebviewEvent\(\s*eventForWebview,\s*resolvedSessionId,/,
+        'queued stream delivery must carry the resolved session ID',
     );
 });
 

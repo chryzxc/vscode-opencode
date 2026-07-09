@@ -429,11 +429,16 @@ function isAssistantOwnedCentralizedPartEvent(
   );
 }
 
-function buildCentralizedRenderMessages(rawSdkEventPayloads: unknown[]): Message[] {
+function buildCentralizedRenderMessages(
+  rawSdkEventPayloads: unknown[],
+  options: { alreadyNormalized?: boolean } = {},
+): Message[] {
   // Normalize the centralized tape once so this conversation builder only
   // consumes one canonical event envelope regardless of whether the original
   // payload was a direct `properties.part` event or a sync-wrapped event.
-  const normalizedRawSdkEventPayloads = normalizeCentralizedEventPayloads(rawSdkEventPayloads);
+  const normalizedRawSdkEventPayloads = options.alreadyNormalized
+    ? rawSdkEventPayloads
+    : normalizeCentralizedEventPayloads(rawSdkEventPayloads);
   if (normalizedRawSdkEventPayloads.length === 0) {
     return [];
   }
@@ -1261,7 +1266,10 @@ function buildCentralizedTranscriptProjection(
   rawSdkEventPayloads: unknown[],
 ): CentralizedTranscriptProjection {
   const normalizedRawSdkEventPayloads = normalizeCentralizedEventPayloads(rawSdkEventPayloads);
-  const renderMessages = buildCentralizedRenderMessages(normalizedRawSdkEventPayloads);
+  const renderMessages = buildCentralizedRenderMessages(
+    normalizedRawSdkEventPayloads,
+    { alreadyNormalized: true },
+  );
   const firstRawIndexByMessageId = new Map<string, number>();
   const conversationEntries: ConversationRenderEntry[] = [];
 
@@ -1622,7 +1630,14 @@ const WEBVIEW_BOOTSTRAP_CACHE_KEY = "opencode.chat.bootstrap.v1";
 const WEBVIEW_BOOTSTRAP_MAX_EVENT_PAYLOADS = 400;
 const VIRTUALIZED_TRANSCRIPT_MIN_ENTRIES = 250;
 const VIRTUALIZED_TRANSCRIPT_OVERSCAN_PX = 1400;
+const VIRTUALIZED_TRANSCRIPT_FALLBACK_VIEWPORT_PX = 800;
 const COMPACTION_DIVIDER_ESTIMATED_HEIGHT = 72;
+// content-visibility: auto renders off-screen entries lazily using
+// contain-intrinsic-size placeholders. After snapping to bottom on session
+// load, newly-visible entries paint with real heights, growing scrollHeight
+// and leaving the viewport above the true bottom. Keep pinning across frames
+// until the height stabilizes (capped to avoid runaway loops).
+const SESSION_LOAD_SCROLL_STABILIZE_FRAMES = 12;
 
 function buildWebviewBootstrapSnapshot(params: {
   currentSessionId: string | null;
@@ -1763,9 +1778,20 @@ type ConversationTranscriptProps = {
   onSetBlockExpanded: (blockKey: string, expanded: boolean) => void;
 };
 
-function getTranscriptEntryContainIntrinsicSize(entry: ConversationRenderEntry): string {
+function getTranscriptEntryContainIntrinsicSize(
+  entry: ConversationRenderEntry,
+  options: { isHiddenByBlock?: boolean } = {},
+): string {
   if (entry.kind !== "message") {
     return "56px";
+  }
+
+  // content-visibility: auto uses contain-intrinsic-size as the off-screen
+  // placeholder. Hidden-by-collapse cards are display:none (0px real height)
+  // but would still reserve 320px each, inflating the scrollbar and causing
+  // scroll snapping. Must return 0px to match the real collapsed footprint.
+  if (options.isHiddenByBlock) {
+    return "0px";
   }
 
   const role = firstNonEmptyString(entry.message.role, entry.message.info?.role)?.toLowerCase();
@@ -1825,10 +1851,11 @@ function buildVirtualizedConversationWindow(params: {
 }): VirtualizedConversationWindow {
   const { entryPrefixHeights, totalEntries, scrollViewport } = params;
   const { scrollTop, viewportHeight } = scrollViewport;
+  const effectiveViewportHeight =
+    viewportHeight > 0 ? viewportHeight : VIRTUALIZED_TRANSCRIPT_FALLBACK_VIEWPORT_PX;
 
   if (
     totalEntries < VIRTUALIZED_TRANSCRIPT_MIN_ENTRIES ||
-    viewportHeight <= 0 ||
     entryPrefixHeights.length !== totalEntries + 1
   ) {
     return {
@@ -1840,9 +1867,9 @@ function buildVirtualizedConversationWindow(params: {
     };
   }
 
-  const overscan = Math.max(VIRTUALIZED_TRANSCRIPT_OVERSCAN_PX, viewportHeight);
+  const overscan = Math.max(VIRTUALIZED_TRANSCRIPT_OVERSCAN_PX, effectiveViewportHeight);
   const windowTop = Math.max(0, scrollTop - overscan);
-  const windowBottom = scrollTop + viewportHeight + overscan;
+  const windowBottom = scrollTop + effectiveViewportHeight + overscan;
   const totalHeight = entryPrefixHeights[totalEntries] ?? 0;
 
   const startIndex = Math.max(
@@ -2090,40 +2117,43 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
         !isCompressed &&
         typeof compactionDividerIndex === "number" &&
         compactionDividerIndex === messageCountSeen;
+
+      // Block visibility must be resolved before consulting the measured
+      // height cache. Hidden cards are display:none and occupy 0px, but
+      // the cache may still hold a stale expanded measurement. Trusting
+      // that stale value would inflate the virtualization padding the same
+      // way the content-visibility intrinsic-size hint does.
+      let isHiddenByBlock = false;
+      if (
+        entry.kind === "message" &&
+        entry.renderKind !== "user" &&
+        entry.renderKind !== "system" &&
+        entry.renderKind !== "permission" &&
+        entry.renderKind !== "background-task-reminder"
+      ) {
+        const blockGroupKey = entryBlockKeys[index];
+        const isAbsoluteLastInBlock = isAbsoluteLastInBlockByIndex.get(index) ?? false;
+        const isLastTextInBlock = isLastTextInBlockByIndex.get(index) ?? false;
+        const blockSize = blockSizeByKey.get(blockGroupKey) ?? 1;
+        const isLiveBlock =
+          hasLiveAssistantTurn &&
+          blockGroupKey === entryBlockKeys[entryBlockKeys.length - 1];
+        const isBlockExpanded =
+          blockExpandedState.get(blockGroupKey) ?? (isLiveBlock ? true : false);
+        const isLastInBlock = isBlockExpanded ? isAbsoluteLastInBlock : isLastTextInBlock;
+        isHiddenByBlock = blockSize > 1 && !isLastInBlock && !isBlockExpanded;
+      }
+
       const measuredHeight = measuredEntryHeightsRef.current.get(entry.key);
       let estimatedHeight = 0;
-      if (typeof measuredHeight === "number") {
+      if (isHiddenByBlock) {
+        estimatedHeight = 0;
+      } else if (typeof measuredHeight === "number") {
         estimatedHeight = measuredHeight;
       } else {
-        let isHiddenByBlock = false;
-        let isBlockExpanded = true;
-        if (
-          entry.kind === "message" &&
-          entry.renderKind !== "user" &&
-          entry.renderKind !== "system" &&
-          entry.renderKind !== "permission" &&
-          entry.renderKind !== "background-task-reminder"
-        ) {
-          const blockGroupKey = entryBlockKeys[index];
-          const isAbsoluteLastInBlock = isAbsoluteLastInBlockByIndex.get(index) ?? false;
-          const isLastTextInBlock = isLastTextInBlockByIndex.get(index) ?? false;
-          const blockSize = blockSizeByKey.get(blockGroupKey) ?? 1;
-          const isLiveBlock =
-            hasLiveAssistantTurn &&
-            blockGroupKey === entryBlockKeys[entryBlockKeys.length - 1];
-          isBlockExpanded =
-            blockExpandedState.get(blockGroupKey) ?? (isLiveBlock ? true : false);
-          const isLastInBlock = isBlockExpanded ? isAbsoluteLastInBlock : isLastTextInBlock;
-          isHiddenByBlock = blockSize > 1 && !isLastInBlock && !isBlockExpanded;
-        }
-
-        if (isHiddenByBlock) {
-          estimatedHeight = 0;
-        } else {
-          estimatedHeight =
-            estimateConversationEntryHeight(entry) +
-            (hasDividerBefore ? COMPACTION_DIVIDER_ESTIMATED_HEIGHT : 0);
-        }
+        estimatedHeight =
+          estimateConversationEntryHeight(entry) +
+          (hasDividerBefore ? COMPACTION_DIVIDER_ESTIMATED_HEIGHT : 0);
       }
 
       prefixHeights[index + 1] = prefixHeights[index] + estimatedHeight;
@@ -2195,6 +2225,7 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
               (!previousMessage.info?.agent && !message.info?.agent));
 
           let messageNode: JSX.Element | null;
+          let entryHiddenByBlock = false;
           if (entry.renderKind === "user") {
             messageNode = <UserMessage message={message} />;
           } else if (entry.renderKind === "background-task-reminder") {
@@ -2228,6 +2259,7 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
               blockExpandedState.get(blockGroupKey) ?? (isLiveBlock ? true : false);
             const isLastInBlock = isBlockExpanded ? isAbsoluteLastInBlock : isLastTextInBlock;
             const isHiddenByBlock = blockSize > 1 && !isLastInBlock && !isBlockExpanded;
+            entryHiddenByBlock = isHiddenByBlock;
 
             messageNode = (
               <ResponseMessage
@@ -2269,7 +2301,9 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
               <div
                 style={{
                   contentVisibility: "auto",
-                  containIntrinsicSize: getTranscriptEntryContainIntrinsicSize(entry),
+                  containIntrinsicSize: getTranscriptEntryContainIntrinsicSize(entry, {
+                    isHiddenByBlock: entryHiddenByBlock,
+                  }),
                 }}
               >
                 {messageNode}
@@ -2585,12 +2619,32 @@ function ChatContent() {
 
     if (shouldSnapToLatest || shouldFollowAfterResponse) {
       setStreamViewport({ isFollowing: true, unseenUpdateCount: 0 });
-      requestAnimationFrame(() => {
-        const root = messagesScrollRef.current;
-        if (root) {
-          root.scrollTop = root.scrollHeight;
-        }
-      });
+      const root = messagesScrollRef.current;
+      if (root) {
+        let lastScrollHeight = -1;
+        let stabilizeFrames = 0;
+        const pinToBottom = () => {
+          const currentScrollHeight = root.scrollHeight;
+          // Stop if the user scrolled away during stabilization.
+          if (stabilizeFrames > 0) {
+            const distanceFromBottom =
+              currentScrollHeight - root.scrollTop - root.clientHeight;
+            if (distanceFromBottom > AUTO_FOLLOW_THRESHOLD_PX) {
+              return;
+            }
+          }
+          root.scrollTop = currentScrollHeight;
+          stabilizeFrames++;
+          if (
+            currentScrollHeight !== lastScrollHeight &&
+            stabilizeFrames < SESSION_LOAD_SCROLL_STABILIZE_FRAMES
+          ) {
+            lastScrollHeight = currentScrollHeight;
+            requestAnimationFrame(pinToBottom);
+          }
+        };
+        requestAnimationFrame(pinToBottom);
+      }
     } else if (justFinishedAiResponse) {
       unseenBaselineMessageCountRef.current = null;
       setStreamViewport((prev) =>
