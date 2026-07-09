@@ -4463,30 +4463,87 @@ export class ChatViewProvider
     }
   }
 
+  private truncateLargeStrings(obj: any, maxLen: number = 200000): any {
+    if (!obj || typeof obj !== "object") return obj;
+    const seen = new WeakSet();
+    const stack = [obj];
+    
+    while (stack.length > 0) {
+      const current = stack.pop();
+      if (!current || typeof current !== "object" || seen.has(current)) continue;
+      seen.add(current);
+      
+      if (Array.isArray(current)) {
+        for (let i = 0; i < current.length; i++) {
+          const item = current[i];
+          if (typeof item === "string") {
+            if (item.length > maxLen) {
+              current[i] = item.slice(0, maxLen) + "\n...[truncated " + (item.length - maxLen) + " chars]";
+            }
+          } else if (item && typeof item === "object") {
+            stack.push(item);
+          }
+        }
+      } else {
+        for (const key in current) {
+          if (Object.prototype.hasOwnProperty.call(current, key)) {
+            const item = current[key];
+            if (typeof item === "string") {
+              if (item.length > maxLen) {
+                current[key] = item.slice(0, maxLen) + "\n...[truncated " + (item.length - maxLen) + " chars]";
+              }
+            } else if (item && typeof item === "object") {
+              stack.push(item);
+            }
+          }
+        }
+      }
+    }
+    return obj;
+  }
+
   private async loadCentralizedRenderableHistory(sessionId: string): Promise<{
     rawSdkEventPayloads: unknown[];
     messages: any[];
   }> {
-    const rawSessionPayloads = await this.sessionService.loadCentralizedSessionData(
-      sessionId,
-    );
-    const messages = await this.processHistoryMessages(
-      Array.isArray(rawSessionPayloads.rawSdkEventPayloads)
-        ? (rawSessionPayloads.rawSdkEventPayloads as any[])
-        : [],
-      sessionId,
-    );
+    this.logger.info(`[loadCentralizedRenderableHistory] START sessionId=${sessionId}`);
+    const start = Date.now();
+    try {
+      const rawSessionPayloads = await this.sessionService.loadCentralizedSessionData(
+        sessionId,
+      );
+      
+      const rawArray = Array.isArray(rawSessionPayloads.rawSdkEventPayloads)
+        ? rawSessionPayloads.rawSdkEventPayloads
+        : [];
+      
+      this.logger.info(`[loadCentralizedRenderableHistory] Loaded ${rawArray.length} items from disk in ${Date.now() - start}ms`);
 
-    this.logger.info("[CENTRALIZED-TAPE][HOST] loaded_renderable_history", {
-      sessionId,
-      rawSdkEventCount: rawSessionPayloads.rawSdkEventPayloads.length,
-      renderableMessageCount: messages.length,
-    });
+      const t1 = Date.now();
+      const safeRawSdkEventPayloads = this.truncateLargeStrings(rawArray);
+      this.logger.info(`[loadCentralizedRenderableHistory] Truncated arrays in ${Date.now() - t1}ms`);
 
-    return {
-      rawSdkEventPayloads: rawSessionPayloads.rawSdkEventPayloads,
-      messages,
-    };
+      const t2 = Date.now();
+      const messages = await this.processHistoryMessages(
+        safeRawSdkEventPayloads,
+        sessionId,
+      );
+      this.logger.info(`[loadCentralizedRenderableHistory] Processed ${messages.length} messages in ${Date.now() - t2}ms`);
+
+      this.logger.info("[CENTRALIZED-TAPE][HOST] loaded_renderable_history", {
+        sessionId,
+        rawSdkEventCount: safeRawSdkEventPayloads.length,
+        renderableMessageCount: messages.length,
+      });
+
+      return {
+        rawSdkEventPayloads: safeRawSdkEventPayloads,
+        messages,
+      };
+    } catch (err: any) {
+      this.logger.error(`[loadCentralizedRenderableHistory] ERROR: ${err.message}`, { stack: err.stack });
+      return { rawSdkEventPayloads: [], messages: [] };
+    }
   }
 
   private isAssistantHistoryMessage(message: any): boolean {

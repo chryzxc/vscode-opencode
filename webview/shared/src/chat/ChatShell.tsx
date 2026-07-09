@@ -1972,80 +1972,96 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
     observer?.observe(node);
   }, []);
 
-  const entryBlockKeys: string[] = [];
-  let currentBlockKey = "initial";
-  const assistantBlockEntries: Array<{ index: number; key: string }> = [];
-  for (let i = 0; i < visibleConversationEntries.length; i++) {
-    const entry = visibleConversationEntries[i];
-    if (entry.kind === "message") {
-      const role = entry.message.role ?? entry.message.info?.role;
-      if (role === "user") {
-        currentBlockKey =
-          firstNonEmptyString(entry.message.info?.id, entry.message.id) ??
-          `user:${i}`;
-      } else if (role === "assistant") {
-        assistantBlockEntries.push({ index: i, key: currentBlockKey });
+  const {
+    entryBlockKeys,
+    isAbsoluteLastInBlockByIndex,
+    isLastTextInBlockByIndex,
+    blockSizeByKey,
+    blockHasInlineAbortByKey,
+  } = useMemo(() => {
+    const entryBlockKeys: string[] = [];
+    let currentBlockKey = "initial";
+    const assistantBlockEntries: Array<{ index: number; key: string }> = [];
+    for (let i = 0; i < visibleConversationEntries.length; i++) {
+      const entry = visibleConversationEntries[i];
+      if (entry.kind === "message") {
+        const role = entry.message.role ?? entry.message.info?.role;
+        if (role === "user") {
+          currentBlockKey =
+            firstNonEmptyString(entry.message.info?.id, entry.message.id) ??
+            `user:${i}`;
+        } else if (role === "assistant") {
+          assistantBlockEntries.push({ index: i, key: currentBlockKey });
+        }
+      }
+      entryBlockKeys.push(currentBlockKey);
+    }
+
+    const isAbsoluteLastInBlockByIndex = new Map<number, boolean>();
+    const lastTextIndexByKey = new Map<string, number>();
+    for (let pos = 0; pos < assistantBlockEntries.length; pos++) {
+      const { index, key } = assistantBlockEntries[pos];
+      const messageEntry = visibleConversationEntries[index];
+      if (messageEntry.kind !== "message") {
+        continue;
+      }
+      const message = messageEntry.message;
+      const hasText = Boolean(
+        message.content || message.text || message.info?.content || message.info?.text,
+      );
+      if (hasText) {
+        lastTextIndexByKey.set(key, index);
       }
     }
-    entryBlockKeys.push(currentBlockKey);
-  }
+    const isLastTextInBlockByIndex = new Map<number, boolean>();
 
-  const isAbsoluteLastInBlockByIndex = new Map<number, boolean>();
-  const lastTextIndexByKey = new Map<string, number>();
-  for (let pos = 0; pos < assistantBlockEntries.length; pos++) {
-    const { index, key } = assistantBlockEntries[pos];
-    const messageEntry = visibleConversationEntries[index];
-    if (messageEntry.kind !== "message") {
-      continue;
+    for (let pos = 0; pos < assistantBlockEntries.length; pos++) {
+      const { index, key } = assistantBlockEntries[pos];
+      const prevKey = pos > 0 ? assistantBlockEntries[pos - 1].key : null;
+      const nextKey =
+        pos < assistantBlockEntries.length - 1
+          ? assistantBlockEntries[pos + 1].key
+          : null;
+
+      const isAbsoluteLast = nextKey !== key;
+
+      const isMultiCardBlock = prevKey === key || nextKey === key;
+      isAbsoluteLastInBlockByIndex.set(index, isMultiCardBlock ? isAbsoluteLast : false);
+
+      const lastTextIndex = lastTextIndexByKey.get(key);
+      let isLastText = false;
+      if (isMultiCardBlock) {
+        if (lastTextIndex !== undefined) {
+          isLastText = index === lastTextIndex;
+        } else {
+          isLastText = isAbsoluteLast;
+        }
+      }
+      isLastTextInBlockByIndex.set(index, isLastText);
     }
-    const message = messageEntry.message;
-    const hasText = Boolean(
-      message.content || message.text || message.info?.content || message.info?.text,
-    );
-    if (hasText) {
-      lastTextIndexByKey.set(key, index);
-    }
-  }
-  const isLastTextInBlockByIndex = new Map<number, boolean>();
 
-  for (let pos = 0; pos < assistantBlockEntries.length; pos++) {
-    const { index, key } = assistantBlockEntries[pos];
-    const prevKey = pos > 0 ? assistantBlockEntries[pos - 1].key : null;
-    const nextKey =
-      pos < assistantBlockEntries.length - 1
-        ? assistantBlockEntries[pos + 1].key
-        : null;
-
-    const isAbsoluteLast = nextKey !== key;
-
-    const isMultiCardBlock = prevKey === key || nextKey === key;
-    isAbsoluteLastInBlockByIndex.set(index, isMultiCardBlock ? isAbsoluteLast : false);
-
-    const lastTextIndex = lastTextIndexByKey.get(key);
-    let isLastText = false;
-    if (isMultiCardBlock) {
-      if (lastTextIndex !== undefined) {
-        isLastText = index === lastTextIndex;
-      } else {
-        isLastText = isAbsoluteLast;
+    const blockSizeByKey = new Map<string, number>();
+    const blockHasInlineAbortByKey = new Map<string, boolean>();
+    for (const { key, index } of assistantBlockEntries) {
+      blockSizeByKey.set(key, (blockSizeByKey.get(key) ?? 0) + 1);
+      const entry = visibleConversationEntries[index];
+      if (
+        entry.kind === "message" &&
+        entry.message.aborted === true &&
+        entry.message.interruptedPresentation === "inline"
+      ) {
+        blockHasInlineAbortByKey.set(key, true);
       }
     }
-    isLastTextInBlockByIndex.set(index, isLastText);
-  }
 
-  const blockSizeByKey = new Map<string, number>();
-  const blockHasInlineAbortByKey = new Map<string, boolean>();
-  for (const { key, index } of assistantBlockEntries) {
-    blockSizeByKey.set(key, (blockSizeByKey.get(key) ?? 0) + 1);
-    const entry = visibleConversationEntries[index];
-    if (
-      entry.kind === "message" &&
-      entry.message.aborted === true &&
-      entry.message.interruptedPresentation === "inline"
-    ) {
-      blockHasInlineAbortByKey.set(key, true);
-    }
-  }
+    return {
+      entryBlockKeys,
+      isAbsoluteLastInBlockByIndex,
+      isLastTextInBlockByIndex,
+      blockSizeByKey,
+      blockHasInlineAbortByKey,
+    };
+  }, [visibleConversationEntries]);
 
   const { entryPrefixHeights, messageCountPrefix } = useMemo(() => {
     const prefixHeights = new Array<number>(visibleConversationEntries.length + 1).fill(0);
@@ -2059,11 +2075,41 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
         typeof compactionDividerIndex === "number" &&
         compactionDividerIndex === messageCountSeen;
       const measuredHeight = measuredEntryHeightsRef.current.get(entry.key);
-      const estimatedHeight =
-        typeof measuredHeight === "number"
-          ? measuredHeight
-          : estimateConversationEntryHeight(entry) +
+      let estimatedHeight = 0;
+      if (typeof measuredHeight === "number") {
+        estimatedHeight = measuredHeight;
+      } else {
+        let isHiddenByBlock = false;
+        let isBlockExpanded = true;
+        if (
+          entry.kind === "message" &&
+          entry.renderKind !== "user" &&
+          entry.renderKind !== "system" &&
+          entry.renderKind !== "permission" &&
+          entry.renderKind !== "background-task-reminder"
+        ) {
+          const blockGroupKey = entryBlockKeys[index];
+          const isAbsoluteLastInBlock = isAbsoluteLastInBlockByIndex.get(index) ?? false;
+          const isLastTextInBlock = isLastTextInBlockByIndex.get(index) ?? false;
+          const blockSize = blockSizeByKey.get(blockGroupKey) ?? 1;
+          const isLiveBlock =
+            hasLiveAssistantTurn &&
+            blockGroupKey === entryBlockKeys[entryBlockKeys.length - 1];
+          isBlockExpanded =
+            blockExpandedState.get(blockGroupKey) ?? (isLiveBlock ? true : false);
+          const isLastInBlock = isBlockExpanded ? isAbsoluteLastInBlock : isLastTextInBlock;
+          isHiddenByBlock = blockSize > 1 && !isLastInBlock && !isBlockExpanded;
+        }
+
+        if (isHiddenByBlock) {
+          estimatedHeight = 0;
+        } else {
+          estimatedHeight =
+            estimateConversationEntryHeight(entry) +
             (hasDividerBefore ? COMPACTION_DIVIDER_ESTIMATED_HEIGHT : 0);
+        }
+      }
+
       prefixHeights[index + 1] = prefixHeights[index] + estimatedHeight;
       messagePrefix[index + 1] =
         messagePrefix[index] + (entry.kind === "message" ? 1 : 0);
@@ -2077,7 +2123,18 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
       entryPrefixHeights: prefixHeights,
       messageCountPrefix: messagePrefix,
     };
-  }, [visibleConversationEntries, measuredHeightsVersion, isCompressed, compactionDividerIndex]);
+  }, [
+    visibleConversationEntries,
+    measuredHeightsVersion,
+    isCompressed,
+    compactionDividerIndex,
+    entryBlockKeys,
+    isAbsoluteLastInBlockByIndex,
+    isLastTextInBlockByIndex,
+    blockSizeByKey,
+    blockExpandedState,
+    hasLiveAssistantTurn,
+  ]);
 
   const transcriptWindow = useMemo(
     () =>
@@ -2340,7 +2397,7 @@ function ChatContent() {
   const resolveAgentColor = useCallback((agentId?: string) => {
     if (!agentId) return "var(--oc-accent)";
 
-    const match = state.availableAgents.find(
+    const match = (state.availableAgents ?? []).find(
       (agent) =>
         agent.id === agentId ||
         agent.name.toLowerCase() === agentId.toLowerCase(),

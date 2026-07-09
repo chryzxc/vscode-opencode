@@ -407,10 +407,15 @@ const MarkdownRendererInner = forwardRef<HTMLDivElement, MarkdownRendererProps>(
   };
 
   // Pre-process markdown to fix numbered lists with blank lines
-  const processedContent = useMemo(
-    () => (isPreParsed ? content : preprocessMarkdown(content || '')),
-    [content, isPreParsed],
-  );
+  // Also brutally truncate massive strings to prevent the UI thread from freezing/crashing
+  // during `marked.parse` when a tool command outputs megabytes of text.
+  const processedContent = useMemo(() => {
+    let raw = content || '';
+    if (raw.length > 150000) {
+      raw = raw.slice(0, 150000) + `\n\n...[content abruptly truncated from ${raw.length} to 150000 characters for performance]`;
+    }
+    return isPreParsed ? raw : preprocessMarkdown(raw);
+  }, [content, isPreParsed]);
 
   const html = useMemo(
     () => (
@@ -424,19 +429,31 @@ const MarkdownRendererInner = forwardRef<HTMLDivElement, MarkdownRendererProps>(
   );
 
   useEffect(() => {
+    let timeoutId: number | null = null;
+
     if (innerRef.current) {
-      // Syntax-highlight code blocks
-      const codeBlocks = innerRef.current.querySelectorAll('pre code');
-      codeBlocks.forEach((block) => {
-        hljs.highlightElement(block as HTMLElement);
-      });
+      // Debounce expensive synchronous operations during streaming to prevent
+      // blocking the main thread and crashing the webview (OOM/grey screen).
+      timeoutId = window.setTimeout(() => {
+        if (!innerRef.current) return;
 
-      // Add copy controls to fenced code blocks.
-      injectCodeBlockCopyButtons(innerRef.current);
+        // Syntax-highlight code blocks
+        const codeBlocks = innerRef.current.querySelectorAll('pre code');
+        codeBlocks.forEach((block) => {
+          hljs.highlightElement(block as HTMLElement);
+        });
 
-      // Inject file icons next to file-path-like text
-      injectFileIcons(innerRef.current);
+        // Add copy controls to fenced code blocks.
+        injectCodeBlockCopyButtons(innerRef.current);
+
+        // Inject file icons next to file-path-like text
+        injectFileIcons(innerRef.current);
+      }, 100);
     }
+
+    return () => {
+      if (timeoutId !== null) window.clearTimeout(timeoutId);
+    };
   }, [html]);
 
   const Tag = isInline ? 'span' : 'div';

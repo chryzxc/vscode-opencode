@@ -476,15 +476,19 @@ export function getCentralizedEventInfo(payload: unknown): UnknownRecord | null 
   return null;
 }
 
+// NOTE: Stream events (like SSE) often use `.event` or `.kind` instead of `.type`.
+// This fallback chain is critical for ensuring that live stream events are correctly
+// classified. Without this, stream events will resolve to an empty type and be
+// incorrectly rejected by the centralized data persister.
 export function getCentralizedEventType(payload: unknown): string {
   const event = asRecord(payload);
   if (!event) {
     return "";
   }
 
-  const directType = asString(event.type).trim();
+  const directType = asString(event.type ?? event.event ?? event.kind).trim();
   const payloadRecord = asRecord(event.payload);
-  const payloadType = asString(payloadRecord?.type).trim();
+  const payloadType = asString(payloadRecord?.type ?? payloadRecord?.event ?? payloadRecord?.kind).trim();
   const payloadSyncType = asString(asRecord(payloadRecord?.syncEvent)?.type).trim();
   const syncType = asString(asRecord(event.syncEvent)?.type).trim();
 
@@ -1162,11 +1166,14 @@ function getMessageModelIdentity(message: Message): {
   };
 }
 
-function findLatestContextInputTokens(messages: Message[]): {
+function findLatestContextInputTokens(messages: Message[] | undefined | null): {
   inputTokens: number;
   providerID?: string;
   modelID?: string;
 } | undefined {
+  if (!messages || messages.length === 0) {
+    return undefined;
+  }
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const inputTokens = getMessageInputTokens(messages[index]);
     if (inputTokens === undefined) {
@@ -8321,11 +8328,12 @@ function handleStreamEvent(
   getState: () => AppState,
   payload: UnknownRecord,
   terminalErrorReached: boolean,
-  shouldSuppressProcessingBootstrap: boolean = false
+  shouldSuppressProcessingBootstrap: boolean = false,
+  markAssistantTurnClosed?: (...messageIds: Array<string | null | undefined>) => void
 ): void {
   const dispatchProcessingTrue = () => {
     if (!shouldSuppressProcessingBootstrap) {
-      dispatchProcessingTrue();
+      dispatch({ type: "SET_IS_PROCESSING", payload: true });
     }
   };
 
@@ -9148,7 +9156,7 @@ function handleStreamEvent(
               sessionID,
             });
 
-        const existing = getState().streaming?.steps.find(
+        const existing = (getState().streaming?.steps ?? []).find(
           (step) => !!callID && step.callID === callID
         );
         if (!existing) {
@@ -9645,13 +9653,15 @@ function handleStreamEvent(
 
 
       if (finish) {
-        markAssistantTurnClosed(
-          asString(asRecord(payload.info)?.id),
-          asString(asRecord(properties)?.messageID),
-          asString(asRecord(properties)?.messageId),
-          asString(payload.messageId),
-          asString(payload.messageID),
-        );
+        if (markAssistantTurnClosed) {
+          markAssistantTurnClosed(
+            asString(asRecord(payload.info)?.id),
+            asString(asRecord(properties)?.messageID),
+            asString(asRecord(properties)?.messageId),
+            asString(payload.messageId),
+            asString(payload.messageID),
+          );
+        }
         const finalized = finalizeStreamingSnapshotSteps(
           getState().streaming,
           asString(asRecord(payload.info)?.error) ||
@@ -10045,16 +10055,24 @@ function handleStreamEvent(
     case 'session.completed':
     case 'finish':
     case 'done': {
-      const terminalStatus: "done" | "error" =
+        const terminalStatus: "done" | "error" =
         asString(payload.error) || asString(asRecord(payload.info)?.error)
           ? "error"
           : "done";
-      markAssistantTurnClosed(
-        asString(asRecord(payload.info)?.id),
-        asString(payload.messageID) || asString(payload.messageId),
-        asString(asRecord(payload.properties)?.messageID),
-        asString(asRecord(payload.properties)?.messageId),
-      );
+
+      // Mark the assistant turn as closed if the function is provided.
+      // We pass both potential sources for message IDs (info, properties, or payload)
+      // to ensure the backend can correctly correlate the finalization event.
+      if (markAssistantTurnClosed) {
+        markAssistantTurnClosed(
+          asString(asRecord(payload.info)?.id),
+          asString(asRecord(properties)?.messageID),
+          asString(asRecord(properties)?.messageId),
+          asString(payload.messageId),
+          asString(payload.messageID),
+        );
+      }
+
       const finalized = finalizeStreamingSnapshotSteps(
         getState().streaming,
         terminalStatus,
@@ -11474,7 +11492,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             );
             if (isSwitchingSession) {
               // Look up the session title from the sessions list
-              const session = currentState.sessionsList.find(s => s.id === chatHistorySessionId);
+              const session = (currentState.sessionsList ?? []).find(s => s.id === chatHistorySessionId);
               const sessionTitle = session?.title || chatHistorySessionId;
 
               dispatch({
@@ -12254,7 +12272,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           // session state stay in sync even while the live UI waits for a renderable
           // assistant turn.
           if (
-            centralizedDisposition === "persist" &&
+            centralizedDisposition !== "excluded-noise" &&
             streamEventType !== "server.heartbeat" &&
             !terminalErrorReached
           ) {
@@ -12271,16 +12289,18 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                 event: payload,
               },
             });
-            const persistSessionId = eventSessionId || activeSessionId || getState().currentSessionId || null;
-            if (persistSessionId) {
-              vscode.postMessage({
-                type: "persistRawSdkEventPayload",
-                sessionId: persistSessionId,
-                event: payload,
-              });
+            if (centralizedDisposition === "persist") {
+              const persistSessionId = eventSessionId || activeSessionId || getState().currentSessionId || null;
+              if (persistSessionId) {
+                vscode.postMessage({
+                  type: "persistRawSdkEventPayload",
+                  sessionId: persistSessionId,
+                  event: payload,
+                });
+              }
             }
           } else if (
-            centralizedDisposition !== "persist" &&
+            centralizedDisposition === "excluded-noise" &&
             streamEventType !== "server.heartbeat" &&
             !terminalErrorReached
           ) {
@@ -12361,6 +12381,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               payload,
               terminalErrorReached,
               shouldSuppressProcessingBootstrap,
+              markAssistantTurnClosed
             );
             dispatch({
               type: "SET_SESSION_STREAMING",
@@ -12371,7 +12392,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             });
             break;
           }
-          handleStreamEvent(dispatch, getState, payload, terminalErrorReached, shouldSuppressProcessingBootstrap);
+          handleStreamEvent(dispatch, getState, payload, terminalErrorReached, shouldSuppressProcessingBootstrap, markAssistantTurnClosed);
           const streamingAfter = getState().streaming;
           if (streamingAfter) {
             latestStreamingSnapshot = streamingAfter;
@@ -13210,6 +13231,10 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         stack: error instanceof Error ? error.stack : undefined,
         eventType: asString((event.data as { type?: unknown })?.type),
         eventData: event.data
+      });
+      dispatch({
+        type: "ADD_ERROR_MESSAGE",
+        payload: `An unexpected UI error occurred while processing an event. Some data may be missing or stuck. Please check the logs. Error: ${error instanceof Error ? error.message : String(error)}`
       });
     }
   };

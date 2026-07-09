@@ -2226,7 +2226,47 @@ export class SessionService {
     await this.saveSessionMessages(sessionId, messages);
   }
 
-  async appendRawSdkEventPayload(sessionId: string, event: unknown): Promise<void> {
+  private truncateLargeStrings(obj: any, maxLen: number = 200000): any {
+    if (!obj || typeof obj !== "object") return obj;
+    const seen = new WeakSet();
+    const stack = [obj];
+    
+    while (stack.length > 0) {
+      const current = stack.pop();
+      if (!current || typeof current !== "object" || seen.has(current)) continue;
+      seen.add(current);
+      
+      if (Array.isArray(current)) {
+        for (let i = 0; i < current.length; i++) {
+          const item = current[i];
+          if (typeof item === "string") {
+            if (item.length > maxLen) {
+              current[i] = item.slice(0, maxLen) + "\n...[truncated " + (item.length - maxLen) + " chars]";
+            }
+          } else if (item && typeof item === "object") {
+            stack.push(item);
+          }
+        }
+      } else {
+        for (const key in current) {
+          if (Object.prototype.hasOwnProperty.call(current, key)) {
+            const item = current[key];
+            if (typeof item === "string") {
+              if (item.length > maxLen) {
+                current[key] = item.slice(0, maxLen) + "\n...[truncated " + (item.length - maxLen) + " chars]";
+              }
+            } else if (item && typeof item === "object") {
+              stack.push(item);
+            }
+          }
+        }
+      }
+    }
+    return obj;
+  }
+
+  async appendRawSdkEventPayload(sessionId: string, rawEvent: unknown): Promise<void> {
+    const event = this.truncateLargeStrings(this.cloneRawSdkEventPayload(rawEvent));
     const eventSummary = this.describeRawSdkEventPayloadForLog(event);
     log.info("[CENTRALIZED-TAPE][SESSION] append_received", {
       sessionId,

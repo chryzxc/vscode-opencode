@@ -168,10 +168,14 @@ function stripDotPathIfJsonSchema(
   }
 }
 
+// NOTE: Stream events (like SSE) often use `.event` or `.kind` instead of `.type`.
+// This fallback chain is critical for ensuring that live stream events are correctly
+// classified and not dropped by the centralized data persister. Without this,
+// stream events will resolve to an empty type and be incorrectly rejected as noise.
 function normalizedCentralizedEventType(event: Record<string, unknown>): string {
-  const directType = asString(event.type).trim();
+  const directType = asString(event.type ?? event.event ?? event.kind).trim();
   const payloadRecord = asRecord(event.payload);
-  const payloadType = asString(payloadRecord?.type).trim();
+  const payloadType = asString(payloadRecord?.type ?? payloadRecord?.event ?? payloadRecord?.kind).trim();
   const payloadSyncType = asString(asRecord(payloadRecord?.syncEvent)?.type).trim();
   const syncType = asString(asRecord(event.syncEvent)?.type).trim();
 
@@ -223,6 +227,9 @@ function hasDeltaProperty(payload: Record<string, unknown>): boolean {
     payloadRecord?.delta,
     asRecord(payloadRecord?.properties)?.delta,
     asRecord(asRecord(payloadRecord?.properties)?.part)?.delta,
+    payload.text,
+    payload.content,
+    payload.chunk,
   ].some((value) => typeof value === "string" && value.length > 0);
 }
 
@@ -394,11 +401,11 @@ function centralizedDebugPayloadFingerprint(payload: unknown): string {
     return normalizedValues.join("|");
   }
 
-  try {
-    return JSON.stringify(event);
-  } catch {
-    return `${Object.prototype.toString.call(event)}:${String(event)}`;
-  }
+  // DO NOT use JSON.stringify as a fallback fingerprint! 
+  // 1. It is extremely slow for large objects (O(N^2) during deduplication loops).
+  // 2. It incorrectly drops stream chunks that happen to contain the same text (e.g. two chunks with " the ").
+  // If an event has no recognizable identity fields, we treat it as unique to avoid dropping it.
+  return `unique_unidentified_${Math.random()}_{Date.now()}`;
 }
 
 export function dedupeCentralizedDebugPayloads(payloads: unknown[]): unknown[] {
@@ -458,4 +465,32 @@ export function shouldPersistCentralizedSessionEventPayload(payload: unknown): b
   // durable source of truth, so trimming to a small allowlist can silently
   // drop important lifecycle frames that power hydration and timeline parity.
   return normalizedCentralizedEventType(event).length > 0;
+}
+
+
+/**
+ * Optimized append-and-dedupe that avoids O(N^2) recalculations of fingerprints.
+ * We only check the new payload against the last 50 items because duplicates
+ * usually happen close to each other. This is critical for stream chunks.
+ */
+export function appendAndDedupeCentralizedDebugPayload(existing: unknown[], newPayload: unknown): unknown[] {
+  if (!Array.isArray(existing)) {
+    return [newPayload];
+  }
+  const newKey =
+    getCentralizedDebugPayloadIdentity(newPayload) ||
+    centralizedDebugPayloadFingerprint(newPayload);
+
+  // Check the last 50 items for a duplicate.
+  const limit = Math.max(0, existing.length - 50);
+  for (let i = existing.length - 1; i >= limit; i--) {
+    const existingKey =
+      getCentralizedDebugPayloadIdentity(existing[i]) ||
+      centralizedDebugPayloadFingerprint(existing[i]);
+    if (existingKey === newKey) {
+      return existing; // Duplicate found, ignore new payload
+    }
+  }
+
+  return [...existing, newPayload];
 }

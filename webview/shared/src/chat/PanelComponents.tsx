@@ -2216,7 +2216,10 @@ export function InputWrapper() {
   const event = activeInteractiveEvent;
   const showInteractivePopover = displayInteractiveEvents.length > 0;
   const currentInteractiveAnswered = Boolean(
-    event?.id && pendingAnswers[event.id]?.text.trim(),
+    event?.id &&
+      (Array.isArray(pendingAnswers[event.id]?.text)
+        ? pendingAnswers[event.id]?.text.length > 0
+        : (pendingAnswers[event.id]?.text as string)?.trim()),
   );
   const eventTitleText = event?.title?.trim() || "";
   const eventBodyText =

@@ -19,6 +19,7 @@ import {
 } from "./rawResponse";
 import {
   dedupeCentralizedDebugPayloads,
+  appendAndDedupeCentralizedDebugPayload,
   sanitizeCentralizedDebugPayload,
   shouldIncludeCentralizedDebugPayload,
 } from "./generated/centralizedDebugPayloadFilter";
@@ -1946,7 +1947,13 @@ export function coalesceAssistantRunForCanonical(run: Message[]): Message {
   for (const message of run) {
     const messageId = getMessageIdForCanonical(message);
     if (messageId) {
-  canonicalId = messageId;
+      canonicalId = messageId;
+      if (!Array.isArray((base as unknown as Record<string, unknown>).coalescedIds)) {
+        (base as unknown as Record<string, unknown>).coalescedIds = [];
+      }
+      if (!(base as unknown as Record<string, unknown>).coalescedIds.includes(messageId)) {
+        ((base as unknown as Record<string, unknown>).coalescedIds as string[]).push(messageId);
+      }
     }
     const text = extractRenderableAssistantTextForCanonical(message);
     if (text) {
@@ -2856,11 +2863,9 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     }
     case "SET_RAW_SDK_EVENT_PAYLOADS": {
       const rawEvents = Array.isArray(action.payload.events) ? action.payload.events : [];
-      const events = dedupeCentralizedDebugPayloads(
-        rawEvents
+      const events = rawEvents
           .filter(shouldIncludeCentralizedDebugPayload)
-          .map((event) => sanitizeCentralizedDebugPayload(event))
-      );
+          .map((event) => sanitizeCentralizedDebugPayload(event));
       const existingEvents = state.rawSdkEventPayloadsBySessionId?.[action.payload.sessionId];
       if (areCentralizedEventListsEquivalent(existingEvents, events)) {
         return state;
@@ -2900,7 +2905,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       }
       const existing = state.rawSdkEventPayloadsBySessionId?.[sessionId] ?? [];
       const sanitizedEvent = sanitizeCentralizedDebugPayload(action.payload.event);
-      const next = dedupeCentralizedDebugPayloads([...existing, sanitizedEvent]);
+      const next = appendAndDedupeCentralizedDebugPayload(existing, sanitizedEvent) as unknown[];
       const event = asRecordLocal(sanitizedEvent);
       const properties = asRecordLocal(event?.properties);
       const info = asRecordLocal(properties?.info);
@@ -3206,15 +3211,12 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         return state;
       }
       const existing = state.streaming.rawSdkEventPayloads ?? [];
-      const next = dedupeCentralizedDebugPayloads([...existing, action.payload]);
+      const next = appendAndDedupeCentralizedDebugPayload(existing, action.payload) as unknown[];
       const nextRawSdkEventPayloadsBySessionId =
         state.currentSessionId
           ? pruneSessionCache({
             ...(state.rawSdkEventPayloadsBySessionId ?? {}),
-            [state.currentSessionId]: dedupeCentralizedDebugPayloads([
-              ...(state.rawSdkEventPayloadsBySessionId?.[state.currentSessionId] ?? []),
-              action.payload,
-            ]),
+            [state.currentSessionId]: appendAndDedupeCentralizedDebugPayload(state.rawSdkEventPayloadsBySessionId?.[state.currentSessionId] ?? [], action.payload),
           }, state.currentSessionId)
           : state.rawSdkEventPayloadsBySessionId;
       // NOTE: Cap the per-turn streaming snapshot at 200 entries to bound memory,
@@ -4137,7 +4139,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     }
     case "DISMISS_INTERACTIVE_EVENT": {
       const dismissedInteractiveEventKeys = new Set(state.dismissedInteractiveEventKeys);
-      const dismissedEvent = state.interactiveEvents.find((event) => event.id === action.payload);
+      const dismissedEvent = (state.interactiveEvents ?? []).find((event) => event.id === action.payload);
       const dismissedKeys = dismissedEvent
         ? getInteractiveEventKeysLocal(dismissedEvent)
         : [`id:${action.payload}`];

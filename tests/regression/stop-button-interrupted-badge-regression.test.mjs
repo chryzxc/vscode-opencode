@@ -97,3 +97,24 @@ test("conversation projection detaches late abort badges instead of reordering t
     "conversation projection should keep canonical card order timestamp-first and leave late abort placement to the detached entry",
   );
 });
+
+test("isVisuallyEmpty accounts for timeline activity so non-aborted cards in expanded blocks are not hidden", () => {
+  assert.match(
+    messageComponentsSource,
+    /const hasTimelineActivity =\s*nonQuestionTimelineDisplayEventGroups\.length > 0\s*\|\|\s*hasPendingReasoningDisplayEvent/s,
+    "hasTimelineActivity guard must exist before isVisuallyEmpty to prevent hiding cards with only tool-call activity",
+  );
+  assert.match(
+    messageComponentsSource,
+    /const isVisuallyEmpty =[\s\S]*!hasTimelineActivity/s,
+    "isVisuallyEmpty must reference hasTimelineActivity so cards with timeline events are never considered empty",
+  );
+});
+
+test("inline Interrupted badge is suppressed for individual cards inside multi-card abort blocks", () => {
+  assert.match(
+    messageComponentsSource,
+    /interruptedPresentation === "inline"\s*&&\s*!hasQuestionLikeInteractiveContent\(cardMessage\)\s*&&[\s\S]*blockHasInlineAbort\s*&&\s*blockSize/s,
+    "inline Interrupted badge must be gated on !(blockHasInlineAbort && blockSize > 1) to prevent duplicate badges in expanded blocks",
+  );
+});

@@ -13,7 +13,7 @@ export const config = {
      * @default true
      */
     showBrowserConsole: false,
-    showCentralizedDebug: false,
+    showCentralizedDebug: true,
   },
 };
 

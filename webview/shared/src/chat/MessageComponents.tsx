@@ -7227,6 +7227,12 @@ const centralizedRawResponse = message?.rawResponse;
     }
 
     if (messageCandidateIds.size === 0) {
+      if (message?.aborted && messageAttachedRawSdkEventPayloads.length > 0) {
+        return [
+          ...messageAttachedRawSdkEventPayloads,
+          ...sessionScopedNoIdPayloads,
+        ];
+      }
       return [];
     }
 
@@ -8653,11 +8659,10 @@ const responseBodyChunks = useMemo(() => {
     hasActiveReasoningPart ||
     hasPendingReasoningDisplayEvent;
   const showResponseSection =
-    !isAborted &&
-    (shouldShowPlanCard ||
-      hasVisibleResponseBody ||
-      hasStickyTimelineActivity ||
-      (isLiveStream && hasLiveTimelineActivity));
+    shouldShowPlanCard ||
+    hasVisibleResponseBody ||
+    hasStickyTimelineActivity ||
+    (isLiveStream && hasLiveTimelineActivity);
 const hasVisibleResponseSectionContent =
     showResponseBody ||
     (shouldShowPlanCard && !!plan);
@@ -8760,6 +8765,17 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
     return () => root.removeEventListener("click", onClick);
   }, []);
 
+  // An assistant card may lack visible response text (hasVisibleResponseSectionContent)
+  // or a response header (showAssistantResponseHeader) and still contain meaningful
+  // activity in its timeline — e.g. tool-call steps, file edits, or pending reasoning.
+  //
+  // Without this guard, non-last cards in an expanded multi-card block (blockSize > 1)
+  // that contain only timeline activity are marked isVisuallyEmpty and hidden via CSS,
+  // leaving only the aborted/highest-card visible. The user sees an empty expanded block
+  // instead of the full activity history.
+  const hasTimelineActivity =
+    nonQuestionTimelineDisplayEventGroups.length > 0 ||
+    hasPendingReasoningDisplayEvent;
   const isVisuallyEmpty =
     !hasVisibleResponseSectionContent &&
     !showAssistantResponseHeader &&
@@ -8772,7 +8788,8 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
     message?.retryState !== "retrying_without_structured_output" &&
     (hideFileChangesSection || !shouldShowFileChanges) &&
     (!centralizedDiffEvent?.files || centralizedDiffEvent.files.length === 0) &&
-    (!subagents || subagents.length === 0);
+    (!subagents || subagents.length === 0) &&
+    !hasTimelineActivity;
 
   const responseEnterClass = streaming
     ? "oc-assistant-streaming-enter"
@@ -9626,7 +9643,13 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
         )}
 
         {interruptedPresentation === "inline" &&
-          !hasQuestionLikeInteractiveContent(cardMessage) && (
+          !hasQuestionLikeInteractiveContent(cardMessage) &&
+          // When this card is part of a multi-card block that has an inline
+          // abort, the block-level presentation (collapsed override badge or
+          // detached assistant.abort transcript entry) already provides the
+          // interruption indicator. Rendering a second inline badge on the
+          // individual card inside the block would duplicate the visual.
+          !(blockHasInlineAbort && blockSize !== undefined && blockSize > 1) && (
           // Inline interrupted badge is correct only when the abort belongs to
           // this card's own transcript position. If projection switches the
           // presentation to `detached`, a separate later conversation entry
