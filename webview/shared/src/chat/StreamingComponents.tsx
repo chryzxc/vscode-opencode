@@ -201,6 +201,7 @@ export function shouldShowStreamingCard({
   if (Array.isArray(interactiveEvents) && interactiveEvents.length > 0) {
     return true;
   }
+  if (streaming.liveSessionStatus) return true;
   if (streaming.steps.length > 0 || streaming.progressEvents.length > 0) return true;
   if (streaming.messageId) {
     const liveSubagents = subagentsByParentMessageId?.[streaming.messageId];

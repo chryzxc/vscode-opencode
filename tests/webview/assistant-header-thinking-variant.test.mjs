@@ -14,11 +14,30 @@ const messageHandlerSource = readSource(
 );
 
 test("assistant header renders thinking variant beside agent/model metadata", () => {
-  // Implementation detail test simplified - component structure is implementation detail
   assert.match(
     messageComponentsSource,
     /thinking|variant|level/,
     "should handle thinking variant metadata",
+  );
+  assert.match(
+    messageComponentsSource,
+    /const assistantHeaderAgentLabel = firstNonEmptyString\(agentName\)\?\.trim\(\) \|\| "assistant";/,
+    "assistant response header should keep a visible fallback agent label instead of disappearing when metadata is partially missing",
+  );
+  assert.match(
+    messageComponentsSource,
+    /const showAssistantResponseHeader = hasPrimaryResponseBody;/,
+    "assistant response header should render for every visible AI response block that has a primary response body",
+  );
+  assert.match(
+    messageComponentsSource,
+    /if \(assistantHeaderAgentLabel\) \{[\s\S]*key: "agent",[\s\S]*text: assistantHeaderAgentLabel,/s,
+    "assistant response header should always emit a visible leading agent segment using the fallback-aware label",
+  );
+  assert.match(
+    messageComponentsSource,
+    /modelName !== "assistant" &&[\s\S]*modelName !== assistantHeaderAgentLabel/s,
+    "assistant response header should avoid duplicating the fallback assistant label as both agent and model",
   );
 });
 

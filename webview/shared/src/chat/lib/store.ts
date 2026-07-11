@@ -148,6 +148,7 @@ export const initialState: AppState = {
   opencodeConfig: undefined,
   opencodeConfigSaveStatus: undefined,
   configFiles: undefined,
+  revertState: null,
   streamingBySessionId: {},
   themeCssVersion: 0,
   showLogger: true,
@@ -197,6 +198,10 @@ export type AppAction =
   | {
     type: "APPEND_LIVE_TOAST_NOTIFICATION";
     payload: { sessionId?: string | null; notification: CentralizedToastNotification };
+  }
+  | {
+    type: "UPDATE_LIVE_SESSION_STATUS";
+    payload: StreamingState["liveSessionStatus"] | null;
   }
   | {
     type: "CACHE_SESSION_MESSAGES";
@@ -358,7 +363,8 @@ export type AppAction =
   | {
     type: "SET_CONFIG_FILE_SAVED";
     payload: { filePath: string; success: boolean; error?: string };
-  };
+  }
+  | { type: "SET_REVERT_STATE"; payload: AppState["revertState"] };
 
 function mergeStats(current: SessionStats, next: SessionStats): SessionStats {
   return {
@@ -818,6 +824,7 @@ function mergeStreamingSnapshotLocal(
       edits: incoming.edits ?? [],
       interactiveEvents: incoming.interactiveEvents ?? [],
       rawSdkEventPayloads: incoming.rawSdkEventPayloads ?? [],
+      liveSessionStatus: incoming.liveSessionStatus ?? null,
     };
   }
 
@@ -861,6 +868,10 @@ function mergeStreamingSnapshotLocal(
       (incoming.content.trim().length > 0 ? Date.now() : undefined),
     plan: incoming.plan ?? existing.plan,
     structuredOutput: incoming.structuredOutput ?? existing.structuredOutput,
+    liveSessionStatus:
+      incoming.liveSessionStatus === undefined
+        ? existing.liveSessionStatus
+        : incoming.liveSessionStatus,
     rawSdkEventPayloads: dedupeCentralizedDebugPayloads(
       [...(existing.rawSdkEventPayloads ?? []), ...(incoming.rawSdkEventPayloads ?? [])],
     ),
@@ -906,6 +917,7 @@ function hasVisibleStreamingSnapshotLocal(
     (Array.isArray(streaming.steps) && streaming.steps.length > 0) ||
     (Array.isArray(streaming.edits) && streaming.edits.length > 0) ||
     (Array.isArray(streaming.interactiveEvents) && streaming.interactiveEvents.length > 0) ||
+    !!streaming.liveSessionStatus ||
     (Array.isArray(streaming.rawSdkEventPayloads) && streaming.rawSdkEventPayloads.length > 0)
   );
 }
@@ -2931,7 +2943,19 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     }
     case "APPEND_LIVE_TOAST_NOTIFICATION": {
       const sessionId = action.payload.sessionId ?? state.currentSessionId ?? "";
+      if (typeof console !== "undefined") {
+        console.warn("[LIVE-EVENT][reducer] APPEND_LIVE_TOAST_NOTIFICATION", {
+          toastKey: action.payload.notification.key,
+          toastType: action.payload.notification.type,
+          toastTitle: action.payload.notification.title,
+          resolvedSessionId: sessionId,
+          currentSessionId: state.currentSessionId ?? null,
+        });
+      }
       if (!sessionId) {
+        if (typeof console !== "undefined") {
+          console.warn("[LIVE-EVENT][reducer] APPEND_LIVE_TOAST_NOTIFICATION dropped — no sessionId");
+        }
         return state;
       }
       const existing = state.liveToastNotificationsBySessionId?.[sessionId] ?? [];
@@ -3001,6 +3025,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
             steps: [],
             progressEvents: [],
             edits: [],
+            liveSessionStatus: null,
             isActive: true,
             agent: state.selectedAgent || undefined,
             // NOTE: model, modelID, providerID intentionally omitted
@@ -3201,6 +3226,54 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         ...state,
         streaming,
         streamingBySessionId,
+      };
+    }
+    case "UPDATE_LIVE_SESSION_STATUS": {
+      if (typeof console !== "undefined") {
+        console.warn("[LIVE-EVENT][reducer] UPDATE_LIVE_SESSION_STATUS", {
+          statusType: action.payload?.statusType ?? null,
+          hadStreaming: !!state.streaming,
+          currentSessionId: state.currentSessionId ?? null,
+        });
+      }
+      if (!state.streaming) {
+        if (!action.payload) {
+          return state;
+        }
+        const streaming: StreamingState = {
+          messageId: null,
+          content: "",
+          reasoning: "",
+          reasoningEvents: [],
+          steps: [],
+          progressEvents: [],
+          edits: [],
+          liveSessionStatus: action.payload,
+          isActive: true,
+          agent: state.selectedAgent || undefined,
+        };
+        return {
+          ...state,
+          streaming,
+          streamingBySessionId: cacheStreamingForSession(
+            state.streamingBySessionId,
+            state.currentSessionId,
+            streaming,
+          ),
+        };
+      }
+      const streaming = {
+        ...state.streaming,
+        liveSessionStatus: action.payload,
+      };
+      return {
+        ...state,
+        streaming,
+        streamingBySessionId: cacheStreamingForSession(
+          state.streamingBySessionId,
+          state.currentSessionId,
+          streaming,
+        ),
       };
     }
     case "APPEND_SDK_EVENT_PAYLOAD": {
@@ -3528,6 +3601,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       const streaming = {
         ...state.streaming,
         isActive: false,
+        liveSessionStatus: null,
         usage: action.payload?.usage ?? state.streaming.usage,
       };
       logger.info("[LOADING][STORE] FINISH_STREAMING", {
@@ -4193,6 +4267,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, opencodeConfigSaveStatus: action.payload };
     case "SET_SHOW_LOGGER":
       return { ...state, showLogger: action.payload };
+    case "SET_REVERT_STATE":
+      return { ...state, revertState: action.payload };
     case "SET_CONFIG_FILES_LIST": {
       const configFilesState: ConfigFilesState = {
         files: action.payload.files,

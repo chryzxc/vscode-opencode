@@ -19,6 +19,8 @@ const CENTRALIZED_DEBUG_EXCLUDED_PATH_RULES = [
       "message.part.delta",
       "message.part.delta.1",
       "tui.toast.show",
+      "tui.show",
+      "session.status",
     ],
   },
   {
@@ -30,6 +32,8 @@ const CENTRALIZED_DEBUG_EXCLUDED_PATH_RULES = [
       "message.part.delta",
       "message.part.delta.1",
       "tui.toast.show",
+      "tui.show",
+      "session.status",
     ],
   },
   {
@@ -41,6 +45,34 @@ const CENTRALIZED_DEBUG_EXCLUDED_PATH_RULES = [
       "message.part.delta",
       "message.part.delta.1",
       "tui.toast.show",
+      "tui.show",
+      "session.status",
+    ],
+  },
+  {
+    path: "syncEvent.data.type",
+    values: [
+      "server.connected",
+      "server.connected.1",
+      "server.heartbeat",
+      "message.part.delta",
+      "message.part.delta.1",
+      "tui.toast.show",
+      "tui.show",
+      "session.status",
+    ],
+  },
+  {
+    path: "payload.syncEvent.data.type",
+    values: [
+      "server.connected",
+      "server.connected.1",
+      "server.heartbeat",
+      "message.part.delta",
+      "message.part.delta.1",
+      "tui.toast.show",
+      "tui.show",
+      "session.status",
     ],
   },
 ] as const;
@@ -166,17 +198,23 @@ function stripDotPathIfJsonSchema(
 // This fallback chain is critical for ensuring that live stream events are correctly
 // classified and not dropped by the centralized data persister. Without this,
 // stream events will resolve to an empty type and be incorrectly rejected as noise.
-function normalizedCentralizedEventType(event: Record<string, unknown>): string {
+export function normalizedCentralizedEventType(event: Record<string, unknown>): string {
   const directType = asString(event.type ?? event.event ?? event.kind).trim();
   const payloadRecord = asRecord(event.payload);
   const payloadType = asString(payloadRecord?.type ?? payloadRecord?.event ?? payloadRecord?.kind).trim();
-  const payloadSyncType = asString(asRecord(payloadRecord?.syncEvent)?.type).trim();
-  const syncType = asString(asRecord(event.syncEvent)?.type).trim();
+  const syncEvent = asRecord(event.syncEvent);
+  const syncType = asString(syncEvent?.type).trim();
+  const syncData = asRecord(syncEvent?.data);
+  const syncDataType = asString(syncData?.type ?? syncData?.event ?? syncData?.kind).trim();
+  const payloadSyncEvent = asRecord(payloadRecord?.syncEvent);
+  const payloadSyncType = asString(payloadSyncEvent?.type).trim();
+  const payloadSyncData = asRecord(payloadSyncEvent?.data);
+  const payloadSyncDataType = asString(payloadSyncData?.type ?? payloadSyncData?.event ?? payloadSyncData?.kind).trim();
 
   const rawType =
     directType && directType !== "sync"
       ? directType
-      : payloadSyncType || syncType || payloadType || directType;
+      : payloadSyncType || syncType || payloadSyncDataType || syncDataType || payloadType || directType;
 
   return rawType.replace(/\.\d+$/, "");
 }
@@ -281,7 +319,10 @@ export function getCentralizedDebugPayloadDisposition(
           (expected) => asString(value).trim().toLowerCase() === expected.toLowerCase(),
         )
       ) {
-        return record.type === "tui.toast.show" ? "live-only" : "excluded-noise";
+        const normalizedType = normalizedCentralizedEventType(record);
+        return normalizedType === "tui.toast.show" || normalizedType === "tui.show" || normalizedType === "session.status"
+          ? "live-only"
+          : "excluded-noise";
       }
     }
   }

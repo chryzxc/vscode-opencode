@@ -426,6 +426,99 @@ export async function activate(context: vscode.ExtensionContext) {
     );
 
     // ============================================================================
+    // COMMAND: opencode.addToThread
+    // ============================================================================
+    // Purpose: Add editor selection, whole file, or explorer file(s)/folder(s)
+    //          to the active chat thread as context.
+    // Invocation contexts:
+    //   - Editor right-click (with or without selection)
+    //   - Explorer right-click on file(s) or folder(s)
+    //   - Command palette
+    // Integration: Adds context via ChatViewProvider.addContext()
+    // ============================================================================
+    context.subscriptions.push(
+      vscode.commands.registerCommand(
+        "opencode.addToThread",
+        async (input?: vscode.Uri | vscode.Uri[]) => {
+          const uris = input
+            ? Array.isArray(input)
+              ? input
+              : [input]
+            : [];
+
+          if (uris.length === 0) {
+            const editor = vscode.window.activeTextEditor;
+            if (!editor) {
+              vscode.window.showWarningMessage("No active editor or file selected");
+              return;
+            }
+            const file = vscode.workspace.asRelativePath(editor.document.uri);
+            const selection = editor.document.getText(editor.selection);
+            if (selection && selection.trim().length > 0) {
+              const startLine = editor.selection.start.line + 1;
+              const endLine = editor.selection.end.line + 1;
+              const lineInfo =
+                startLine === endLine ? `${startLine}` : `${startLine}-${endLine}`;
+              await chatViewProvider.addContext({
+                file,
+                lineInfo,
+                content: selection,
+                languageId: editor.document.languageId,
+              });
+            } else {
+              await chatViewProvider.addContext({
+                file,
+                languageId: editor.document.languageId,
+              });
+            }
+            await vscode.commands.executeCommand("opencode.chatView.focus");
+            return;
+          }
+
+          const MAX_FILES = 50;
+          const collectedUris: vscode.Uri[] = [];
+          for (const uri of uris) {
+            try {
+              const stat = await vscode.workspace.fs.stat(uri);
+              if (stat.type === vscode.FileType.Directory) {
+                const relPattern = new vscode.RelativePattern(uri, "**/*");
+                const found = await vscode.workspace.findFiles(
+                  relPattern,
+                  "**/{node_modules,.git,dist,build,out,.next,.cache}/**",
+                  MAX_FILES - collectedUris.length,
+                );
+                collectedUris.push(...found);
+              } else {
+                collectedUris.push(uri);
+              }
+            } catch {
+              collectedUris.push(uri);
+            }
+            if (collectedUris.length >= MAX_FILES) break;
+          }
+
+          if (collectedUris.length === 0) {
+            vscode.window.showWarningMessage("No files found to add");
+            return;
+          }
+
+          if (collectedUris.length > MAX_FILES) {
+            vscode.window.showWarningMessage(
+              `Too many files (${collectedUris.length}). Added first ${MAX_FILES}.`,
+            );
+            collectedUris.length = MAX_FILES;
+          }
+
+          for (const fileUri of collectedUris) {
+            const file = vscode.workspace.asRelativePath(fileUri);
+            await chatViewProvider.addContext({ file });
+          }
+          await vscode.commands.executeCommand("opencode.chatView.focus");
+        },
+      ),
+    );
+
+    // ============================================================================
     // COMMAND: opencode.showPlan
     // ============================================================================
     // Purpose: Display an implementation plan in a dedicated webview panel

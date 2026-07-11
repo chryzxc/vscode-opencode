@@ -36,6 +36,7 @@ import {
   ArrowDown,
   Brain,
   Database,
+  RotateCcw,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -59,6 +60,7 @@ import { BackgroundOutputStep } from "./components/activity-steps/BackgroundOutp
 import { DiffPreviewStep } from "./components/activity-steps/DiffPreviewStep";
 import { ActivityDiffExcerpt } from "./components/ActivityDiffExcerpt";
 import { ImagePreviewModal } from "./ImagePreviewModal";
+import { CodeSelectionPreviewModal } from "./CodeSelectionPreviewModal";
 import { SubagentDetailModal } from "./SubagentDetailModal";
 
 // NEW: Import custom hooks for subagent data access
@@ -67,6 +69,7 @@ import { DiffStats } from "./DiffStats";
 import {
   asString,
   getCentralizedAssistantContentChunksFromRawSdkEventPayloads,
+  getCentralizedEventType,
   getCentralizedEventPart,
   latestAssistantMessageIdFromCentralizedTape,
   normalizeCentralizedEventPayloads,
@@ -93,6 +96,7 @@ import type {
   InteractiveEvent,
   Message,
   MessagePart,
+  CodeSelectionMessagePart,
   MessageStep,
   Model,
   ReasoningEvent,
@@ -292,6 +296,38 @@ function isRenderableAssistantTextPart(part: MessagePart): boolean {
     return false;
   }
   return !isActivityLikePart(part);
+}
+
+function isSyntheticUserToolTextPart(text: string): boolean {
+  const normalized = normalizeComparableText(text);
+  if (!normalized) {
+    return false;
+  }
+  if (
+    normalized.startsWith("called the ") &&
+    normalized.includes(" tool with the following input:")
+  ) {
+    return true;
+  }
+  return text.includes("<path>") && text.includes("</path>") && text.includes("<content>");
+}
+
+function isRenderableUserTextPart(part: MessagePart): boolean {
+  if (!isRenderableAssistantTextPart(part)) {
+    return false;
+  }
+  if ((part as { synthetic?: unknown }).synthetic === true) {
+    return false;
+  }
+  const text =
+    typeof part.message === "string"
+      ? part.message
+      : typeof part.text === "string"
+        ? part.text
+        : typeof part.content === "string"
+          ? part.content
+          : "";
+  return !!text && !isSyntheticUserToolTextPart(splitInjectedSystemPromptFromUserText(text));
 }
 
 function normalizeErrorLikeValue(value: unknown): string {
@@ -1134,6 +1170,7 @@ function getMessageTimestamp(message?: Message): number | undefined {
 
 function messageBodyFromParts(
   parts?: Array<MessagePart | Record<string, unknown> | null | undefined>,
+  role?: string,
 ): string {
   if (!parts) {
     return "";
@@ -1141,7 +1178,14 @@ function messageBodyFromParts(
   return parts
     .map((part) => {
       const partRec = asRecord(part);
-      if (!partRec || !isRenderableAssistantTextPart(partRec as MessagePart)) {
+      if (
+        !partRec ||
+        !(
+          role?.toLowerCase() === "user"
+            ? isRenderableUserTextPart(partRec as MessagePart)
+            : isRenderableAssistantTextPart(partRec as MessagePart)
+        )
+      ) {
         return "";
       }
       return (
@@ -1377,12 +1421,81 @@ function eventBelongsToAssistantScope(
   if (assistantScopeMessageIds.size === 0) {
     return false;
   }
-  const eventMessageId = extractEventMessageId(event);
+  const eventMessageId = extractSemanticEventMessageId(event);
   return !!eventMessageId && assistantScopeMessageIds.has(eventMessageId);
 }
 
+function extractSemanticEventMessageId(event: unknown): string | null {
+  const eventRecord = asRecord(event);
+  if (!eventRecord) {
+    return null;
+  }
+
+  const payloadRecord = asRecord(eventRecord.payload);
+  const info =
+    asRecord(asRecord(eventRecord.properties)?.info) ||
+    asRecord(eventRecord.info) ||
+    asRecord(asRecord(payloadRecord?.properties)?.info) ||
+    asRecord(payloadRecord?.info);
+
+  const part =
+    asRecord(asRecord(eventRecord.properties)?.part) ||
+    asRecord(eventRecord.part) ||
+    asRecord(asRecord(payloadRecord?.properties)?.part) ||
+    asRecord(payloadRecord?.part);
+
+  const syncData =
+    asRecord(asRecord(eventRecord.syncEvent)?.data) ||
+    asRecord(asRecord(payloadRecord?.syncEvent)?.data);
+  const syncInfo = asRecord(syncData?.info);
+  const syncPart = asRecord(syncData?.part);
+
+  const messageRecord =
+    asRecord(eventRecord.message) ||
+    asRecord(asRecord(eventRecord.properties)?.message) ||
+    asRecord(payloadRecord?.message) ||
+    asRecord(asRecord(payloadRecord?.properties)?.message);
+
+  const directId = firstNonEmptyString(
+    asString(info?.id),
+    asString(info?.messageID),
+    asString(info?.messageId),
+    asString(part?.messageID),
+    asString(part?.messageId),
+    asString(syncInfo?.id),
+    asString(syncInfo?.messageID),
+    asString(syncInfo?.messageId),
+    asString(syncPart?.messageID),
+    asString(syncPart?.messageId),
+    asString(messageRecord?.id),
+    asString(messageRecord?.messageID),
+    asString(messageRecord?.messageId),
+    asString(eventRecord.messageId),
+    asString(eventRecord.messageID),
+    asString(payloadRecord?.messageId),
+    asString(payloadRecord?.messageID),
+  );
+  if (directId) {
+    return directId;
+  }
+
+  // Centralized/session tape rows often carry a wrapper event id such as `evt_*`
+  // even when they are not actually scoped to a single assistant message. Those
+  // wrapper ids are useful for lifecycle tracking, but they are NOT safe for
+  // assistant-card scoping. If we treat them as semantic message ids, session-
+  // level metadata rows like `session.updated` and `session.next.*` stop looking
+  // like shared turn metadata and the top response header loses agent/model/
+  // thinking labels after hydration.
+  const fallbackId = firstNonEmptyString(asString(payloadRecord?.id), asString(eventRecord.id));
+  if (!fallbackId || fallbackId.toLowerCase().startsWith("evt_")) {
+    return null;
+  }
+
+  return fallbackId;
+}
+
 function isAssistantScopedNoIdPayloadCandidate(event: unknown): boolean {
-  if (extractEventMessageId(event)) {
+  if (extractSemanticEventMessageId(event)) {
     return false;
   }
 
@@ -1427,15 +1540,34 @@ function isAssistantScopedNoIdPayloadCandidate(event: unknown): boolean {
       part?.message,
     ) !== undefined;
 
+  const model = asRecord(info?.model);
+  const hasAssistantHeaderMetadata =
+    !!firstNonEmptyString(
+      info?.agent,
+      properties?.agent,
+      model?.providerID,
+      model?.modelID,
+      model?.id,
+      model?.variant,
+      info?.providerID,
+      info?.modelID,
+      info?.variant,
+    );
+
   const isAssistantLikeTerminalEvent =
     eventType === "message.completed" ||
     eventType === "session.completed" ||
     eventType === "message.updated";
 
+  const isAssistantHeaderMetadataEvent =
+    eventType === "session.next.agent.switched" ||
+    eventType === "session.next.model.switched" ||
+    eventType === "session.updated";
+
   return (role === "assistant" || isAssistantLikeTerminalEvent) && (
     hasStructuredPayload ||
     hasAssistantText
-  );
+  ) || (isAssistantHeaderMetadataEvent && hasAssistantHeaderMetadata);
 }
 
 function normalizeComparableText(value: unknown): string {
@@ -3857,7 +3989,7 @@ function orderedAssistantResponseChunksFromCentralizedData(
   const orderedMessageIds: string[] = [];
   const seenMessageIds = new Set<string>();
   for (const event of rawSdkEventPayloads) {
-    const messageID = extractEventMessageId(event);
+    const messageID = extractSemanticEventMessageId(event);
     if (!messageID) {
       continue;
     }
@@ -3888,7 +4020,7 @@ function orderedAssistantResponseChunksFromCentralizedData(
 
   for (const messageID of orderedMessageIds) {
     const scopedPayloads = rawSdkEventPayloads.filter(
-      (event) => extractEventMessageId(event) === messageID,
+        (event) => extractSemanticEventMessageId(event) === messageID,
     );
     const bodyChunks = getCentralizedAssistantContentChunksFromRawSdkEventPayloads(
       scopedPayloads,
@@ -3900,7 +4032,7 @@ function orderedAssistantResponseChunksFromCentralizedData(
     let firstBodySeq = Number.MAX_SAFE_INTEGER;
     for (let index = 0; index < rawSdkEventPayloads.length; index += 1) {
       const event = rawSdkEventPayloads[index];
-      if (extractEventMessageId(event) !== messageID) {
+      if (extractSemanticEventMessageId(event) !== messageID) {
         continue;
       }
       if (isAiResponseEvent(event)) {
@@ -4275,6 +4407,7 @@ function inferAttachmentPathsFromHydratedUserText(raw: string): string[] {
 function isExplicitFileAttachmentPart(part: MessagePart): boolean {
   const partType = (part.type || "").trim().toLowerCase();
   if (partType === "file") {
+    if (isCodeSelectionPart(part)) return false;
     return true;
   }
 
@@ -4289,6 +4422,71 @@ function isExplicitFileAttachmentPart(part: MessagePart): boolean {
     typeof part.message === "string";
 
   return (hasPathLikeSource || hasFilename) && !hasTextPayload;
+}
+
+function isCodeSelectionPart(part: MessagePart | undefined | null | {}): part is CodeSelectionMessagePart {
+  if (!part || typeof part !== "object") return false;
+  const rec = part as Record<string, unknown>;
+  const type = typeof rec.type === "string" ? rec.type : "";
+  const source = rec.source as Record<string, unknown> | undefined;
+  if (!source) return false;
+  const sourceType = typeof source.type === "string" ? source.type : "";
+  const lineInfo = typeof source.lineInfo === "string" ? source.lineInfo : "";
+  const textValue = source.text && typeof source.text === "object"
+    ? (source.text as Record<string, unknown>).value
+    : undefined;
+  return type === "file" && sourceType === "file" && lineInfo.length > 0 && typeof textValue === "string";
+}
+
+export interface CodeSelectionChipData {
+  path?: string;
+  filename?: string;
+  languageId?: string;
+  lineInfo?: string;
+  content: string;
+  startLine?: number;
+  endLine?: number;
+}
+
+function parseLineRange(lineInfo?: string): { startLine?: number; endLine?: number } {
+  if (!lineInfo) return {};
+  const match = lineInfo.match(/(\d+)(?:\s*-\s*(\d+))?/);
+  if (!match) return {};
+  return {
+    startLine: match[1] ? Number(match[1]) : undefined,
+    endLine: match[2] ? Number(match[2]) : undefined,
+  };
+}
+
+function rangeToLines(range?: { start?: { line?: number }; end?: { line?: number } }): { startLine?: number; endLine?: number } {
+  if (!range) return {};
+  const startLine = typeof range.start?.line === "number" ? range.start.line + 1 : undefined;
+  const endLine = typeof range.end?.line === "number" ? range.end.line + 1 : undefined;
+  return { startLine, endLine };
+}
+
+function collectCodeSelectionsFromParts(parts: MessagePart[] | undefined): CodeSelectionChipData[] {
+  if (!parts) return [];
+  const out: CodeSelectionChipData[] = [];
+  for (const part of parts) {
+    if (!isCodeSelectionPart(part)) continue;
+    const source = part.source;
+    const value = source.text?.value ?? "";
+    const { startLine, endLine } = parseLineRange(source.lineInfo);
+    const lineInfo = source.lineInfo || (startLine && endLine ? `${startLine}-${endLine}` : startLine ? `${startLine}` : undefined);
+    out.push({
+      path: source.path,
+      filename:
+        basenamePreservingLineSuffix(part.filename || source.path || "", lineInfo) ||
+        undefined,
+      languageId: source.languageId || part.mime,
+      lineInfo,
+      content: value,
+      startLine,
+      endLine,
+    });
+  }
+  return out;
 }
 
 function collectImageUrlsFromParts(message?: Message): string[] {
@@ -4307,9 +4505,51 @@ function collectImageUrlsFromParts(message?: Message): string[] {
   return urls;
 }
 
+function isImageAttachmentPart(part: MessagePart | undefined): boolean {
+  if (!part) return false;
+  const type = typeof part.type === "string" ? part.type.toLowerCase() : "";
+  const mime = typeof part.mime === "string" ? part.mime.toLowerCase() : "";
+  return type === "file" && mime.startsWith("image/");
+}
+
+function basenamePreservingLineSuffix(label: string, lineInfo?: string): string {
+  const normalizedLabel = label.trim();
+  if (!normalizedLabel) return "";
+  const normalizedLineInfo = typeof lineInfo === "string" ? lineInfo.trim() : "";
+  const lineSuffix = normalizedLineInfo ? `:${normalizedLineInfo.replace(/^:+/, "")}` : "";
+  const withoutSuffix =
+    lineSuffix && normalizedLabel.endsWith(lineSuffix)
+      ? normalizedLabel.slice(0, -lineSuffix.length)
+      : normalizedLabel;
+  const segments = withoutSuffix.split(/[\\/]/);
+  const baseName = segments[segments.length - 1] || withoutSuffix;
+  return `${baseName}${lineSuffix}`;
+}
+
+function buildExplicitFileChipLabel(part: MessagePart): string | undefined {
+  const filename = typeof part.filename === "string" ? part.filename.trim() : "";
+  const sourcePath = typeof part.source?.path === "string" ? part.source.path.trim() : "";
+  const lineInfo = typeof part.source?.lineInfo === "string" ? part.source.lineInfo.trim() : "";
+  const baseLabel = basenamePreservingLineSuffix(filename || sourcePath, lineInfo);
+  if (!baseLabel) return undefined;
+  if (!lineInfo) return baseLabel;
+  const lineSuffix = `:${lineInfo}`;
+  return baseLabel.endsWith(lineSuffix) ? baseLabel : `${baseLabel}${lineSuffix}`;
+}
+
+function buildExplicitFileChip(part: MessagePart): { label: string; path?: string } | undefined {
+  const label = buildExplicitFileChipLabel(part);
+  if (!label) return undefined;
+  const sourcePath = typeof part.source?.path === "string" ? part.source.path.trim() : "";
+  return {
+    label,
+    path: sourcePath || undefined,
+  };
+}
+
 function normalizedUserMessageText(message?: Message): string {
   const raw =
-    message?.content ?? message?.text ?? messageBodyFromParts(message?.parts);
+    message?.content ?? message?.text ?? messageBodyFromParts(message?.parts, message?.role ?? message?.info?.role);
   const withoutAttachmentEcho = stripHydratedAttachmentEcho(
     typeof raw === "string" ? raw : "",
     message,
@@ -6220,11 +6460,21 @@ export const BackgroundTaskReminderMessage = memo(function BackgroundTaskReminde
 
 export const UserMessage = memo(function UserMessage({ message }: { message?: Message }) {
   const [previewImageSrc, setPreviewImageSrc] = useState<string | null>(null);
+  const [previewSelection, setPreviewSelection] = useState<CodeSelectionChipData | null>(null);
   const [copied, setCopied] = useState(false);
   const userMessageRef = useRef<HTMLDivElement>(null);
   const rawUserText =
-    message?.content ?? message?.text ?? messageBodyFromParts(message?.parts);
+    message?.content ?? message?.text ?? messageBodyFromParts(message?.parts, message?.role ?? message?.info?.role);
+  const codeSelections = useMemo(
+    () => collectCodeSelectionsFromParts(message?.parts),
+    [message?.parts],
+  );
   const splitContent = useMemo(() => {
+    if (codeSelections.length > 0) {
+      return splitInjectedSystemPromptFromUserText(
+        typeof rawUserText === "string" ? rawUserText : "",
+      );
+    }
     const withoutAttachmentEcho = stripHydratedAttachmentEcho(
       typeof rawUserText === "string" ? rawUserText : "",
       message,
@@ -6232,17 +6482,27 @@ export const UserMessage = memo(function UserMessage({ message }: { message?: Me
     const withoutGenericFenceEcho =
       stripGenericHydratedAttachmentFence(withoutAttachmentEcho);
     return splitInjectedSystemPromptFromUserText(withoutGenericFenceEcho);
-  }, [message, rawUserText]);
+  }, [message, rawUserText, codeSelections]);
   const content = splitContent.userText;
   const injectedSystemText = splitContent.systemText;
   const explicitFileChips = (message?.parts ?? [])
-    .filter(isExplicitFileAttachmentPart)
-    .map((part) => part.filename ?? part.source?.path)
-    .filter((value): value is string => !!value);
+    .filter((part) => isExplicitFileAttachmentPart(part) && !isImageAttachmentPart(part))
+    .map((part) => buildExplicitFileChip(part))
+    .filter((value): value is { label: string; path?: string } => !!value);
   const inferredFileChips = inferAttachmentPathsFromHydratedUserText(
     typeof rawUserText === "string" ? rawUserText : "",
+  ).map((filePath) => ({
+    label: basenamePreservingLineSuffix(filePath),
+    path: filePath,
+  }));
+  const fileChips = Array.from(
+    new Map(
+      [...explicitFileChips, ...inferredFileChips].map((chip) => [
+        `${chip.path ?? ""}:${chip.label}`,
+        chip,
+      ]),
+    ).values(),
   );
-  const fileChips = Array.from(new Set([...explicitFileChips, ...inferredFileChips]));
   const effectiveImages = Array.from(
     new Set([
       ...((message?.images ?? []).filter((src): src is string => typeof src === "string")),
@@ -6300,13 +6560,13 @@ export const UserMessage = memo(function UserMessage({ message }: { message?: Me
   }
 
 
-  if (!content && !hasImages && !injectedSystemText) {
+  if (!content && !hasImages && !injectedSystemText && codeSelections.length === 0 && fileChips.length === 0) {
     return null;
   }
 
   return (
       <div className="oc-message-enter mt-6 mb-3.5 flex flex-col gap-1.5" style={DEFERRED_CHAT_CARD_STYLE}>
-      {(content || hasImages) ? (
+      {(content || hasImages || codeSelections.length > 0 || fileChips.length > 0) ? (
         <div className="flex items-end justify-end gap-1.5">
           <div className="w-fit max-w-[78%]">
             <div className="oc-msg-user" ref={userMessageRef}>
@@ -6342,6 +6602,44 @@ export const UserMessage = memo(function UserMessage({ message }: { message?: Me
                       <span className="truncate">image-{index + 1}</span>
                     </button>
                   ))}
+                </div>
+              )}
+              {fileChips.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {fileChips.map((label, index) => (
+                    <div
+                      key={`file-chip-${index}:${label.label}`}
+                      className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-oc-border bg-oc-panel-soft px-2.5 py-1 text-[10px] font-medium text-oc-text-soft"
+                      title={label.label}
+                    >
+                      <FileIcon filePath={label.path || label.label} className="h-3.5 w-3.5 shrink-0" />
+                      <span className="truncate">{label.label}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {codeSelections.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {codeSelections.map((sel, index) => {
+                    const lineLabel =
+                      sel.startLine && sel.endLine && sel.startLine !== sel.endLine
+                        ? `${sel.startLine}-${sel.endLine}`
+                        : `${sel.startLine ?? sel.endLine ?? sel.lineInfo ?? ""}`;
+                    const name = sel.filename ?? sel.path ?? `selection-${index + 1}`;
+                    const label = lineLabel ? `${name}:${lineLabel}` : name;
+                    return (
+                      <button
+                        key={`code-sel-${index}`}
+                        type="button"
+                        className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-oc-border bg-oc-panel-soft px-2.5 py-1 text-[10px] font-medium text-oc-text-soft transition-colors hover:bg-oc-bg-soft"
+                        onClick={() => setPreviewSelection(sel)}
+                        title={sel.path ?? label}
+                      >
+                        <FileCode className="h-3.5 w-3.5 shrink-0" />
+                        <span className="truncate">{label}</span>
+                      </button>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -6384,6 +6682,11 @@ export const UserMessage = memo(function UserMessage({ message }: { message?: Me
         imageAlt="Message image"
         title="Image Preview"
         onClose={() => setPreviewImageSrc(null)}
+      />
+      <CodeSelectionPreviewModal
+        isOpen={previewSelection !== null}
+        data={previewSelection}
+        onClose={() => setPreviewSelection(null)}
       />
     </div>
   );
@@ -6594,7 +6897,7 @@ function eventMatchesAssistantScope(
   }
 
   const messageId =
-    extractEventMessageId(payload) ||
+    extractSemanticEventMessageId(payload) ||
     firstNonEmptyString(info?.id, info?.messageID, info?.messageId) ||
     null;
   return !!messageId && assistantScopeMessageIds.has(messageId);
@@ -6873,12 +7176,14 @@ function getAssistantTurnMetadataFromCentralizedEvents(
     const record = asRecord(payload);
     if (!record) continue;
 
-    const payloadType = asString(record.type);
+    const normalizedType = getCentralizedEventType(record);
+    const payloadRecord = asRecord(record.payload);
+    const payloadSyncEvent = asRecord(payloadRecord?.syncEvent);
     const syncEvent = asRecord(record.syncEvent);
-    const syncType = asString(syncEvent?.type);
-    const normalizedType = syncType || payloadType;
-    const properties = asRecord(record.properties);
-    const syncData = asRecord(syncEvent?.data);
+    const properties = asRecord(record.properties) || asRecord(payloadRecord?.properties);
+    const syncData =
+      asRecord(syncEvent?.data) ||
+      asRecord(payloadSyncEvent?.data);
 
     if (
       normalizedType === "session.next.agent.switched" ||
@@ -6912,7 +7217,7 @@ function getAssistantTurnMetadataFromCentralizedEvents(
       continue;
     }
 
-    const info = asRecord(properties?.info) || asRecord(syncData?.info);
+    const info = getCentralizedEventInfo(record) || asRecord(syncData?.info);
     if (info) {
       if (normalizedType === "session.updated" || normalizedType === "session.updated.1") {
         const agent = asString(info.agent);
@@ -6926,6 +7231,12 @@ function getAssistantTurnMetadataFromCentralizedEvents(
           if (providerID) metadata.providerID = providerID;
           if (variant) metadata.variant = variant;
         }
+        const modelID = asString(info.modelID);
+        const providerID = asString(info.providerID);
+        const variant = asString(info.variant);
+        if (modelID) metadata.modelID = modelID;
+        if (providerID) metadata.providerID = providerID;
+        if (variant) metadata.variant = variant;
       } else if (normalizedType === "message.updated" || normalizedType === "message.updated.1") {
         if (asString(info.role) === "assistant") {
           const agent = asString(info.agent);
@@ -7197,7 +7508,7 @@ const centralizedRawResponse = message?.rawResponse;
     }
 
     const attachedPayloadsWithoutIds = messageAttachedRawSdkEventPayloads.filter((event) =>
-      !extractEventMessageId(event),
+      !extractSemanticEventMessageId(event),
     );
     const sessionScopedNoIdPayloads = sessionScopedRawSdkEventPayloads.filter((event) =>
       isAssistantScopedNoIdPayloadCandidate(event),
@@ -7227,7 +7538,7 @@ const centralizedRawResponse = message?.rawResponse;
     // syncEvent-aware path so stale duplicated data cannot leak across turns.
     if (messageAttachedRawSdkEventPayloads.length > 0) {
       const attachedPayloadsWithIds = messageAttachedRawSdkEventPayloads.filter((event) =>
-        !!extractEventMessageId(event),
+        !!extractSemanticEventMessageId(event),
       );
       const scopedAttachedPayloads = messageAttachedRawSdkEventPayloads.filter((event) =>
         eventBelongsToAssistantScope(event, messageCandidateIds),
@@ -7235,8 +7546,9 @@ const centralizedRawResponse = message?.rawResponse;
       if (scopedAttachedPayloads.length > 0) {
         // Message-attached payloads are already card-scoped by persistence.
         // Preserve entries that lack an explicit message id so top-level
-        // assistant activity does not disappear during rehydration just because
-        // the payload shape is missing messageID/messageId.
+        // assistant activity and header metadata (agent/model/thinking) do not
+        // disappear during rehydration just because the payload shape is
+        // session-scoped rather than message-scoped.
         return [
           ...scopedAttachedPayloads,
           ...sessionScopedNoIdPayloads,
@@ -8287,11 +8599,81 @@ const centralizedRawResponse = message?.rawResponse;
       (Array.isArray(interactiveEvents) && interactiveEvents.length > 0) ||
       (Array.isArray(streaming.interactiveEvents) &&
         streaming.interactiveEvents.length > 0) ||
+      !!streaming.liveSessionStatus ||
       subagents.length > 0)
   );
+  const liveSessionStatus = streaming?.liveSessionStatus;
+  const hasLiveSessionStatus = !!liveSessionStatus;
+  const [liveStatusNow, setLiveStatusNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!liveSessionStatus?.next) {
+      return;
+    }
+    setLiveStatusNow(Date.now());
+    const intervalId = window.setInterval(() => {
+      setLiveStatusNow(Date.now());
+    }, 1000);
+    return () => window.clearInterval(intervalId);
+  }, [liveSessionStatus?.next]);
+  const liveStatusCountdown = useMemo(() => {
+    if (!liveSessionStatus?.next || !Number.isFinite(liveSessionStatus.next)) {
+      return undefined;
+    }
+    const remainingMs = Math.max(0, liveSessionStatus.next - liveStatusNow);
+    const totalSeconds = Math.ceil(remainingMs / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return minutes > 0 ? `${minutes}:${String(seconds).padStart(2, "0")}` : `${seconds}s`;
+  }, [liveSessionStatus?.next, liveStatusNow]);
+  const liveStatusTitle = useMemo(() => {
+    if (!liveSessionStatus) {
+      return "";
+    }
+    if (liveSessionStatus.statusType === "retry") {
+      return typeof liveSessionStatus.attempt === "number"
+        ? `Retry scheduled · attempt ${liveSessionStatus.attempt}`
+        : "Retry scheduled";
+    }
+    if (
+      liveSessionStatus.statusType === "busy" ||
+      liveSessionStatus.statusType === "running" ||
+      liveSessionStatus.statusType === "processing" ||
+      liveSessionStatus.statusType === "streaming" ||
+      liveSessionStatus.statusType === "in_progress"
+    ) {
+      return "Session busy";
+    }
+    return `Session status · ${liveSessionStatus.statusType.replace(/[_-]+/g, " ")}`;
+  }, [liveSessionStatus]);
+  const liveStatusSubtitle = useMemo(() => {
+    if (!liveSessionStatus) {
+      return undefined;
+    }
+    if (liveSessionStatus.message) {
+      return liveSessionStatus.message;
+    }
+    if (liveSessionStatus.statusType === "retry") {
+      return "Waiting before the next retry.";
+    }
+    if (
+      liveSessionStatus.statusType === "busy" ||
+      liveSessionStatus.statusType === "running" ||
+      liveSessionStatus.statusType === "processing" ||
+      liveSessionStatus.statusType === "streaming" ||
+      liveSessionStatus.statusType === "in_progress"
+    ) {
+      return "Assistant is still working on this turn.";
+    }
+    return undefined;
+  }, [liveSessionStatus]);
 
   // Use type-safe helpers instead of type assertions
   const agentName = turnMetadata.agent || getAgentName(message, streaming);
+  // The response header is a persistent affordance, not a best-effort bonus.
+  // When upstream metadata is partially missing we still render a visible label
+  // so every AI response block keeps a stable top anchor instead of collapsing
+  // to an empty header row.
+  const assistantHeaderAgentLabel = firstNonEmptyString(agentName)?.trim() || "assistant";
   const agentColor = useMemo(() => {
     return getStableAgentAccentColor(agentName);
   }, [agentName]);
@@ -8323,10 +8705,10 @@ const centralizedRawResponse = message?.rawResponse;
   const headerSegments = useMemo(() => {
     const segments: AssistantHeaderSegment[] = [];
 
-    if (agentName && agentName !== "assistant") {
+    if (assistantHeaderAgentLabel) {
       segments.push({
         key: "agent",
-        text: agentName,
+        text: assistantHeaderAgentLabel,
         className: "oc-msg-agent-name min-w-0 truncate text-oc-xs opacity-60",
         style: agentColor
           ? {
@@ -8336,7 +8718,11 @@ const centralizedRawResponse = message?.rawResponse;
       });
     }
 
-    if (modelName && modelName !== "assistant") {
+    if (
+      modelName &&
+      modelName !== "assistant" &&
+      modelName !== assistantHeaderAgentLabel
+    ) {
       segments.push({
         key: "model",
         text: modelName,
@@ -8353,7 +8739,7 @@ const centralizedRawResponse = message?.rawResponse;
     }
 
     return segments;
-  }, [agentColor, agentName, modelName, showMessageThinking, thinkingVariant]);
+  }, [agentColor, assistantHeaderAgentLabel, modelName, showMessageThinking, thinkingVariant]);
   const centralizedMetrics = useMemo(
     () =>
       getCentralizedMetricsSnapshot(
@@ -8604,12 +8990,11 @@ const responseBodyChunks = useMemo(() => {
       }),
     [cardMessage, planPrelude, shouldShowPlanCard, visibleResponseBodyChunks],
   );
-  // VISUAL PRESENTATION OF COLLAPSED STATES:
-  // For non-last messages in an activity timeline block (i.e. messages that are hidden 
-  // when the block is collapsed, but visible when expanded), we do NOT show the
-  // full AI response header (which contains the model name and aggregated metrics).
-  // This keeps the UI cleaner and avoids repetitive headers for every step.
-  const showAssistantResponseHeader = hasPrimaryResponseBody && isLastInBlock;
+  // Product contract: every visible AI response block with a primary response
+  // body must render the top assistant header. Do not reintroduce `isLastInBlock`
+  // here: expanded intermediate cards need the same header affordance, and the
+  // screenshot regression came from hiding it for non-last cards.
+  const showAssistantResponseHeader = hasPrimaryResponseBody;
   const isAborted = cardMessage?.aborted === true;
   const effectiveInterruptedPresentation =
     cardMessage?.interruptedPresentation ||
@@ -8677,6 +9062,7 @@ const responseBodyChunks = useMemo(() => {
         : `Worked through ${visibleStepsCount} steps`;
   const hasLiveTimelineActivity =
     hasStreamingActivity ||
+    hasLiveSessionStatus ||
     hasActiveTimelineWork ||
     hasActiveReasoningPart ||
     hasPendingReasoningDisplayEvent;
@@ -8986,9 +9372,68 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
 
           {!isAssistantTurnCollapsed &&
             (hasStickyTimelineActivity ||
+              hasLiveSessionStatus ||
               showThinkingPlaceholder ||
               nonQuestionTimelineDisplayEventGroups.length > 0) && (
               <section data-assistant-section="activity" className="space-y-2">
+                {hasLiveSessionStatus ? (
+                  <div className="mb-2 px-2.5">
+                    <div
+                      className="w-full rounded-[14px] border px-3 py-2.5 text-left"
+                      style={{
+                        background: liveSessionStatus.statusType === "retry"
+                          ? "color-mix(in srgb, var(--vscode-warningForeground) 6%, var(--oc-panel-soft))"
+                          : "color-mix(in srgb, var(--oc-accent) 7%, var(--oc-panel-soft))",
+                        borderColor: liveSessionStatus.statusType === "retry"
+                          ? "color-mix(in srgb, var(--vscode-warningForeground) 18%, var(--oc-border))"
+                          : "color-mix(in srgb, var(--oc-accent) 18%, var(--oc-border))",
+                      }}
+                    >
+                      <div className="mb-1.5 flex min-w-0 items-center gap-2">
+                        <div
+                          className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full"
+                          style={{
+                            background: liveSessionStatus.statusType === "retry"
+                              ? "color-mix(in srgb, var(--vscode-warningForeground) 14%, transparent)"
+                              : "color-mix(in srgb, var(--oc-accent) 14%, transparent)",
+                            color: liveSessionStatus.statusType === "retry"
+                              ? "var(--vscode-warningForeground)"
+                              : "var(--oc-accent)",
+                          }}
+                        >
+                          {liveSessionStatus.statusType === "retry" ? (
+                            <AlertTriangle className="h-3 w-3" />
+                          ) : (
+                            <div className="h-2 w-2 rounded-full animate-pulse" style={{ background: "currentColor" }} />
+                          )}
+                        </div>
+                        <div className="min-w-0">
+                          <div
+                            className="text-[10px] font-semibold uppercase tracking-[0.12em]"
+                            style={{
+                              color: liveSessionStatus.statusType === "retry"
+                                ? "color-mix(in srgb, var(--vscode-warningForeground) 82%, var(--oc-text-soft))"
+                                : "color-mix(in srgb, var(--oc-accent) 82%, var(--oc-text-soft))",
+                            }}
+                          >
+                            {liveStatusTitle}
+                          </div>
+                          {liveStatusCountdown ? (
+                            <div className="flex items-center gap-1 text-[11px] text-oc-text-soft opacity-75">
+                              <Clock className="h-3 w-3" />
+                              <span>Next retry in {liveStatusCountdown}</span>
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                      {liveStatusSubtitle ? (
+                        <div className="text-[12.5px] leading-relaxed text-oc-text">
+                          {liveStatusSubtitle}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
                 {nonQuestionTimelineDisplayEventGroups.map((group, groupIdx) => {
                   if (group.type === "commentary") {
                     return (
@@ -9792,6 +10237,7 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
             <FileChangesSection
               structuredFileChanges={[]}
               centralizedDiffEvent={centralizedDiffEvent}
+              messageId={centralizedDiffEvent.messageId || messageId || null}
               sessionId={currentSessionId}
             />
           </div>
@@ -9889,6 +10335,7 @@ export const FileChangesSection = memo(function FileChangesSection({
   centralizedDiffEvent?: {
     id?: string;
     sessionId?: string;
+    messageId?: string;
     createdAt?: number;
     files: Array<{
       file: string;
@@ -9901,7 +10348,7 @@ export const FileChangesSection = memo(function FileChangesSection({
 }) {
   type DiffExcerpt = { header?: string; lines?: string[]; added?: number; deleted?: number };
   type FileChange = { file: string; added: number; deleted: number; diffExcerpt?: DiffExcerpt };
-  const summaryMessageId = firstNonEmptyString(changeSummary?.messageId, messageId) || null;
+  const summaryMessageId = firstNonEmptyString(centralizedDiffEvent?.messageId, changeSummary?.messageId, messageId) || null;
 
   const compactDisplayDir = (dir: string): string => {
     const normalized = dir.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -9981,14 +10428,25 @@ export const FileChangesSection = memo(function FileChangesSection({
   const totalDeleted = fileChanges.reduce((sum, file) => sum + file.deleted, 0);
 
   const undoMessageId = summaryMessageId;
+  const [isUndoing, setIsUndoing] = useState(false);
+  const [revertedMessageId, setRevertedMessageId] = useState<string | null>(null);
+  const isReverted = !!revertedMessageId && !!undoMessageId && revertedMessageId === undoMessageId;
 
   const handleUndo = () => {
     if (!undoMessageId) {
       return;
     }
+    setIsUndoing(true);
     vscode.postMessage({
       type: "undoMessageChanges",
       messageId: undoMessageId,
+      sessionId: sessionId || undefined,
+    });
+  };
+
+  const handleRestore = () => {
+    vscode.postMessage({
+      type: "unrevertSession",
       sessionId: sessionId || undefined,
     });
   };
@@ -10013,9 +10471,20 @@ export const FileChangesSection = memo(function FileChangesSection({
             file?: string;
             messageId?: string;
             diffExcerpt?: { header?: string; lines?: string[] };
+            revertState?: { messageID?: string; partID?: string; snapshot?: string; diff?: string } | null;
           }
         | undefined;
-      if (!data || data.type !== "messageFileDiffPreview") {
+      if (!data) {
+        return;
+      }
+      if (data.type === "revertStateUpdate") {
+        // Clear loading state regardless of outcome — revert either succeeded or failed.
+        setIsUndoing(false);
+        // Track which message was reverted so we can swap Undo → Restore inline.
+        setRevertedMessageId(data.revertState?.messageID ?? null);
+        return;
+      }
+      if (data.type !== "messageFileDiffPreview") {
         return;
       }
       if (summaryMessageId && data.messageId && data.messageId !== summaryMessageId) {
@@ -10083,20 +10552,36 @@ export const FileChangesSection = memo(function FileChangesSection({
           )}
         </div>
         <div className="ml-auto flex items-center gap-1">
-          <button
-            type="button"
-            onClick={handleUndo}
-            disabled={!undoMessageId}
-            className="inline-flex items-center gap-1 rounded-md border border-oc-border bg-white/[0.025] px-2 py-1 text-[13px] oc-text-secondary transition-colors hover:border-oc-border-strong hover:bg-white/[0.05] hover:text-oc-text-soft"
-            title={
-              undoMessageId
-                ? "Undo changes from this assistant message"
-                : "Undo unavailable: no message identifier for this change set"
-            }
-          >
-            <Undo2 className="h-3.5 w-3.5" />
-            Undo
-          </button>
+          {isReverted ? (
+            <button
+              type="button"
+              onClick={handleRestore}
+              className="inline-flex items-center gap-1 rounded-md border border-oc-border bg-white/[0.025] px-2 py-1 text-[13px] oc-text-secondary transition-colors hover:border-oc-border-strong hover:bg-white/[0.05] hover:text-oc-text-soft"
+              title="Restore reverted changes"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              Restore
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={handleUndo}
+              disabled={!undoMessageId || isUndoing}
+              className="inline-flex items-center gap-1 rounded-md border border-oc-border bg-white/[0.025] px-2 py-1 text-[13px] oc-text-secondary transition-colors hover:border-oc-border-strong hover:bg-white/[0.05] hover:text-oc-text-soft disabled:cursor-not-allowed disabled:opacity-40 disabled:pointer-events-none"
+              title={
+                undoMessageId
+                  ? "Undo changes from this assistant message"
+                  : "Undo unavailable: no message identifier for this change set"
+              }
+            >
+              {isUndoing ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Undo2 className="h-3.5 w-3.5" />
+              )}
+              {isUndoing ? "Undoing..." : "Undo"}
+            </button>
+          )}
           <button
             type="button"
             onClick={handleReview}

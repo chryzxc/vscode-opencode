@@ -108,6 +108,10 @@
         "title": "OpenCode: Insert File Reference"
       },
       {
+        "command": "opencode.addToThread",
+        "title": "OpenCode: Add to Thread"
+      },
+      {
         "command": "opencode.installSkill",
         "title": "OpenCode: Install Skill"
       },
@@ -151,6 +155,16 @@
         {
           "command": "opencode.sendSelection",
           "when": "editorHasSelection",
+          "group": "opencode"
+        },
+        {
+          "command": "opencode.addToThread",
+          "group": "opencode"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "opencode.addToThread",
           "group": "opencode"
         }
       ]
