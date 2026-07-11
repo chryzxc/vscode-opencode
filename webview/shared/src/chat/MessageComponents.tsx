@@ -4285,15 +4285,9 @@ function TodoWriteStep({ event }: { event: DisplayEvent }) {
     // ignore
   }
 
+  // A TodoWrite activity already has its own pending state in the timeline.
+  // Do not add a second generic loading row before its checklist payload arrives.
   if (todos.length === 0) {
-    if (event.status === "pending") {
-      return (
-        <div className="oc-refined-event-content flex items-center gap-2 rounded-md px-3 py-2 text-xs text-oc-text-soft">
-          <AIStatusTicker className="oc-thinking-status" />
-          <span>Generating checklist...</span>
-        </div>
-      );
-    }
     return null;
   }
 
@@ -7302,6 +7296,8 @@ function ResponseMessageInner({
   blockGroupKey,
   isLastInBlock,
   isBlockExpanded,
+  isBlockStreaming = false,
+  isBlockHeaderAnchor = true,
   onSetBlockExpanded,
   blockSize = 1,
   isHiddenByBlock = false,
@@ -7326,6 +7322,12 @@ function ResponseMessageInner({
   blockGroupKey?: string;
   isLastInBlock?: boolean;
   isBlockExpanded?: boolean;
+  // The current assistant block is actively streaming. Its content remains
+  // expanded and no completed-turn expand/collapse controls are available.
+  isBlockStreaming?: boolean;
+  // Exactly one visible card in a response block owns the agent/model/thinking
+  // metadata and statistics header.
+  isBlockHeaderAnchor?: boolean;
   onSetBlockExpanded?: (expanded: boolean) => void;
   // Total number of assistant cards in this block (1 = single-card, unchanged behaviour).
   blockSize?: number;
@@ -7353,6 +7355,29 @@ function ResponseMessageInner({
   // NEW: Use custom hooks for subagent data access
   const messageId = message?.id || message?.info?.id;
   const formattedSubagents = useSubagentsForParentMessage(messageId);
+  // A child session can be observed before OpenCode supplies the final parent
+  // assistant message id. Those entries are intentionally retained under an
+  // `orphan-…` key in centralized state. Surface them once on the final visible
+  // assistant card of the response block instead of dropping them.
+  const orphanSubagentsForBlock = useMemo(() => {
+    if (!isLastInBlock || !currentSessionId) {
+      return [] as SubagentSummary[];
+    }
+    const byId = new Map<string, SubagentSummary>();
+    for (const [parentKey, summaries] of Object.entries(
+      subagentsByParentMessageId || {},
+    )) {
+      if (!parentKey.startsWith("orphan-")) {
+        continue;
+      }
+      for (const summary of Array.isArray(summaries) ? summaries : []) {
+        if (summary?.parentSessionId === currentSessionId) {
+          byId.set(summary.id, summary);
+        }
+      }
+    }
+    return Array.from(byId.values());
+  }, [currentSessionId, isLastInBlock, subagentsByParentMessageId]);
 
   const [showSubagents, setShowSubagents] = useState(true);
   const [showAllSubagents, setShowAllSubagents] = useState(false);
@@ -8081,12 +8106,30 @@ const centralizedRawResponse = message?.rawResponse;
         ? stickyTimelineDisplayEventsRef.current.events
         : visibleDisplayEvents;
         
+  // Step lifecycle markers are retained for timeline bookkeeping, but their
+  // compact UI is intentionally hidden. They must not leave an empty
+  // collapsed summary that can be expanded into no visible content.
+  const isHiddenLifecycleTimelineEvent = (event: DisplayEvent) => {
+    const labelLower = (event.label || "").trim().toLowerCase();
+    const summaryLower = (event.summary || "").trim().toLowerCase();
+    return event.internal === true && (
+      labelLower === "step-start" ||
+      labelLower === "step-finish" ||
+      (labelLower === "step" && (summaryLower === "start" || summaryLower === "finish")) ||
+      (labelLower === "start" && summaryLower === "start") ||
+      (labelLower === "finish" && summaryLower === "finish")
+    );
+  };
+
   const hasStickyTimelineActivity = timelineDisplayEvents.length > 0;
+  const hasExpandableTimelineActivity = timelineDisplayEvents.some(
+    (event) => !isHiddenLifecycleTimelineEvent(event),
+  );
   const canCollapseCompletedAssistantTurn =
     cardMessage?.aborted !== true &&
     !isCurrentCardLiveAssistantTurn &&
     !(assistantTurnPending && isLatestAssistantMessage && isAfterLatestUserMessage) &&
-    hasStickyTimelineActivity;
+    hasExpandableTimelineActivity;
   const effectiveExpanded =
     typeof isBlockExpanded === "boolean" ? isBlockExpanded : viewState.showExpandedActivityTimeline;
   const isAssistantTurnCollapsed =
@@ -8472,7 +8515,8 @@ const centralizedRawResponse = message?.rawResponse;
 	const subagents = useMemo(() => {
 		// Filter for active session and current message only
 		const activeSessionId = currentSessionId;
-		const filtered = formattedSubagents.filter((subagent) => {
+		const candidates = [...formattedSubagents, ...orphanSubagentsForBlock];
+		const filtered = candidates.filter((subagent) => {
 			// Check if in active session
 			if (activeSessionId && subagent.parentSessionId !== activeSessionId) {
 				return false;
@@ -8484,11 +8528,12 @@ const centralizedRawResponse = message?.rawResponse;
 			// More flexible message ID matching to handle different ID formats
 			return subagent.parentMessageId === messageId ||
 			       subagent.id === messageId ||
-			       (subagent.parentMessageId && messageId.includes(subagent.parentMessageId));
+			       (subagent.parentMessageId && messageId.includes(subagent.parentMessageId)) ||
+			       (isLastInBlock && subagent.parentMessageId?.startsWith("orphan-"));
 		});
 
-		return filtered;
-	}, [messageId, currentSessionId, formattedSubagents]);
+		return Array.from(new Map(filtered.map((subagent) => [subagent.id, subagent])).values());
+	}, [messageId, currentSessionId, formattedSubagents, orphanSubagentsForBlock, isLastInBlock]);
   const previousSubagentCount = useRef(subagents.length);
 
   useEffect(() => {
@@ -8990,11 +9035,11 @@ const responseBodyChunks = useMemo(() => {
       }),
     [cardMessage, planPrelude, shouldShowPlanCard, visibleResponseBodyChunks],
   );
-  // Product contract: every visible AI response block with a primary response
-  // body must render the top assistant header. Do not reintroduce `isLastInBlock`
-  // here: expanded intermediate cards need the same header affordance, and the
-  // screenshot regression came from hiding it for non-last cards.
-  const showAssistantResponseHeader = hasPrimaryResponseBody;
+  // The agent/model/thinking and metrics header describes the AI response
+  // block, rather than an individual assistant message. The shell selects the
+  // single visible anchor for each collapsed or expanded block.
+  const showAssistantResponseHeader =
+    isBlockHeaderAnchor && (hasPrimaryResponseBody || blockSize > 1);
   const isAborted = cardMessage?.aborted === true;
   const effectiveInterruptedPresentation =
     cardMessage?.interruptedPresentation ||
@@ -9039,21 +9084,9 @@ const responseBodyChunks = useMemo(() => {
   // Drive the collapsed state from the shared block-level prop when available
   // (so all non-last cards in the block toggle together), otherwise fall back
   // to the local viewState for standalone or legacy usage.
-  const visibleStepsCount = timelineDisplayEvents.filter((event) => {
-    const labelLower = (event.label || "").trim().toLowerCase();
-    const isLifecycleMarkerEvent =
-      event.internal === true && (
-        labelLower === "step-start" ||
-        labelLower === "step-finish" ||
-        (labelLower === "step" && (
-          (event.summary || "").trim().toLowerCase() === "start" ||
-          (event.summary || "").trim().toLowerCase() === "finish"
-        )) ||
-        (labelLower === "start" && (event.summary || "").trim().toLowerCase() === "start") ||
-        (labelLower === "finish" && (event.summary || "").trim().toLowerCase() === "finish")
-      );
-    return !isLifecycleMarkerEvent;
-  }).length;
+  const visibleStepsCount = timelineDisplayEvents.filter(
+    (event) => !isHiddenLifecycleTimelineEvent(event),
+  ).length;
   const collapsedTimelineLabel =
     typeof duration === "number" && Number.isFinite(duration) && duration > 0
       ? `Worked for ${formatDuration(duration * 1000)}`
@@ -9934,7 +9967,7 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
           {/* Block-level pill for the last card in a multi-card block.
               When collapsed: replaces ALL the per-card pills with one unified summary
               and is displayed ABOVE the final text to maintain chronological sense. */}
-          {isLastInBlock && blockSize > 1 && !isBlockExpanded && (
+          {isLastInBlock && blockSize > 1 && !isBlockStreaming && !isBlockExpanded && (
             <section data-assistant-section="block-collapse-control-collapsed">
               <div className="flex justify-start mb-2">
                 <button
@@ -10023,7 +10056,7 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
 
           {/* Block-level pill for the last card in a multi-card block.
               When expanded: shows a single Collapse link at the very end to fold the whole block. */}
-          {isLastInBlock && blockSize > 1 && isBlockExpanded && (
+          {isLastInBlock && blockSize > 1 && !isBlockStreaming && isBlockExpanded && (
             <section data-assistant-section="block-collapse-control-expanded">
               <div className="flex justify-start mt-1">
                 <button
@@ -10702,6 +10735,8 @@ function areResponseMessagePropsEqual(
     prevProps.blockGroupKey === nextProps.blockGroupKey &&
     prevProps.isLastInBlock === nextProps.isLastInBlock &&
     prevProps.isBlockExpanded === nextProps.isBlockExpanded &&
+    prevProps.isBlockStreaming === nextProps.isBlockStreaming &&
+    prevProps.isBlockHeaderAnchor === nextProps.isBlockHeaderAnchor &&
     prevProps.blockSize === nextProps.blockSize &&
     prevProps.isHiddenByBlock === nextProps.isHiddenByBlock
   );
@@ -10723,6 +10758,8 @@ export const ResponseMessage = memo(function ResponseMessage({
   blockGroupKey,
   isLastInBlock,
   isBlockExpanded,
+  isBlockStreaming,
+  isBlockHeaderAnchor,
   onSetBlockExpanded,
   blockSize,
   isHiddenByBlock,
@@ -10743,6 +10780,8 @@ export const ResponseMessage = memo(function ResponseMessage({
   blockGroupKey?: string;
   isLastInBlock?: boolean;
   isBlockExpanded?: boolean;
+  isBlockStreaming?: boolean;
+  isBlockHeaderAnchor?: boolean;
   onSetBlockExpanded?: (expanded: boolean) => void;
   blockSize?: number;
   isHiddenByBlock?: boolean;
@@ -10765,6 +10804,8 @@ export const ResponseMessage = memo(function ResponseMessage({
       blockGroupKey={blockGroupKey}
       isLastInBlock={isLastInBlock}
       isBlockExpanded={isBlockExpanded}
+      isBlockStreaming={isBlockStreaming}
+      isBlockHeaderAnchor={isBlockHeaderAnchor}
       onSetBlockExpanded={onSetBlockExpanded}
       blockSize={blockSize}
       isHiddenByBlock={isHiddenByBlock}
@@ -11050,6 +11091,9 @@ export const CentralizedDebugPanel = memo(function CentralizedDebugPanel() {
     currentSessionId,
     errorMessages,
     rawSdkEventPayloadsBySessionId,
+    liveEventStreamBySessionId,
+    subagentsByParentMessageId,
+    subagentDetailsById,
     receivedInitState,
     serverStatus,
   } = useAppState(
@@ -11057,6 +11101,9 @@ export const CentralizedDebugPanel = memo(function CentralizedDebugPanel() {
       currentSessionId: state.currentSessionId,
       errorMessages: state.errorMessages,
       rawSdkEventPayloadsBySessionId: state.rawSdkEventPayloadsBySessionId,
+      liveEventStreamBySessionId: state.liveEventStreamBySessionId,
+      subagentsByParentMessageId: state.subagentsByParentMessageId,
+      subagentDetailsById: state.subagentDetailsById,
       receivedInitState: state.receivedInitState,
       serverStatus: state.serverStatus,
     }),
@@ -11067,6 +11114,21 @@ export const CentralizedDebugPanel = memo(function CentralizedDebugPanel() {
   const rawSdkEventPayloads = centralizedSessionId && Array.isArray(rawSdkEventPayloadsBySessionId?.[centralizedSessionId])
     ? rawSdkEventPayloadsBySessionId[centralizedSessionId]
     : [];
+  const liveEventStream = centralizedSessionId && Array.isArray(liveEventStreamBySessionId?.[centralizedSessionId])
+    ? liveEventStreamBySessionId[centralizedSessionId]
+    : [];
+  const centralizedData = {
+    schemaVersion: 1,
+    sessionId: centralizedSessionId,
+    rawEventStream: { events: rawSdkEventPayloads },
+    // Debug-only: populated only while this webview is alive and intentionally
+    // absent after chatHistory rehydrates a session.
+    liveEventStream: { persistence: "client-only", events: liveEventStream },
+    subagents: {
+      summariesByParentMessageId: subagentsByParentMessageId,
+      detailsById: subagentDetailsById,
+    },
+  };
 
   if (!config.debug.showCentralizedDebug) {
     return null;
@@ -11078,7 +11140,7 @@ export const CentralizedDebugPanel = memo(function CentralizedDebugPanel() {
         <span className="font-semibold text-oc-text">Centralized Data (Debug)</span>
         <button 
           onClick={() => {
-            navigator.clipboard.writeText(JSON.stringify({ rawEventStream: { sessionId: centralizedSessionId, rawSdkEventPayloads } }, null, 2));
+            navigator.clipboard.writeText(JSON.stringify(centralizedData, null, 2));
             setCopiedDebugPanel("centralized");
             setTimeout(() => setCopiedDebugPanel(null), 2000);
           }}
@@ -11088,7 +11150,7 @@ export const CentralizedDebugPanel = memo(function CentralizedDebugPanel() {
         </button>
       </div>
       <div className="p-2 max-h-48 overflow-y-auto text-oc-text-muted">
-        <pre>{JSON.stringify({ rawEventStream: { sessionId: centralizedSessionId, rawSdkEventPayloads } }, null, 2)}</pre>
+        <pre>{JSON.stringify(centralizedData, null, 2)}</pre>
       </div>
     </div>
   );

@@ -142,7 +142,6 @@ import {
   SessionHandler,
   StreamEventHandler,
   StructuredOutputProcessor,
-  SubagentPersistence,
   type AssistantHistoryMarker,
   type ChatModelOption,
   type ChatSlashCommand,
@@ -288,6 +287,12 @@ export class ChatViewProvider
   private activeStreamSessionId: string | undefined;
   private pendingStreamWebviewEvents: Array<{ event: unknown; sessionId?: string }> = [];
   private streamWebviewFlushTimer: ReturnType<typeof setTimeout> | undefined;
+  /**
+   * Debug-only mirror of every event that reaches this provider. This is sent
+   * to the webview but deliberately never enters SessionService persistence.
+   */
+  private pendingLiveEventDebugEvents: Array<{ event: unknown; sessionId?: string }> = [];
+  private liveEventDebugFlushTimer: ReturnType<typeof setTimeout> | undefined;
   private pendingRawSdkPersistenceBySessionId = new Map<string, unknown[]>();
   private rawSdkPersistenceFlushTimer: ReturnType<typeof setTimeout> | undefined;
   private currentTodoItems: unknown[] = [];
@@ -386,6 +391,35 @@ export class ChatViewProvider
         event: item.event,
         sessionId: item.sessionId,
       })),
+    });
+  }
+
+  private enqueueLiveEventDebugEvent(
+    event: unknown,
+    sessionId: string | undefined,
+  ): void {
+    this.pendingLiveEventDebugEvents.push({ event, sessionId });
+    if (this.liveEventDebugFlushTimer) {
+      return;
+    }
+    this.liveEventDebugFlushTimer = setTimeout(() => {
+      this.flushLiveEventDebugEvents();
+    }, 32);
+  }
+
+  private flushLiveEventDebugEvents(): void {
+    if (this.liveEventDebugFlushTimer) {
+      clearTimeout(this.liveEventDebugFlushTimer);
+      this.liveEventDebugFlushTimer = undefined;
+    }
+    const events = this.pendingLiveEventDebugEvents;
+    if (events.length === 0) {
+      return;
+    }
+    this.pendingLiveEventDebugEvents = [];
+    this.view?.webview.postMessage({
+      type: "liveEventStreamDebugBatch",
+      events,
     });
   }
 
@@ -675,7 +709,6 @@ export class ChatViewProvider
   private diagnosticsLogger!: DiagnosticsLogger;
   private structuredOutputProcessor!: StructuredOutputProcessor;
   private planManager!: PlanManager;
-  private subagentPersistence!: SubagentPersistence;
   private compactionManager!: CompactionManager;
   private historyProcessor!: HistoryProcessor;
   private modelAndAgentManager!: ModelAndAgentManager;
@@ -805,20 +838,7 @@ export class ChatViewProvider
       this.planManager,
     );
 
-    // 4. SubagentPersistence
-    this.subagentPersistence = new SubagentPersistence(
-      this.context.workspaceState,
-      this.subagentTracker,
-      logger,
-      asRecord,
-      firstNonEmptyString,
-      this.normalizeSubagentStatus.bind(this),
-      this.mergeSubagentEntries.bind(this),
-      this.hydrateSubagentsFromPayload.bind(this),
-      this.resolveSubagentPayloadSessionId.bind(this),
-    );
-
-    // 5. CompactionManager
+    // 4. CompactionManager
     this.compactionManager = new CompactionManager(
       this.context.workspaceState,
       this.serverManager,
@@ -828,7 +848,7 @@ export class ChatViewProvider
       this.processHistoryMessages.bind(this),
     );
 
-    // 6. HistoryProcessor
+    // 5. HistoryProcessor
     this.historyProcessor = new HistoryProcessor(
       this.context.workspaceState,
       logger,
@@ -840,7 +860,7 @@ export class ChatViewProvider
       this.planManager,
     );
 
-    // 7. ModelAndAgentManager
+    // 6. ModelAndAgentManager
     this.modelAndAgentManager = new ModelAndAgentManager(
       this.context.globalState,
       this.serverManager,
@@ -850,23 +870,21 @@ export class ChatViewProvider
       firstNonEmptyString,
     );
 
-    // 8. QueueManager
+    // 7. QueueManager
     this.queueManager = new QueueManager(logger);
 
-    // 9. SessionHandler
+    // 8. SessionHandler
     this.sessionHandler = new SessionHandler(
       this.sessionService,
       this.historyProcessor,
-      this.subagentPersistence,
       this.compactionManager,
       this.modelAndAgentManager,
       logger,
     );
 
-    // 10. StreamEventHandler
+    // 9. StreamEventHandler
     this.streamEventHandler = new StreamEventHandler(
       this.structuredOutputProcessor,
-      this.subagentPersistence,
       this.compactionManager,
       this.diagnosticsLogger,
       this.geminiTokenTracker,
@@ -1598,7 +1616,8 @@ export class ChatViewProvider
         sessionId: sessionId,
         messages: messages,
         
-        rawSdkEventPayloads: sessionHistory.rawSdkEventPayloads,
+        rawEventStream: { events: sessionHistory.events },
+        subagents: sessionHistory.subagents,
         processingSessionIds: this.getEffectiveProcessingSessionIds(),
       });
       await this.compactionManager.sendCompactionViewStateForMessages(
@@ -1713,7 +1732,6 @@ export class ChatViewProvider
     try {
       log.featureStep(flow, 'deleting_session');
       await this.sessionService.deleteSession(sessionId);
-      await this.clearPersistedSubagentSnapshot(sessionId);
       await this.compactionManager.clearPersistedCompactionViewState(sessionId);
 
       const currentSession = await this.sessionService.getCurrentSession();
@@ -1933,14 +1951,6 @@ export class ChatViewProvider
         error: error instanceof Error ? error.message : String(error),
       });
     }
-  }
-
-  /**
-   * Wrapper: Clear persisted subagent snapshot
-   * Delegates to SubagentPersistence module
-   */
-  private async clearPersistedSubagentSnapshot(sessionId: string): Promise<void> {
-    return this.subagentPersistence.clearPersistedSubagentSnapshot(sessionId);
   }
 
   /**
@@ -2206,20 +2216,6 @@ export class ChatViewProvider
       | undefined,
   ): boolean {
     return this.historyProcessor.hasAssistantHistoryAdvanced(latest, baseline);
-  }
-
-  /**
-   * Subagent methods - delegate to SubagentPersistence
-   */
-  private async persistSubagentLiveState(
-    sessionId: string,
-    payload: unknown,
-  ): Promise<void> {
-    await this.subagentPersistence.persistSubagentLiveState(sessionId, payload as SubagentUpdatePayload);
-  }
-
-  private buildSubagentPayloadFromMessage(message: any, sessionId?: string): any {
-    return this.subagentPersistence.buildSubagentPayloadFromMessage(message, sessionId ?? '');
   }
 
   /**
@@ -2925,7 +2921,7 @@ export class ChatViewProvider
               this.logHistoryRenderDiagnostics(
                 "webview.ready.current-session",
                 currentSession.id,
-                sessionHistory.rawSdkEventPayloads,
+                sessionHistory.events,
                 messages,
               );
               this.view?.webview.postMessage({
@@ -2933,7 +2929,8 @@ export class ChatViewProvider
                 sessionId: currentSession.id,
                 messages: messages,
                 
-                rawSdkEventPayloads: sessionHistory.rawSdkEventPayloads,
+                rawEventStream: { events: sessionHistory.events },
+                subagents: sessionHistory.subagents,
                 processingSessionIds: this.getEffectiveProcessingSessionIds(),
               });
               await this.sendPersistedCompactionViewState(currentSession.id);
@@ -2969,7 +2966,11 @@ export class ChatViewProvider
         }
         case "sendMessage":
         case "sendPrompt": {
-          this.logger.error(`[DEBUG][HOST] Received ${message.type} instead of questionReply!`, { message });
+          this.logger.debug("Received prompt dispatch from webview", {
+            type: message.type,
+            sessionId: message.sessionId,
+            clientRequestId: message.clientRequestId,
+          });
           const correlationId = this.logger.startFeatureFlow('send-message', {
             hasFiles: message.files?.length > 0,
             hasImages: message.images?.length > 0,
@@ -3276,7 +3277,8 @@ export class ChatViewProvider
               sessionId: createdSession.id,
               messages: [],
               rawMessages: [],
-              rawSdkEventPayloads: [],
+              rawEventStream: { events: [] },
+              subagents: { summariesByParentMessageId: {}, detailsById: {} },
             });
 
             // Non-blocking follow-up work:
@@ -3286,7 +3288,6 @@ export class ChatViewProvider
             void (async () => {
               try {
                 await Promise.all([
-                  this.clearPersistedSubagentSnapshot(createdSession.id),
                   this.persistSessionSettings(createdSession.id, {
                     agent: "build",
                   }),
@@ -3814,7 +3815,7 @@ export class ChatViewProvider
             this.logHistoryRenderDiagnostics(
               "retryLastMessage.reload",
               retrySessionId,
-              sessionHistory.rawSdkEventPayloads,
+              sessionHistory.events,
               messages,
             );
             this.view?.webview.postMessage({
@@ -3822,7 +3823,8 @@ export class ChatViewProvider
               sessionId: retrySessionId,
               messages: messages,
               
-              rawSdkEventPayloads: sessionHistory.rawSdkEventPayloads,
+              rawEventStream: { events: sessionHistory.events },
+              subagents: sessionHistory.subagents,
               processingSessionIds: this.getEffectiveProcessingSessionIds(),
             });
           } catch (err) {
@@ -4040,20 +4042,58 @@ export class ChatViewProvider
       // Always run subagent tracking before any session-scoped early return so child
       // session events are captured regardless of which session is active in the UI.
       const subagentUpdate = this.subagentTracker.consumeStreamEvent(event);
+      // Child-session events (including session.error) belong in the parent
+      // session's card, persisted tape, and debug panel. Preserve the original
+      // child ID inside the event payload, but use the tracker-resolved parent
+      // ID as the storage/display bucket.
+      const subagentParentSessionId = subagentUpdate
+        ? this.resolveSubagentPayloadSessionId(subagentUpdate)
+        : undefined;
       if (subagentUpdate) {
         this.view?.webview.postMessage({
           type: "subagentUpdate",
           ...subagentUpdate,
         });
         this.sendProcessingSessionsUpdate();
-        void this.subagentPersistence.persistSubagentUpdateSnapshot(
-          subagentUpdate,
+        const subagentSessionId =
+          subagentParentSessionId || this.currentSessionId;
+        if (subagentSessionId) {
+          void this.sessionService
+            .persistCentralizedSubagentProjection(subagentSessionId, subagentUpdate)
+            .catch((persistError) => {
+              this.logger.warn("Failed to persist centralized subagent projection", {
+                err: persistError,
+              });
+            });
+        }
+      }
+
+      // Keep an unfiltered, client-only mirror for diagnosing why a live event
+      // is absent from the persisted event stream. This path stays ahead of all
+      // persistence/presentation gates and never calls SessionService.
+      this.enqueueLiveEventDebugEvent(
+        event,
+        subagentParentSessionId ||
+          eventSessionId ||
+          this.activeStreamSessionId ||
           this.currentSessionId,
-          this.sessionService,
-          (msg) => this.view?.webview.postMessage(msg)
-        ).catch((persistError) => {
-          this.logger.warn("Failed to persist subagent stream snapshot", { err: persistError });
-        });
+      );
+
+      // Persist the raw event before any presentation/session-processing gate.
+      // Subagent tracker updates intentionally run ahead of those gates; keeping
+      // persistence here prevents the UI from showing a live subagent that is
+      // absent from the centralized event stream after an early return below.
+      const persistenceSessionId =
+        subagentParentSessionId ||
+        eventSessionId ||
+        this.activeStreamSessionId ||
+        this.currentSessionId;
+      if (persistenceSessionId) {
+        this.enqueueRawSdkEventPersistence(
+          persistenceSessionId,
+          { ...event, sessionId: persistenceSessionId },
+          isTerminalLifecycleEvent,
+        );
       }
 
       // Sync server-generated session title from session.updated events.
@@ -4251,7 +4291,11 @@ export class ChatViewProvider
         this.logger.warn("Failed to log stream event", { err: error });
       }
 
-      const resolvedSessionId = eventSessionId || this.activeStreamSessionId || this.currentSessionId;
+      const resolvedSessionId =
+        subagentParentSessionId ||
+        eventSessionId ||
+        this.activeStreamSessionId ||
+        this.currentSessionId;
 
       const info = (properties?.info as Record<string, unknown> | undefined) || {};
       const preRenderPreview =
@@ -4488,6 +4532,7 @@ export class ChatViewProvider
         this.unsubscribe = undefined;
       }
       this.flushStreamWebviewEvents();
+      this.flushLiveEventDebugEvents();
       this.flushRawSdkEventPersistence();
       this.isBootstrappingWebview = false;
       this.hasInitializedWebview = false;
@@ -4608,7 +4653,8 @@ export class ChatViewProvider
   }
 
   private async loadCentralizedRenderableHistory(sessionId: string): Promise<{
-    rawSdkEventPayloads: unknown[];
+    events: unknown[];
+    subagents: import("../services/SessionService").CentralizedSubagentProjection;
     messages: any[];
   }> {
     this.logger.debug(`[loadCentralizedRenderableHistory] START sessionId=${sessionId}`);
@@ -4618,8 +4664,8 @@ export class ChatViewProvider
         sessionId,
       );
       
-      const rawArray = Array.isArray(rawSessionPayloads.rawSdkEventPayloads)
-        ? rawSessionPayloads.rawSdkEventPayloads
+      const rawArray = Array.isArray(rawSessionPayloads.rawEventStream.events)
+        ? rawSessionPayloads.rawEventStream.events
         : [];
       
       this.logger.debug(`[loadCentralizedRenderableHistory] Loaded ${rawArray.length} items from disk in ${Date.now() - start}ms`);
@@ -4642,12 +4688,17 @@ export class ChatViewProvider
       });
 
       return {
-        rawSdkEventPayloads: safeRawSdkEventPayloads,
+        events: safeRawSdkEventPayloads,
+        subagents: rawSessionPayloads.subagents,
         messages,
       };
     } catch (err: any) {
       this.logger.error(`[loadCentralizedRenderableHistory] ERROR: ${err.message}`, { stack: err.stack });
-      return { rawSdkEventPayloads: [], messages: [] };
+      return {
+        events: [],
+        subagents: { summariesByParentMessageId: {}, detailsById: {} },
+        messages: [],
+      };
     }
   }
 
@@ -5918,28 +5969,6 @@ export class ChatViewProvider
    */
   private async sendPersistedCompactionViewState(sessionId: string): Promise<void> {
     return this.compactionManager.sendPersistedCompactionViewState(sessionId);
-  }
-
-  /**
-   * Callback: Sync subagent snapshot for session
-   * Delegates to SubagentPersistence module
-   */
-  private async syncSubagentSnapshotForSession(
-    sessionId: string,
-    messages: any[],
-  ): Promise<SubagentUpdatePayload> {
-    const snapshot = await this.subagentPersistence.syncSubagentSnapshotForSession(
-      sessionId,
-      messages,
-    );
-    const normalized = this.remapOrphanedSubagentKeys(snapshot, messages);
-    if (normalized !== snapshot) {
-      await this.subagentPersistence.savePersistedSubagentSnapshot(
-        sessionId,
-        normalized,
-      );
-    }
-    return normalized;
   }
 
   /**
@@ -7887,16 +7916,6 @@ export class ChatViewProvider
             duration: duration,
           },
         });
-        const snapshotFromFinalMessage = this.buildSubagentPayloadFromMessage(
-          finalMessage,
-          session.id,
-        );
-        if (snapshotFromFinalMessage) {
-          await this.persistSubagentLiveState(
-            session.id,
-            snapshotFromFinalMessage,
-          );
-        }
 
         this.view?.webview.postMessage({
           type: "messageResponse",
@@ -10084,6 +10103,7 @@ export class ChatViewProvider
       this.unsubscribe = undefined;
     }
     this.flushStreamWebviewEvents();
+    this.flushLiveEventDebugEvents();
     this.flushRawSdkEventPersistence();
     this.quotaService.off("quotaUpdate", this.handleQuotaUpdate);
     if (this.webviewMessageListener) {

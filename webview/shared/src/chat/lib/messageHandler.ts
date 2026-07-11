@@ -11431,16 +11431,24 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         case "chatHistory": {
           let canonicalMessages: Message[] = [];
           let chatHistorySessionId = "";
+          let persistedSubagents: UnknownRecord | undefined;
           let hydrationPresentationPolicy: SubagentPresentationPolicy = {
             mode: "hydration",
             sessionProcessing: false,
           };
           try {
             terminalErrorReached = false;
+            dispatch({ type: "CLEAR_LIVE_EVENT_STREAM_DEBUG" });
             const centralizedMessages = asArray(data.messages, isMessage);
-            const rawSdkEventPayloads = Array.isArray((data as UnknownRecord).rawSdkEventPayloads)
-              ? [...((data as UnknownRecord).rawSdkEventPayloads as unknown[])]
-              : [];
+            const rawEventStream = asRecord((data as UnknownRecord).rawEventStream);
+            // Accept the legacy transport field while existing webviews/session
+            // payloads roll forward. New payloads use rawEventStream.events.
+            const rawSdkEventPayloads = Array.isArray(rawEventStream?.events)
+              ? [...(rawEventStream.events as unknown[])]
+              : Array.isArray((data as UnknownRecord).rawSdkEventPayloads)
+                ? [...((data as UnknownRecord).rawSdkEventPayloads as unknown[])]
+                : [];
+            persistedSubagents = asRecord((data as UnknownRecord).subagents);
             const historySessionId = asString(data.sessionId) || null;
             if (historySessionId) {
               logger.setSession(historySessionId);
@@ -11581,7 +11589,15 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           const rawSdkEventPayloads = postHydrationState.rawSdkEventPayloadsBySessionId?.[chatHistorySessionId] ?? [];
 
           const extractedHydratedSubagents =
-            extractSubagentsFromCentralizedEvents(rawSdkEventPayloads);
+            persistedSubagents &&
+            (asRecord(persistedSubagents.summariesByParentMessageId) ||
+              asRecord(persistedSubagents.detailsById))
+              ? {
+                  summariesByParentMessageId:
+                    persistedSubagents.summariesByParentMessageId || {},
+                  detailsById: persistedSubagents.detailsById || {},
+                }
+              : extractSubagentsFromCentralizedEvents(rawSdkEventPayloads);
 
           const normalizedHydratedSubagents = normalizeHydratedSubagentMaps(
             extractedHydratedSubagents.summariesByParentMessageId,
@@ -12230,6 +12246,26 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               presentationPolicy: streamPolicy,
             },
           );
+          break;
+        }
+        case "liveEventStreamDebugBatch": {
+          const events = Array.isArray(data.events) ? data.events : [];
+          for (const item of events) {
+            const event = asRecord(item.event) ?? item;
+            const sessionId =
+              asString(item.sessionId) ||
+              asString(item.sessionID) ||
+              asString(event.sessionId) ||
+              asString(event.sessionID) ||
+              asString(asRecord(event.properties)?.sessionId) ||
+              asString(asRecord(event.properties)?.sessionID) ||
+              getState().currentSessionId ||
+              null;
+            dispatch({
+              type: "APPEND_LIVE_EVENT_STREAM_DEBUG",
+              payload: { sessionId, event },
+            });
+          }
           break;
         }
         case "streamEvent": {

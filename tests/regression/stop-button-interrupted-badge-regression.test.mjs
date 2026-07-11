@@ -88,7 +88,7 @@ test("conversation projection detaches late abort badges instead of reordering t
   );
   assert.match(
     chatShellSource,
-    /kind:\s*"assistant\.abort"[\s\S]*countCanonicalMessagesAtOrBeforeRawIndex[\s\S]*terminalRawIndex/s,
+    /kind:\s*"assistant\.abort"[\s\S]*getConversationOrderAfterRawIndex\(terminalRawIndex,\s*7\)/s,
     "projection should emit a detached interruption entry at the terminal raw position",
   );
   assert.match(

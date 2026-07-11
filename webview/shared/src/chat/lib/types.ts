@@ -853,6 +853,8 @@ export interface AppState {
   messages: Message[];
   messagesBySessionId?: Record<string, Message[]>;
   rawSdkEventPayloadsBySessionId?: Record<string, unknown[]>;
+  /** Unfiltered live stream mirror for debugging; intentionally never persisted. */
+  liveEventStreamBySessionId?: Record<string, unknown[]>;
   liveToastNotificationsBySessionId?: Record<string, import("./toastEvents").CentralizedToastNotification[]>;
   promptQueue: QueueItem[];
   queueBySessionId: Record<string, QueueItem[]>;

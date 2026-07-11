@@ -13,7 +13,6 @@ const chatProviderSource = readAllSources(
     joinFromRoot('src', 'providers', 'chat', 'DiagnosticsLogger.ts'),
     joinFromRoot('src', 'providers', 'chat', 'StructuredOutputProcessor.ts'),
     joinFromRoot('src', 'providers', 'chat', 'PlanManager.ts'),
-    joinFromRoot('src', 'providers', 'chat', 'SubagentPersistence.ts'),
     joinFromRoot('src', 'providers', 'chat', 'CompactionManager.ts'),
     joinFromRoot('src', 'providers', 'chat', 'HistoryProcessor.ts'),
     joinFromRoot('src', 'providers', 'chat', 'ModelAndAgentManager.ts'),
@@ -108,6 +107,19 @@ test('MessageStreamService unwraps SDK sync event wrappers into canonical stream
     messageStreamSource,
     /import \{ normalizeSdkStreamEvent \} from "\.\/opencodeSdkCompat";/,
     'MessageStreamService should import shared SDK compat normalization',
+  );
+});
+
+test('MessageStreamService snapshots raw SDK events into plain data before notifying callbacks', () => {
+  assert.match(
+    messageStreamSource,
+    /import \{ createPlainObjectSnapshot \} from "\.\.\/shared\/createPlainObjectSnapshot";/,
+    'MessageStreamService should import the shared plain-object snapshot helper',
+  );
+  assert.match(
+    messageStreamSource,
+    /private cloneRawEvent<T>\(value: T\): T \{\s*return createPlainObjectSnapshot\(value\);\s*\}/,
+    'MessageStreamService should not leak the original SDK event object when cloning fails',
   );
 });
 

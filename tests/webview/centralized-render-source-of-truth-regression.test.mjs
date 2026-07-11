@@ -133,8 +133,13 @@ test("centralized transcript projection emits session-error entries in tape orde
   );
   assert.match(
     chatShellSource,
-    /hasPrimarySessionErrorEvent[\s\S]*?candidateError\.source !== "message\.updated"/s,
+    /primarySessionErrorEvents[\s\S]*?candidateError\.source !== "message\.updated"/s,
     "projection should detect when a primary session.error/error event exists",
+  );
+  assert.match(
+    chatShellSource,
+    /fallbackSpecificSessionErrorEvents[\s\S]*?candidateError\.source === "message\.updated"[\s\S]*?!isGenericSessionErrorMessage\(candidateError\.message\)/s,
+    "projection should keep specific message.updated errors when primary session.error rows are only generic fallbacks",
   );
   assert.match(
     chatShellSource,

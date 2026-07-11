@@ -109,10 +109,17 @@ export function buildMessageConversationEntries(
  * Count how many canonical message entries existed on or before a raw tape
  * index. Diff cards use this to place themselves relative to the one canonical
  * message order instead of owning a separate ordering system.
+ *
+ * Hidden assistant placeholders are intentionally excluded here. They are useful
+ * for transcript reconstruction, but they do not consume visible vertical space
+ * in the rendered conversation. Counting them would push `session.error` and
+ * similar inline rows below later visible user messages.
  */
 export function countCanonicalMessagesAtOrBeforeRawIndex(
   renderMessageEntries: ProjectedRenderMessageEntry[],
   rawIndex: number,
 ): number {
-  return renderMessageEntries.filter((entry) => entry.rawOrder <= rawIndex).length;
+  return renderMessageEntries.filter(
+    (entry) => entry.renderKind !== "hidden" && entry.rawOrder <= rawIndex,
+  ).length;
 }

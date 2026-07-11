@@ -1,4 +1,22 @@
+import { createPlainObjectSnapshot } from "../shared/createPlainObjectSnapshot";
+
 type UnknownRecord = Record<string, unknown>;
+
+const SUBAGENT_CONSOLE_DEBUG_ENABLED = false;
+
+function safeConsoleContext<T>(value: T): T {
+  return createPlainObjectSnapshot(value);
+}
+
+function debugSubagentLog(message: string, payload: unknown): void {
+  // These logs are only for deep local debugging. Keep them fully disabled in
+  // normal runs so the extension host never hands rich object payloads to the
+  // inspector bridge unless a developer explicitly opts in by editing source.
+  if (!SUBAGENT_CONSOLE_DEBUG_ENABLED) {
+    return;
+  }
+  console.log(message, safeConsoleContext(payload));
+}
 
 export type SubagentStatus =
   | "pending"
@@ -212,6 +230,68 @@ function extractErrorText(value: unknown): string {
   }
 
   return "";
+}
+
+/**
+ * The server can emit a useful `session.error` followed milliseconds later by
+ * the same failure serialized as a Bun stack trace. The latter is diagnostic
+ * data, not a user-facing error: it would otherwise replace the actionable
+ * message on the subagent card.
+ */
+function isInternalRuntimeStack(value: string): boolean {
+  return (
+    /\/\$bunfs\//i.test(value) ||
+    (/\b(?:Error|Exception)\b/i.test(value) &&
+      /\bat\s+(?:<anonymous>|[\w$.]+(?:\s+\([^)]*\))?)/i.test(value))
+  );
+}
+
+function isGenericErrorMessage(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return (
+    !normalized ||
+    normalized === "session error" ||
+    normalized === "unknown error" ||
+    /^[\w.]+error:?$/.test(normalized)
+  );
+}
+
+function toUserFacingErrorMessage(value: string): string {
+  const trimmed = value.trim();
+  if (!isInternalRuntimeStack(trimmed)) {
+    return trimmed;
+  }
+
+  if (/providermodelnotfounderror/i.test(trimmed)) {
+    return "The selected provider model was not found.";
+  }
+
+  return "The subagent failed to run.";
+}
+
+function errorMessageQuality(value: string, wasInternalStack = false): number {
+  if (!value.trim()) {
+    return 0;
+  }
+  if (wasInternalStack || isInternalRuntimeStack(value)) {
+    return 1;
+  }
+  return isGenericErrorMessage(value) ? 2 : 3;
+}
+
+function selectUserFacingErrorMessage(
+  existing: string | undefined,
+  incomingRaw: string,
+): string {
+  const incoming = toUserFacingErrorMessage(incomingRaw);
+  const existingQuality = errorMessageQuality(existing || "");
+  const incomingQuality = errorMessageQuality(
+    incoming,
+    isInternalRuntimeStack(incomingRaw),
+  );
+
+  // Keep an earlier actionable server message over a later diagnostic stack.
+  return incomingQuality >= existingQuality ? incoming : existing || incoming;
 }
 
 function toTimestamp(value: unknown, fallback = Date.now()): number {
@@ -1385,7 +1465,7 @@ export class SubagentTracker {
     }
 
     // Log session creation with all available info
-    console.log('===SUBAGENT_SPAWN=== [SESSION_CREATED] Full info object', {
+    debugSubagentLog('===SUBAGENT_SPAWN=== [SESSION_CREATED] Full info object', {
       parentSessionId,
       childSessionId,
       activeSessionId: this.activeSessionId,
@@ -1442,7 +1522,7 @@ export class SubagentTracker {
       const providerID = asString(info.providerID) || selectedModel?.providerID || undefined;
       const modelID = asString(info.modelID) || selectedModel?.modelID || undefined;
 
-      console.log('===SUBAGENT_SPAWN=== [TRACKER] Creating orphan subagent', {
+      debugSubagentLog('===SUBAGENT_SPAWN=== [TRACKER] Creating orphan subagent', {
         detailId,
         parentSessionId,
         parentMessageId,
@@ -1498,7 +1578,7 @@ export class SubagentTracker {
     const providerID = detail.providerID || asString(info.providerID) || selectedModel?.providerID || undefined;
     const modelID = detail.modelID || asString(info.modelID) || selectedModel?.modelID || undefined;
 
-    console.log('===SUBAGENT_SPAWN=== [TRACKER] Updating existing subagent', {
+    debugSubagentLog('===SUBAGENT_SPAWN=== [TRACKER] Updating existing subagent', {
       detailId,
       childSessionId,
       existingProviderID: detail.providerID,
@@ -1519,7 +1599,7 @@ export class SubagentTracker {
     detail.providerID = providerID;
     detail.modelID = modelID;
 
-    console.log('===SUBAGENT_SPAWN=== [TRACKER] After update', {
+    debugSubagentLog('===SUBAGENT_SPAWN=== [TRACKER] After update', {
       detailId,
       finalProviderID: detail.providerID,
       finalModelID: detail.modelID,
@@ -1610,7 +1690,7 @@ export class SubagentTracker {
       };
 
       // Log the full error extraction context
-      console.log('===SUBAGENT_SPAWN=== [ERROR_EXTRACTION] Error extraction context', {
+      debugSubagentLog('===SUBAGENT_SPAWN=== [ERROR_EXTRACTION] Error extraction context', {
         sessionId,
         detailId,
         errorContext,
@@ -1631,7 +1711,7 @@ export class SubagentTracker {
                   "Session error";
     }
 
-    console.log('===SUBAGENT_SPAWN=== [ERROR] Session error received', {
+    debugSubagentLog('===SUBAGENT_SPAWN=== [ERROR] Session error received', {
       sessionId,
       detailId,
       errorText,
@@ -1639,10 +1719,14 @@ export class SubagentTracker {
       detailModelID: detail.modelID,
       hasError: Boolean(properties.error),
       errorKeys: properties.error ? Object.keys(properties.error) : [],
-      rawError: properties.error ? JSON.stringify(properties.error).slice(0, 500) : undefined,
+      rawError: properties.error ? safeConsoleContext(properties.error) : undefined,
     });
 
-    // If we still have a generic error, try to construct a more informative one
+    errorText = selectUserFacingErrorMessage(detail.errorText, errorText);
+
+    // If we still have a generic error, try to construct a more informative one.
+    // Do not use this fallback for an internal stack trace: it is intentionally
+    // downgraded above so it cannot overwrite the server's actionable message.
     if (errorText === "Session error" || errorText.toLowerCase().includes("error")) {
       const errorName = asString(errorObj?.name);
       const modelID = detail.modelID || detail.providerID;
@@ -1654,22 +1738,25 @@ export class SubagentTracker {
       }
     }
 
+    const errorChanged = detail.errorText !== errorText;
     detail.status = "error";
     detail.errorText = errorText;
     detail.latestActivity = errorText;
     detail.endedAt = detail.endedAt ?? createdAt;
     this.recomputeDuration(detail);
-    this.pushTimeline(detail, {
-      key: this.makeTimelineKey(
-        "session.error",
-        undefined,
-        undefined,
+    if (errorChanged) {
+      this.pushTimeline(detail, {
+        key: this.makeTimelineKey(
+          "session.error",
+          undefined,
+          undefined,
+          createdAt,
+        ),
+        type: "session.error",
+        label: errorText,
         createdAt,
-      ),
-      type: "session.error",
-      label: errorText,
-      createdAt,
-    });
+      });
+    }
     this.upsertDetail(detail);
 
     changedParents.add(detail.parentMessageId);

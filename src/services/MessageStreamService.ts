@@ -64,6 +64,7 @@ import { createLogger } from '../utils/Logger';
 import { LoggingCategories } from '../utils/LoggingSchema';
 import * as vscode from "vscode";
 import { normalizeSdkStreamEvent } from "./opencodeSdkCompat";
+import { createPlainObjectSnapshot } from "../shared/createPlainObjectSnapshot";
 
 /**
  * Represents a server-sent event from the OpenCode server.
@@ -187,14 +188,7 @@ export class MessageStreamService {
   }
 
   private cloneRawEvent<T>(value: T): T {
-    if (typeof structuredClone === "function") {
-      try {
-        return structuredClone(value);
-      } catch {
-        return value;
-      }
-    }
-    return value;
+    return createPlainObjectSnapshot(value);
   }
 
   private isLikelyStreamTransportFailure(error: unknown): boolean {

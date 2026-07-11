@@ -8,7 +8,6 @@
 
 import type { SessionService } from "../../services/SessionService";
 import type { HistoryProcessor } from "./HistoryProcessor";
-import type { SubagentPersistence } from "./SubagentPersistence";
 import type { CompactionManager } from "./CompactionManager";
 import type { ModelAndAgentManager } from "./ModelAndAgentManager";
 
@@ -20,7 +19,6 @@ export class SessionHandler {
   constructor(
     private sessionService: SessionService,
     private historyProcessor: HistoryProcessor,
-    private subagentPersistence: SubagentPersistence,
     private compactionManager: CompactionManager,
     private modelAndAgentManager: ModelAndAgentManager,
     private logger: ReturnType<typeof import("../../utils/Logger").createLogger>,
@@ -160,7 +158,8 @@ export class SessionHandler {
       const centralizedSessionData = await this.sessionService.loadCentralizedSessionData(
         sessionId,
       );
-      const rawSdkEventPayloads = centralizedSessionData.rawSdkEventPayloads;
+      const rawEventStream = centralizedSessionData.rawEventStream;
+      const subagents = centralizedSessionData.subagents;
       const rawMessages = await this.sessionService.getMessages(sessionId);
       const fallbackMessages = Array.isArray(rawMessages) ? rawMessages : [];
       const messages = await this.historyProcessor.processHistoryMessages(
@@ -168,14 +167,14 @@ export class SessionHandler {
         sessionId,
       );
 
-      await this.subagentPersistence.syncSubagentSnapshotForSession(sessionId, messages);
       await this.modelAndAgentManager.applySessionSettings(sessionId);
 
       this.postMessage({
         type: "chatHistory",
         sessionId,
         messages,
-        rawSdkEventPayloads,
+        rawEventStream,
+        subagents,
       });
       await this.compactionManager.sendCompactionViewStateForMessages(
         sessionId,
@@ -202,7 +201,6 @@ export class SessionHandler {
 
     try {
       await this.sessionService.deleteSession(sessionId);
-      await this.subagentPersistence.clearPersistedSubagentSnapshot(sessionId);
       await this.compactionManager.clearPersistedCompactionViewState(sessionId);
 
       const currentSessionId = this.getCurrentSessionId();

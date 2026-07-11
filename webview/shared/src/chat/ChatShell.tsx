@@ -35,6 +35,7 @@ import {
   buildMessageConversationEntries,
   countCanonicalMessagesAtOrBeforeRawIndex,
 } from "./lib/conversationProjection";
+import { buildAssistantBlockPresentation } from "./lib/assistantBlockPresentation";
 import vscode from "./lib/vscode";
 import logger from "./lib/logger";
 import { config } from "../config";
@@ -1577,6 +1578,32 @@ function buildCentralizedTranscriptProjection(
         : undefined;
   };
 
+  const getConversationOrderAfterRawIndex = (
+    rawIndex: number,
+    offset: number,
+  ): number => {
+    // IMPORTANT:
+    // Non-message transcript rows (session.error, session.diff, detached abort)
+    // must anchor against the *visible* canonical transcript, not against raw
+    // centralized message count or hidden assistant placeholders.
+    //
+    // Example failure mode this prevents:
+    // - user message
+    // - hidden assistant placeholder with no renderable bubble yet
+    // - session.error
+    // - next user message
+    //
+    // If we count the hidden assistant row, or if we multiply by the next slot
+    // directly, the session.error card is pushed below the later user message.
+    // We instead anchor to the last visible message at-or-before this raw tape
+    // index, then place the non-message row inside that message's 10-point slot.
+    const visibleMessageCount = countCanonicalMessagesAtOrBeforeRawIndex(
+      renderMessageEntries,
+      rawIndex,
+    );
+    return (visibleMessageCount - 1) * 10 + offset;
+  };
+
   for (const entry of renderMessageEntries) {
     const terminalRawIndex = getTerminalRawIndex(entry.message);
     if (
@@ -1763,6 +1790,9 @@ function buildCentralizedTranscriptProjection(
     if (entry.kind !== "message") {
       return;
     }
+    if (entry.renderKind === "hidden") {
+      return;
+    }
     if (
       entry.renderKind === "background-task-reminder" ||
       entry.renderKind === "hidden"
@@ -1797,11 +1827,7 @@ function buildCentralizedTranscriptProjection(
       kind: "assistant.abort",
       key: `assistant.abort:${entry.ids[0] ?? entry.index}`,
       messageId: entry.ids[0],
-      order:
-        countCanonicalMessagesAtOrBeforeRawIndex(
-          renderMessageEntries,
-          terminalRawIndex,
-        ) * 10 + 7,
+      order: getConversationOrderAfterRawIndex(terminalRawIndex, 7),
     });
   }
 
@@ -1820,27 +1846,35 @@ function buildCentralizedTranscriptProjection(
       continue;
     }
     seenSessionDiffFingerprints.add(diffFingerprint);
-    const priorMessageCount = countCanonicalMessagesAtOrBeforeRawIndex(
-      renderMessageEntries,
-      rawIndex,
-    );
     conversationEntries.push({
       kind: "session.diff",
       key: `session.diff:${diff.id ?? rawIndex}`,
       diff,
-      order: priorMessageCount * 10 + 5,
+      order: getConversationOrderAfterRawIndex(rawIndex, 5),
     });
   }
 
   const parsedSessionErrorEvents = normalizedRawSdkEventPayloads
     .map((payload, rawIndex) => parseCentralizedSessionErrorEvent(payload, rawIndex))
     .filter((event): event is CentralizedSessionErrorEvent => !!event);
-  const hasPrimarySessionErrorEvent = parsedSessionErrorEvents.some(
+  const primarySessionErrorEvents = parsedSessionErrorEvents.filter(
     (candidateError) => candidateError.source !== "message.updated",
   );
-  const sessionErrorEvents = hasPrimarySessionErrorEvent
-    ? parsedSessionErrorEvents.filter((candidateError) => candidateError.source !== "message.updated")
-    : parsedSessionErrorEvents;
+  const primarySpecificSessionErrorEvents = primarySessionErrorEvents.filter(
+    (candidateError) => !isGenericSessionErrorMessage(candidateError.message),
+  );
+  const fallbackSpecificSessionErrorEvents = parsedSessionErrorEvents.filter(
+    (candidateError) =>
+      candidateError.source === "message.updated" &&
+      !isGenericSessionErrorMessage(candidateError.message),
+  );
+  const sessionErrorEvents = primarySpecificSessionErrorEvents.length > 0
+    ? primarySpecificSessionErrorEvents
+    : fallbackSpecificSessionErrorEvents.length > 0
+      ? fallbackSpecificSessionErrorEvents
+      : primarySessionErrorEvents.length > 0
+        ? primarySessionErrorEvents
+        : parsedSessionErrorEvents;
   const hasSpecificSessionErrorEvent = sessionErrorEvents.some(
     (candidateError) => !isGenericSessionErrorMessage(candidateError.message),
   );
@@ -1868,15 +1902,11 @@ function buildCentralizedTranscriptProjection(
       continue;
     }
     seenSessionErrorFingerprints.add(fingerprint);
-    const priorMessageCount = countCanonicalMessagesAtOrBeforeRawIndex(
-      renderMessageEntries,
-      errorEvent.rawIndex,
-    );
     conversationEntries.push({
       kind: "session.error",
       key: `session.error:${errorEvent.id ?? errorEvent.rawIndex}`,
       error: errorEvent,
-      order: priorMessageCount * 10 + 6,
+      order: getConversationOrderAfterRawIndex(errorEvent.rawIndex, 6),
     });
   }
 
@@ -2324,94 +2354,31 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
 
   const {
     entryBlockKeys,
+    isFirstInBlockByIndex,
     isAbsoluteLastInBlockByIndex,
     isLastTextInBlockByIndex,
     blockSizeByKey,
     blockHasInlineAbortByKey,
-  } = useMemo(() => {
-    const entryBlockKeys: string[] = [];
-    let currentBlockKey = "initial";
-    const assistantBlockEntries: Array<{ index: number; key: string }> = [];
-    for (let i = 0; i < visibleConversationEntries.length; i++) {
-      const entry = visibleConversationEntries[i];
-      if (entry.kind === "message") {
-        const role = entry.message.role ?? entry.message.info?.role;
-        if (role === "user") {
-          currentBlockKey =
-            firstNonEmptyString(entry.message.info?.id, entry.message.id) ??
-            `user:${i}`;
-        } else if (role === "assistant") {
-          assistantBlockEntries.push({ index: i, key: currentBlockKey });
+  } = useMemo(
+    () => buildAssistantBlockPresentation(
+      visibleConversationEntries.map((entry, index) => {
+        if (entry.kind !== "message") {
+          return {};
         }
-      }
-      entryBlockKeys.push(currentBlockKey);
-    }
-
-    const isAbsoluteLastInBlockByIndex = new Map<number, boolean>();
-    const lastTextIndexByKey = new Map<string, number>();
-    for (let pos = 0; pos < assistantBlockEntries.length; pos++) {
-      const { index, key } = assistantBlockEntries[pos];
-      const messageEntry = visibleConversationEntries[index];
-      if (messageEntry.kind !== "message") {
-        continue;
-      }
-      const message = messageEntry.message;
-      const hasText = Boolean(
-        message.content || message.text || message.info?.content || message.info?.text,
-      );
-      if (hasText) {
-        lastTextIndexByKey.set(key, index);
-      }
-    }
-    const isLastTextInBlockByIndex = new Map<number, boolean>();
-
-    for (let pos = 0; pos < assistantBlockEntries.length; pos++) {
-      const { index, key } = assistantBlockEntries[pos];
-      const prevKey = pos > 0 ? assistantBlockEntries[pos - 1].key : null;
-      const nextKey =
-        pos < assistantBlockEntries.length - 1
-          ? assistantBlockEntries[pos + 1].key
-          : null;
-
-      const isAbsoluteLast = nextKey !== key;
-
-      const isMultiCardBlock = prevKey === key || nextKey === key;
-      isAbsoluteLastInBlockByIndex.set(index, isMultiCardBlock ? isAbsoluteLast : false);
-
-      const lastTextIndex = lastTextIndexByKey.get(key);
-      let isLastText = false;
-      if (isMultiCardBlock) {
-        if (lastTextIndex !== undefined) {
-          isLastText = index === lastTextIndex;
-        } else {
-          isLastText = isAbsoluteLast;
-        }
-      }
-      isLastTextInBlockByIndex.set(index, isLastText);
-    }
-
-    const blockSizeByKey = new Map<string, number>();
-    const blockHasInlineAbortByKey = new Map<string, boolean>();
-    for (const { key, index } of assistantBlockEntries) {
-      blockSizeByKey.set(key, (blockSizeByKey.get(key) ?? 0) + 1);
-      const entry = visibleConversationEntries[index];
-      if (
-        entry.kind === "message" &&
-        entry.message.aborted === true &&
-        entry.message.interruptedPresentation === "inline"
-      ) {
-        blockHasInlineAbortByKey.set(key, true);
-      }
-    }
-
-    return {
-      entryBlockKeys,
-      isAbsoluteLastInBlockByIndex,
-      isLastTextInBlockByIndex,
-      blockSizeByKey,
-      blockHasInlineAbortByKey,
-    };
-  }, [visibleConversationEntries]);
+        const message = entry.message;
+        return {
+          role: message.role ?? message.info?.role,
+          userBlockKey: firstNonEmptyString(message.info?.id, message.id) ?? `user:${index}`,
+          hasResponseText: Boolean(
+            message.content || message.text || message.info?.content || message.info?.text,
+          ),
+          hasInlineAbort:
+            message.aborted === true && message.interruptedPresentation === "inline",
+        };
+      }),
+    ),
+    [visibleConversationEntries],
+  );
 
   const { entryPrefixHeights, messageCountPrefix } = useMemo(() => {
     const prefixHeights = new Array<number>(visibleConversationEntries.length + 1).fill(0);
@@ -2445,8 +2412,11 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
         const isLiveBlock =
           hasLiveAssistantTurn &&
           blockGroupKey === entryBlockKeys[entryBlockKeys.length - 1];
+        // A response block must remain fully expanded while it is streaming.
+        // Once the stream ends, the default collapsed state takes over and
+        // the completed-turn affordances can appear.
         const isBlockExpanded =
-          blockExpandedState.get(blockGroupKey) ?? (isLiveBlock ? true : false);
+          isLiveBlock || blockExpandedState.get(blockGroupKey) === true;
         const isLastInBlock = isBlockExpanded ? isAbsoluteLastInBlock : isLastTextInBlock;
         isHiddenByBlock = blockSize > 1 && !isLastInBlock && !isBlockExpanded;
       }
@@ -2558,13 +2528,21 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
             const blockGroupKey = entryBlockKeys[entryIndex];
             const isAbsoluteLastInBlock =
               isAbsoluteLastInBlockByIndex.get(entryIndex) ?? false;
+            const isFirstInBlock = isFirstInBlockByIndex.get(entryIndex) ?? true;
             const isLastTextInBlock = isLastTextInBlockByIndex.get(entryIndex) ?? false;
             const blockSize = blockSizeByKey.get(blockGroupKey) ?? 1;
             const isLiveBlock =
               hasLiveAssistantTurn && blockGroupKey === entryBlockKeys[entryBlockKeys.length - 1];
+            // Do not allow a persisted collapsed state to hide active stream
+            // content. Completed blocks return to the default collapsed view.
             const isBlockExpanded =
-              blockExpandedState.get(blockGroupKey) ?? (isLiveBlock ? true : false);
+              isLiveBlock || blockExpandedState.get(blockGroupKey) === true;
             const isLastInBlock = isBlockExpanded ? isAbsoluteLastInBlock : isLastTextInBlock;
+            // The header belongs to the response block, not every individual
+            // assistant message. When collapsed, pin it to the visible summary
+            // card; when expanded, pin it to the first card in the block.
+            const isBlockHeaderAnchor =
+              blockSize <= 1 || (isBlockExpanded ? isFirstInBlock : isLastInBlock);
             const isHiddenByBlock = blockSize > 1 && !isLastInBlock && !isBlockExpanded;
             entryHiddenByBlock = isHiddenByBlock;
 
@@ -2589,6 +2567,8 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
                 blockGroupKey={blockGroupKey}
                 isLastInBlock={isLastInBlock}
                 isBlockExpanded={isBlockExpanded}
+                isBlockStreaming={isLiveBlock}
+                isBlockHeaderAnchor={isBlockHeaderAnchor}
                 blockSize={blockSize}
                 isHiddenByBlock={isHiddenByBlock}
                 blockHasInlineAbort={blockHasInlineAbortByKey.get(blockGroupKey)}

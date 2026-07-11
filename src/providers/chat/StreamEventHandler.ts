@@ -8,7 +8,6 @@
  */
 
 import type { StructuredOutputProcessor } from "./StructuredOutputProcessor";
-import type { SubagentPersistence } from "./SubagentPersistence";
 import type { CompactionManager } from "./CompactionManager";
 import type { DiagnosticsLogger } from "./DiagnosticsLogger";
 import type { GeminiTokenUsageTracker } from "../../services/GeminiTokenUsageTracker";
@@ -28,7 +27,6 @@ export class StreamEventHandler {
 
   constructor(
     private structuredOutputProcessor: StructuredOutputProcessor,
-    private subagentPersistence: SubagentPersistence,
     private compactionManager: CompactionManager,
     private diagnosticsLogger: DiagnosticsLogger,
     private geminiTokenTracker: GeminiTokenUsageTracker,
@@ -79,12 +77,13 @@ export class StreamEventHandler {
     const subagentUpdate = this.getSubagentUpdate(properties, enrichedEvent);
     if (subagentUpdate) {
       this.logSubagentUpdate(subagentUpdate);
-      await this.subagentPersistence.persistSubagentUpdateSnapshot(
-        subagentUpdate,
-        sessionId ?? this.getCurrentSessionId(),
-        this.sessionService,
-        this.postMessage,
-      );
+      const targetSessionId = sessionId ?? this.getCurrentSessionId();
+      if (targetSessionId) {
+        await this.sessionService.persistCentralizedSubagentProjection(
+          targetSessionId,
+          subagentUpdate,
+        );
+      }
     }
 
     // Track token usage

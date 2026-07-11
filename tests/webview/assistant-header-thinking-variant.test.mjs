@@ -13,6 +13,11 @@ const messageHandlerSource = readSource(
   "messageHandler.ts",
 );
 
+const chatShellSource = readSource(
+  [joinFromRoot("webview", "shared", "src", "chat", "ChatShell.tsx")],
+  "ChatShell.tsx",
+);
+
 test("assistant header renders thinking variant beside agent/model metadata", () => {
   assert.match(
     messageComponentsSource,
@@ -26,8 +31,8 @@ test("assistant header renders thinking variant beside agent/model metadata", ()
   );
   assert.match(
     messageComponentsSource,
-    /const showAssistantResponseHeader = hasPrimaryResponseBody;/,
-    "assistant response header should render for every visible AI response block that has a primary response body",
+    /const showAssistantResponseHeader =\s*isBlockHeaderAnchor && \(hasPrimaryResponseBody \|\| blockSize > 1\);/,
+    "assistant response header should render once for its designated response-block anchor",
   );
   assert.match(
     messageComponentsSource,
@@ -38,6 +43,11 @@ test("assistant header renders thinking variant beside agent/model metadata", ()
     messageComponentsSource,
     /modelName !== "assistant" &&[\s\S]*modelName !== assistantHeaderAgentLabel/s,
     "assistant response header should avoid duplicating the fallback assistant label as both agent and model",
+  );
+  assert.match(
+    chatShellSource,
+    /const isBlockHeaderAnchor =\s*blockSize <= 1 \|\| \(isBlockExpanded \? isFirstInBlock : isLastInBlock\);/,
+    "collapsed blocks should place the header on their visible summary card, while expanded blocks place it on the first card",
   );
 });
 

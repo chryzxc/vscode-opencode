@@ -344,5 +344,50 @@ describe("SubagentTracker", () => {
         "Unexpected server error. Check server logs for details.",
       );
     });
+
+    it("keeps an actionable model error when a later ProviderModelNotFound stack arrives", () => {
+      tracker.consumeStreamEvent(
+        makeEvent("message.part.updated", {
+          part: makeSubtaskPart("parent-session-1", "msg-1", "part-1"),
+        }),
+      );
+      tracker.consumeStreamEvent(
+        makeEvent("session.created", {
+          info: { id: "child-1", parentID: "parent-session-1" },
+        }),
+      );
+      tracker.consumeStreamEvent(
+        makeEvent("session.error", {
+          sessionID: "child-1",
+          error: {
+            message:
+              "Model not found: opencode-go/qwen3.5-plus. Did you mean: qwen3.6-plus?",
+          },
+        }),
+      );
+
+      const payload = tracker.consumeStreamEvent(
+        makeEvent("session.error", {
+          sessionID: "child-1",
+          error: {
+            message:
+              "ProviderModelNotFoundError: at <anonymous> (/$bunfs/root/chunk.js:1:1)",
+          },
+        }),
+      );
+
+      const erroredDetail = Object.values(payload!.detailsById).find(
+        (detail) => detail.childSessionId === "child-1",
+      );
+      assert.ok(erroredDetail);
+      assert.equal(
+        erroredDetail.errorText,
+        "Model not found: opencode-go/qwen3.5-plus. Did you mean: qwen3.6-plus?",
+      );
+      assert.equal(
+        erroredDetail.timelineEvents.filter((event) => event.type === "session.error").length,
+        1,
+      );
+    });
   });
 });

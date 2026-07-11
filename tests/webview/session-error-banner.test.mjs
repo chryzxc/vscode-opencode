@@ -34,7 +34,7 @@ describe('Session error banner rendering', () => {
     );
     assert.match(
       chatShellSource,
-      /kind:\s*"session\.error"[\s\S]*?error:\s*errorEvent[\s\S]*?order:\s*priorMessageCount\s*\*\s*10\s*\+\s*6/s,
+      /kind:\s*"session\.error"[\s\S]*?error:\s*errorEvent[\s\S]*?order:\s*getConversationOrderAfterRawIndex\(errorEvent\.rawIndex,\s*6\)/s,
       'ChatShell must emit a session.error conversation entry ordered from the centralized tape',
     );
     assert.match(

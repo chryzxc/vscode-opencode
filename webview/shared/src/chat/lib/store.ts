@@ -74,6 +74,7 @@ export const initialState: AppState = {
   messages: [],
   messagesBySessionId: {},
   rawSdkEventPayloadsBySessionId: {},
+  liveEventStreamBySessionId: {},
   liveToastNotificationsBySessionId: {},
   promptQueue: [],
   queueBySessionId: {},
@@ -195,6 +196,8 @@ export type AppAction =
     payload: { sessionId: string; events: unknown[] };
   }
   | { type: "APPEND_RAW_SDK_EVENT_PAYLOAD"; payload: { sessionId?: string | null; event: unknown } }
+  | { type: "APPEND_LIVE_EVENT_STREAM_DEBUG"; payload: { sessionId?: string | null; event: unknown } }
+  | { type: "CLEAR_LIVE_EVENT_STREAM_DEBUG" }
   | {
     type: "APPEND_LIVE_TOAST_NOTIFICATION";
     payload: { sessionId?: string | null; notification: CentralizedToastNotification };
@@ -810,70 +813,84 @@ function mergeStreamingSnapshotLocal(
   existing: StreamingState | null | undefined,
   incoming: StreamingState,
 ): StreamingState {
+  // Stream transport payloads are incremental and may omit fields that are
+  // present in a fully-hydrated StreamingState. Normalize them before any
+  // merge/update path reads collection lengths or string methods.
+  const normalizedIncoming: StreamingState = {
+    ...incoming,
+    content: asStringLocal(incoming.content),
+    reasoning: asStringLocal(incoming.reasoning),
+    reasoningEvents: Array.isArray(incoming.reasoningEvents) ? incoming.reasoningEvents : [],
+    steps: Array.isArray(incoming.steps) ? incoming.steps : [],
+    progressEvents: Array.isArray(incoming.progressEvents) ? incoming.progressEvents : [],
+    edits: Array.isArray(incoming.edits) ? incoming.edits : [],
+    interactiveEvents: Array.isArray(incoming.interactiveEvents) ? incoming.interactiveEvents : [],
+    rawSdkEventPayloads: Array.isArray(incoming.rawSdkEventPayloads)
+      ? incoming.rawSdkEventPayloads
+      : [],
+  };
   const shouldResetTimeline =
     !!existing?.messageId &&
-    !!incoming.messageId &&
-    existing.messageId !== incoming.messageId;
+    !!normalizedIncoming.messageId &&
+    existing.messageId !== normalizedIncoming.messageId;
   if (!existing || shouldResetTimeline) {
     return {
-      ...incoming,
-      hasRenderableContent: incoming.hasRenderableContent ?? false,
-      reasoningEvents: incoming.reasoningEvents ?? [],
-      steps: incoming.steps ?? [],
-      progressEvents: incoming.progressEvents ?? [],
-      edits: incoming.edits ?? [],
-      interactiveEvents: incoming.interactiveEvents ?? [],
-      rawSdkEventPayloads: incoming.rawSdkEventPayloads ?? [],
-      liveSessionStatus: incoming.liveSessionStatus ?? null,
+      ...normalizedIncoming,
+      hasRenderableContent: normalizedIncoming.hasRenderableContent ?? false,
+      liveSessionStatus: normalizedIncoming.liveSessionStatus ?? null,
     };
   }
 
-  const mergedSteps = mergeActivityArraysLocal(existing.steps, incoming.steps);
+  const mergedSteps = mergeActivityArraysLocal(existing.steps, normalizedIncoming.steps);
   const mergedProgressEvents = mergeActivityArraysLocal(
     existing.progressEvents,
-    incoming.progressEvents,
+    normalizedIncoming.progressEvents,
   );
   const mergedReasoningEvents = mergeActivityArraysLocal(
     existing.reasoningEvents,
-    incoming.reasoningEvents,
+    normalizedIncoming.reasoningEvents,
   );
-  const mergedEdits = mergeActivityArraysLocal(existing.edits, incoming.edits);
+  const mergedEdits = mergeActivityArraysLocal(existing.edits, normalizedIncoming.edits);
   const mergedInteractiveEvents = mergeActivityArraysLocal(
     existing.interactiveEvents,
-    incoming.interactiveEvents,
+    normalizedIncoming.interactiveEvents,
   );
 
   return {
     ...existing,
-    ...incoming,
-    messageId: incoming.messageId ?? existing.messageId,
+    ...normalizedIncoming,
+    messageId: normalizedIncoming.messageId ?? existing.messageId,
     content:
-      incoming.content.trim().length > 0 ? incoming.content : existing.content,
+      normalizedIncoming.content.trim().length > 0
+        ? normalizedIncoming.content
+        : asStringLocal(existing.content),
     reasoning:
-      incoming.reasoning.trim().length > 0 ? incoming.reasoning : existing.reasoning,
-    steps: mergedSteps ?? existing.steps ?? incoming.steps ?? [],
-    progressEvents: mergedProgressEvents ?? existing.progressEvents ?? incoming.progressEvents ?? [],
-    reasoningEvents: mergedReasoningEvents ?? existing.reasoningEvents ?? incoming.reasoningEvents ?? [],
-    edits: mergedEdits ?? existing.edits ?? incoming.edits ?? [],
-    interactiveEvents: mergedInteractiveEvents ?? existing.interactiveEvents ?? incoming.interactiveEvents ?? [],
+      normalizedIncoming.reasoning.trim().length > 0
+        ? normalizedIncoming.reasoning
+        : asStringLocal(existing.reasoning),
+    steps: mergedSteps ?? existing.steps ?? normalizedIncoming.steps,
+    progressEvents: mergedProgressEvents ?? existing.progressEvents ?? normalizedIncoming.progressEvents,
+    reasoningEvents: mergedReasoningEvents ?? existing.reasoningEvents ?? normalizedIncoming.reasoningEvents,
+    edits: mergedEdits ?? existing.edits ?? normalizedIncoming.edits,
+    interactiveEvents: mergedInteractiveEvents ?? existing.interactiveEvents ?? normalizedIncoming.interactiveEvents,
     hasRenderableContent:
-      existing.hasRenderableContent || incoming.hasRenderableContent || false,
+      existing.hasRenderableContent || normalizedIncoming.hasRenderableContent || false,
     hasAssistantFinishSignal:
-      existing.hasAssistantFinishSignal || incoming.hasAssistantFinishSignal || false,
+      existing.hasAssistantFinishSignal || normalizedIncoming.hasAssistantFinishSignal || false,
     hasTerminalStepSignal:
-      existing.hasTerminalStepSignal || incoming.hasTerminalStepSignal || false,
+      existing.hasTerminalStepSignal || normalizedIncoming.hasTerminalStepSignal || false,
     contentStartSeq:
       existing.contentStartSeq ??
-      incoming.contentStartSeq ??
-      (incoming.content.trim().length > 0 ? Date.now() : undefined),
-    plan: incoming.plan ?? existing.plan,
-    structuredOutput: incoming.structuredOutput ?? existing.structuredOutput,
+      normalizedIncoming.contentStartSeq ??
+      (normalizedIncoming.content.trim().length > 0 ? Date.now() : undefined),
+    plan: normalizedIncoming.plan ?? existing.plan,
+    structuredOutput: normalizedIncoming.structuredOutput ?? existing.structuredOutput,
     liveSessionStatus:
-      incoming.liveSessionStatus === undefined
+      normalizedIncoming.liveSessionStatus === undefined
         ? existing.liveSessionStatus
-        : incoming.liveSessionStatus,
+        : normalizedIncoming.liveSessionStatus,
     rawSdkEventPayloads: dedupeCentralizedDebugPayloads(
-      [...(existing.rawSdkEventPayloads ?? []), ...(incoming.rawSdkEventPayloads ?? [])],
+      [...(existing.rawSdkEventPayloads ?? []), ...normalizedIncoming.rawSdkEventPayloads],
     ),
   };
 }
@@ -2941,6 +2958,26 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         }, sessionId),
       };
     }
+    case "APPEND_LIVE_EVENT_STREAM_DEBUG": {
+      const sessionId = action.payload.sessionId ?? state.currentSessionId ?? "";
+      if (!sessionId) {
+        return state;
+      }
+      return {
+        ...state,
+        liveEventStreamBySessionId: {
+          ...(state.liveEventStreamBySessionId ?? {}),
+          [sessionId]: [
+            ...(state.liveEventStreamBySessionId?.[sessionId] ?? []),
+            action.payload.event,
+          ],
+        },
+      };
+    }
+    case "CLEAR_LIVE_EVENT_STREAM_DEBUG":
+      // This field is deliberately a browser-lifetime diagnostic mirror. Do
+      // not restore it from chatHistory or include it in persistence payloads.
+      return { ...state, liveEventStreamBySessionId: {} };
     case "APPEND_LIVE_TOAST_NOTIFICATION": {
       const sessionId = action.payload.sessionId ?? state.currentSessionId ?? "";
       if (typeof console !== "undefined") {
@@ -2974,6 +3011,10 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case "CLEAR_MESSAGES":
       return { ...state, messages: [] };
     case "SET_PROCESSING":
+      // Defensive normalization for reloaded/legacy webview state. A stream
+      // bootstrap must never fail merely because a stale state snapshot omitted
+      // the messages array.
+      const currentMessages = Array.isArray(state.messages) ? state.messages : [];
       logger.info("[LOADING][STORE] SET_PROCESSING", {
         payload: action.payload,
         currentSessionId: state.currentSessionId,
@@ -2982,8 +3023,11 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         streamingExists: !!state.streaming,
         hasRenderableContent: state.streaming?.hasRenderableContent,
         priorIsProcessing: state.isProcessing,
-        hasMessages: state.messages.length > 0,
-        lastMessageRole: state.messages.length > 0 ? state.messages[state.messages.length - 1].role : null,
+        hasMessages: currentMessages.length > 0,
+        lastMessageRole:
+          currentMessages.length > 0
+            ? currentMessages[currentMessages.length - 1].role
+            : null,
       });
       // Question popovers are final assistant messages now, not an
       // interactive-await state. Let new user turns enter processing even when
@@ -3083,7 +3127,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         isNewAssistantTurn &&
         !!state.streaming &&
         state.streaming.isActive === false &&
-        (!!state.streaming.messageId || state.streaming.content.trim().length > 0) &&
+        (!!state.streaming.messageId ||
+          asStringLocal(state.streaming.content).trim().length > 0) &&
         state.streaming.messageId !== nextAssistantTurnMessageId;
       if (shouldClearStaleStreamingSnapshot) {
         return {
