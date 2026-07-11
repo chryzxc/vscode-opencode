@@ -85,6 +85,25 @@ function messageTokenStats(message: Message): {
   };
 }
 
+function contextChipDisplayParts(context: ContextItem): {
+  displayName: string;
+  lineSuffix: string;
+} {
+  const rawLabel = context.file.startsWith("resource:")
+    ? context.file.replace("resource:", "")
+    : context.file;
+  const segments = rawLabel.split(/[\\/]/);
+  const displayName = segments[segments.length - 1] || rawLabel;
+  const normalizedLineInfo = typeof context.lineInfo === "string" ? context.lineInfo.trim() : "";
+
+  return {
+    displayName,
+    lineSuffix: normalizedLineInfo
+      ? `:${normalizedLineInfo.replace(/^:+/, "")}`
+      : "",
+  };
+}
+
 function CircularProgress({
   pct,
   size = 16,
@@ -2525,14 +2544,12 @@ export const InputWrapper = memo(function InputWrapper() {
     const items = e.clipboardData?.items;
     if (!items) return;
 
-    // Large text paste → auto-convert to a .txt attachment. Only convert when
-    // the paste is "pure text" — i.e. no image item accompanies it — so image
-    // pastes keep flowing through the existing image branch below.
+    // Large text paste → auto-convert to a .txt attachment. Prioritize text
+    // content over image items: rich-text clipboard copies from IDEs/browsers
+    // often include an image/png fallback alongside text/plain, and the user
+    // intent is to paste the text, not the fallback image.
     const pastedText = e.clipboardData.getData("text/plain") ?? "";
-    if (
-      pastedText.length >= PASTE_TEXT_ATTACHMENT_THRESHOLD &&
-      !Array.from(items).some((it) => it.type.startsWith("image/"))
-    ) {
+    if (pastedText.length >= PASTE_TEXT_ATTACHMENT_THRESHOLD) {
       e.preventDefault();
       const dataUrl = `data:text/plain;charset=utf-8,${encodeURIComponent(pastedText)}`;
       const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
@@ -3134,7 +3151,7 @@ export const InputWrapper = memo(function InputWrapper() {
             ))}
             {selectedContexts.map((context) => {
               const isResource = context.file.startsWith("resource:");
-              const displayFile = isResource ? context.file.replace("resource:", "") : context.file;
+              const { displayName, lineSuffix } = contextChipDisplayParts(context);
               return (
                 <div
                   key={`${context.file}:${context.lineInfo}`}
@@ -3145,8 +3162,9 @@ export const InputWrapper = memo(function InputWrapper() {
                   ) : (
                     <FileIcon filePath={context.file} className="h-3.5 w-3.5" />
                   )}
-                  <span className="truncate max-w-[220px]">
-                    {displayFile} {context.lineInfo}
+                  <span className="flex min-w-0 items-center gap-1">
+                    <span className="truncate max-w-[160px]">{displayName}</span>
+                    {lineSuffix ? <span className="shrink-0">{lineSuffix}</span> : null}
                   </span>
                   {context.languageId && !isResource && (
                     <span className="opacity-60 text-[9px] font-semibold shrink-0">

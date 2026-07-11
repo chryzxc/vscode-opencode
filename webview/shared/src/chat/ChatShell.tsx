@@ -1,5 +1,5 @@
 import { Fragment, memo, startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { Archive, X } from "lucide-react";
+import { AlertTriangle, Archive, X } from "lucide-react";
 
 import { AppProvider, shallowEqual, useAppDispatch, useAppState } from "./lib/store";
 import {
@@ -86,6 +86,109 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+function extractSessionErrorMessage(value: unknown): string | undefined {
+  const record = asRecord(value);
+  const nestedError = asRecord(record?.error);
+  const nestedErrorData = asRecord(nestedError?.data);
+  return firstNonEmptyString(
+    nestedErrorData?.message,
+    nestedError?.message,
+    record?.message,
+    typeof record?.error === "string" ? record.error : undefined,
+    record?.reason,
+    record?.code,
+  );
+}
+
+function isGenericSessionErrorMessage(message: string | undefined): boolean {
+  const normalized = normalizeComparableText(message);
+  if (!normalized) {
+    return true;
+  }
+  return [
+    "model did not produce structured output",
+    "unexpected server error",
+    "unknown error",
+    "request failed",
+    "operation failed",
+  ].includes(normalized);
+}
+
+type CentralizedSessionErrorEvent = {
+  id?: string;
+  sessionId?: string;
+  createdAt?: number;
+  message: string;
+  rawIndex: number;
+  source: "session.error" | "error" | "message.updated";
+};
+
+function parseCentralizedSessionErrorEvent(
+  payload: unknown,
+  rawIndex: number,
+): CentralizedSessionErrorEvent | null {
+  const event = asRecord(payload);
+  if (!event) return null;
+
+  const eventType = getCentralizedEventType(event);
+  if (
+    eventType !== "session.error" &&
+    eventType !== "error" &&
+    eventType !== "message.updated"
+  ) {
+    return null;
+  }
+
+  const properties = asRecord(event.properties);
+  const info = getCentralizedEventInfo(event);
+  const syncData = asRecord(asRecord(event.syncEvent)?.data);
+  const sessionId = firstNonEmptyString(
+    properties?.sessionID,
+    properties?.sessionId,
+    syncData?.sessionID,
+    syncData?.sessionId,
+    event.sessionID,
+    event.sessionId,
+    info?.sessionID,
+    info?.sessionId,
+  );
+  const createdAt =
+    typeof properties?.time === "number"
+      ? properties.time
+      : typeof syncData?.time === "number"
+        ? syncData.time
+        : typeof event.time === "number"
+          ? event.time
+          : undefined;
+
+  if (eventType === "session.error" || eventType === "error") {
+    const message =
+      extractSessionErrorMessage(properties) ??
+      extractSessionErrorMessage(event) ??
+      extractSessionErrorMessage(syncData);
+    if (!message) return null;
+    return {
+      id: firstNonEmptyString(event.id, properties?.id, syncData?.id),
+      sessionId,
+      createdAt,
+      message,
+      rawIndex,
+      source: eventType,
+    };
+  }
+
+  const message = extractSessionErrorMessage(info);
+  if (!message) return null;
+  return {
+    id: firstNonEmptyString(info?.id, info?.messageID, info?.messageId, event.id),
+    sessionId,
+    createdAt,
+    message,
+    rawIndex,
+    source: "message.updated",
+  };
+}
+
 function normalizeComparableText(value: unknown): string {
   if (typeof value !== "string") {
     return "";
@@ -94,6 +197,97 @@ function normalizeComparableText(value: unknown): string {
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
+}
+
+function hasInjectedSystemPromptShape(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return (
+    /^\[[^\]]+\]/.test(normalized) ||
+    /^<[^>]+>/.test(normalized) ||
+    /^\/\*/.test(normalized)
+  );
+}
+
+function looksLikeStandaloneSystemMessage(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return false;
+  }
+  return (
+    /^\[[a-z][a-z0-9_\- ]*\]/i.test(trimmed) ||
+    /^<[a-z][a-z0-9_\-]*>/i.test(trimmed) ||
+    /^<!--\s*[a-z][a-z0-9_\-]*/i.test(trimmed)
+  );
+}
+
+function splitInjectedSystemPromptFromUserText(raw: string): string {
+  const sanitized = raw.trim();
+  if (!sanitized) {
+    return "";
+  }
+  const separatorMatch = sanitized.match(/(?:\r?\n)---(?:\r?\n)+/);
+  if (!separatorMatch) {
+    return sanitized;
+  }
+  const separatorIndex = sanitized.indexOf(separatorMatch[0]);
+  if (separatorIndex <= 0) {
+    return sanitized;
+  }
+  const systemText = sanitized.slice(0, separatorIndex).trim();
+  const userText = sanitized.slice(separatorIndex + separatorMatch[0].length).trim();
+  if (!systemText || !userText || !hasInjectedSystemPromptShape(systemText)) {
+    return sanitized;
+  }
+  return userText;
+}
+
+function isSyntheticUserToolText(value: string): boolean {
+  const normalized = normalizeComparableText(value);
+  if (!normalized) {
+    return false;
+  }
+  if (
+    normalized.startsWith("called the ") &&
+    normalized.includes(" tool with the following input:")
+  ) {
+    return true;
+  }
+  return value.includes("<path>") && value.includes("</path>") && value.includes("<content>");
+}
+
+function buildVisibleUserMessageText(
+  rawText: string | undefined,
+  parts: unknown[] | undefined,
+): string {
+  const visibleTexts = (parts ?? [])
+    .map((part) => asRecord(part))
+    .filter((part) => part?.synthetic !== true)
+    .map((part) =>
+      firstNonEmptyString(
+        part?.message,
+        part?.text,
+        part?.content,
+      ) ?? "",
+    )
+    .map((text) => splitInjectedSystemPromptFromUserText(text))
+    .filter((text) => text.length > 0 && !isSyntheticUserToolText(text));
+
+  if (visibleTexts.length === 0) {
+    return splitInjectedSystemPromptFromUserText(rawText ?? "");
+  }
+
+  const dedupedTexts: string[] = [];
+  for (const text of visibleTexts) {
+    if (
+      dedupedTexts.some(
+        (existing) => normalizeComparableText(existing) === normalizeComparableText(text),
+      )
+    ) {
+      continue;
+    }
+    dedupedTexts.push(text);
+  }
+  return dedupedTexts.join("\n\n").trim();
 }
 
 function renderMessageContentSignature(message: Message): string {
@@ -662,15 +856,41 @@ function buildCentralizedRenderMessages(
     }
     const part = eventPart;
     const messageId = getCentralizedPartMessageId(part);
-    if (
+
+    // Register role from the part event's info if we haven't already. Some
+    // system messages arrive via message.part.updated without a matching
+    // message.updated event (or with mismatched IDs), causing them to default
+    // to "user" and render as right-aligned user bubbles instead of full-width
+    // system cards.
+    if (messageId && !messageRolesById.has(messageId)) {
+      const partEventInfo = getCentralizedEventInfo(event);
+      const partEventRole = firstNonEmptyString(partEventInfo?.role)?.toLowerCase();
+      if (partEventRole) {
+        messageRolesById.set(messageId, partEventRole);
+        if (partEventRole === "user") {
+          userMessageIds.add(messageId);
+        }
+        if (partEventRole === "system") {
+          systemMessageIds.add(messageId);
+        }
+      }
+    }
+
+    const isAssistantOwnedPart =
       messageId &&
       isAssistantOwnedCentralizedPartEvent(
         event,
         part,
         assistantMessageIds,
         latestAssistantMessageId,
-      )
-    ) {
+      );
+    if (messageId) {
+      const existingParts = partsByMessageId.get(messageId) ?? [];
+      existingParts.push(part);
+      partsByMessageId.set(messageId, existingParts);
+    }
+
+    if (isAssistantOwnedPart) {
       assistantMessageIds.add(messageId);
       const parentId = firstNonEmptyString(
         assistantParentIdByMessageId.get(messageId),
@@ -686,12 +906,6 @@ function buildCentralizedRenderMessages(
         parentId: parentId || undefined,
         createdAt,
       });
-      // Extract and collect the part for this message
-      if (part) {
-        const existingParts = partsByMessageId.get(messageId) ?? [];
-        existingParts.push(part);
-        partsByMessageId.set(messageId, existingParts);
-      }
       continue;
     }
 
@@ -723,6 +937,17 @@ function buildCentralizedRenderMessages(
       userMessageIds.has(descriptor.messageId) ||
       centralizedRole === "user";
     if (isKnownSystemMessage) {
+      if (!systemDescriptors.some((entry) => entry.messageId === descriptor.messageId)) {
+        systemDescriptors.push(descriptor);
+      }
+      continue;
+    }
+    if (
+      !isKnownUserMessage &&
+      centralizedRole !== "assistant" &&
+      !assistantMessageIds.has(descriptor.messageId) &&
+      looksLikeStandaloneSystemMessage(descriptor.text)
+    ) {
       if (!systemDescriptors.some((entry) => entry.messageId === descriptor.messageId)) {
         systemDescriptors.push(descriptor);
       }
@@ -993,11 +1218,14 @@ function buildCentralizedRenderMessages(
     }
     seenMessageIds.add(descriptor.messageId);
 
+    const userParts = getPartsForMessageId(descriptor.messageId);
+    const visibleUserText = buildVisibleUserMessageText(descriptor.text, userParts);
+
     merged.push({
       id: descriptor.messageId,
       role: "user",
-      content: descriptor.text,
-      text: descriptor.text,
+      content: visibleUserText,
+      text: visibleUserText,
       info: {
         id: descriptor.messageId,
         role: "user",
@@ -1011,6 +1239,7 @@ function buildCentralizedRenderMessages(
       coalescedIds: coalescedIdsByMessageId.get(descriptor.messageId) ?? undefined,
       created: descriptor.createdAt,
       createdAt: descriptor.createdAt,
+      parts: userParts,
       rawSdkEventPayloads: getRawEventsForMessageId(descriptor.messageId),
     } as Message);
   }
@@ -1038,6 +1267,7 @@ function buildCentralizedRenderMessages(
       },
       created: descriptor.createdAt,
       createdAt: descriptor.createdAt,
+      parts: getPartsForMessageId(descriptor.messageId),
       rawSdkEventPayloads: getRawEventsForMessageId(descriptor.messageId),
     } as Message);
   }
@@ -1147,6 +1377,12 @@ type ConversationRenderEntry =
       key: string;
       messageId?: string;
       order: number;
+    }
+  | {
+      kind: "session.error";
+      key: string;
+      error: CentralizedSessionErrorEvent;
+      order: number;
     };
 
 type CentralizedTranscriptProjection = {
@@ -1205,7 +1441,17 @@ function parseCentralizedSessionDiffEvent(
       .filter((item) => item.file.length > 0);
     if (files.length === 0) return null;
     const eventTime = typeof properties?.time === "number" ? properties.time : typeof syncData?.time === "number" ? syncData.time : typeof event.time === "number" ? event.time : undefined;
-    return { id: firstNonEmptyString(event.id), sessionId: resolveSessionId(), createdAt: eventTime, files };
+    // session.diff events don't always carry a message ID, but when they do
+    // (e.g. inside properties or syncData), preserve it so the undo button
+    // can target the exact message that owns these file changes.
+    const diffMessageId = firstNonEmptyString(
+      properties?.messageID,
+      properties?.messageId,
+      syncData?.messageID,
+      syncData?.messageId,
+      info?.id,
+    );
+    return { id: firstNonEmptyString(event.id), sessionId: resolveSessionId(), messageId: diffMessageId, createdAt: eventTime, files };
   }
 
   if (eventType === "message.updated") {
@@ -1224,7 +1470,14 @@ function parseCentralizedSessionDiffEvent(
       }))
       .filter((item) => item.file.length > 0);
     if (files.length === 0) return null;
-    return { id: firstNonEmptyString(event.id), sessionId: resolveSessionId(), createdAt: undefined, files };
+    const updatedMessageId = firstNonEmptyString(
+      info?.id,
+      properties?.id,
+      properties?.messageID,
+      syncData?.id,
+      syncData?.messageID,
+    );
+    return { id: firstNonEmptyString(event.id), sessionId: resolveSessionId(), messageId: updatedMessageId, createdAt: undefined, files };
   }
 
   return null;
@@ -1579,6 +1832,54 @@ function buildCentralizedTranscriptProjection(
     });
   }
 
+  const parsedSessionErrorEvents = normalizedRawSdkEventPayloads
+    .map((payload, rawIndex) => parseCentralizedSessionErrorEvent(payload, rawIndex))
+    .filter((event): event is CentralizedSessionErrorEvent => !!event);
+  const hasPrimarySessionErrorEvent = parsedSessionErrorEvents.some(
+    (candidateError) => candidateError.source !== "message.updated",
+  );
+  const sessionErrorEvents = hasPrimarySessionErrorEvent
+    ? parsedSessionErrorEvents.filter((candidateError) => candidateError.source !== "message.updated")
+    : parsedSessionErrorEvents;
+  const hasSpecificSessionErrorEvent = sessionErrorEvents.some(
+    (candidateError) => !isGenericSessionErrorMessage(candidateError.message),
+  );
+  const seenSessionErrorFingerprints = new Set<string>();
+  for (const errorEvent of sessionErrorEvents) {
+    if (
+      hasSpecificSessionErrorEvent &&
+      isGenericSessionErrorMessage(errorEvent.message)
+    ) {
+      continue;
+    }
+    // IMPORTANT: dedupe must stay event-specific, not message-text-specific.
+    // Different assistant turns can fail with the exact same server message,
+    // and collapsing by `{sessionId, message, source}` would hide later
+    // failures from the transcript. Include the concrete event identity so each
+    // errored turn can still surface its own inline session-error row.
+    const fingerprint = JSON.stringify({
+      sessionId: errorEvent.sessionId ?? "",
+      id: errorEvent.id ?? null,
+      rawIndex: errorEvent.rawIndex,
+      message: errorEvent.message,
+      source: errorEvent.source,
+    });
+    if (seenSessionErrorFingerprints.has(fingerprint)) {
+      continue;
+    }
+    seenSessionErrorFingerprints.add(fingerprint);
+    const priorMessageCount = countCanonicalMessagesAtOrBeforeRawIndex(
+      renderMessageEntries,
+      errorEvent.rawIndex,
+    );
+    conversationEntries.push({
+      kind: "session.error",
+      key: `session.error:${errorEvent.id ?? errorEvent.rawIndex}`,
+      error: errorEvent,
+      order: priorMessageCount * 10 + 6,
+    });
+  }
+
   return {
     renderMessages,
     conversationEntries: conversationEntries.sort((left, right) => left.order - right.order),
@@ -1782,6 +2083,9 @@ function getTranscriptEntryContainIntrinsicSize(
   entry: ConversationRenderEntry,
   options: { isHiddenByBlock?: boolean } = {},
 ): string {
+  if (entry.kind === "session.error") {
+    return "132px";
+  }
   if (entry.kind !== "message") {
     return "56px";
   }
@@ -1807,6 +2111,9 @@ function getTranscriptEntryContainIntrinsicSize(
 function estimateConversationEntryHeight(entry: ConversationRenderEntry): number {
   if (entry.kind === "assistant.abort") {
     return 56;
+  }
+  if (entry.kind === "session.error") {
+    return 132;
   }
   if (entry.kind === "session.diff") {
     return 0;
@@ -2342,6 +2649,62 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
           return null;
         }
 
+        if (entry.kind === "session.error") {
+          return (
+            <div
+              key={entry.key}
+              ref={(node) => attachMeasuredEntryNode(entry.key, node)}
+            >
+              {dividerHere ? <CompactionDivider at={lastCompactedAt} /> : null}
+              <div
+                style={{
+                  contentVisibility: "auto",
+                  containIntrinsicSize: getTranscriptEntryContainIntrinsicSize(entry),
+                }}
+              >
+                <div className="mb-2">
+                  <div
+                    className="w-full rounded-[14px] border px-3 py-2.5 text-left"
+                    style={{
+                      background:
+                        "color-mix(in srgb, var(--vscode-errorForeground) 6%, var(--oc-panel-soft))",
+                      borderColor:
+                        "color-mix(in srgb, var(--vscode-errorForeground) 18%, var(--oc-border))",
+                    }}
+                  >
+                    <div className="mb-1.5 flex min-w-0 items-center gap-2">
+                      <div
+                        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full"
+                        style={{
+                          background:
+                            "color-mix(in srgb, var(--vscode-errorForeground) 14%, transparent)",
+                          color: "var(--vscode-errorForeground)",
+                        }}
+                      >
+                        <AlertTriangle className="h-3 w-3" />
+                      </div>
+                      <div className="min-w-0">
+                        <div
+                          className="text-[10px] font-semibold uppercase tracking-[0.12em]"
+                          style={{ color: "color-mix(in srgb, var(--vscode-errorForeground) 82%, var(--oc-text-soft))" }}
+                        >
+                          Session error
+                        </div>
+                        <div className="text-[11px] text-oc-text-soft opacity-75">
+                          Response could not be completed
+                        </div>
+                      </div>
+                    </div>
+                    <div className="text-[12.5px] leading-relaxed text-oc-text">
+                      {entry.error.message}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        }
+
         return (
           <div
             key={entry.key}
@@ -2386,6 +2749,7 @@ function ChatContent() {
       processingSessionIds: appState.processingSessionIds,
       rawSdkEventPayloadsBySessionId: appState.rawSdkEventPayloadsBySessionId,
       receivedInitState: appState.receivedInitState,
+      revertState: appState.revertState,
       selectedAgent: appState.selectedAgent,
       serverStatus: appState.serverStatus,
       streaming: appState.streaming,
@@ -3017,6 +3381,8 @@ function ChatContent() {
         entryTime = getCanonicalMessageCreatedAt(entry.message);
       } else if (entry.kind === "session.diff") {
         entryTime = entry.diff.createdAt ?? 0;
+      } else if (entry.kind === "session.error") {
+        entryTime = entry.error.createdAt ?? 0;
       }
 
       while (

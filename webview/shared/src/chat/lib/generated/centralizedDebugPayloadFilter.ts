@@ -25,6 +25,8 @@ const CENTRALIZED_DEBUG_EXCLUDED_PATH_RULES = [
       "message.part.delta",
       "message.part.delta.1",
       "tui.toast.show",
+      "tui.show",
+      "session.status",
     ],
   },
   {
@@ -36,6 +38,8 @@ const CENTRALIZED_DEBUG_EXCLUDED_PATH_RULES = [
       "message.part.delta",
       "message.part.delta.1",
       "tui.toast.show",
+      "tui.show",
+      "session.status",
     ],
   },
   {
@@ -47,6 +51,34 @@ const CENTRALIZED_DEBUG_EXCLUDED_PATH_RULES = [
       "message.part.delta",
       "message.part.delta.1",
       "tui.toast.show",
+      "tui.show",
+      "session.status",
+    ],
+  },
+  {
+    path: "syncEvent.data.type",
+    values: [
+      "server.connected",
+      "server.connected.1",
+      "server.heartbeat",
+      "message.part.delta",
+      "message.part.delta.1",
+      "tui.toast.show",
+      "tui.show",
+      "session.status",
+    ],
+  },
+  {
+    path: "payload.syncEvent.data.type",
+    values: [
+      "server.connected",
+      "server.connected.1",
+      "server.heartbeat",
+      "message.part.delta",
+      "message.part.delta.1",
+      "tui.toast.show",
+      "tui.show",
+      "session.status",
     ],
   },
 ] as const;
@@ -172,17 +204,23 @@ function stripDotPathIfJsonSchema(
 // This fallback chain is critical for ensuring that live stream events are correctly
 // classified and not dropped by the centralized data persister. Without this,
 // stream events will resolve to an empty type and be incorrectly rejected as noise.
-function normalizedCentralizedEventType(event: Record<string, unknown>): string {
+export function normalizedCentralizedEventType(event: Record<string, unknown>): string {
   const directType = asString(event.type ?? event.event ?? event.kind).trim();
   const payloadRecord = asRecord(event.payload);
   const payloadType = asString(payloadRecord?.type ?? payloadRecord?.event ?? payloadRecord?.kind).trim();
-  const payloadSyncType = asString(asRecord(payloadRecord?.syncEvent)?.type).trim();
-  const syncType = asString(asRecord(event.syncEvent)?.type).trim();
+  const syncEvent = asRecord(event.syncEvent);
+  const syncType = asString(syncEvent?.type).trim();
+  const syncData = asRecord(syncEvent?.data);
+  const syncDataType = asString(syncData?.type ?? syncData?.event ?? syncData?.kind).trim();
+  const payloadSyncEvent = asRecord(payloadRecord?.syncEvent);
+  const payloadSyncType = asString(payloadSyncEvent?.type).trim();
+  const payloadSyncData = asRecord(payloadSyncEvent?.data);
+  const payloadSyncDataType = asString(payloadSyncData?.type ?? payloadSyncData?.event ?? payloadSyncData?.kind).trim();
 
   const rawType =
     directType && directType !== "sync"
       ? directType
-      : payloadSyncType || syncType || payloadType || directType;
+      : payloadSyncType || syncType || payloadSyncDataType || syncDataType || payloadType || directType;
 
   return rawType.replace(/\.\d+$/, "");
 }
@@ -287,7 +325,10 @@ export function getCentralizedDebugPayloadDisposition(
           (expected) => asString(value).trim().toLowerCase() === expected.toLowerCase(),
         )
       ) {
-        return record.type === "tui.toast.show" ? "live-only" : "excluded-noise";
+        const normalizedType = normalizedCentralizedEventType(record);
+        return normalizedType === "tui.toast.show" || normalizedType === "tui.show" || normalizedType === "session.status"
+          ? "live-only"
+          : "excluded-noise";
       }
     }
   }
@@ -401,10 +442,9 @@ function centralizedDebugPayloadFingerprint(payload: unknown): string {
     return normalizedValues.join("|");
   }
 
-  // DO NOT use JSON.stringify as a fallback fingerprint! 
-  // 1. It is extremely slow for large objects (O(N^2) during deduplication loops).
-  // 2. It incorrectly drops stream chunks that happen to contain the same text (e.g. two chunks with " the ").
-  // If an event has no recognizable identity fields, we treat it as unique to avoid dropping it.
+  // DO NOT use JSON.stringify as a fallback fingerprint!
+  // It is extremely slow for large objects and incorrectly drops stream chunks.
+  // We use a counter to ensure unidentified events remain unique.
   return `unique_unidentified_${Math.random()}_{Date.now()}`;
 }
 
@@ -467,12 +507,6 @@ export function shouldPersistCentralizedSessionEventPayload(payload: unknown): b
   return normalizedCentralizedEventType(event).length > 0;
 }
 
-
-/**
- * Optimized append-and-dedupe that avoids O(N^2) recalculations of fingerprints.
- * We only check the new payload against the last 50 items because duplicates
- * usually happen close to each other. This is critical for stream chunks.
- */
 export function appendAndDedupeCentralizedDebugPayload(existing: unknown[], newPayload: unknown): unknown[] {
   if (!Array.isArray(existing)) {
     return [newPayload];
@@ -481,7 +515,6 @@ export function appendAndDedupeCentralizedDebugPayload(existing: unknown[], newP
     getCentralizedDebugPayloadIdentity(newPayload) ||
     centralizedDebugPayloadFingerprint(newPayload);
 
-  // Check the last 50 items for a duplicate.
   const limit = Math.max(0, existing.length - 50);
   for (let i = existing.length - 1; i >= limit; i--) {
     const existingKey =

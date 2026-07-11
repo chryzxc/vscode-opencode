@@ -1,0 +1,181 @@
+/**
+ * Regression: Pre-message failures (invalid parts, server validation) must
+ * surface as in-conversation error messages, not be silently swallowed.
+ *
+ * Bug: The old session.error handler only checked flat payload fields and
+ * used keyword-based filtering to drop "noise" errors. Server payloads nest
+ * the error message as { error: { data: { message } } }, so the flat
+ * extraction missed the real message and the error was silently dropped.
+ * Pre-message failures never emit a message.updated sync event, so they
+ * had no other path to reach the conversation.
+ *
+ * Fix: messageHandler now:
+ *   1. Extracts error.data.message with priority over flat fields
+ *   2. Uses signaling detection (completed/finished/done) instead of keywords
+ *   3. Dispatches ADD_ERROR_MESSAGE for genuine errors
+ *   4. Always resets SET_ASSISTANT_TURN_PENDING to false
+ */
+
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readSource, joinFromRoot, extractFunctionBody } from "../helpers/source-utils.mjs";
+
+const messageHandlerSource = readSource(
+  [joinFromRoot("webview", "shared", "src", "chat", "lib", "messageHandler.ts")],
+  "messageHandler.ts",
+);
+
+function extractSessionErrorBlock(source) {
+  const start = source.indexOf("case 'session.error':");
+  if (start === -1) return "";
+  // Find the matching `break;` for this case block
+  const breakIdx = source.indexOf("break;", start);
+  return breakIdx === -1 ? "" : source.slice(start, breakIdx + 6);
+}
+
+test("session.error handler handles both session.error and error event types", () => {
+  assert.match(
+    messageHandlerSource,
+    /case 'session\.error':[\s\S]*?case 'error':/,
+    "handler must cover both session.error and bare error event types",
+  );
+});
+
+test("error message extraction prioritizes nested error.data.message", () => {
+  const block = extractSessionErrorBlock(messageHandlerSource);
+  assert.ok(block.length > 0, "session.error case block must exist");
+
+  // Must access payload.error as a record first
+  assert.match(
+    block,
+    /asRecord\(payload\.error\)/,
+    "must cast payload.error to record for nested access",
+  );
+
+  // Must access errorRecord.data as a record
+  assert.match(
+    block,
+    /asRecord\(errorRecord\?\.data\)/,
+    "must access error.data as a record",
+  );
+
+  // The extraction chain must include errorDataRecord.message
+  assert.match(
+    block,
+    /asString\(errorDataRecord\?\.message\)/,
+    "must extract message from error.data.message",
+  );
+
+  // Must also check flat payload.message as first priority
+  assert.match(
+    block,
+    /asString\(payload\.message\)/,
+    "must also check flat payload.message",
+  );
+});
+
+test("error reason extracted for signaling detection", () => {
+  const block = extractSessionErrorBlock(messageHandlerSource);
+
+  assert.match(
+    block,
+    /const errorReason = asString\(payload\.reason\) \|\| asString\(payload\.code\)/,
+    "must extract errorReason from reason or code field",
+  );
+});
+
+test("isSignalingEvent detects completion signals in reason", () => {
+  const block = extractSessionErrorBlock(messageHandlerSource);
+
+  // Must check for completed, finished, done — NOT old keyword filtering
+  assert.match(
+    block,
+    /errorReason\?\.includes\("completed"\)/,
+    "must detect 'completed' signaling",
+  );
+  assert.match(
+    block,
+    /errorReason\?\.includes\("finished"\)/,
+    "must detect 'finished' signaling",
+  );
+  assert.match(
+    block,
+    /errorReason\?\.includes\("done"\)/,
+    "must detect 'done' signaling",
+  );
+});
+
+test("isGenuineError requires non-empty message and excludes signaling events", () => {
+  const block = extractSessionErrorBlock(messageHandlerSource);
+
+  assert.match(
+    block,
+    /const isGenuineError =/,
+    "must define isGenuineError flag",
+  );
+  assert.match(
+    block,
+    /!!errorMessage/,
+    "must require errorMessage to be truthy",
+  );
+  assert.match(
+    block,
+    /errorMessage\.trim\(\)\.length > 0/,
+    "must require non-empty trimmed message",
+  );
+  assert.match(
+    block,
+    /!isSignalingEvent/,
+    "must exclude signaling events from genuine errors",
+  );
+});
+
+test("genuine errors dispatch ADD_ERROR_MESSAGE for in-conversation surfacing", () => {
+  const block = extractSessionErrorBlock(messageHandlerSource);
+
+  assert.match(
+    block,
+    /if \(isGenuineError\)/,
+    "must branch on isGenuineError",
+  );
+  assert.match(
+    block,
+    /dispatch\(\{ type: "ADD_ERROR_MESSAGE", payload: errorMessage \}\)/,
+    "must dispatch ADD_ERROR_MESSAGE for genuine errors so they surface in conversation",
+  );
+});
+
+test("session.error always resets assistant turn pending regardless of error type", () => {
+  const block = extractSessionErrorBlock(messageHandlerSource);
+
+  // SET_ASSISTANT_TURN_PENDING must be OUTSIDE the isGenuineError if-block
+  // so it runs for both genuine and signaling events
+  const genuineIdx = block.indexOf("if (isGenuineError)");
+  const turnPendingIdx = block.indexOf('type: "SET_ASSISTANT_TURN_PENDING"');
+
+  assert.ok(
+    turnPendingIdx > genuineIdx,
+    "SET_ASSISTANT_TURN_PENDING dispatch must come after the isGenuineError check — it must run unconditionally",
+  );
+
+  assert.match(
+    block,
+    /SET_ASSISTANT_TURN_PENDING,[\s\S]*?payload:\s*\{ pending:\s*false,\s*messageId:\s*null \}/s,
+    "must reset assistant turn pending to false with null messageId",
+  );
+}
+
+test("session.error handler dispatches SET_PROCESSING false and FINISH_STREAMING", () => {
+  const block = extractSessionErrorBlock(messageHandlerSource);
+
+  assert.match(
+    block,
+    /type: 'SET_PROCESSING', payload: false/,
+    "must set processing to false on session error",
+  );
+  assert.match(
+    block,
+    /type: 'FINISH_STREAMING'/,
+    "must finish streaming on session error",
+  );
+});

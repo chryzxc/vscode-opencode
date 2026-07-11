@@ -16,8 +16,9 @@ function getCollapsedRenderingState({
     isStreamingActive,
     hasCopyableResponseContent,
 }) {
-    // 1. Header is only shown for the last message in a block
-    const showAssistantResponseHeader = hasPrimaryResponseBody && isLastInBlock;
+    // 1. Every visible AI response block should keep its header so agent/model
+    // metadata remains visible even on expanded intermediate cards.
+    const showAssistantResponseHeader = hasPrimaryResponseBody;
 
     // 2. The timestamp is moved inside the bubble and copy button removed for messages WITHOUT copyable text
     const showTimestampInsideBubble = !isStreamingActive && !hasCopyableResponseContent;
@@ -46,7 +47,7 @@ describe("Assistant Message Collapsed State UI Logic", () => {
         assert.strictEqual(state.showFooterOutsideBubble, false, "Copy button and external footer should be hidden for intermediate steps");
     });
 
-    it("should hide header but put footer outside for intermediate steps WITH text (e.g. expanded text message followed by tool call)", () => {
+    it("should keep header visible for intermediate steps WITH text (e.g. expanded text message followed by tool call)", () => {
         const state = getCollapsedRenderingState({
             hasPrimaryResponseBody: true,
             isLastInBlock: false, // It's an expanded text message that isn't the final card
@@ -54,7 +55,7 @@ describe("Assistant Message Collapsed State UI Logic", () => {
             hasCopyableResponseContent: true, // It has text
         });
 
-        assert.strictEqual(state.showAssistantResponseHeader, false, "Header should be hidden because it's not the last card");
+        assert.strictEqual(state.showAssistantResponseHeader, true, "Header should remain visible for any response block that has body text");
         assert.strictEqual(state.showTimestampInsideBubble, false, "Timestamp should NOT be inside the bubble because it has text");
         assert.strictEqual(state.showFooterOutsideBubble, true, "Copy button and external footer should be visible because it has text");
     });
@@ -70,6 +71,17 @@ describe("Assistant Message Collapsed State UI Logic", () => {
         assert.strictEqual(state.showAssistantResponseHeader, true, "Header should be visible for the final message");
         assert.strictEqual(state.showTimestampInsideBubble, false, "Timestamp should NOT be inside the bubble for the final message");
         assert.strictEqual(state.showFooterOutsideBubble, true, "Copy button and external footer should be visible for the final message");
+    });
+
+    it("should hide header only when there is no primary response body", () => {
+        const state = getCollapsedRenderingState({
+            hasPrimaryResponseBody: false,
+            isLastInBlock: true,
+            isStreamingActive: false,
+            hasCopyableResponseContent: false,
+        });
+
+        assert.strictEqual(state.showAssistantResponseHeader, false, "Header should stay hidden for non-response activity-only cards");
     });
     
     it("should hide footers while streaming is active", () => {

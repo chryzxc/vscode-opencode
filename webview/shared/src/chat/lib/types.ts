@@ -311,6 +311,15 @@ export interface StreamingState {
     interactiveEvents?: InteractiveEvent[];
   };
   interactiveEvents?: InteractiveEvent[];
+  liveSessionStatus?: {
+    statusType: string;
+    message?: string;
+    attempt?: number;
+    next?: number;
+    sessionId?: string;
+    source?: string;
+    updatedAt?: number;
+  };
   rawStructuredOutputs?: unknown[];
   inThoughtBlock?: boolean;
   /** Track if currently processing a reasoning part to prevent content leakage */
@@ -348,6 +357,18 @@ export interface MessageInfo {
   interruptedPresentation?: "inline" | "detached";
 }
 
+export interface MessagePartSource {
+  path?: string;
+  type?: string;
+  uri?: string;
+  languageId?: string;
+  lineInfo?: string;
+  name?: string;
+  kind?: number;
+  range?: { start?: { line?: number; character?: number }; end?: { line?: number; character?: number } };
+  text?: { value: string; start: number; end: number };
+}
+
 export interface MessagePart {
   type?: string;
   text?: string;
@@ -360,7 +381,29 @@ export interface MessagePart {
   filename?: string;
   files?: string[];
   hash?: string;
-  source?: { path?: string };
+  source?: MessagePartSource;
+  mime?: string;
+}
+
+export interface SourceRange {
+  start: { line: number; character: number };
+  end: { line: number; character: number };
+}
+
+export interface CodeSelectionSource extends MessagePartSource {
+  type: "file";
+  path: string;
+  text: { value: string; start: number; end: number };
+  lineInfo?: string;
+  languageId?: string;
+}
+
+export interface CodeSelectionMessagePart extends MessagePart {
+  type: "file";
+  mime?: string;
+  filename?: string;
+  url?: string;
+  source: CodeSelectionSource;
 }
 
 export interface OpenCodeRawResponsePart {
@@ -510,6 +553,7 @@ export interface CentralizedSessionDiffFile {
 export interface CentralizedSessionDiffEvent {
   id?: string;
   sessionId?: string;
+  messageId?: string;
   createdAt?: number;
   files: CentralizedSessionDiffFile[];
 }
@@ -898,8 +942,16 @@ export interface AppState {
     error?: string;
   };
   configFiles?: ConfigFilesState;
+  revertState?: RevertState | null;
   /** Incremented when theme CSS is injected to force FileIcon components to re-check for theme icons */
   themeCssVersion: number;
+}
+
+export interface RevertState {
+  messageID: string;
+  partID?: string;
+  snapshot?: string;
+  diff?: string;
 }
 
 export interface ConfigFileInfo {

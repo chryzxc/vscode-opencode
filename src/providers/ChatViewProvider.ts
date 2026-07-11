@@ -1682,6 +1682,10 @@ export class ChatViewProvider
           }
         });
 
+      // Sync persisted revert state so the webview knows if this session
+      // is currently reverted (Undo button → Restore after reload).
+      await this.syncRevertStateFromServer(sessionId);
+
       // Update the list selection
       await this.handleGetSessions();
     } catch (error) {
@@ -3158,6 +3162,9 @@ export class ChatViewProvider
                     await promptAsyncFn.call((client as any).session, {
                       sessionID: replySessionId,
                       directory: this.getWorkspaceDirectory(),
+                      // Include the agent so the server uses the correct agent instead of
+                      // falling back to the workspace default (which may not exist).
+                      agent: this.modelAndAgentManager.getSelectedAgent(),
                       // Include parts so the agent knows what the user answered
                       parts: [{ type: "text", text: displayText }],
                     });
@@ -3350,6 +3357,12 @@ export class ChatViewProvider
         case "undoMessageChanges": {
           await this.handleUndoMessageChanges(
             this.firstNonEmptyString(message.messageId),
+            this.firstNonEmptyString(message.sessionId),
+          );
+          break;
+        }
+        case "unrevertSession": {
+          await this.handleUnrevertSession(
             this.firstNonEmptyString(message.sessionId),
           );
           break;
@@ -5018,7 +5031,7 @@ export class ChatViewProvider
       promptFiles.push({
         uri: path.isAbsolute(filePath) ? vscode.Uri.file(filePath).toString() : filePath,
         mime: "text/plain",
-        name: path.basename(filePath),
+        name: filePath,
       });
     }
     for (const context of options.contexts ?? []) {
@@ -5027,20 +5040,44 @@ export class ChatViewProvider
         continue;
       }
       const content = typeof context?.content === "string" ? context.content : "";
-      promptFiles.push({
-        uri: filePath,
-        mime: typeof context?.languageId === "string" ? context.languageId : "text/plain",
-        name: path.basename(filePath),
-        ...(content
-          ? {
-              source: {
-                start: 0,
-                end: content.length,
-                text: content,
-              },
-            }
-          : {}),
-      });
+      if (content) {
+        // Code selection: use data URI so the server only sees the selected lines,
+        // not the whole file from disk. Without this, the server resolves the raw
+        // file path and the AI reads the entire file instead of the selection.
+        const dataUri = `data:text/plain;base64,${Buffer.from(
+          content,
+          "utf-8",
+        ).toString("base64")}`;
+        const lineInfo =
+          typeof context?.lineInfo === "string" ? context.lineInfo : "";
+        const nameWithLine =
+          filePath && lineInfo ? `${filePath}:${lineInfo}` : filePath;
+        promptFiles.push({
+          uri: dataUri,
+          mime: "text/plain",
+          name: nameWithLine,
+          source: {
+            type: "file",
+            path: filePath,
+            text: {
+              value: content,
+              start: 0,
+              end: content.length,
+            },
+            lineInfo,
+            languageId:
+              typeof context?.languageId === "string" ? context.languageId : "",
+          },
+        });
+      } else {
+        promptFiles.push({
+          uri: path.isAbsolute(filePath)
+            ? vscode.Uri.file(filePath).toString()
+            : filePath,
+          mime: "text/plain",
+          name: filePath,
+        });
+      }
     }
     for (const image of options.images ?? []) {
       const dataUrl =
@@ -7064,9 +7101,32 @@ export class ChatViewProvider
               } as any,
             });
           } else if (ctx.content) {
+            const selectionContent = ctx.content;
+            const selectionPath = ctx.file;
+            const selectionDataUrl = `data:text/plain;base64,${Buffer.from(
+              selectionContent,
+              "utf-8",
+            ).toString("base64")}`;
+            const selectionPathWithLineInfo =
+              selectionPath && ctx.lineInfo
+                ? `${selectionPath}:${ctx.lineInfo}`
+                : selectionPath;
             parts.push({
-              type: "text",
-              text: `\`\`\`${ctx.languageId}\n// ${ctx.file}:${ctx.lineInfo}\n${ctx.content}\n\`\`\``,
+              type: "file",
+              mime: "text/plain",
+              filename: selectionPathWithLineInfo,
+              url: selectionDataUrl,
+              source: {
+                type: "file",
+                path: selectionPath || "",
+                text: {
+                  value: selectionContent,
+                  start: 0,
+                  end: selectionContent.length,
+                },
+                lineInfo: ctx.lineInfo || "",
+                languageId: ctx.languageId || "",
+              } as any,
             });
           } else if (ctx.file && workspaceFolder) {
             // Handle file paths without content (attached via @)
@@ -7081,7 +7141,7 @@ export class ChatViewProvider
               const textContent = new TextDecoder().decode(content);
               parts.push({
                 type: "file",
-                mime: ctx.languageId || "text/plain",
+                mime: "text/plain",
                 filename: ctx.file.split(/[\\/]/).pop(),
                 url: absoluteUri.toString(),
                 source: {
@@ -9430,17 +9490,79 @@ export class ChatViewProvider
       requestedSessionId,
       this.currentSessionId,
     );
+    // Surface the early-return case so the user knows why nothing happened
+    // instead of silently failing.
     if (!targetMessageId || !targetSessionId) {
+      vscode.window.showWarningMessage(
+        "Unable to undo changes: missing message or session identifier.",
+      );
       return;
     }
 
     try {
       const client = await this.serverManager.ensureRunning();
       const workspaceDir = this.getWorkspaceDirectory();
-      await client.session.revert({
+      // The v2 SDK defaults to ThrowOnError=false, which means HTTP errors
+      // (400 BadRequest, 404 NotFound, 409 SessionBusy) are returned in
+      // result.error — NOT thrown. We must check result.error explicitly
+      // before accessing result.data, otherwise the undo silently fails.
+      const revertResult = await client.session.revert({
         sessionID: targetSessionId,
         messageID: targetMessageId,
         ...(workspaceDir ? { directory: workspaceDir } : {}),
+      });
+      const revertError = (
+        revertResult as unknown as { error?: unknown }
+      )?.error;
+      if (revertError) {
+        const errorMessage =
+          revertError instanceof Error
+            ? revertError.message
+            : typeof revertError === "object" &&
+                revertError !== null
+              ? String(
+                  (revertError as Record<string, unknown>).message ??
+                    (revertError as Record<string, unknown>).data ??
+                    revertError,
+                )
+              : String(revertError);
+        this.logger.error("Undo changes: server returned error", {
+          messageId: targetMessageId,
+          sessionId: targetSessionId,
+          error: errorMessage,
+        });
+        vscode.window.showErrorMessage(
+          `Failed to undo changes: ${errorMessage}`,
+        );
+        return;
+      }
+
+      const sessionData = (
+        revertResult as unknown as { data?: unknown }
+      )?.data;
+      const revertField =
+        (sessionData as Record<string, unknown> | undefined)?.revert ??
+        undefined;
+      const revertRecord =
+        revertField && typeof revertField === "object"
+          ? (revertField as Record<string, unknown>)
+          : null;
+      const optionalStr = (key: string): string | undefined => {
+        const v = revertRecord ? revertRecord[key] : undefined;
+        return typeof v === "string" && v.length > 0 ? v : undefined;
+      };
+      const revertState = revertRecord
+        ? {
+            messageID:
+              optionalStr("messageID") ?? targetMessageId,
+            partID: optionalStr("partID"),
+            snapshot: optionalStr("snapshot"),
+            diff: optionalStr("diff"),
+          }
+        : null;
+      this.view?.webview.postMessage({
+        type: "revertStateUpdate",
+        revertState,
       });
 
       await this.handleLoadSession(targetSessionId);
@@ -9454,6 +9576,104 @@ export class ChatViewProvider
         error: errorMessage,
       });
       vscode.window.showErrorMessage(`Failed to undo changes: ${errorMessage}`);
+    }
+  }
+
+  private async handleUnrevertSession(
+    requestedSessionId?: string,
+  ): Promise<void> {
+    const targetSessionId = this.firstNonEmptyString(
+      requestedSessionId,
+      this.currentSessionId,
+    );
+    if (!targetSessionId) {
+      vscode.window.showWarningMessage(
+        "Unable to restore: missing session identifier.",
+      );
+      return;
+    }
+
+    try {
+      const client = await this.serverManager.ensureRunning();
+      const workspaceDir = this.getWorkspaceDirectory();
+      // Same ThrowOnError=false pattern as handleUndoMessageChanges —
+      // HTTP errors land in result.error, not in catch.
+      const unrevertResult = await client.session.unrevert({
+        sessionID: targetSessionId,
+        ...(workspaceDir ? { directory: workspaceDir } : {}),
+      });
+
+      const unrevertError = (
+        unrevertResult as unknown as { error?: unknown }
+      )?.error;
+      if (unrevertError) {
+        const errorMessage =
+          unrevertError instanceof Error
+            ? unrevertError.message
+            : typeof unrevertError === "object" &&
+                unrevertError !== null
+              ? String(
+                  (unrevertError as Record<string, unknown>).message ??
+                    (unrevertError as Record<string, unknown>).data ??
+                    unrevertError,
+                )
+              : String(unrevertError);
+        this.logger.error("Restore: server returned error", {
+          sessionId: targetSessionId,
+          error: errorMessage,
+        });
+        vscode.window.showErrorMessage(
+          `Failed to restore: ${errorMessage}`,
+        );
+        return;
+      }
+
+      this.view?.webview.postMessage({
+        type: "revertStateUpdate",
+        revertState: null,
+      });
+
+      await this.handleLoadSession(targetSessionId);
+      await this.handleGetSessions();
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      this.logger.error("Failed to restore reverted messages", {
+        sessionId: targetSessionId,
+        error: errorMessage,
+      });
+      vscode.window.showErrorMessage(`Failed to restore: ${errorMessage}`);
+    }
+  }
+
+  private async syncRevertStateFromServer(sessionId: string): Promise<void> {
+    try {
+      const client = await this.serverManager.ensureRunning();
+      const resp = await client.session.get({ sessionID: sessionId });
+      const revert = (resp.data as Record<string, unknown> | undefined)?.revert as
+        | { messageID?: string; partID?: string; snapshot?: string; diff?: string }
+        | undefined;
+      if (revert?.messageID) {
+        this.view?.webview.postMessage({
+          type: "revertStateUpdate",
+          revertState: {
+            messageID: revert.messageID,
+            partID: revert.partID,
+            snapshot: revert.snapshot,
+            diff: revert.diff,
+          },
+        });
+      } else {
+        this.view?.webview.postMessage({
+          type: "revertStateUpdate",
+          revertState: null,
+        });
+      }
+    } catch (error) {
+      this.logger.debug("syncRevertStateFromServer: could not fetch session", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 

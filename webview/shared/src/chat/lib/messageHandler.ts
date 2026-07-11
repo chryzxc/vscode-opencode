@@ -49,7 +49,11 @@ import vscode from "./vscode";
 import {
   PENDING_CURRENT_SESSION_KEY,
 } from "./pendingUserMessages";
-import { toastNotificationFromPayload } from "./toastEvents";
+import {
+  liveSessionStatusFromPayload,
+  toastNotificationFromPayload,
+} from "./toastEvents";
+import { routeLiveEvent } from "./liveEventRouter";
 
 // NEW: Import modular subagent processing functions
 import {
@@ -3945,7 +3949,7 @@ function interactiveEventsFromQuestionAskedPayload(payload: UnknownRecord): Inte
       const allowCustomInput =
         asBoolean(question.allowCustomInput, false) ||
         asBoolean(question.allow_custom_input, false) ||
-        asBoolean(question.custom, true);
+        asBoolean(question.custom, false);
       if (options.length < 2 && !allowCustomInput) {
         return undefined;
       }
@@ -9693,27 +9697,34 @@ function handleStreamEvent(
     }
     case 'session.error':
     case 'error': {
-      const errorMessage = asString(payload.message) || asString(payload.error) || asString(asRecord(payload.error)?.message);
+      // Extract the error message from multiple possible payload shapes.
+      // Server payloads nest the message: { error: { name, data: { message } } }
+      // Older payloads may use flat { message } or { error: "string" } shapes.
+      const errorRecord = asRecord(payload.error);
+      const errorDataRecord = asRecord(errorRecord?.data);
+      const errorMessage =
+        asString(payload.message) ||
+        asString(errorDataRecord?.message) ||
+        asString(errorRecord?.message) ||
+        asString(payload.error) ||
+        asString(payload.reason) ||
+        asString(payload.code);
       const errorReason = asString(payload.reason) || asString(payload.code);
 
-      // Only surface user-facing errors for genuine problems, not signaling events.
-      // The inline conversation card is driven by the matching message.updated
-      // sync event, so this branch only cleans up state and logging.
-      const isGenuineError = errorMessage &&
+      // Only surface user-facing errors for genuine problems, not signaling
+      // events. The inline conversation card is driven by the matching
+      // message.updated sync event for streaming-time failures, but
+      // pre-message failures (invalid parts, server validation) never emit a
+      // message.updated — so we must surface those as in-conversation errors.
+      const isSignalingEvent =
+        errorReason?.includes("completed") ||
+        errorReason?.includes("finished") ||
+        errorReason?.includes("done");
+
+      const isGenuineError =
+        !!errorMessage &&
         errorMessage.trim().length > 0 &&
-        // Filter out signaling/completion messages
-        !errorReason?.includes("completed") &&
-        !errorReason?.includes("finished") &&
-        !errorReason?.includes("done") &&
-        // Only show if it looks like a user-facing problem
-        (errorMessage.includes("quota") ||
-         errorMessage.includes("limit") ||
-         errorMessage.includes("rate") ||
-         errorMessage.includes("429") ||
-         errorMessage.includes("quota") ||
-         errorMessage.toLowerCase().includes("error") ||
-         errorMessage.toLowerCase().includes("failed") ||
-         errorMessage.toLowerCase().includes("timeout"));
+        !isSignalingEvent;
 
       if (isGenuineError) {
         logger.info("ERROR_FLOW: Showing genuine error to user", {
@@ -9721,6 +9732,10 @@ function handleStreamEvent(
           errorMessage,
           errorReason,
         });
+        // Pre-message failures (invalid parts, server validation) never emit
+        // a message.updated sync event, so surface those as in-conversation
+        // errors to avoid silent failures.
+        dispatch({ type: "ADD_ERROR_MESSAGE", payload: errorMessage });
       } else {
         logger.debug("Skipping error event - not user-facing", {
           normalizedEventType,
@@ -9729,9 +9744,6 @@ function handleStreamEvent(
         });
       }
 
-      // The matching message.updated sync event carries info.error and renders
-      // the inline conversation card. Avoid duplicating that same failure as a
-      // toast, but always clean up the loading state.
       dispatch({
         type: "SET_ASSISTANT_TURN_PENDING",
         payload: { pending: false, messageId: null },
@@ -12252,12 +12264,32 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             streamEventCanStartVisibleAssistantTurn(payload);
           const centralizedDisposition =
             getCentralizedDebugPayloadDisposition(payload);
-          const liveToastNotification = toastNotificationFromPayload(payload);
+          const liveRoute = routeLiveEvent(payload);
+          const liveToastNotification = liveRoute.toast ?? null;
+          const liveSessionStatus = liveRoute.sessionStatus ?? null;
           const shouldLogStreamEvent = !streamEventType.includes("message.part") ||
                                       streamEventType === "message.completed" ||
                                       streamEventType === "session.completed";
 
+          logger.info("[LIVE-EVENT] streamEvent received", {
+            streamEventType,
+            centralizedDisposition,
+            eventSessionId: eventSessionId || null,
+            activeSessionId: activeSessionId || null,
+            hasToast: !!liveToastNotification,
+            hasStatus: !!liveSessionStatus,
+            statusType: liveSessionStatus?.statusType ?? null,
+            toastType: liveToastNotification?.type ?? null,
+          });
+
           if (liveToastNotification) {
+            logger.info("[LIVE-EVENT] dispatching APPEND_LIVE_TOAST_NOTIFICATION", {
+              toastKey: liveToastNotification.key,
+              toastType: liveToastNotification.type,
+              title: liveToastNotification.title,
+              message: liveToastNotification.message,
+              sessionId: eventSessionId || activeSessionId || null,
+            });
             dispatch({
               type: "APPEND_LIVE_TOAST_NOTIFICATION",
               payload: {
@@ -12267,12 +12299,25 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             });
           }
 
+          if (liveSessionStatus) {
+            logger.info("[LIVE-EVENT] dispatching UPDATE_LIVE_SESSION_STATUS", {
+              statusType: liveSessionStatus.statusType,
+              attempt: liveSessionStatus.attempt ?? null,
+              message: liveSessionStatus.message ?? null,
+              sessionId: eventSessionId || activeSessionId || null,
+            });
+            dispatch({
+              type: "UPDATE_LIVE_SESSION_STATUS",
+              payload: liveSessionStatus,
+            });
+          }
+
           // Persist the raw centralized tape as soon as the stream event is accepted.
           // We do this before the visibility gate so the debug tape and hydrated
           // session state stay in sync even while the live UI waits for a renderable
           // assistant turn.
           if (
-            centralizedDisposition !== "excluded-noise" &&
+            centralizedDisposition === "persist" &&
             streamEventType !== "server.heartbeat" &&
             !terminalErrorReached
           ) {
@@ -12289,18 +12334,16 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                 event: payload,
               },
             });
-            if (centralizedDisposition === "persist") {
-              const persistSessionId = eventSessionId || activeSessionId || getState().currentSessionId || null;
-              if (persistSessionId) {
-                vscode.postMessage({
-                  type: "persistRawSdkEventPayload",
-                  sessionId: persistSessionId,
-                  event: payload,
-                });
-              }
+            const persistSessionId = eventSessionId || activeSessionId || getState().currentSessionId || null;
+            if (persistSessionId) {
+              vscode.postMessage({
+                type: "persistRawSdkEventPayload",
+                sessionId: persistSessionId,
+                event: payload,
+              });
             }
           } else if (
-            centralizedDisposition === "excluded-noise" &&
+            (centralizedDisposition === "excluded-noise" || centralizedDisposition === "live-only") &&
             streamEventType !== "server.heartbeat" &&
             !terminalErrorReached
           ) {
@@ -12318,6 +12361,16 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             !isExplicitStreamStart &&
             !canStartVisibleAssistantTurn
           ) {
+            logger.info("[LIVE-EVENT] breaking early — no active streaming/processing state", {
+              streamEventType,
+              isProcessing: stateBeforeStreamEvent.isProcessing,
+              hasConfirmedProcessingSession,
+              hasStreaming: !!stateBeforeStreamEvent.streaming,
+              isExplicitStreamStart,
+              canStartVisibleAssistantTurn,
+              hasToast: !!liveToastNotification,
+              hasStatus: !!liveSessionStatus,
+            });
             break;
           }
           if (terminalErrorReached && (getState().isProcessing || hasConfirmedProcessingSession)) {
@@ -12367,6 +12420,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                 case "ADD_STREAMING_STEP":
                 case "UPDATE_STREAMING_STEP":
                 case "ADD_STREAMING_EDIT":
+                case "UPDATE_LIVE_SESSION_STATUS":
                 case "FINISH_STREAMING":
                 case "SET_PROCESSING":
                   scopedState = appReducer(scopedState, action);
@@ -12430,7 +12484,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         case "streamEventBatch": {
           const events = Array.isArray(data.events) ? data.events : [];
           startTransition(() => {
-            for (const item of events) {
+            for (const [eventIndex, item] of events.entries()) {
               const evtPayload = asRecord(item.event) ?? item;
               const evtType = asString(evtPayload.type) || asString(evtPayload.event) || "unknown";
               const envelopeSessionId =
@@ -12445,7 +12499,23 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               const stateBeforeBatchEvent = getState();
               const activeSessionId = stateBeforeBatchEvent.currentSessionId;
               const disposition = getCentralizedDebugPayloadDisposition(evtPayload);
-              if (disposition !== "excluded-noise" && evtType !== "server.heartbeat") {
+              const batchLiveRoute = routeLiveEvent(evtPayload, eventIndex);
+              if (batchLiveRoute.toast) {
+                dispatch({
+                  type: "APPEND_LIVE_TOAST_NOTIFICATION",
+                  payload: {
+                    sessionId: eventSessionId || activeSessionId || null,
+                    notification: batchLiveRoute.toast,
+                  },
+                });
+              }
+              if (batchLiveRoute.sessionStatus) {
+                dispatch({
+                  type: "UPDATE_LIVE_SESSION_STATUS",
+                  payload: batchLiveRoute.sessionStatus,
+                });
+              }
+              if (disposition === "persist" && evtType !== "server.heartbeat") {
                 dispatch({
                   type: "APPEND_RAW_SDK_EVENT_PAYLOAD",
                   payload: {
@@ -12479,6 +12549,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                     case "ADD_STREAMING_STEP":
                     case "UPDATE_STREAMING_STEP":
                     case "ADD_STREAMING_EDIT":
+                    case "UPDATE_LIVE_SESSION_STATUS":
                     case "FINISH_STREAMING":
                     case "SET_PROCESSING":
                       scopedState = appReducer(scopedState, action);
@@ -12827,6 +12898,28 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               payload: currentSessionId,
             });
           }
+          break;
+        }
+        case "revertStateUpdate": {
+          const revertRaw = asRecord(data.revertState);
+          if (!revertRaw) {
+            dispatch({ type: "SET_REVERT_STATE", payload: null });
+            break;
+          }
+          const messageID = asString(revertRaw.messageID);
+          if (!messageID) {
+            dispatch({ type: "SET_REVERT_STATE", payload: null });
+            break;
+          }
+          dispatch({
+            type: "SET_REVERT_STATE",
+            payload: {
+              messageID,
+              partID: asString(revertRaw.partID) || undefined,
+              snapshot: asString(revertRaw.snapshot) || undefined,
+              diff: asString(revertRaw.diff) || undefined,
+            },
+          });
           break;
         }
         case "sessionTitleUpdated": {
