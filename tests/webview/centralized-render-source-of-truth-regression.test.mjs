@@ -7,6 +7,10 @@ const chatShellSource = readSource(
   [joinFromRoot("webview", "shared", "src", "chat", "ChatShell.tsx")],
   "ChatShell.tsx",
 );
+const transcriptClassificationSource = readSource(
+  [joinFromRoot("webview", "shared", "src", "chat", "lib", "transcriptMessageClassification.ts")],
+  "transcriptMessageClassification.ts",
+);
 
 test("centralized transcript renderer does not fall back to local message state when the tape is empty", () => {
   const body = extractFunctionBody(
@@ -133,8 +137,13 @@ test("centralized transcript projection emits session-error entries in tape orde
   );
   assert.match(
     chatShellSource,
-    /hasPrimarySessionErrorEvent[\s\S]*?candidateError\.source !== "message\.updated"/s,
+    /primarySessionErrorEvents[\s\S]*?candidateError\.source !== "message\.updated"/s,
     "projection should detect when a primary session.error/error event exists",
+  );
+  assert.match(
+    chatShellSource,
+    /fallbackSpecificSessionErrorEvents[\s\S]*?candidateError\.source === "message\.updated"[\s\S]*?!isGenericSessionErrorMessage\(candidateError\.message\)/s,
+    "projection should keep specific message.updated errors when primary session.error rows are only generic fallbacks",
   );
   assert.match(
     chatShellSource,
@@ -185,13 +194,13 @@ test("centralized builder classifies system messages as full-width entries inste
 
   assert.match(
     body,
-    /looksLikeStandaloneSystemMessage\(descriptor\.text\)/,
+    /isExplicitSystemTransportText\(descriptor\.text\)/,
     "routing loop must fall back to content-based system detection for descriptors with no registered role",
   );
 
   assert.match(
-    chatShellSource,
-    /function looksLikeStandaloneSystemMessage\([\s\S]*?\/\^\\\[\[a-z\]/s,
+    transcriptClassificationSource,
+    /export function isExplicitSystemTransportText\([\s\S]*?\/\^\\\[\[a-z\]/s,
     "content-based fallback should detect bracketed system message patterns",
   );
 
@@ -199,5 +208,11 @@ test("centralized builder classifies system messages as full-width entries inste
     body,
     /role:\s*"system",[\s\S]*?info:\s*\{[\s\S]*?role:\s*"system"/s,
     "system descriptors must be merged with role and info.role set to system for full-width rendering",
+  );
+
+  assert.match(
+    body,
+    /const isStandaloneSystemTextPart[\s\S]*?isExplicitSystemTransportText[\s\S]*?const isAssistantOwnedPart\s*=\s*!isStandaloneSystemTextPart/s,
+    "standalone system text must bypass the assistant-ID fallback before system classification",
   );
 });

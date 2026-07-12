@@ -11,6 +11,7 @@ import { StepIndicator } from "@/components/ui/StepIndicator";
 import { Stepper, StepperItem } from "@/components/ui/stepper";
 import { shallowEqual, useAppState } from "../../lib/store";
 import { buildBackgroundTaskPresentation } from "../../lib/backgroundTaskPresentation";
+import { usePersistentModalOpen } from "../../lib/usePersistentModalOpen";
 
 import type { ActivityDetail } from "../../lib/types";
 
@@ -305,7 +306,9 @@ export function CallOmoAgentStep({
       }),
     [messages, resolvedBackgroundTaskId],
   );
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isModalOpen, setIsModalOpen] = usePersistentModalOpen(
+    `call-omo-agent:${resolvedBackgroundTaskId || sessionValue || description}`,
+  );
   const modalTitle = "call_omo_agent";
   const summaryLine =
     description ||

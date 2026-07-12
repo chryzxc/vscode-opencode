@@ -504,7 +504,7 @@ export class StructuredOutputProcessor {
       success: "done",
       failed: "error",
       error: "error",
-      cancelled: "error",
+      cancelled: "cancelled",
       canceled: "error",
       pending: "pending",
       queued: "pending",
@@ -883,13 +883,12 @@ export class StructuredOutputProcessor {
     });
   }
 
-  private preserveStructuredOutputRawFields(
+  private finalizeStructuredOutput(
     rawRecord: Record<string, unknown>,
     normalizedRecord: Record<string, unknown>,
   ): StructuredAssistantOutput {
     const output: StructuredAssistantOutput = {
       ...(normalizedRecord as StructuredAssistantOutput),
-      raw: rawRecord,
     };
 
     const responseType = this.firstNonEmptyString(
@@ -997,7 +996,7 @@ export class StructuredOutputProcessor {
       return undefined;
     }
 
-    return this.preserveStructuredOutputRawFields(rec, {
+    return this.finalizeStructuredOutput(rec, {
       type: effectiveResponseType,
       text: message,
       responseType: effectiveResponseType,
@@ -1262,7 +1261,7 @@ export class StructuredOutputProcessor {
           },
         );
       }
-      return salvaged ? this.preserveStructuredOutputRawFields(rec, salvaged) : undefined;
+      return salvaged ? this.finalizeStructuredOutput(rec, salvaged) : undefined;
     }
 
     const sanitizedCanonicalRec = sanitizeStructuredOutput(canonicalRec);
@@ -1289,7 +1288,7 @@ export class StructuredOutputProcessor {
       diagnostics,
     });
 
-    return this.preserveStructuredOutputRawFields(
+    return this.finalizeStructuredOutput(
       rec,
       sanitizedCanonicalRec,
     );

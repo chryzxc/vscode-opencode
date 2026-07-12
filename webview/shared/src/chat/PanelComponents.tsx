@@ -2471,10 +2471,11 @@ export const InputWrapper = memo(function InputWrapper() {
           e.type === "confirm" ||
           e.type === "quick_input",
       );
-    // Only paint an optimistic transcript bubble when this prompt is actually
-    // being sent now. Deferred prompts already have their own queue UI, and
-    // rendering them as transcript messages can move them ahead of the turn
-    // that is still in progress.
+    // Only paint an optimistic user bubble when the composer is NOT in a live
+    // assistant turn. When sending during an active response the server queues
+    // the message natively and echoes it back via the SSE stream; the real
+    // message then shows a "QUEUED" badge derived from the message tape
+    // (mirrors the opencode TUI — no client-side queue state required).
     const pendingSessionId = sessionId ?? PENDING_CURRENT_SESSION_KEY;
     if (!hasLiveAssistantTurn) {
       dispatch({
@@ -2500,7 +2501,6 @@ export const InputWrapper = memo(function InputWrapper() {
       contexts: currentContexts,
       agent: currentAgent,
       images: currentAttachments,
-      ...(hasLiveAssistantTurn ? { delivery: "deferred" } : {}),
       ...(hasPendingQuestion ? { interactiveSubmit: true } : {}),
     });
 

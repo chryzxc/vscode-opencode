@@ -24,6 +24,12 @@ import {
   shouldIncludeCentralizedDebugPayload,
 } from "./generated/centralizedDebugPayloadFilter";
 import type { CentralizedToastNotification } from "./toastEvents";
+import {
+  createSubagentEntityStore,
+  selectSubagentSummariesByParentMessageId,
+  upsertSubagentDetailsIntoStore,
+  upsertSubagentSummariesIntoStore,
+} from "./subagents/stateManager";
 
 const globalQuestionRequestIDMap = new Map<string, { requestID: string, questionIndex?: number }>();
 
@@ -41,7 +47,6 @@ import type {
   FileResult,
   Message,
   Model,
-  PendingDeferredPrompt,
   PendingUserMessage,
   QueueItem,
   QuotaData,
@@ -74,10 +79,10 @@ export const initialState: AppState = {
   messages: [],
   messagesBySessionId: {},
   rawSdkEventPayloadsBySessionId: {},
+  liveEventStreamBySessionId: {},
   liveToastNotificationsBySessionId: {},
   promptQueue: [],
   queueBySessionId: {},
-  pendingDeferredPromptsBySessionId: {},
   pendingUserMessagesBySessionId: {},
   isExecutingQueue: false,
   executingQueueSessionIds: new Set<string>(),
@@ -136,6 +141,7 @@ export const initialState: AppState = {
   assistantTurnMessageId: null,
   modelCapability: null,
   todoItems: [],
+  subagentStore: createSubagentEntityStore(),
   subagentsByParentMessageId: {},
   subagentDetailsById: {},
   selectedSubagentId: null,
@@ -195,6 +201,12 @@ export type AppAction =
     payload: { sessionId: string; events: unknown[] };
   }
   | { type: "APPEND_RAW_SDK_EVENT_PAYLOAD"; payload: { sessionId?: string | null; event: unknown } }
+  | {
+    type: "APPEND_RAW_SDK_EVENT_PAYLOAD_BATCH";
+    payload: { sessionId?: string | null; events: unknown[] };
+  }
+  | { type: "APPEND_LIVE_EVENT_STREAM_DEBUG"; payload: { sessionId?: string | null; event: unknown } }
+  | { type: "CLEAR_LIVE_EVENT_STREAM_DEBUG" }
   | {
     type: "APPEND_LIVE_TOAST_NOTIFICATION";
     payload: { sessionId?: string | null; notification: CentralizedToastNotification };
@@ -263,7 +275,6 @@ export type AppAction =
     type: "SET_QUEUE";
     payload: { sessionId: string | null; queue: QueueItem[] };
   }
-  | { type: "ADD_PENDING_DEFERRED_PROMPT"; payload: PendingDeferredPrompt }
   | { type: "ADD_PENDING_USER_MESSAGE"; payload: PendingUserMessage }
   | {
     type: "CONFIRM_PENDING_USER_MESSAGE";
@@ -810,70 +821,84 @@ function mergeStreamingSnapshotLocal(
   existing: StreamingState | null | undefined,
   incoming: StreamingState,
 ): StreamingState {
+  // Stream transport payloads are incremental and may omit fields that are
+  // present in a fully-hydrated StreamingState. Normalize them before any
+  // merge/update path reads collection lengths or string methods.
+  const normalizedIncoming: StreamingState = {
+    ...incoming,
+    content: asStringLocal(incoming.content),
+    reasoning: asStringLocal(incoming.reasoning),
+    reasoningEvents: Array.isArray(incoming.reasoningEvents) ? incoming.reasoningEvents : [],
+    steps: Array.isArray(incoming.steps) ? incoming.steps : [],
+    progressEvents: Array.isArray(incoming.progressEvents) ? incoming.progressEvents : [],
+    edits: Array.isArray(incoming.edits) ? incoming.edits : [],
+    interactiveEvents: Array.isArray(incoming.interactiveEvents) ? incoming.interactiveEvents : [],
+    rawSdkEventPayloads: Array.isArray(incoming.rawSdkEventPayloads)
+      ? incoming.rawSdkEventPayloads
+      : [],
+  };
   const shouldResetTimeline =
     !!existing?.messageId &&
-    !!incoming.messageId &&
-    existing.messageId !== incoming.messageId;
+    !!normalizedIncoming.messageId &&
+    existing.messageId !== normalizedIncoming.messageId;
   if (!existing || shouldResetTimeline) {
     return {
-      ...incoming,
-      hasRenderableContent: incoming.hasRenderableContent ?? false,
-      reasoningEvents: incoming.reasoningEvents ?? [],
-      steps: incoming.steps ?? [],
-      progressEvents: incoming.progressEvents ?? [],
-      edits: incoming.edits ?? [],
-      interactiveEvents: incoming.interactiveEvents ?? [],
-      rawSdkEventPayloads: incoming.rawSdkEventPayloads ?? [],
-      liveSessionStatus: incoming.liveSessionStatus ?? null,
+      ...normalizedIncoming,
+      hasRenderableContent: normalizedIncoming.hasRenderableContent ?? false,
+      liveSessionStatus: normalizedIncoming.liveSessionStatus ?? null,
     };
   }
 
-  const mergedSteps = mergeActivityArraysLocal(existing.steps, incoming.steps);
+  const mergedSteps = mergeActivityArraysLocal(existing.steps, normalizedIncoming.steps);
   const mergedProgressEvents = mergeActivityArraysLocal(
     existing.progressEvents,
-    incoming.progressEvents,
+    normalizedIncoming.progressEvents,
   );
   const mergedReasoningEvents = mergeActivityArraysLocal(
     existing.reasoningEvents,
-    incoming.reasoningEvents,
+    normalizedIncoming.reasoningEvents,
   );
-  const mergedEdits = mergeActivityArraysLocal(existing.edits, incoming.edits);
+  const mergedEdits = mergeActivityArraysLocal(existing.edits, normalizedIncoming.edits);
   const mergedInteractiveEvents = mergeActivityArraysLocal(
     existing.interactiveEvents,
-    incoming.interactiveEvents,
+    normalizedIncoming.interactiveEvents,
   );
 
   return {
     ...existing,
-    ...incoming,
-    messageId: incoming.messageId ?? existing.messageId,
+    ...normalizedIncoming,
+    messageId: normalizedIncoming.messageId ?? existing.messageId,
     content:
-      incoming.content.trim().length > 0 ? incoming.content : existing.content,
+      normalizedIncoming.content.trim().length > 0
+        ? normalizedIncoming.content
+        : asStringLocal(existing.content),
     reasoning:
-      incoming.reasoning.trim().length > 0 ? incoming.reasoning : existing.reasoning,
-    steps: mergedSteps ?? existing.steps ?? incoming.steps ?? [],
-    progressEvents: mergedProgressEvents ?? existing.progressEvents ?? incoming.progressEvents ?? [],
-    reasoningEvents: mergedReasoningEvents ?? existing.reasoningEvents ?? incoming.reasoningEvents ?? [],
-    edits: mergedEdits ?? existing.edits ?? incoming.edits ?? [],
-    interactiveEvents: mergedInteractiveEvents ?? existing.interactiveEvents ?? incoming.interactiveEvents ?? [],
+      normalizedIncoming.reasoning.trim().length > 0
+        ? normalizedIncoming.reasoning
+        : asStringLocal(existing.reasoning),
+    steps: mergedSteps ?? existing.steps ?? normalizedIncoming.steps,
+    progressEvents: mergedProgressEvents ?? existing.progressEvents ?? normalizedIncoming.progressEvents,
+    reasoningEvents: mergedReasoningEvents ?? existing.reasoningEvents ?? normalizedIncoming.reasoningEvents,
+    edits: mergedEdits ?? existing.edits ?? normalizedIncoming.edits,
+    interactiveEvents: mergedInteractiveEvents ?? existing.interactiveEvents ?? normalizedIncoming.interactiveEvents,
     hasRenderableContent:
-      existing.hasRenderableContent || incoming.hasRenderableContent || false,
+      existing.hasRenderableContent || normalizedIncoming.hasRenderableContent || false,
     hasAssistantFinishSignal:
-      existing.hasAssistantFinishSignal || incoming.hasAssistantFinishSignal || false,
+      existing.hasAssistantFinishSignal || normalizedIncoming.hasAssistantFinishSignal || false,
     hasTerminalStepSignal:
-      existing.hasTerminalStepSignal || incoming.hasTerminalStepSignal || false,
+      existing.hasTerminalStepSignal || normalizedIncoming.hasTerminalStepSignal || false,
     contentStartSeq:
       existing.contentStartSeq ??
-      incoming.contentStartSeq ??
-      (incoming.content.trim().length > 0 ? Date.now() : undefined),
-    plan: incoming.plan ?? existing.plan,
-    structuredOutput: incoming.structuredOutput ?? existing.structuredOutput,
+      normalizedIncoming.contentStartSeq ??
+      (normalizedIncoming.content.trim().length > 0 ? Date.now() : undefined),
+    plan: normalizedIncoming.plan ?? existing.plan,
+    structuredOutput: normalizedIncoming.structuredOutput ?? existing.structuredOutput,
     liveSessionStatus:
-      incoming.liveSessionStatus === undefined
+      normalizedIncoming.liveSessionStatus === undefined
         ? existing.liveSessionStatus
-        : incoming.liveSessionStatus,
+        : normalizedIncoming.liveSessionStatus,
     rawSdkEventPayloads: dedupeCentralizedDebugPayloads(
-      [...(existing.rawSdkEventPayloads ?? []), ...(incoming.rawSdkEventPayloads ?? [])],
+      [...(existing.rawSdkEventPayloads ?? []), ...normalizedIncoming.rawSdkEventPayloads],
     ),
   };
 }
@@ -2406,6 +2431,7 @@ export function mergeStreamingReasoning(
   current: string,
   incoming: string,
   append?: boolean,
+  delta?: boolean,
 ): ReasoningMergeResult {
   const incomingChunk = incoming.trim();
   if (!append) {
@@ -2420,6 +2446,18 @@ export function mergeStreamingReasoning(
   }
   if (!current) {
     return { reasoning: incoming, eventChunk: incomingChunk };
+  }
+
+  // True transport deltas are already ordered and non-overlapping. Avoid
+  // normalizing and searching the entire accumulated reasoning buffer for
+  // every token; that made long reasoning streams progressively quadratic
+  // and could monopolize the webview thread during scroll gestures.
+  if (delta) {
+    return {
+      reasoning: appendStreamingReasoning(current, incoming),
+      eventChunk: incomingChunk,
+      replaceLastEvent: false,
+    };
   }
 
   const currentNorm = normalizeReasoningText(current);
@@ -2941,6 +2979,60 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         }, sessionId),
       };
     }
+    case "APPEND_RAW_SDK_EVENT_PAYLOAD_BATCH": {
+      const sessionId = action.payload.sessionId ?? state.currentSessionId ?? "";
+      const incoming = Array.isArray(action.payload.events)
+        ? action.payload.events.filter(shouldIncludeCentralizedDebugPayload)
+        : [];
+      if (!sessionId || incoming.length === 0) {
+        return state;
+      }
+      const existing = state.rawSdkEventPayloadsBySessionId?.[sessionId] ?? [];
+      let next = existing;
+      for (const rawEvent of incoming) {
+        next = appendAndDedupeCentralizedDebugPayload(
+          next,
+          sanitizeCentralizedDebugPayload(rawEvent),
+        ) as unknown[];
+      }
+      if (next === existing) {
+        return state;
+      }
+      logger.info("[CENTRALIZED-TAPE][WEBVIEW_STORE] append_raw_sdk_event_payload_batch", {
+        sessionId,
+        incomingCount: incoming.length,
+        previousCount: existing.length,
+        nextCount: next.length,
+        currentSessionId: state.currentSessionId,
+      });
+      return {
+        ...state,
+        rawSdkEventPayloadsBySessionId: pruneSessionCache({
+          ...(state.rawSdkEventPayloadsBySessionId ?? {}),
+          [sessionId]: next,
+        }, sessionId),
+      };
+    }
+    case "APPEND_LIVE_EVENT_STREAM_DEBUG": {
+      const sessionId = action.payload.sessionId ?? state.currentSessionId ?? "";
+      if (!sessionId) {
+        return state;
+      }
+      return {
+        ...state,
+        liveEventStreamBySessionId: {
+          ...(state.liveEventStreamBySessionId ?? {}),
+          [sessionId]: [
+            ...(state.liveEventStreamBySessionId?.[sessionId] ?? []),
+            action.payload.event,
+          ],
+        },
+      };
+    }
+    case "CLEAR_LIVE_EVENT_STREAM_DEBUG":
+      // This field is deliberately a browser-lifetime diagnostic mirror. Do
+      // not restore it from chatHistory or include it in persistence payloads.
+      return { ...state, liveEventStreamBySessionId: {} };
     case "APPEND_LIVE_TOAST_NOTIFICATION": {
       const sessionId = action.payload.sessionId ?? state.currentSessionId ?? "";
       if (typeof console !== "undefined") {
@@ -2974,6 +3066,10 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case "CLEAR_MESSAGES":
       return { ...state, messages: [] };
     case "SET_PROCESSING":
+      // Defensive normalization for reloaded/legacy webview state. A stream
+      // bootstrap must never fail merely because a stale state snapshot omitted
+      // the messages array.
+      const currentMessages = Array.isArray(state.messages) ? state.messages : [];
       logger.info("[LOADING][STORE] SET_PROCESSING", {
         payload: action.payload,
         currentSessionId: state.currentSessionId,
@@ -2982,8 +3078,11 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         streamingExists: !!state.streaming,
         hasRenderableContent: state.streaming?.hasRenderableContent,
         priorIsProcessing: state.isProcessing,
-        hasMessages: state.messages.length > 0,
-        lastMessageRole: state.messages.length > 0 ? state.messages[state.messages.length - 1].role : null,
+        hasMessages: currentMessages.length > 0,
+        lastMessageRole:
+          currentMessages.length > 0
+            ? currentMessages[currentMessages.length - 1].role
+            : null,
       });
       // Question popovers are final assistant messages now, not an
       // interactive-await state. Let new user turns enter processing even when
@@ -3083,7 +3182,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         isNewAssistantTurn &&
         !!state.streaming &&
         state.streaming.isActive === false &&
-        (!!state.streaming.messageId || state.streaming.content.trim().length > 0) &&
+        (!!state.streaming.messageId ||
+          asStringLocal(state.streaming.content).trim().length > 0) &&
         state.streaming.messageId !== nextAssistantTurnMessageId;
       if (shouldClearStaleStreamingSnapshot) {
         return {
@@ -3236,8 +3336,24 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           currentSessionId: state.currentSessionId ?? null,
         });
       }
-      if (!state.streaming) {
-        if (!action.payload) {
+      const status = action.payload;
+      const statusSessionId = status?.sessionId ?? state.currentSessionId;
+      // A retry status can follow a terminal event from the previous attempt.
+      // Treat it as a new live phase of that same assistant turn, otherwise the
+      // StreamingCard's completed-turn guard hides the inline status row.
+      const keepsAssistantTurnLive = Boolean(
+        status && status.statusType !== "idle" && status.statusType !== "completed",
+      );
+      const existingSessionStreaming = statusSessionId
+        ? state.streamingBySessionId?.[statusSessionId] ?? null
+        : null;
+      const activeStreaming =
+        state.currentSessionId === statusSessionId
+          ? state.streaming
+          : existingSessionStreaming;
+
+      if (!activeStreaming) {
+        if (!status) {
           return state;
         }
         const streaming: StreamingState = {
@@ -3248,32 +3364,35 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           steps: [],
           progressEvents: [],
           edits: [],
-          liveSessionStatus: action.payload,
-          isActive: true,
+          liveSessionStatus: status,
+          isActive: keepsAssistantTurnLive,
           agent: state.selectedAgent || undefined,
         };
+        const streamingBySessionId = cacheStreamingForSession(
+          state.streamingBySessionId,
+          statusSessionId,
+          streaming,
+        );
         return {
           ...state,
-          streaming,
-          streamingBySessionId: cacheStreamingForSession(
-            state.streamingBySessionId,
-            state.currentSessionId,
-            streaming,
-          ),
+          ...(state.currentSessionId === statusSessionId ? { streaming } : {}),
+          streamingBySessionId,
         };
       }
       const streaming = {
-        ...state.streaming,
-        liveSessionStatus: action.payload,
+        ...activeStreaming,
+        liveSessionStatus: status,
+        isActive: keepsAssistantTurnLive ? true : activeStreaming.isActive,
       };
+      const streamingBySessionId = cacheStreamingForSession(
+        state.streamingBySessionId,
+        statusSessionId,
+        streaming,
+      );
       return {
         ...state,
-        streaming,
-        streamingBySessionId: cacheStreamingForSession(
-          state.streamingBySessionId,
-          state.currentSessionId,
-          streaming,
-        ),
+        ...(state.currentSessionId === statusSessionId ? { streaming } : {}),
+        streamingBySessionId,
       };
     }
     case "APPEND_SDK_EVENT_PAYLOAD": {
@@ -3384,6 +3503,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         state.streaming.reasoning,
         action.payload.reasoning,
         action.payload.append,
+        action.payload.delta,
       );
       const reasoning = merged.reasoning;
       const chunk = merged.eventChunk?.trim() ?? "";
@@ -3417,6 +3537,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
                   existingText,
                   action.payload.reasoning,
                   action.payload.append,
+                  action.payload.delta,
                 ).reasoning
               : chunk;
           const replaceIndex =
@@ -3674,32 +3795,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           state.currentSessionId === targetSessionId
             ? sessionQueue
             : state.promptQueue,
-      };
-    }
-    case "ADD_PENDING_DEFERRED_PROMPT": {
-      const item = action.payload;
-      if (!item.sessionId || !item.id || !item.text.trim()) {
-        return state;
-      }
-      const nextBySession = { ...(state.pendingDeferredPromptsBySessionId ?? {}) };
-      const existing = nextBySession[item.sessionId] ?? [];
-      const alreadyExists = existing.some(
-        (prompt) =>
-          prompt.id === item.id ||
-          (prompt.clientRequestId &&
-            item.clientRequestId &&
-            prompt.clientRequestId === item.clientRequestId),
-      );
-      if (alreadyExists) {
-        return state;
-      }
-      nextBySession[item.sessionId] = [...existing, item];
-      return {
-        ...state,
-        pendingDeferredPromptsBySessionId: pruneSessionCache(
-          nextBySession,
-          state.currentSessionId,
-        ),
       };
     }
     case "ADD_PENDING_USER_MESSAGE": {
@@ -4112,21 +4207,27 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       };
     }
     case "UPSERT_SUBAGENT_SUMMARIES": {
+      const subagentStore = upsertSubagentSummariesIntoStore(
+        state.subagentStore,
+        action.payload,
+      );
       return {
         ...state,
-        subagentsByParentMessageId: {
-          ...state.subagentsByParentMessageId,
-          ...action.payload,
-        },
+        subagentStore,
+        subagentsByParentMessageId: selectSubagentSummariesByParentMessageId(subagentStore),
+        subagentDetailsById: subagentStore.byId,
       };
     }
     case "UPSERT_SUBAGENT_DETAIL": {
+      const subagentStore = upsertSubagentDetailsIntoStore(
+        state.subagentStore,
+        action.payload,
+      );
       return {
         ...state,
-        subagentDetailsById: {
-          ...state.subagentDetailsById,
-          ...action.payload,
-        },
+        subagentStore,
+        subagentsByParentMessageId: selectSubagentSummariesByParentMessageId(subagentStore),
+        subagentDetailsById: subagentStore.byId,
       };
     }
     case "SELECT_SUBAGENT": {
@@ -4138,6 +4239,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case "CLEAR_SUBAGENTS_FOR_SESSION": {
       return {
         ...state,
+        subagentStore: createSubagentEntityStore(),
         subagentsByParentMessageId: {},
         subagentDetailsById: {},
         selectedSubagentId: null,

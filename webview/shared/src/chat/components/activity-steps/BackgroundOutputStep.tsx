@@ -5,6 +5,7 @@ import { ArrowRight, Bot, Clock3, Copy, Sparkles, X, Terminal, ChevronDown } fro
 
 import { cn, formatDuration } from "@/utils";
 import { Stepper, StepperItem } from "@/components/ui/stepper";
+import { usePersistentModalOpen } from "../../lib/usePersistentModalOpen";
 import { StepIndicator } from "@/components/ui/StepIndicator";
 
 import { MarkdownRenderer } from "../../../components/MarkdownRenderer";
@@ -406,7 +407,9 @@ export function BackgroundOutputStep({
     parsedOutput.sessionId ||
     stringValue(activityDetail?.sessionID);
     
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isModalOpen, setIsModalOpen] = usePersistentModalOpen(
+    `background-output:${taskId || sessionLabel || description}`,
+  );
 
   const isDone = status === "done";
   const isError = status === "error";

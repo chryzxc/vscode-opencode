@@ -59,6 +59,7 @@ import { routeLiveEvent } from "./liveEventRouter";
 import {
   extractSubagentsFromCentralizedEvents as modularExtractSubagentsFromCentralizedEvents
 } from './subagents/centralExtractor';
+import { resolveHydratedSubagentProjection } from "./subagents/hydrationSource";
 import {
   mergeSubagentSummaries,
   hasSubagentSummaryEntries,
@@ -2427,7 +2428,6 @@ type StructuredOutput = {
     parentMessageId?: string;
     items: StructuredSubagent[];
   };
-  raw?: UnknownRecord;
 };
 
 function buildStructuredOutputLogPreview(value: unknown): {
@@ -2610,14 +2610,9 @@ function warnOnStructuredFieldDrop(
   }
 }
 
-function preserveStructuredOutputRawFields(
-  rawRecord: UnknownRecord,
-  normalizedRecord: StructuredOutput,
-): StructuredOutput {
+function finalizeStructuredOutput(normalizedRecord: StructuredOutput): StructuredOutput {
   return {
-    ...(rawRecord as StructuredOutput),
     ...normalizedRecord,
-    raw: rawRecord,
   };
 }
 
@@ -2651,7 +2646,7 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
         validationErrors: validation.errors,
       });
     }
-    return salvaged ? preserveStructuredOutputRawFields(rec, salvaged) : undefined;
+    return salvaged ? finalizeStructuredOutput(salvaged) : undefined;
   }
   const rawResponseType =
     asString(sanitizedRec.responseType) || asString(rec.type) || asString(rec.kind) || undefined;
@@ -3091,7 +3086,7 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
   warnOnStructuredFieldDrop(rec, normalizedStructured as UnknownRecord, {
     stage: "normalized",
   });
-  return preserveStructuredOutputRawFields(rec, normalizedStructured);
+  return finalizeStructuredOutput(normalizedStructured);
 }
 
 function salvageStructuredOutput(value: unknown): StructuredOutput | undefined {
@@ -3152,7 +3147,7 @@ function salvageStructuredOutput(value: unknown): StructuredOutput | undefined {
     return undefined;
   }
 
-  return preserveStructuredOutputRawFields(rec, {
+  return finalizeStructuredOutput({
     responseType: effectiveResponseType,
     message,
     plan: hasPlan ? plan : undefined,
@@ -4381,6 +4376,26 @@ function isActivityLikePart(part: UnknownRecord): boolean {
   ];
 
   return activityKeys.some((key) => typeof part[key] !== "undefined");
+}
+
+function isImmediateActivityStreamPayload(payload: UnknownRecord): boolean {
+  const eventType = asString(payload.type) || asString(payload.event) || asString(payload.kind);
+  if (!eventType.startsWith("message.part.")) {
+    return false;
+  }
+
+  const properties = asRecord(payload.properties);
+  const part = asRecord(payload.part) ?? asRecord(properties?.part);
+  const partType = normalizePartType(part?.type);
+  return (
+    partType === "tool" ||
+    partType === "step-start" ||
+    partType === "step-finish" ||
+    partType === "step-stop" ||
+    partType === "patch" ||
+    partType === "subtask" ||
+    partType === "agent"
+  );
 }
 
 function isRenderableAssistantTextPart(part: UnknownRecord): boolean {
@@ -6027,6 +6042,7 @@ function normalizeHydratedSubagentMaps(
   messages: Message[],
   freezeIncompleteStatuses: boolean,
   policy?: SubagentPresentationPolicy,
+  cancelIncompleteStatuses = false,
 ): {
   summariesByParentMessageId: Record<string, SubagentSummary[]>;
   detailsById: Record<string, SubagentDetail>;
@@ -6087,10 +6103,40 @@ function normalizeHydratedSubagentMaps(
     });
   }
 
-  return {
+  const normalized = {
     summariesByParentMessageId: normalizedSummariesByParentMessageId,
     detailsById: normalizedDetailsById,
   };
+
+  if (!cancelIncompleteStatuses) {
+    return normalized;
+  }
+
+  const isIncomplete = (status: string | undefined) =>
+    status === "pending" || status === "running" || status === "orphaned";
+  const detailsAfterRestart = Object.fromEntries(
+    Object.entries(normalized.detailsById).map(([id, detail]) => [
+      id,
+      isIncomplete(detail.status)
+        ? { ...detail, status: "cancelled" as const, latestActivity: "Cancelled" }
+        : detail,
+    ]),
+  );
+  const summariesAfterRestart = Object.fromEntries(
+    Object.entries(normalized.summariesByParentMessageId).map(([parentId, summaries]) => [
+      parentId,
+      summaries.map((summary) => {
+        const detail = detailsAfterRestart[summary.id];
+        if (detail) {
+          return { ...summary, status: detail.status, latestActivity: detail.latestActivity };
+        }
+        return isIncomplete(summary.status)
+          ? { ...summary, status: "cancelled" as const, latestActivity: "Cancelled" }
+          : summary;
+      }),
+    ]),
+  );
+  return { summariesByParentMessageId: summariesAfterRestart, detailsById: detailsAfterRestart };
 }
 
 function canCoalesceAssistantHistoryMessages(
@@ -8412,12 +8458,16 @@ function handleStreamEvent(
   const messageId =
     asString(payload.messageId) ||
     asString((payload as UnknownRecord).messageID) ||
-    asString(payload.id) ||
     asString(properties?.messageId) ||
     asString(properties?.messageID) ||
     asString(partRecord?.messageId) ||
     asString(partRecord?.messageID) ||
     asString(infoRecord?.id) ||
+    // Event envelopes use `evt_*` ids. Those identify a transport frame, not
+    // the assistant message that owns a live tool update. Prefer every
+    // semantic message-id field above so successive tool snapshots remain on
+    // one streaming card instead of being treated as stray assistant turns.
+    asString(payload.id) ||
     current?.messageId ||
     null;
 
@@ -8999,7 +9049,10 @@ function handleStreamEvent(
             const candidateContent = contentPatch.append
               ? (streamingState?.content || '') + contentPatch.content
               : contentPatch.content;
-            const candidateTokens = comparableTokens(candidateContent);
+            // Duplicate-token protection only needs the recent boundary where
+            // chunks were joined. Tokenizing the full accumulated response on
+            // every delta is quadratic for long answers and blocks scrolling.
+            const candidateTokens = comparableTokens(candidateContent.slice(-2048));
             if (hasDuplicateTokenPattern(candidateTokens)) {
               dispatch({
                 type: "UPDATE_STREAMING_REASONING",
@@ -9105,6 +9158,18 @@ function handleStreamEvent(
           asString((stateObj as UnknownRecord)?.sessionId) ||
           undefined;
         const title = asString(part.title) || (tool ? `Running ${tool}...` : inferredStepTitle(part));
+        const normalizedPartStatus = normalizeProgressStatus(asString(part.status));
+        const normalizedStateStatus = normalizeProgressStatus(
+          asString(stateObj?.status),
+        );
+        const reportedToolStatus =
+          normalizedPartStatus === "error" || normalizedStateStatus === "error"
+            ? "error"
+            : normalizedPartStatus === "done" || normalizedStateStatus === "done"
+              ? "done"
+              : normalizedPartStatus === "running" || normalizedStateStatus === "running"
+                ? "running"
+                : "pending";
 
         // Extract output from multiple possible sources
         // 1. From state.output (tool state)
@@ -9169,7 +9234,7 @@ function handleStreamEvent(
             callID,
             title,
             type: "tool",
-            status: asString(part.status) === "error" ? "error" : "pending",
+            status: reportedToolStatus,
             source: "stream",
             partType: "tool",
             internal: isInternalToolName(tool),
@@ -9186,20 +9251,15 @@ function handleStreamEvent(
           //   1. part.status === 'done' (direct top-level field)
           //   2. part.state.status === 'done' (nested state object)
           //   3. part.state.result exists (implicit done — tool produced a result)
-          const normalizedPartStatus = normalizeProgressStatus(asString(part.status));
-          const normalizedStateStatus = normalizeProgressStatus(
-            asString(stateObj?.status),
-          );
           const hasResult = stateObj && "result" in stateObj;
           const resolvedStatus =
-            normalizedPartStatus === "done" ||
-            normalizedStateStatus === "done" ||
-            hasResult
-              ? "done"
-              : normalizedPartStatus === "error" ||
-                  normalizedStateStatus === "error"
-                ? "error"
-                : existing.status; // keep current status if no new info
+            existing.status === "done" || existing.status === "error"
+              ? existing.status
+              : hasResult
+                ? "done"
+                : reportedToolStatus === "pending"
+                  ? existing.status
+                  : reportedToolStatus;
 
           upsertStreamingStep(dispatch, getState, {
             id: asString(part.id) || existing.id,
@@ -10518,6 +10578,16 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
   const stoppedSessionIds = new Set<string>();
   let awaitingInteractiveTurnStart = false;
 
+  // Stopping is an immediate, user-owned transition. The server can still
+  // deliver events that were already buffered when the abort was requested;
+  // those events must not bootstrap another streaming card for the stopped
+  // turn. A subsequent userMessageAppended event removes the session from this
+  // set when a genuinely new turn begins.
+  const isStoppedSession = (...sessionIds: Array<string | null | undefined>) => {
+    const sessionId = firstNonEmptyString(...sessionIds);
+    return !!sessionId && stoppedSessionIds.has(sessionId);
+  };
+
   const markAssistantTurnClosed = (...messageIds: Array<string | null | undefined>) => {
     for (const messageId of messageIds) {
       if (messageId) {
@@ -10576,6 +10646,35 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
     }
 
     return false;
+  };
+
+  /** Route all ephemeral SDK UI events through one observable path. */
+  const routeLiveEventToUi = (
+    payload: unknown,
+    sessionId: string | null,
+    source: "streamEvent" | "streamEventBatch" | "liveEventStreamDebugBatch",
+    index = 0,
+  ) => {
+    const liveRoute = routeLiveEvent(payload, index);
+    logger.info("[LIVE-TOAST] route", {
+      source,
+      sessionId,
+      eventType: asString(asRecord(payload)?.type) ?? "unknown",
+      hasToast: !!liveRoute.toast,
+      hasSessionStatus: !!liveRoute.sessionStatus,
+      toastKey: liveRoute.toast?.key ?? null,
+    });
+
+    if (liveRoute.toast) {
+      dispatch({
+        type: "APPEND_LIVE_TOAST_NOTIFICATION",
+        payload: { sessionId, notification: liveRoute.toast },
+      });
+    }
+    if (liveRoute.sessionStatus) {
+      dispatch({ type: "UPDATE_LIVE_SESSION_STATUS", payload: liveRoute.sessionStatus });
+    }
+    return liveRoute;
   };
 
   const isLikelyInteractiveAnswerSubmissionMessage = (message: Message): boolean => {
@@ -10642,6 +10741,13 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
 
       // Set processing state BEFORE handling message types to ensure streaming state is created early.
       // Never bootstrap "in progress" UI from compaction lifecycle messages.
+      // Also suppress once the active assistant turn has finished: trailing events
+      // (session.diff, replayed parent-user messages) don't carry the assistant id,
+      // so we fall back to the live assistantTurnMessageId latch.
+      const currentAssistantTurnMessageId = getState().assistantTurnMessageId || null;
+      const currentAssistantTurnIsClosed =
+        !!currentAssistantTurnMessageId &&
+        closedAssistantTurnMessageIds.has(currentAssistantTurnMessageId);
       const shouldSuppressProcessingBootstrap = !!(
         awaitingInteractiveTurnStart &&
         asBoolean(data.processing, false) &&
@@ -10652,7 +10758,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
       ) || (
         !!eventMessageId &&
         closedAssistantTurnMessageIds.has(eventMessageId)
-      );
+      ) || currentAssistantTurnIsClosed;
       if (
         asBoolean(data.processing, false) &&
         type !== "compactionStatus" &&
@@ -10796,7 +10902,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             logger.setShowLogger(showLogger);
             dispatch({ type: "SET_SHOW_LOGGER", payload: showLogger });
           }
-
           break;
         }
         case "modelsList": {
@@ -10972,13 +11077,21 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         }
         case "stopRequestHandled": {
           awaitingInteractiveTurnStart = false;
-          const stoppedSessionId = firstNonEmptyString(
+          const handledSessionId = firstNonEmptyString(
             asString(data.sessionId),
             asString(data.sessionID),
             getState().currentSessionId ?? undefined,
           );
-          if (stoppedSessionId) {
-            stoppedSessionIds.add(stoppedSessionId);
+          const currentSessionId = getState().currentSessionId;
+          if (
+            handledSessionId &&
+            currentSessionId &&
+            handledSessionId !== currentSessionId
+          ) {
+            break;
+          }
+          if (handledSessionId) {
+            stoppedSessionIds.add(handledSessionId);
           }
           const currentStreaming = getState().streaming;
           latestStreamingSnapshot = currentStreaming ?? latestStreamingSnapshot;
@@ -11063,46 +11176,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           dispatch({ type: "FINISH_STREAMING" });
           dispatch({ type: "SET_STREAMING", payload: null });
           dispatch({ type: "SET_INTERACTIVE_EVENTS", payload: [] });
-          break;
-        }
-        case "deferredPromptAccepted": {
-          const messageRecord = asRecord(data.message);
-          const timeRecord = asRecord(messageRecord?.time);
-          const sessionId = firstNonEmptyString(
-            asString(data.sessionId),
-            asString(data.sessionID),
-            asString(messageRecord?.sessionID),
-            getState().currentSessionId ?? undefined,
-          );
-          const text = firstNonEmptyString(
-            asString(messageRecord?.text),
-            asString(data.text),
-          );
-          if (!sessionId || !text) {
-            break;
-          }
-
-          dispatch({
-            type: "ADD_PENDING_DEFERRED_PROMPT",
-            payload: {
-              id:
-                firstNonEmptyString(
-                  asString(messageRecord?.id),
-                  asString(data.clientRequestId),
-                ) ?? `deferred-${Date.now()}`,
-              sessionId,
-              createdAt:
-                asOptionalNumber(timeRecord?.created) ??
-                asOptionalNumber(data.createdAt) ??
-                Date.now(),
-              text,
-              files: asArray(data.files, (item): item is string => typeof item === "string"),
-              contexts: asArray(data.contexts, (item): item is ContextItem => !!asRecord(item)),
-              images: Array.isArray(data.images) ? data.images : undefined,
-              agent: asOptionalString(data.agent),
-              clientRequestId: asOptionalString(data.clientRequestId),
-            },
-          });
           break;
         }
         case "messageResponse": {
@@ -11431,16 +11504,26 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         case "chatHistory": {
           let canonicalMessages: Message[] = [];
           let chatHistorySessionId = "";
+          let persistedSubagents: UnknownRecord | undefined;
           let hydrationPresentationPolicy: SubagentPresentationPolicy = {
             mode: "hydration",
             sessionProcessing: false,
           };
+          const cancelIncompleteHydratedSubagents =
+            (data as UnknownRecord).subagentsRecoveredAfterRestart === true;
           try {
             terminalErrorReached = false;
+            dispatch({ type: "CLEAR_LIVE_EVENT_STREAM_DEBUG" });
             const centralizedMessages = asArray(data.messages, isMessage);
-            const rawSdkEventPayloads = Array.isArray((data as UnknownRecord).rawSdkEventPayloads)
-              ? [...((data as UnknownRecord).rawSdkEventPayloads as unknown[])]
-              : [];
+            const rawEventStream = asRecord((data as UnknownRecord).rawEventStream);
+            // Accept the legacy transport field while existing webviews/session
+            // payloads roll forward. New payloads use rawEventStream.events.
+            const rawSdkEventPayloads = Array.isArray(rawEventStream?.events)
+              ? [...(rawEventStream.events as unknown[])]
+              : Array.isArray((data as UnknownRecord).rawSdkEventPayloads)
+                ? [...((data as UnknownRecord).rawSdkEventPayloads as unknown[])]
+                : [];
+            persistedSubagents = asRecord((data as UnknownRecord).subagents);
             const historySessionId = asString(data.sessionId) || null;
             if (historySessionId) {
               logger.setSession(historySessionId);
@@ -11580,8 +11663,10 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           const postHydrationState = getState();
           const rawSdkEventPayloads = postHydrationState.rawSdkEventPayloadsBySessionId?.[chatHistorySessionId] ?? [];
 
-          const extractedHydratedSubagents =
-            extractSubagentsFromCentralizedEvents(rawSdkEventPayloads);
+          const extractedHydratedSubagents = resolveHydratedSubagentProjection(
+            rawSdkEventPayloads,
+            persistedSubagents,
+          );
 
           const normalizedHydratedSubagents = normalizeHydratedSubagentMaps(
             extractedHydratedSubagents.summariesByParentMessageId,
@@ -11589,6 +11674,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             canonicalMessages,
             false,
             hydrationPresentationPolicy,
+            cancelIncompleteHydratedSubagents,
           );
           if (
             Object.keys(normalizedHydratedSubagents.summariesByParentMessageId)
@@ -12232,6 +12318,33 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           );
           break;
         }
+        case "liveEventStreamDebugBatch": {
+          const events = Array.isArray(data.events) ? data.events : [];
+          for (const [eventIndex, item] of events.entries()) {
+            const event = asRecord(item.event) ?? item;
+            const sessionId =
+              asString(item.sessionId) ||
+              asString(item.sessionID) ||
+              asString(event.sessionId) ||
+              asString(event.sessionID) ||
+              asString(asRecord(event.properties)?.sessionId) ||
+              asString(asRecord(event.properties)?.sessionID) ||
+              getState().currentSessionId ||
+              null;
+            dispatch({
+              type: "APPEND_LIVE_EVENT_STREAM_DEBUG",
+              payload: { sessionId, event },
+            });
+
+            // The host mirrors every SDK event into this client-only batch
+            // before its processing gate. That includes startup `tui.show`
+            // notifications, which can otherwise never reach streamEvent.
+            // Route them here as well so the centralized live tape remains
+            // the source for visible, ephemeral UI notifications.
+            routeLiveEventToUi(event, sessionId, "liveEventStreamDebugBatch", eventIndex);
+          }
+          break;
+        }
         case "streamEvent": {
           const stateBeforeStreamEvent = getState();
           const payload = asRecord(data.event) ?? data;
@@ -12246,6 +12359,13 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             asString(asRecord(payload.properties)?.sessionId) ||
             asString(asRecord(payload.properties)?.sessionID);
           const activeSessionId = stateBeforeStreamEvent.currentSessionId;
+          if (isStoppedSession(eventSessionId, activeSessionId)) {
+            logger.info("[LIVE-EVENT] ignoring late event for stopped session", {
+              streamEventType,
+              sessionId: eventSessionId || activeSessionId || null,
+            });
+            break;
+          }
           const hasConfirmedProcessingSession = !!(
             (eventSessionId &&
               stateBeforeStreamEvent.processingSessionIds.includes(eventSessionId)) ||
@@ -12264,7 +12384,11 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             streamEventCanStartVisibleAssistantTurn(payload);
           const centralizedDisposition =
             getCentralizedDebugPayloadDisposition(payload);
-          const liveRoute = routeLiveEvent(payload);
+          const liveRoute = routeLiveEventToUi(
+            payload,
+            eventSessionId || activeSessionId || null,
+            "streamEvent",
+          );
           const liveToastNotification = liveRoute.toast ?? null;
           const liveSessionStatus = liveRoute.sessionStatus ?? null;
           const shouldLogStreamEvent = !streamEventType.includes("message.part") ||
@@ -12281,36 +12405,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             statusType: liveSessionStatus?.statusType ?? null,
             toastType: liveToastNotification?.type ?? null,
           });
-
-          if (liveToastNotification) {
-            logger.info("[LIVE-EVENT] dispatching APPEND_LIVE_TOAST_NOTIFICATION", {
-              toastKey: liveToastNotification.key,
-              toastType: liveToastNotification.type,
-              title: liveToastNotification.title,
-              message: liveToastNotification.message,
-              sessionId: eventSessionId || activeSessionId || null,
-            });
-            dispatch({
-              type: "APPEND_LIVE_TOAST_NOTIFICATION",
-              payload: {
-                sessionId: eventSessionId || activeSessionId || null,
-                notification: liveToastNotification,
-              },
-            });
-          }
-
-          if (liveSessionStatus) {
-            logger.info("[LIVE-EVENT] dispatching UPDATE_LIVE_SESSION_STATUS", {
-              statusType: liveSessionStatus.statusType,
-              attempt: liveSessionStatus.attempt ?? null,
-              message: liveSessionStatus.message ?? null,
-              sessionId: eventSessionId || activeSessionId || null,
-            });
-            dispatch({
-              type: "UPDATE_LIVE_SESSION_STATUS",
-              payload: liveSessionStatus,
-            });
-          }
 
           // Persist the raw centralized tape as soon as the stream event is accepted.
           // We do this before the visibility gate so the debug tape and hydrated
@@ -12334,14 +12428,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                 event: payload,
               },
             });
-            const persistSessionId = eventSessionId || activeSessionId || getState().currentSessionId || null;
-            if (persistSessionId) {
-              vscode.postMessage({
-                type: "persistRawSdkEventPayload",
-                sessionId: persistSessionId,
-                event: payload,
-              });
-            }
           } else if (
             (centralizedDisposition === "excluded-noise" || centralizedDisposition === "live-only") &&
             streamEventType !== "server.heartbeat" &&
@@ -12429,7 +12515,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                   break;
               }
             };
-            startTransition(() => {
+            const processScopedStreamEvent = () => {
               handleStreamEvent(
                 scopedDispatch,
                 scopedGetState,
@@ -12445,12 +12531,22 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                   streaming: scopedState.streaming,
                 },
               });
-            });
+            };
+            if (isImmediateActivityStreamPayload(payload)) {
+              processScopedStreamEvent();
+            } else {
+              startTransition(processScopedStreamEvent);
+            }
             break;
           }
-          startTransition(() => {
+          const processStreamEvent = () => {
             handleStreamEvent(dispatch, getState, payload, terminalErrorReached, shouldSuppressProcessingBootstrap, markAssistantTurnClosed);
-          });
+          };
+          if (isImmediateActivityStreamPayload(payload)) {
+            processStreamEvent();
+          } else {
+            startTransition(processStreamEvent);
+          }
           const streamingAfter = getState().streaming;
           if (streamingAfter) {
             latestStreamingSnapshot = streamingAfter;
@@ -12483,7 +12579,9 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         }
         case "streamEventBatch": {
           const events = Array.isArray(data.events) ? data.events : [];
-          startTransition(() => {
+          const batchStartedAt = performance.now();
+          const rawEventsBySessionId = new Map<string, unknown[]>();
+          const processBatchEvents = () => {
             for (const [eventIndex, item] of events.entries()) {
               const evtPayload = asRecord(item.event) ?? item;
               const evtType = asString(evtPayload.type) || asString(evtPayload.event) || "unknown";
@@ -12498,31 +12596,27 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                 asString(asRecord(evtPayload.properties)?.sessionID);
               const stateBeforeBatchEvent = getState();
               const activeSessionId = stateBeforeBatchEvent.currentSessionId;
+              if (isStoppedSession(eventSessionId, activeSessionId)) {
+                logger.info("[LIVE-EVENT] ignoring late batch event for stopped session", {
+                  streamEventType: evtType,
+                  sessionId: eventSessionId || activeSessionId || null,
+                });
+                continue;
+              }
               const disposition = getCentralizedDebugPayloadDisposition(evtPayload);
-              const batchLiveRoute = routeLiveEvent(evtPayload, eventIndex);
-              if (batchLiveRoute.toast) {
-                dispatch({
-                  type: "APPEND_LIVE_TOAST_NOTIFICATION",
-                  payload: {
-                    sessionId: eventSessionId || activeSessionId || null,
-                    notification: batchLiveRoute.toast,
-                  },
-                });
-              }
-              if (batchLiveRoute.sessionStatus) {
-                dispatch({
-                  type: "UPDATE_LIVE_SESSION_STATUS",
-                  payload: batchLiveRoute.sessionStatus,
-                });
-              }
+              routeLiveEventToUi(
+                evtPayload,
+                eventSessionId || activeSessionId || null,
+                "streamEventBatch",
+                eventIndex,
+              );
               if (disposition === "persist" && evtType !== "server.heartbeat") {
-                dispatch({
-                  type: "APPEND_RAW_SDK_EVENT_PAYLOAD",
-                  payload: {
-                    sessionId: eventSessionId || activeSessionId || null,
-                    event: evtPayload,
-                  },
-                });
+                const rawSessionId = eventSessionId || activeSessionId || null;
+                if (rawSessionId) {
+                  const queued = rawEventsBySessionId.get(rawSessionId) ?? [];
+                  queued.push(evtPayload);
+                  rawEventsBySessionId.set(rawSessionId, queued);
+                }
               }
               if (
                 eventSessionId &&
@@ -12591,11 +12685,31 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                 }
               }
             }
-          });
+            for (const [sessionId, rawEvents] of rawEventsBySessionId) {
+              dispatch({
+                type: "APPEND_RAW_SDK_EVENT_PAYLOAD_BATCH",
+                payload: { sessionId, events: rawEvents },
+              });
+            }
+          };
+          const hasImmediateActivity = events.some((item) =>
+            isImmediateActivityStreamPayload(asRecord(item.event) ?? item),
+          );
+          if (hasImmediateActivity) {
+            processBatchEvents();
+          } else {
+            startTransition(processBatchEvents);
+          }
           const streamingAfter = getState().streaming;
           if (streamingAfter) {
             latestStreamingSnapshot = streamingAfter;
           }
+          logger.streamPerformance("stream-event-batch", {
+            eventCount: events.length,
+            durationMs: Number((performance.now() - batchStartedAt).toFixed(2)),
+            streamingContentLength: streamingAfter?.content.length ?? 0,
+            streamingReasoningLength: streamingAfter?.reasoning.length ?? 0,
+          });
           break;
         }
         case "streamEventEnrich": {

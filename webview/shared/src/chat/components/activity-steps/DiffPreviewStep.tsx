@@ -6,6 +6,7 @@ import { ChevronDown, Copy, Diff, FileCode2, X } from "lucide-react";
 import { cn } from "../../../utils";
 
 import { ActivityDiffExcerpt } from "../ActivityDiffExcerpt";
+import { usePersistentModalOpen } from "../../lib/usePersistentModalOpen";
 import { ActivityStepStatusChip } from "./ActivityStepStatusChip";
 
 import type { ActivityDetail } from "../../lib/types";
@@ -282,7 +283,9 @@ export function DiffPreviewStep({
   status,
   activityDetail,
 }: DiffPreviewStepProps) {
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isModalOpen, setIsModalOpen] = usePersistentModalOpen(
+    `diff-preview:${filePath || title || activityDetail?.id || "unknown"}`,
+  );
   const derivedExcerpt = useMemo(() => {
     if (excerpt && Array.isArray(excerpt.lines) && excerpt.lines.length > 0) {
       return excerpt;

@@ -13,6 +13,7 @@ class WebviewLogger {
   private sessionId: string | null = null;
   private showLogger: boolean = true;
   private showBrowserConsoleOverride: boolean | null = null;
+  private readonly lastPerformanceLogAt = new Map<string, number>();
 
   setSession(sessionId: string): void {
     this.sessionId = sessionId;
@@ -24,6 +25,36 @@ class WebviewLogger {
 
   setShowBrowserConsole(enabled: boolean): void {
     this.showBrowserConsoleOverride = enabled;
+  }
+
+  streamPerformance(metric: string, context: Record<string, unknown> = {}): void {
+    const now = performance.now();
+    const previous = this.lastPerformanceLogAt.get(metric) ?? -Infinity;
+    // Instrumentation must not become a stream-event bottleneck itself.
+    if (now - previous < 250) {
+      return;
+    }
+    this.lastPerformanceLogAt.set(metric, now);
+    const payload = {
+      ...context,
+      metric,
+      timestamp: Date.now(),
+      source: "webview",
+      sessionId: this.sessionId,
+    };
+    if (this.showBrowserConsoleOverride ?? config.debug.showBrowserConsole) {
+      console.debug("[WebView][STREAM-PERF]", payload);
+    }
+    try {
+      vscode.postMessage({
+        type: "webviewLog",
+        level: "info",
+        message: `[STREAM-PERF] ${metric}`,
+        context: payload,
+      });
+    } catch {
+      // Best-effort diagnostics only.
+    }
   }
 
   private shouldLog(level: LogLevel): boolean {

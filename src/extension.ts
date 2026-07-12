@@ -25,6 +25,7 @@
  */
 
 import * as vscode from "vscode";
+import { installInspectorNetworkCompatibility } from "./utils/InspectorNetworkCompatibility";
 import { OpencodeServerManager } from "./services/OpencodeServerManager";
 import { SessionService } from "./services/SessionService";
 import { ChatViewProvider } from "./providers/ChatViewProvider";
@@ -148,6 +149,7 @@ function setupConsoleSuppression(context: vscode.ExtensionContext): void {
 }
 
 export async function activate(context: vscode.ExtensionContext) {
+  installInspectorNetworkCompatibility();
   setupConsoleSuppression(context);
 
   const activationStartTime = Date.now();

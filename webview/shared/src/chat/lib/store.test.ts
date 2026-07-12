@@ -483,6 +483,38 @@ describe('streaming reasoning reducer state', () => {
 });
 
 describe('assistant turn pending lifecycle', () => {
+  it('starts centralized streaming when a legacy state snapshot omits messages', () => {
+    const seededState = {
+      ...initialState,
+      messages: undefined,
+    } as unknown as typeof initialState;
+
+    assert.doesNotThrow(() => appReducer(seededState, {
+      type: 'SET_PROCESSING',
+      payload: true,
+    }));
+  });
+
+  it('tolerates a legacy streaming snapshot without content during centralized bootstrap', () => {
+    const seededState = {
+      ...initialState,
+      streaming: {
+        messageId: 'msg-old-assistant',
+        reasoning: '',
+        reasoningEvents: [],
+        steps: [],
+        progressEvents: [],
+        edits: [],
+        isActive: false,
+      } as unknown as NonNullable<typeof initialState.streaming>,
+    };
+
+    assert.doesNotThrow(() => appReducer(seededState, {
+      type: 'SET_ASSISTANT_TURN_PENDING',
+      payload: { pending: true, messageId: 'msg-new-assistant' },
+    }));
+  });
+
   it('clears a stale inactive streaming snapshot when a new assistant turn starts', () => {
     const seededState = {
       ...initialState,
@@ -706,6 +738,31 @@ describe('raw event capture', () => {
       nextState.rawSdkEventPayloadsBySessionId?.['ses_123'],
       [rawEvent],
     );
+  });
+});
+
+describe('live event stream debug capture', () => {
+  it('keeps unfiltered events in browser-only state and clears them on hydration', () => {
+    const liveOnlyEvent = {
+      type: 'message.part.updated',
+      sessionId: 'ses_123',
+      properties: { part: { type: 'reasoning', delta: 'private live chunk' } },
+    };
+    const captured = appReducer(
+      { ...initialState, currentSessionId: 'ses_123' },
+      {
+        type: 'APPEND_LIVE_EVENT_STREAM_DEBUG',
+        payload: { sessionId: 'ses_123', event: liveOnlyEvent },
+      },
+    );
+
+    assert.deepStrictEqual(
+      captured.liveEventStreamBySessionId?.['ses_123'],
+      [liveOnlyEvent],
+    );
+
+    const cleared = appReducer(captured, { type: 'CLEAR_LIVE_EVENT_STREAM_DEBUG' });
+    assert.deepStrictEqual(cleared.liveEventStreamBySessionId, {});
   });
 });
 
@@ -997,6 +1054,26 @@ describe("appReducer render-stability guards", () => {
     assert.deepStrictEqual(nextState.streaming?.reasoningEvents, []);
     assert.deepStrictEqual(nextState.streaming?.edits, []);
     assert.deepStrictEqual(nextState.streaming?.interactiveEvents, []);
+  });
+
+  it("normalizes incomplete streaming snapshots before subsequent updates", () => {
+    const seededState = appReducer(initialState, {
+      type: "SET_STREAMING",
+      payload: {
+        messageId: "msg-partial",
+        isActive: true,
+      } as any,
+    });
+
+    const nextState = appReducer(seededState, {
+      type: "ADD_STREAMING_STEP",
+      payload: { id: "step-1", title: "Working", status: "pending" },
+    });
+
+    assert.strictEqual(nextState.streaming?.content, "");
+    assert.strictEqual(nextState.streaming?.reasoning, "");
+    assert.strictEqual(nextState.streaming?.steps?.length, 1);
+    assert.deepStrictEqual(nextState.streaming?.reasoningEvents, []);
   });
 
   it("preserves rawSdkEventPayloads order when canonicalizing duplicate assistant turns", () => {

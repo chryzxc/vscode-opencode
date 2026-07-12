@@ -1,11 +1,30 @@
+import { createPlainObjectSnapshot } from "../shared/createPlainObjectSnapshot";
+
 type UnknownRecord = Record<string, unknown>;
+
+const SUBAGENT_CONSOLE_DEBUG_ENABLED = false;
+
+function safeConsoleContext<T>(value: T): T {
+  return createPlainObjectSnapshot(value);
+}
+
+function debugSubagentLog(message: string, payload: unknown): void {
+  // These logs are only for deep local debugging. Keep them fully disabled in
+  // normal runs so the extension host never hands rich object payloads to the
+  // inspector bridge unless a developer explicitly opts in by editing source.
+  if (!SUBAGENT_CONSOLE_DEBUG_ENABLED) {
+    return;
+  }
+  console.log(message, safeConsoleContext(payload));
+}
 
 export type SubagentStatus =
   | "pending"
   | "running"
   | "done"
   | "error"
-  | "orphaned";
+  | "orphaned"
+  | "cancelled";
 
 export type SubagentReference = {
   messageID?: string;
@@ -71,6 +90,8 @@ export type SubagentSummary = {
 };
 
 export type SubagentDetail = SubagentSummary & {
+  /** Canonical SDK event tape; same shape as Message.rawSdkEventPayloads. */
+  rawEvents: unknown[];
   thinkingEvents: SubagentThinkingEvent[];
   conversationEvents: SubagentConversationEvent[];
   progressEvents: SubagentProgressEvent[];
@@ -111,6 +132,7 @@ const MAX_TIMELINE_EVENTS = 200;
 const MAX_PROGRESS_EVENTS = 200;
 const MAX_THINKING_EVENTS = 200;
 const MAX_CONVERSATION_EVENTS = 400;
+const MAX_RAW_EVENTS = 400;
 
 function asRecord(value: unknown): UnknownRecord | null {
   return typeof value === "object" && value !== null
@@ -214,6 +236,90 @@ function extractErrorText(value: unknown): string {
   return "";
 }
 
+/**
+ * The server can emit a useful `session.error` followed milliseconds later by
+ * the same failure serialized as a Bun stack trace. The latter is diagnostic
+ * data, not a user-facing error: it would otherwise replace the actionable
+ * message on the subagent card.
+ */
+function isInternalRuntimeStack(value: string): boolean {
+  return (
+    /\/\$bunfs\//i.test(value) ||
+    (/\b(?:Error|Exception)\b/i.test(value) &&
+      /\bat\s+(?:<anonymous>|[\w$.]+(?:\s+\([^)]*\))?)/i.test(value))
+  );
+}
+
+function isGenericErrorMessage(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return (
+    !normalized ||
+    normalized === "session error" ||
+    normalized === "unknown error" ||
+    /^[\w.]+error:?$/.test(normalized)
+  );
+}
+
+function toUserFacingErrorMessage(value: string): string {
+  const trimmed = value.trim();
+  if (!isInternalRuntimeStack(trimmed)) {
+    return trimmed;
+  }
+
+  if (/providermodelnotfounderror/i.test(trimmed)) {
+    return "The selected provider model was not found.";
+  }
+
+  return "The subagent failed to run.";
+}
+
+function errorMessageQuality(value: string, wasInternalStack = false): number {
+  if (!value.trim()) {
+    return 0;
+  }
+  if (wasInternalStack || isInternalRuntimeStack(value)) {
+    return 1;
+  }
+  return isGenericErrorMessage(value) ? 2 : 3;
+}
+
+function selectUserFacingErrorMessage(
+  existing: string | undefined,
+  incomingRaw: string,
+): string {
+  const incoming = toUserFacingErrorMessage(incomingRaw);
+  const existingQuality = errorMessageQuality(existing || "");
+  const incomingQuality = errorMessageQuality(
+    incoming,
+    isInternalRuntimeStack(incomingRaw),
+  );
+
+  // Keep an earlier actionable server message over a later diagnostic stack.
+  return incomingQuality >= existingQuality ? incoming : existing || incoming;
+}
+
+/**
+ * A child session can fail before it emits its first message.updated event.
+ * In that case session.created usually has no model metadata and the card is
+ * temporarily labelled with the parent's selected model. A provider's
+ * "Model not found" error, however, names the exact model the child actually
+ * attempted to use, so it is the authoritative metadata for that failed run.
+ */
+function modelFromNotFoundError(
+  errorText: string,
+): { providerID: string; modelID: string } | undefined {
+  const match = /\bmodel\s+not\s+found\s*:\s*([^\s/:]+)\/([^\s,?.]+)/i.exec(
+    errorText,
+  );
+  if (!match) {
+    return undefined;
+  }
+
+  const providerID = match[1].trim();
+  const modelID = match[2].trim();
+  return providerID && modelID ? { providerID, modelID } : undefined;
+}
+
 function toTimestamp(value: unknown, fallback = Date.now()): number {
   const n = asNumber(value);
   if (typeof n === "number" && Number.isFinite(n)) {
@@ -283,7 +389,7 @@ function joinConversationText(previous: string, incoming: string): string {
     !/\s/.test(prevChar) &&
     !/\s/.test(nextChar) &&
     !/^[,.;:!?)}\]]/.test(incoming) &&
-    !/[([{]$/ .test(prevChar);
+    !/[([{<]$/ .test(prevChar);
   return needsSpace ? `${previous} ${incoming}` : `${previous}${incoming}`;
 }
 
@@ -329,6 +435,7 @@ function cloneSummary(summary: SubagentSummary): SubagentSummary {
 function cloneDetail(detail: SubagentDetail): SubagentDetail {
   return {
     ...cloneSummary(detail),
+    rawEvents: [...detail.rawEvents],
     thinkingEvents: detail.thinkingEvents.map((event) => ({ ...event })),
     conversationEvents: detail.conversationEvents.map((event) => ({ ...event })),
     progressEvents: detail.progressEvents.map((event) => ({ ...event })),
@@ -487,6 +594,15 @@ export class SubagentTracker {
       return null;
     }
 
+    // Preserve the source tape with the derived detail so child sessions can
+    // reuse raw-event based chat components without reshaping their payload.
+    for (const detailId of changedDetails) {
+      const detail = this.detailsById.get(detailId);
+      if (detail) {
+        this.appendRawEvent(detail, event);
+      }
+    }
+
     return this.buildUpdatePayload(changedParents, changedDetails);
   }
 
@@ -621,16 +737,17 @@ export class SubagentTracker {
       statusValue === "running" ||
       statusValue === "done" ||
       statusValue === "error" ||
-      statusValue === "orphaned"
+      statusValue === "orphaned" ||
+      statusValue === "cancelled"
         ? (statusValue as SubagentStatus)
         : statusValue === "completed" ||
           statusValue === "finished" ||
           statusValue === "success"
           ? "done"
-          : statusValue === "failed" ||
-              statusValue === "cancelled" ||
-              statusValue === "canceled"
+          : statusValue === "failed"
             ? "error"
+            : statusValue === "canceled"
+              ? "cancelled"
             : "pending";
 
     const references = Array.isArray(rec.references)
@@ -700,6 +817,10 @@ export class SubagentTracker {
             } as SubagentConversationEvent;
           })
           .filter((item): item is SubagentConversationEvent => !!item)
+      : [];
+
+    const rawEvents = Array.isArray(rec.rawEvents)
+      ? rec.rawEvents.slice(-MAX_RAW_EVENTS)
       : [];
 
     const progressEvents = Array.isArray(rec.progressEvents)
@@ -780,6 +901,7 @@ export class SubagentTracker {
       status,
       latestActivity: asString(rec.latestActivity) || "Loaded from history",
       references,
+      rawEvents,
       thinkingEvents,
       conversationEvents,
       progressEvents,
@@ -1047,6 +1169,13 @@ export class SubagentTracker {
     }
   }
 
+  private appendRawEvent(detail: SubagentDetail, event: unknown): void {
+    detail.rawEvents = clampEvents(
+      [...detail.rawEvents, event],
+      MAX_RAW_EVENTS,
+    );
+  }
+
   private handleMessagePartUpdated(
     properties: UnknownRecord,
     changedParents: Set<string>,
@@ -1096,6 +1225,7 @@ export class SubagentTracker {
         latestActivity:
           partType === "agent" ? "Background agent requested" : "Subagent requested",
         references: [],
+        rawEvents: [],
         thinkingEvents: [],
         conversationEvents: [],
         progressEvents: [],
@@ -1191,7 +1321,7 @@ export class SubagentTracker {
       detail.latestActivity = thinkingText.trim().slice(0, 120);
     }
 
-    const progress = this.extractProgressFromPart(part, properties, createdAt);
+    const progress = this.extractProgressFromPart(part, createdAt);
     if (progress) {
       this.pushProgress(detail, {
         ...progress,
@@ -1385,7 +1515,7 @@ export class SubagentTracker {
     }
 
     // Log session creation with all available info
-    console.log('===SUBAGENT_SPAWN=== [SESSION_CREATED] Full info object', {
+    debugSubagentLog('===SUBAGENT_SPAWN=== [SESSION_CREATED] Full info object', {
       parentSessionId,
       childSessionId,
       activeSessionId: this.activeSessionId,
@@ -1442,7 +1572,7 @@ export class SubagentTracker {
       const providerID = asString(info.providerID) || selectedModel?.providerID || undefined;
       const modelID = asString(info.modelID) || selectedModel?.modelID || undefined;
 
-      console.log('===SUBAGENT_SPAWN=== [TRACKER] Creating orphan subagent', {
+      debugSubagentLog('===SUBAGENT_SPAWN=== [TRACKER] Creating orphan subagent', {
         detailId,
         parentSessionId,
         parentMessageId,
@@ -1466,6 +1596,7 @@ export class SubagentTracker {
         providerID,
         modelID,
         references: [],
+        rawEvents: [],
         thinkingEvents: [],
         conversationEvents: [],
         progressEvents: [],
@@ -1498,7 +1629,7 @@ export class SubagentTracker {
     const providerID = detail.providerID || asString(info.providerID) || selectedModel?.providerID || undefined;
     const modelID = detail.modelID || asString(info.modelID) || selectedModel?.modelID || undefined;
 
-    console.log('===SUBAGENT_SPAWN=== [TRACKER] Updating existing subagent', {
+    debugSubagentLog('===SUBAGENT_SPAWN=== [TRACKER] Updating existing subagent', {
       detailId,
       childSessionId,
       existingProviderID: detail.providerID,
@@ -1519,7 +1650,7 @@ export class SubagentTracker {
     detail.providerID = providerID;
     detail.modelID = modelID;
 
-    console.log('===SUBAGENT_SPAWN=== [TRACKER] After update', {
+    debugSubagentLog('===SUBAGENT_SPAWN=== [TRACKER] After update', {
       detailId,
       finalProviderID: detail.providerID,
       finalModelID: detail.modelID,
@@ -1610,7 +1741,7 @@ export class SubagentTracker {
       };
 
       // Log the full error extraction context
-      console.log('===SUBAGENT_SPAWN=== [ERROR_EXTRACTION] Error extraction context', {
+      debugSubagentLog('===SUBAGENT_SPAWN=== [ERROR_EXTRACTION] Error extraction context', {
         sessionId,
         detailId,
         errorContext,
@@ -1631,7 +1762,7 @@ export class SubagentTracker {
                   "Session error";
     }
 
-    console.log('===SUBAGENT_SPAWN=== [ERROR] Session error received', {
+    debugSubagentLog('===SUBAGENT_SPAWN=== [ERROR] Session error received', {
       sessionId,
       detailId,
       errorText,
@@ -1639,10 +1770,24 @@ export class SubagentTracker {
       detailModelID: detail.modelID,
       hasError: Boolean(properties.error),
       errorKeys: properties.error ? Object.keys(properties.error) : [],
-      rawError: properties.error ? JSON.stringify(properties.error).slice(0, 500) : undefined,
+      rawError: properties.error ? safeConsoleContext(properties.error) : undefined,
     });
 
-    // If we still have a generic error, try to construct a more informative one
+    errorText = selectUserFacingErrorMessage(detail.errorText, errorText);
+
+    // Do not leave a parent-model fallback (for example, glm-5.2) on a card
+    // whose child session definitively failed while requesting another model
+    // (for example, opencode/gpt-5-nano). This also covers failures that occur
+    // before the child has emitted message.updated metadata.
+    const failedModel = modelFromNotFoundError(errorText);
+    if (failedModel) {
+      detail.providerID = failedModel.providerID;
+      detail.modelID = failedModel.modelID;
+    }
+
+    // If we still have a generic error, try to construct a more informative one.
+    // Do not use this fallback for an internal stack trace: it is intentionally
+    // downgraded above so it cannot overwrite the server's actionable message.
     if (errorText === "Session error" || errorText.toLowerCase().includes("error")) {
       const errorName = asString(errorObj?.name);
       const modelID = detail.modelID || detail.providerID;
@@ -1654,22 +1799,25 @@ export class SubagentTracker {
       }
     }
 
+    const errorChanged = detail.errorText !== errorText;
     detail.status = "error";
     detail.errorText = errorText;
     detail.latestActivity = errorText;
     detail.endedAt = detail.endedAt ?? createdAt;
     this.recomputeDuration(detail);
-    this.pushTimeline(detail, {
-      key: this.makeTimelineKey(
-        "session.error",
-        undefined,
-        undefined,
+    if (errorChanged) {
+      this.pushTimeline(detail, {
+        key: this.makeTimelineKey(
+          "session.error",
+          undefined,
+          undefined,
+          createdAt,
+        ),
+        type: "session.error",
+        label: errorText,
         createdAt,
-      ),
-      type: "session.error",
-      label: errorText,
-      createdAt,
-    });
+      });
+    }
     this.upsertDetail(detail);
 
     changedParents.add(detail.parentMessageId);
@@ -1703,7 +1851,6 @@ export class SubagentTracker {
 
   private extractProgressFromPart(
     part: UnknownRecord,
-    properties: UnknownRecord,
     createdAt: number,
   ): Omit<SubagentProgressEvent, "messageID" | "partID"> | null {
     const partType = asString(part.type).toLowerCase();
@@ -1810,20 +1957,11 @@ export class SubagentTracker {
       };
     }
 
-    const delta = asString(properties.delta);
-    if (partType && delta) {
-      const deltaLabel = sanitizeActivityLabel(delta);
-      if (!deltaLabel) {
-        return null;
-      }
-      return {
-        id: `${asString(part.id) || partType}:${createdAt}`,
-        title: `${partType}: ${deltaLabel}`,
-        status: "pending",
-        createdAt,
-        callID,
-      };
-    }
+    // Text/reasoning deltas are content, not progress. The generic fallback
+    // used to turn each token into a step (for example, `text: < text:
+    // manifest text: .json`), duplicating the same payload in the activity
+    // timeline and corrupting its label. Only explicit progress-bearing part
+    // types above may create progress events.
     return null;
   }
 

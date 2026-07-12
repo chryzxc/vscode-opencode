@@ -1,4 +1,8 @@
-import { getCentralizedEventPart } from "./messageHandler";
+import {
+  getCentralizedEventInfo,
+  getCentralizedEventPart,
+  getCentralizedEventType,
+} from "./messageHandler";
 
 import type { Message } from "./types";
 
@@ -43,6 +47,96 @@ function getMessageAndCoalescedIds(message: Message): string[] {
       ),
     ),
   );
+}
+
+function getCentralizedEventMessageId(payload: unknown): string | undefined {
+  const part = getCentralizedEventPart(payload);
+  const info = getCentralizedEventInfo(payload);
+  return firstNonEmptyString(
+    part?.messageID,
+    part?.messageId,
+    info?.id,
+    info?.messageID,
+    info?.messageId,
+  );
+}
+
+/**
+ * Determines whether a would-be main-transcript message is actually emitted
+ * by a child/subagent session.
+ *
+ * Important centralized-tape contract:
+ * - The parent chat intentionally retains forwarded child events in its raw
+ *   tape. The subagent card/modal reads that same tape to build its activity
+ *   timeline and conversation.
+ * - A forwarded event has two session identities: its outer envelope
+ *   (`event.sessionId`) remains the parent session for routing/persistence,
+ *   while the event payload (`properties.sessionID`, `part.sessionID`, or
+ *   `info.sessionID`) names the child session that actually produced it.
+ * - Therefore a child text part can look exactly like an ordinary assistant
+ *   response if a transcript renderer only considers `role` and `messageID`.
+ *   Rendering it in the main list duplicates subagent work as a parent AI
+ *   response.
+ *
+ * This is deliberately a visibility decision only. Do not remove, rewrite,
+ * or filter these raw events at ingestion: doing so would break the subagent
+ * detail timeline, tool steps, and hydrated conversation. The main transcript
+ * must simply return `hidden` for messages whose scoped session differs from
+ * their parent-tape envelope session.
+ *
+ * The comparison requires both IDs, so ordinary current-session events and
+ * incomplete/legacy events without explicit session metadata stay visible.
+ */
+export function isCrossSessionSubagentMessage(params: {
+  message: Message | undefined;
+  rawSdkEventPayloads: unknown[];
+}): boolean {
+  const { message, rawSdkEventPayloads } = params;
+  if (!message || !Array.isArray(rawSdkEventPayloads)) {
+    return false;
+  }
+
+  const messageIds = new Set(getMessageAndCoalescedIds(message));
+  if (messageIds.size === 0) {
+    return false;
+  }
+
+  // Prefer the message-scoped event slice built by the centralized renderer.
+  // Its coalesced aliases ensure that a duplicate/rehydrated message cannot
+  // escape this ownership check. The full tape fallback supports callers that
+  // only have a normalized Message shell.
+  const messageEvents = Array.isArray(message.rawSdkEventPayloads)
+    ? message.rawSdkEventPayloads
+    : rawSdkEventPayloads.filter((payload) => {
+        const messageId = getCentralizedEventMessageId(payload);
+        return !!messageId && messageIds.has(messageId);
+      });
+
+  return messageEvents.some((payload) => {
+    const event = asRecord(payload);
+    if (!event) {
+      return false;
+    }
+    const properties = asRecord(event.properties);
+    const syncData = asRecord(asRecord(event.syncEvent)?.data);
+    const part = getCentralizedEventPart(payload);
+    const info = getCentralizedEventInfo(payload);
+    // Never compare `event.sessionId` with itself after normalization. The
+    // outer field is the parent routing envelope; the scoped fields below are
+    // the authoritative producer session for this specific message/part.
+    const envelopeSessionId = firstNonEmptyString(event.sessionId, event.sessionID);
+    const scopedSessionId = firstNonEmptyString(
+      part?.sessionID,
+      part?.sessionId,
+      info?.sessionID,
+      info?.sessionId,
+      properties?.sessionID,
+      properties?.sessionId,
+      syncData?.sessionID,
+      syncData?.sessionId,
+    );
+    return !!envelopeSessionId && !!scopedSessionId && envelopeSessionId !== scopedSessionId;
+  });
 }
 
 function extractMessageTextForReminderLookup(message: Message | undefined): string {
@@ -317,4 +411,51 @@ export function isBackgroundTaskChildAssistantMessage(params: {
   }
 
   return true;
+}
+
+/**
+ * Subagent sessions begin with a server-authored user message so the child
+ * agent receives its assignment. That transport message can be present in the
+ * parent session's centralized tape, but it is not a prompt written by the
+ * person using the chat and must not create a user bubble there.
+ *
+ * `prt_` is deliberately not used as an identifier: it is the normal prefix
+ * for every message part. Instead, resolve the part's messageID to its
+ * message.updated parent and require the explicit initiator protocol marker
+ * plus the child-agent metadata supplied by the server.
+ */
+export function isSubagentInitiatorMessage(params: {
+  message: Message | undefined;
+  rawSdkEventPayloads: unknown[];
+}): boolean {
+  const { message, rawSdkEventPayloads } = params;
+  if (!message || !Array.isArray(rawSdkEventPayloads)) {
+    return false;
+  }
+
+  const role = firstNonEmptyString(message.role, message.info?.role)?.toLowerCase();
+  if (role !== "user") {
+    return false;
+  }
+
+  const messageId = firstNonEmptyString(message.info?.id, message.id, message.messageId);
+  if (!messageId) {
+    return false;
+  }
+
+  const text = extractMessageTextForReminderLookup(message).toLowerCase();
+  if (!text.includes("<!-- omo_internal_initiator -->")) {
+    return false;
+  }
+
+  return rawSdkEventPayloads.some((payload) => {
+    if (getCentralizedEventType(payload) !== "message.updated") {
+      return false;
+    }
+    const info = getCentralizedEventInfo(payload);
+    const eventMessageId = firstNonEmptyString(info?.id, info?.messageID, info?.messageId);
+    const eventRole = firstNonEmptyString(info?.role)?.toLowerCase();
+    const agent = firstNonEmptyString(info?.agent);
+    return eventMessageId === messageId && eventRole === "user" && !!agent;
+  });
 }

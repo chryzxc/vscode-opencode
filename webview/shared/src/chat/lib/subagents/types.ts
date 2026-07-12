@@ -8,7 +8,7 @@
 /**
  * Current lifecycle status of a subagent session.
  */
-export type SubagentStatus = 'pending' | 'running' | 'done' | 'error' | 'orphaned';
+export type SubagentStatus = 'pending' | 'running' | 'done' | 'error' | 'orphaned' | 'cancelled';
 
 /**
  * Reference identifiers for connecting subagent events to parent message/parts.
@@ -96,6 +96,8 @@ export interface SubagentSummary {
  * Detailed subagent information including all events and metadata.
  */
 export interface SubagentDetail extends SubagentSummary {
+  /** Same SDK event-tape shape used by Message.rawSdkEventPayloads. */
+  rawEvents?: unknown[];
   thinkingEvents: SubagentThinkingEvent[];
   conversationEvents?: SubagentConversationEvent[];
   rawConversationEvents?: unknown[];
@@ -109,6 +111,22 @@ export interface SubagentDetail extends SubagentSummary {
   };
   errorText?: string;
   hydrationUnavailable?: boolean;
+}
+
+/**
+ * Canonical normalized subagent state.
+ *
+ * `byId` is the only mutable source of truth. The message and child-session
+ * indexes exist solely for efficient rendering and late session binding.
+ * Legacy summary/detail maps are derived from this store for compatibility
+ * with the existing chat components.
+ */
+export interface SubagentEntityStore {
+  version: 1;
+  byId: Record<string, SubagentDetail>;
+  idsByParentMessageId: Record<string, string[]>;
+  idByChildSessionId: Record<string, string>;
+  updatedAt: number;
 }
 
 /**
@@ -130,7 +148,10 @@ export interface NormalizedSubagentEvent {
  * Store state structure for subagent data.
  */
 export interface SubagentState {
+  subagentStore: SubagentEntityStore;
+  /** @deprecated Derived compatibility projection. Do not mutate directly. */
   subagentsByParentMessageId: Record<string, SubagentSummary[]>;
+  /** @deprecated Derived compatibility projection. Do not mutate directly. */
   subagentDetailsById: Record<string, SubagentDetail>;
   selectedSubagentId: string | null;
   subagentsPanelOpen: boolean;

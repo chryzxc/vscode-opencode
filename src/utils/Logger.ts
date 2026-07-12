@@ -30,6 +30,7 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import { createPlainObjectSnapshot } from "../shared/createPlainObjectSnapshot";
 
 /**
  * Log level severity enumeration.
@@ -183,7 +184,10 @@ class Logger {
       try {
         fs.mkdirSync(logDir, { recursive: true });
       } catch (error) {
-        console.warn(`Failed to create log directory ${logDir}:`, error);
+        console.warn(
+          `Failed to create log directory ${logDir}:`,
+          this.sanitizeConsoleValue(error),
+        );
         // Disable file logging if directory creation fails
         enableFile = false;
       }
@@ -241,6 +245,14 @@ class Logger {
    */
   private formatEntry(entry: LogEntry): string {
     return JSON.stringify(entry);
+  }
+
+  private sanitizeConsoleValue<T>(value: T): T {
+    // DevTools/inspector can choke on live runtime-owned objects (for example
+    // HTTP/stream wrappers) even when we only intend to log them for debugging.
+    // Snapshot everything crossing the console boundary into plain data first so
+    // logging never retains a live object graph.
+    return createPlainObjectSnapshot(value);
   }
 
   /**
@@ -434,7 +446,10 @@ class Logger {
       await fs.promises.appendFile(this.config.logFilePath, logsToWrite);
     } catch (error) {
       // If file logging fails, just log to console and clear buffer
-      console.error("Failed to write logs to file:", error);
+      console.error(
+        "Failed to write logs to file:",
+        this.sanitizeConsoleValue(error),
+      );
       this.logBuffer = [];
     } finally {
       this.isFlushing = false;
@@ -477,7 +492,10 @@ class Logger {
         error instanceof Error &&
         !error.message.includes("ENOENT")
       ) {
-        console.error("Log rotation error:", error);
+        console.error(
+          "Log rotation error:",
+          this.sanitizeConsoleValue(error),
+        );
       }
     }
   }
@@ -492,12 +510,15 @@ class Logger {
     context?: Record<string, unknown>,
     error?: Error,
   ): void {
+    const sanitizedContext = context
+      ? this.sanitizeConsoleValue(context)
+      : undefined;
     const entry: LogEntry = {
       timestamp: new Date().toISOString(),
       level,
       category,
       message,
-      context,
+      context: sanitizedContext,
     };
 
     if (error) {

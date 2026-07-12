@@ -60,7 +60,8 @@ export function getSubagentDisplayActivity(
   if (
     (resolvedStatus === "done" ||
       resolvedStatus === "error" ||
-      resolvedStatus === "orphaned") &&
+      resolvedStatus === "orphaned" ||
+      resolvedStatus === "cancelled") &&
     hasStaleNonTerminalActivity
   ) {
     return statusText;
@@ -138,7 +139,7 @@ export function shouldFreezeSubagentForPresentation(
 export function resolveDisplayStatus(detail: SubagentDetail): SubagentStatus {
   const status = (detail.status || "running").toLowerCase() as SubagentStatus;
 
-  if (status === "error" || status === "orphaned" || status === "pending") {
+  if (status === "error" || status === "orphaned" || status === "pending" || status === "cancelled") {
     return status;
   }
 
@@ -248,6 +249,7 @@ export function formatSubagentStatus(status: SubagentStatus): string {
     'done': 'Complete',
     'error': 'Error',
     'orphaned': 'Orphaned',
+    'cancelled': 'Cancelled',
   };
 
   return statusDisplayNames[status] || status;
@@ -287,7 +289,7 @@ export function isSubagentActive(detail: SubagentDetail): boolean {
  */
 export function isSubagentTerminal(detail: SubagentDetail): boolean {
   const status = resolveDisplayStatus(detail);
-  return status === 'done' || status === 'error' || status === 'orphaned';
+  return status === 'done' || status === 'error' || status === 'orphaned' || status === 'cancelled';
 }
 
 /**
@@ -300,6 +302,7 @@ export function getSubagentStatusColor(status: SubagentStatus): string {
     'done': 'text-green-600',
     'error': 'text-red-600',
     'orphaned': 'text-gray-600',
+    'cancelled': 'text-gray-600',
   };
 
   return colorMap[status] || 'text-gray-600';

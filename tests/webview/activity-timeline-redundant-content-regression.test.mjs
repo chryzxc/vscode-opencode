@@ -82,6 +82,24 @@ test("activity timeline also suppresses redundant descriptions and details", () 
   );
 });
 
+test("read activities are header-only and do not reserve an empty payload row", () => {
+  assert.match(
+    messageComponentsSource,
+    /const isReadActivity = labelLower === "read";/,
+    "read events should be identified before the activity body is rendered",
+  );
+  assert.match(
+    messageComponentsSource,
+    /const shouldRenderActivityBody = !isReadActivity;/,
+    "read events should not mount an otherwise-empty body container",
+  );
+  assert.match(
+    messageComponentsSource,
+    /shouldRenderActivityBody \? \(\s*<div className="flex flex-col gap-1 w-full">/s,
+    "the activity body should render only when it has a visible purpose",
+  );
+});
+
 test("question prelude activity rows also suppress redundant summary text", () => {
   assert.match(
     messageComponentsSource,
@@ -146,5 +164,13 @@ test("implementation plan card renders through the dedicated plan card component
     messageComponentsSource,
     /const \{[\s\S]*responseChunksToRender,[\s\S]*\} = useMemo\(\(\) =>[\s\S]*getRenderablePlanResponseChunks\(/s,
     "implementation plan response presentation should be derived through the dedicated helper",
+  );
+});
+
+test("implementation plan cards recognize hydrated system-role approval turns", () => {
+  assert.match(
+    messageComponentsSource,
+    /const messageRole = \(m\.role \?\? m\.info\?\.role \?\? ""\)\.toLowerCase\(\);[\s\S]*isPlanProceedMessageContent\(text\)[\s\S]*messageRole === "user" \|\| messageRole === "system"[\s\S]*status = "Executing";/,
+    "a persisted Proceed on this plan instruction must mark its plan as approved even when hydration presents it as a system message",
   );
 });

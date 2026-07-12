@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, Info, X, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Info, XCircle } from "lucide-react";
 
 import { cn } from "../utils";
+import logger from "./lib/logger";
 import { extractCentralizedToastNotifications, type CentralizedToastNotification, type ToastVariant } from "./lib/toastEvents";
 
 function toastVariantStyles(variant: ToastVariant) {
@@ -9,40 +10,32 @@ function toastVariantStyles(variant: ToastVariant) {
     case "success":
       return {
         icon: CheckCircle2,
-        accent: "border-emerald-500/40 bg-[rgba(16,55,34,0.96)]",
+        accent: "var(--vscode-testing-iconPassed, var(--oc-green))",
         label: "Success",
-        iconTone: "text-emerald-300",
-        titleTone: "text-emerald-200",
       };
     case "warning":
       return {
         icon: AlertTriangle,
-        accent: "border-amber-500/40 bg-[rgba(58,39,14,0.96)]",
+        accent: "var(--vscode-editorWarning-foreground, var(--oc-yellow))",
         label: "Warning",
-        iconTone: "text-amber-300",
-        titleTone: "text-amber-200",
       };
     case "error":
       return {
         icon: XCircle,
-        accent: "border-rose-500/40 bg-[rgba(64,18,26,0.96)]",
+        accent: "var(--vscode-editorError-foreground, var(--oc-red))",
         label: "Error",
-        iconTone: "text-rose-300",
-        titleTone: "text-rose-200",
       };
     case "info":
     default:
       return {
         icon: Info,
-        accent: "border-sky-500/40 bg-[rgba(14,30,48,0.96)]",
+        accent: "var(--vscode-textLink-foreground, var(--oc-text))",
         label: "Info",
-        iconTone: "text-sky-300",
-        titleTone: "text-sky-200",
       };
   }
 }
 
-export function CentralizedToastOverlay({
+export function LiveEventBanner({
   sessionId,
   rawSdkEventPayloads,
   liveNotifications,
@@ -64,7 +57,15 @@ export function CentralizedToastOverlay({
 
   useEffect(() => {
     activeToastRef.current = activeToast;
-  }, [activeToast]);
+    if (activeToast) {
+      logger.info("[LIVE-TOAST] overlay rendering", {
+        sessionId: sessionId ?? null,
+        toastKey: activeToast.key,
+        type: activeToast.type,
+        durationMs: activeToast.durationMs,
+      });
+    }
+  }, [activeToast, sessionId]);
 
   const clearActiveTimer = () => {
     if (timeoutHandleRef.current !== null) {
@@ -113,6 +114,12 @@ export function CentralizedToastOverlay({
     );
 
     if (nextToasts.length === 0) {
+      logger.info("[LIVE-TOAST] overlay evaluated", {
+        sessionId: currentSessionKey,
+        notificationCount: notifications.length,
+        activeToastKey: activeToastRef.current?.key ?? null,
+        queuedCount: toastQueueRef.current.length,
+      });
       return;
     }
 
@@ -120,6 +127,12 @@ export function CentralizedToastOverlay({
       seenToastKeysRef.current.add(notification.key);
       toastQueueRef.current.push(notification);
     }
+
+    logger.info("[LIVE-TOAST] overlay queued", {
+      sessionId: currentSessionKey,
+      keys: nextToasts.map((notification) => notification.key),
+      queuedCount: toastQueueRef.current.length,
+    });
 
     if (!activeToastRef.current) {
       showNextToast();
@@ -132,24 +145,12 @@ export function CentralizedToastOverlay({
     };
   }, []);
 
-  const dismissToast = (key: string) => {
-    clearActiveTimer();
-    if (activeToastRef.current?.key === key) {
-      activeToastRef.current = null;
-      setActiveToast(null);
-      showNextToast();
-      return;
-    }
-
-    toastQueueRef.current = toastQueueRef.current.filter((toast) => toast.key !== key);
-  };
-
   if (!activeToast) {
     return null;
   }
 
   return (
-    <div className="pointer-events-none absolute right-3 top-24 z-40 flex w-full max-w-sm flex-col gap-2.5">
+    <div className="pointer-events-none relative z-20 flex w-full flex-col">
       {(() => {
         const styles = toastVariantStyles(activeToast.variant);
         const Icon = styles.icon;
@@ -157,36 +158,35 @@ export function CentralizedToastOverlay({
           <div
             key={activeToast.key}
             className={cn(
-              "pointer-events-auto overflow-hidden rounded-lg border shadow-[0_14px_36px_rgba(0,0,0,0.28)] backdrop-blur",
-              styles.accent,
+              "pointer-events-auto border-b border-l-2 border-oc-border bg-oc-panel",
             )}
+            style={{
+              borderLeftColor: styles.accent,
+              backgroundColor: "color-mix(in srgb, var(--oc-panel) 84%, var(--oc-text) 16%)",
+              boxShadow: "inset 0 1px 0 color-mix(in srgb, var(--oc-text) 8%, transparent)",
+            }}
+            role="status"
+            aria-live="polite"
           >
-            <div className="flex items-start gap-3 px-3 py-2.5">
-              <div className={cn("mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center", styles.iconTone)} aria-hidden="true">
-                <Icon className="h-4 w-4" />
+            <div className="flex items-start gap-2.5 px-3 py-2">
+              <div className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center" style={{ color: styles.accent }} aria-hidden="true">
+                <Icon className="h-3.5 w-3.5" />
               </div>
               <div className="min-w-0 flex-1">
-                <div className={cn("text-[10px] font-semibold uppercase tracking-[0.08em]", styles.titleTone)}>
-                  {styles.label}
-                </div>
-                <div className="mt-1 text-[12px] font-semibold leading-5 text-oc-text">
-                  {activeToast.title}
+                <div className="flex min-w-0 items-baseline gap-2">
+                  <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.1em]" style={{ color: styles.accent }}>
+                    {styles.label}
+                  </span>
+                  <span className="truncate text-[13px] font-semibold leading-4 text-oc-text">
+                    {activeToast.title}
+                  </span>
                 </div>
                 {activeToast.message ? (
-                  <div className="mt-0.5 whitespace-pre-wrap break-words text-[12px] leading-5 text-oc-text-soft">
+                  <div className="mt-0.5 whitespace-pre-wrap break-words text-[12px] leading-4 text-oc-text opacity-90">
                     {activeToast.message}
                   </div>
                 ) : null}
               </div>
-              <button
-                type="button"
-                className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border border-white/10 text-oc-text-soft transition-colors hover:bg-white/5 hover:text-oc-text"
-                aria-label="Dismiss toast"
-                title="Dismiss toast"
-                onClick={() => dismissToast(activeToast.key)}
-              >
-                <X className="h-3 w-3" />
-              </button>
             </div>
           </div>
         );

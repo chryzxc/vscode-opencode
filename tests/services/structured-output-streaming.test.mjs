@@ -9,7 +9,6 @@ const chatProviderSource = readAllSources(
     joinFromRoot('src', 'providers', 'chat', 'DiagnosticsLogger.ts'),
     joinFromRoot('src', 'providers', 'chat', 'StructuredOutputProcessor.ts'),
     joinFromRoot('src', 'providers', 'chat', 'PlanManager.ts'),
-    joinFromRoot('src', 'providers', 'chat', 'SubagentPersistence.ts'),
     joinFromRoot('src', 'providers', 'chat', 'CompactionManager.ts'),
     joinFromRoot('src', 'providers', 'chat', 'HistoryProcessor.ts'),
     joinFromRoot('src', 'providers', 'chat', 'ModelAndAgentManager.ts'),

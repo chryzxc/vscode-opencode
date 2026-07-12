@@ -220,7 +220,6 @@ export type StructuredAssistantOutput = {
   responseType?: StructuredResponseType | string;
   /** @deprecated legacy alias kept for compatibility while the schema migrates to `text`. */
   message?: string;
-  raw?: Record<string, unknown>;
   /**
    * Per-file change metadata emitted by structured output.
    * Runtime normalization may coerce malformed provider payloads before validation.

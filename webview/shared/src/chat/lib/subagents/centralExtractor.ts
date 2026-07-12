@@ -93,31 +93,31 @@ export function extractSubagentsFromCentralizedEvents(
 
     // Use the unified logic to find the ultimate parent message ID
     // This handles: Tool Event → Assistant Message → User Message
-    const parentMessageId = findUltimateParentMessageId(subagentEvent, rawSdkEventPayloads);
+    const resolvedParentMessageId = findUltimateParentMessageId(subagentEvent, rawSdkEventPayloads);
 
-    if (!parentMessageId) {
+    if (!resolvedParentMessageId) {
       continue;
     }
 
     // Filter by parent message if specified
-    if (parentMessageId && parentMessageId !== parentMessageId) {
+    if (parentMessageId && resolvedParentMessageId !== parentMessageId) {
       continue;
     }
 
     // Get ALL events for this message to capture all related tools
-    const allRelatedEvents = eventsByMessageId.get(parentMessageId) || [];
+    const allRelatedEvents = eventsByMessageId.get(resolvedParentMessageId) || [];
 
     // Build the subagent detail including all tools (bash, glob, etc.)
-    const detail = extractSubagentDetailFromCentralizedEvents(allRelatedEvents, callID, parentMessageId);
+    const detail = extractSubagentDetailFromCentralizedEvents(allRelatedEvents, callID, resolvedParentMessageId);
 
     if (detail) {
       detailsById[detail.id] = detail;
 
       // Add to summaries
-      if (!summariesByParentMessageId[parentMessageId]) {
-        summariesByParentMessageId[parentMessageId] = [];
+      if (!summariesByParentMessageId[resolvedParentMessageId]) {
+        summariesByParentMessageId[resolvedParentMessageId] = [];
       }
-      summariesByParentMessageId[parentMessageId].push(
+      summariesByParentMessageId[resolvedParentMessageId].push(
         normalizeSubagentSummary(detail) as SubagentSummary
       );
     }
@@ -185,6 +185,7 @@ function extractSubagentDetailFromCentralizedEvents(
     latestActivity: extractLatestActivity(parentEventRecord) || metadata.output || 'Subagent update',
     references: [],
     thinkingEvents,
+    rawEvents: events,
     conversationEvents,
     rawConversationEvents: conversationEvents,
     progressEvents,
@@ -240,6 +241,7 @@ function extractSubagentDetailFromEvents(
     latestActivity: extractLatestActivity(event) || 'Tool activity',
     references: [],
     thinkingEvents,
+    rawEvents: events,
     conversationEvents,
     rawConversationEvents: conversationEvents,
     progressEvents,

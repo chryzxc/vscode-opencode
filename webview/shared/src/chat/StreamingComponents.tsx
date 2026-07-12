@@ -165,7 +165,10 @@ export function shouldShowStreamingCard({
   subagentsByParentMessageId,
 }: ShouldShowStreamingCardInput): boolean {
   if (!streaming) return false;
-  if (hasTranscriptAssistantForCurrentTurn) return false;
+  // Delta chunks deliberately do not enter the centralized transcript. Keep
+  // the live card mounted for the active turn so its renderable text reaches
+  // the user immediately; the centralized card takes over after completion.
+  if (hasTranscriptAssistantForCurrentTurn && !streaming.isActive) return false;
 
   const candidateIds = new Set(
     [streaming.messageId, assistantTurnMessageId]
@@ -178,7 +181,7 @@ export function shouldShowStreamingCard({
     Array.isArray(transcriptAssistantMessageIds) &&
     transcriptAssistantMessageIds.some((messageId) => candidateIds.has(messageId));
 
-  if (hasMatchingAssistantTurnInTranscript) return false;
+  if (hasMatchingAssistantTurnInTranscript && !streaming.isActive) return false;
 
   const hasRenderableText =
     streaming.hasRenderableContent === true &&
@@ -252,11 +255,11 @@ export const StreamingCard = memo(function StreamingCard({
 
   return (
     <ResponseMessage
-      // TEMPORARY: keep the live streaming card activity-only. The canonical
-      // assistant text is rendered by the finalized message card below.
+      // Render safe text directly from the live stream. Centralized payloads
+      // omit deltas, so waiting for their finalized snapshot makes a response
+      // appear all at once after an otherwise empty loading period.
       message={undefined}
       streaming={streaming}
-      hideLoadingText
       isContiguous={isContiguous}
       interactiveEvents={interactiveEvents}
       currentSessionId={currentSessionId}

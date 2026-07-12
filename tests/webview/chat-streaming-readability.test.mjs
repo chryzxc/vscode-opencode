@@ -92,6 +92,21 @@ test('ChatShell implements smart auto-follow pause and jump-to-latest control', 
     /root\.scrollTop\s*=\s*root\.scrollHeight/,
     'chat shell should force-scroll to the latest edge when follow-mode is enabled',
   );
+  assert.match(
+    chatShellSource,
+    /const onScroll = \(\) => \{[\s\S]*?distanceFromBottom > AUTO_FOLLOW_THRESHOLD_PX[\s\S]*?pauseFollow\("scroll"\)/s,
+    'chat shell should synchronously pause follow mode on user scroll so streaming updates cannot fight the gesture',
+  );
+  assert.match(
+    chatShellSource,
+    /const onWheel = \(event: WheelEvent\) => \{[\s\S]*?pauseFollow\("wheel"\)/s,
+    'chat shell should pause follow mode on wheel intent before a small scroll can be overwritten',
+  );
+  assert.match(
+    chatShellSource,
+    /manualScrollIntentUntil = Date\.now\(\) \+ 180/,
+    'chat shell should keep manual scroll intent long enough for the scroll frame to settle',
+  );
 });
 
 test('AssistantMessage live streaming card does not clamp its height', () => {

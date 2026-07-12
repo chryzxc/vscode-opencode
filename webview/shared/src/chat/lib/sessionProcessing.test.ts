@@ -7,6 +7,7 @@ import {
   hasBusySessionStatusInCentralizedTape,
   hasCompletedAssistantReplyInCentralizedTape,
   isAssistantRespondingInCurrentSession,
+  computeQueuedUserMessageIndexes,
 } from './sessionProcessing';
 
 describe('isAssistantRespondingInCurrentSession', () => {
@@ -121,6 +122,59 @@ describe('isAssistantRespondingInCurrentSession', () => {
     ]);
 
     assert.strictEqual(result, false);
+  });
+
+  it('does not re-arm loading when trailing events arrive after the assistant finish signal', () => {
+    // Regression: trailing events (session.diff, replayed parent-user
+    // message.updated) after `finish:"stop"` used to re-arm isProcessing in
+    // messageHandler because they don't carry the assistant messageId. The
+    // fix latches loading OFF once the active assistant turn is closed; this
+    // pins the centralized-tape half of that contract.
+    const finishedTape = [
+      {
+        id: 'evt_1',
+        type: 'message.updated',
+        properties: {
+          info: {
+            id: 'msg_assistant_1',
+            role: 'assistant',
+            finish: 'stop',
+          },
+        },
+      },
+      {
+        id: 'evt_2',
+        type: 'session.diff',
+        properties: {},
+      },
+      {
+        id: 'evt_3',
+        type: 'message.updated',
+        properties: {
+          info: {
+            id: 'msg_user_1',
+            role: 'user',
+          },
+        },
+      },
+    ];
+
+    assert.strictEqual(
+      hasActiveAssistantReplyInCentralizedTape(finishedTape),
+      false,
+    );
+    assert.strictEqual(
+      isAssistantRespondingInCurrentSession(
+        false,
+        'ses_1',
+        [],
+        false,
+        false,
+        false,
+        finishedTape,
+      ),
+      false,
+    );
   });
 
   it('treats a message-scoped abort marker as a completed assistant reply', () => {
@@ -478,5 +532,36 @@ describe('hasActiveAssistantTurnContext', () => {
     );
 
     assert.strictEqual(result, false);
+  });
+});
+
+describe('computeQueuedUserMessageIndexes', () => {
+  it('marks adjacent user turns after the active streamed response as queued', () => {
+    const queuedIndexes = computeQueuedUserMessageIndexes([
+      { id: 'assistant-old', role: 'assistant' },
+      { id: 'user-current', role: 'user' },
+      { id: 'user-queued', role: 'user' },
+    ]);
+
+    assert.deepStrictEqual([...queuedIndexes], [2]);
+  });
+
+  it('marks a user turn after the active assistant owned by the transcript', () => {
+    const queuedIndexes = computeQueuedUserMessageIndexes([
+      { id: 'user-current', role: 'user' },
+      { id: 'assistant-active', role: 'assistant' },
+      { id: 'user-queued', role: 'user' },
+    ], 'assistant-active');
+
+    assert.deepStrictEqual([...queuedIndexes], [2]);
+  });
+
+  it('does not mark the initial user turn that starts a separately rendered response', () => {
+    const queuedIndexes = computeQueuedUserMessageIndexes([
+      { id: 'assistant-old', role: 'assistant' },
+      { id: 'user-current', role: 'user' },
+    ]);
+
+    assert.deepStrictEqual([...queuedIndexes], []);
   });
 });

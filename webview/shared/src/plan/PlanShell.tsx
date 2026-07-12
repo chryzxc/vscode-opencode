@@ -725,9 +725,6 @@ export default function PlanShell() {
               <X className="h-4 w-4" />
             </button>
           </div>
-          <p className="mt-1 text-[11px] text-[var(--vscode-descriptionForeground)]">
-            Review feedback, edit wording, and remove resolved notes.
-          </p>
         </div>
 
         <div className="flex-1 space-y-4 overflow-y-auto p-4 pb-8">
@@ -756,24 +753,23 @@ export default function PlanShell() {
                     setActiveCommentId(comment.id);
                     focusPlanAnchor(comment.id);
                   }}
-                  className={`relative rounded-xl border p-3.5 text-xs shadow-sm transition-all duration-200 ease-out ${
+                  className={`group relative rounded-[10px] border p-3.5 transition-all duration-200 ease-out cursor-default ${
                     activeCommentId === comment.id
-                      ? "border-[color-mix(in_srgb,var(--vscode-focusBorder)_65%,var(--vscode-panel-border)_35%)] bg-[color-mix(in_srgb,var(--vscode-editor-background)_80%,var(--vscode-focusBorder)_20%)] shadow-[0_0_0_1px_color-mix(in_srgb,var(--vscode-focusBorder)_30%,transparent)]"
-                      : "border-[color-mix(in_srgb,var(--vscode-panel-border)_82%,var(--vscode-focusBorder)_18%)] bg-[color-mix(in_srgb,var(--vscode-editor-background)_88%,var(--vscode-focusBorder)_12%)] hover:border-[color-mix(in_srgb,var(--vscode-focusBorder)_38%,var(--vscode-panel-border)_62%)]"
+                      ? "border-[color-mix(in_srgb,var(--vscode-focusBorder)_40%,transparent)] bg-[color-mix(in_srgb,var(--vscode-editor-background)_95%,var(--vscode-focusBorder)_5%)] shadow-sm"
+                      : "border-[color-mix(in_srgb,var(--vscode-panel-border)_50%,transparent)] bg-transparent hover:border-[color-mix(in_srgb,var(--vscode-focusBorder)_20%,var(--vscode-panel-border)_80%)] hover:bg-[color-mix(in_srgb,var(--vscode-editor-background)_98%,var(--vscode-focusBorder)_2%)]"
                   }`}
                 >
-                  <div className="mb-2 flex items-start justify-between gap-2">
-                    <p className="min-w-0 flex-1 whitespace-normal break-words rounded-md border border-[color-mix(in_srgb,var(--vscode-panel-border)_74%,transparent)] bg-[color-mix(in_srgb,var(--vscode-editor-background)_72%,var(--vscode-focusBorder)_28%)] px-2 py-1.5 pr-1 text-[12px] italic leading-relaxed text-[color-mix(in_srgb,var(--vscode-editor-foreground)_72%,var(--vscode-descriptionForeground)_28%)]">
-                      <Quote className="mr-1 inline h-3 w-3 -translate-y-px opacity-75" />
+                  <div className="mb-3 flex items-start gap-3">
+                    <div className="min-w-0 flex-1 rounded-r border-l-[3px] border-[var(--vscode-focusBorder)] bg-[color-mix(in_srgb,var(--vscode-editor-background)_80%,var(--vscode-focusBorder)_20%)] px-2.5 py-1.5 text-[12px] italic leading-relaxed text-[var(--vscode-descriptionForeground)]">
                       {comment.anchor.startLine === -1
                         ? "(General Feedback)"
                         : `\u201C${comment.anchor.selectedText}\u201D`}
-                    </p>
-                    <span className="shrink-0 rounded border border-[color-mix(in_srgb,var(--vscode-panel-border)_68%,transparent)] bg-[color-mix(in_srgb,var(--vscode-editor-background)_70%,var(--vscode-focusBorder)_30%)] px-1.5 py-0.5 text-[10px] font-medium tracking-wide text-[var(--vscode-descriptionForeground)]">
+                    </div>
+                    <span className="shrink-0 rounded bg-[color-mix(in_srgb,var(--vscode-editor-background)_70%,var(--vscode-focusBorder)_30%)] px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-[var(--vscode-descriptionForeground)]">
                       {lineLabel}
                     </span>
                   </div>
-                  <p className="mb-3 whitespace-pre-wrap break-words text-[13px] leading-6 text-[var(--vscode-editor-foreground)]">
+                  <p className="mb-3 whitespace-pre-wrap break-words text-[13px] leading-relaxed text-[var(--vscode-foreground)]">
                     {comment.text}
                   </p>
 
@@ -792,7 +788,7 @@ export default function PlanShell() {
                         className="mb-2 text-xs"
                         rows={3}
                       />
-                      <div className="flex gap-2">
+                      <div className="flex gap-2 justify-end">
                         <Button
                           size="sm"
                           onClick={() => {
@@ -809,7 +805,7 @@ export default function PlanShell() {
                         </Button>
                         <Button
                           size="sm"
-                          variant="outline"
+                          variant="ghost"
                           onClick={() => {
                             setEditingId(null);
                             setEditText("");
@@ -820,28 +816,30 @@ export default function PlanShell() {
                       </div>
                     </>
                   ) : (
-                    <div className="flex flex-wrap gap-2">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-8 gap-1.5 border-[var(--vscode-panel-border)] bg-[var(--vscode-editor-background)] px-2.5 text-[var(--vscode-editor-foreground)] hover:bg-[var(--vscode-list-hoverBackground)]"
-                        onClick={() => {
+                    <div className={`flex flex-wrap justify-end gap-1 transition-opacity ${activeCommentId === comment.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100'}`}>
+                      <button
+                        type="button"
+                        className="flex h-6 items-center gap-1.5 rounded px-2 text-[11px] font-medium text-[var(--vscode-descriptionForeground)] hover:bg-[var(--vscode-list-hoverBackground)] hover:text-[var(--vscode-foreground)] transition-colors"
+                        onClick={(e) => {
+                          e.stopPropagation();
                           setEditingId(comment.id);
                           setEditText(comment.text);
                         }}
                       >
-                        <Pencil className="h-3.5 w-3.5" />
+                        <Pencil className="h-3 w-3" />
                         Edit
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-8 gap-1.5 border-[color-mix(in_srgb,var(--vscode-errorForeground)_30%,var(--vscode-panel-border)_70%)] bg-[var(--vscode-editor-background)] px-2.5 text-[color-mix(in_srgb,var(--vscode-errorForeground)_75%,var(--vscode-editor-foreground)_25%)] hover:bg-[color-mix(in_srgb,var(--vscode-errorForeground)_10%,var(--vscode-editor-background)_90%)]"
-                        onClick={() => window.postDeleteComment?.(comment.id)}
+                      </button>
+                      <button
+                        type="button"
+                        className="flex h-6 items-center gap-1.5 rounded px-2 text-[11px] font-medium text-[var(--vscode-descriptionForeground)] hover:bg-[color-mix(in_srgb,var(--vscode-errorForeground)_15%,transparent)] hover:text-[var(--vscode-errorForeground)] transition-colors"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          window.postDeleteComment?.(comment.id);
+                        }}
                       >
-                        <Trash2 className="h-3.5 w-3.5" />
+                        <Trash2 className="h-3 w-3" />
                         Delete
-                      </Button>
+                      </button>
                     </div>
                   )}
                 </div>

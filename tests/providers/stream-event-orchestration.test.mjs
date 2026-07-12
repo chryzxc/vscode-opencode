@@ -42,6 +42,37 @@ test('subagent tracker consumes stream events before session gating', () => {
   );
 });
 
+test('centralized event persistence is queued before stream events can return through session gates', () => {
+  const persistIndex = streamSubscribeBody.indexOf('enqueueRawSdkEventPersistence(');
+  const todoGateIndex = streamSubscribeBody.indexOf('handleSdkTodoUpdatedEvent(');
+  const compactionGateIndex = streamSubscribeBody.indexOf('handleSdkCompactionStreamEvent(');
+  assert.ok(persistIndex >= 0, 'stream callback should enqueue centralized persistence');
+  assert.ok(todoGateIndex >= 0, 'stream callback should retain the todo gate');
+  assert.ok(compactionGateIndex >= 0, 'stream callback should retain the compaction gate');
+  assert.ok(
+    persistIndex < todoGateIndex && persistIndex < compactionGateIndex,
+    'centralized persistence must happen before early-return gates',
+  );
+});
+
+test('child subagent events are bucketed under their parent session for persistence and live debugging', () => {
+  assert.match(
+    streamSubscribeBody,
+    /const subagentParentSessionId = subagentUpdate[\s\S]*?resolveSubagentPayloadSessionId\(subagentUpdate\)/,
+    'stream callback should resolve the parent session from a subagent update',
+  );
+  assert.match(
+    streamSubscribeBody,
+    /enqueueLiveEventDebugEvent\([\s\S]*?subagentParentSessionId \|\|\s*eventSessionId/s,
+    'live debug event capture should prefer the parent session bucket',
+  );
+  assert.match(
+    streamSubscribeBody,
+    /const persistenceSessionId =[\s\S]*?subagentParentSessionId \|\|[\s\S]*?eventSessionId/s,
+    'centralized raw persistence should prefer the parent session bucket',
+  );
+});
+
 test('session id extraction exists and is used for stream scoping', () => {
   // Session ID extraction has been refactored into the centralized streaming system
   assert.match(
@@ -117,9 +148,9 @@ test.skip('todo_update events are batched before posting to the webview', () => 
 
 test('enriched stream events are forwarded to the webview', () => {
   assert.match(
-    streamSubscribeBody,
-    /type: "streamEvent"[\s\S]*sessionId: resolvedSessionId/s,
-    'streamEvent forwarding should include the resolved session id',
+    chatViewProviderSource,
+    /type: "streamEvent"[\s\S]*sessionId: item\.sessionId[\s\S]*type: "streamEventBatch"[\s\S]*sessionId: item\.sessionId/s,
+    'stream forwarding should preserve the resolved session id for single and batched events',
   );
   assert.match(
     streamSubscribeBody,

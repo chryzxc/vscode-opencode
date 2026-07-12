@@ -184,18 +184,6 @@ export interface QueueItem {
   agent?: string;
 }
 
-export interface PendingDeferredPrompt {
-  id: string;
-  sessionId: string;
-  createdAt: number;
-  text: string;
-  files?: string[];
-  contexts?: ContextItem[];
-  images?: unknown[];
-  agent?: string;
-  clientRequestId?: string;
-}
-
 export interface PendingUserMessage {
   id: string;
   sessionId: string;
@@ -663,10 +651,11 @@ import type { SubagentConversationEvent } from './subagents/types';
 import type { SubagentProgressEvent } from './subagents/types';
 import type { SubagentSummary } from './subagents/types';
 import type { SubagentDetail } from './subagents/types';
+import type { SubagentEntityStore } from './subagents/types';
 import type { NormalizedSubagentEvent } from './subagents/types';
 
 // Re-export for backward compatibility
-export type { SubagentStatus, SubagentReference, SubagentTimelineEvent, SubagentThinkingEvent, SubagentConversationEvent, SubagentProgressEvent, SubagentSummary, SubagentDetail, NormalizedSubagentEvent, SubagentPresentationPolicy };
+export type { SubagentStatus, SubagentReference, SubagentTimelineEvent, SubagentThinkingEvent, SubagentConversationEvent, SubagentProgressEvent, SubagentSummary, SubagentDetail, SubagentEntityStore, NormalizedSubagentEvent, SubagentPresentationPolicy };
 
 
 export interface Message {
@@ -765,10 +754,6 @@ export interface Message {
   interruptedPresentation?: "inline" | "detached";
   /** Marks a user echo as an interactive popover answer submission. */
   interactiveSubmit?: boolean;
-  /** Local-only marker for a user prompt accepted by OpenCode deferred delivery. */
-  pendingDeferredPrompt?: boolean;
-  /** Local-only status label shown while the centralized tape has not echoed this prompt yet. */
-  pendingDeferredPromptLabel?: string;
   /** Optional structured error information for display in the UI */
   displayError?: DisplayError;
 }
@@ -853,10 +838,11 @@ export interface AppState {
   messages: Message[];
   messagesBySessionId?: Record<string, Message[]>;
   rawSdkEventPayloadsBySessionId?: Record<string, unknown[]>;
+  /** Unfiltered live stream mirror for debugging; intentionally never persisted. */
+  liveEventStreamBySessionId?: Record<string, unknown[]>;
   liveToastNotificationsBySessionId?: Record<string, import("./toastEvents").CentralizedToastNotification[]>;
   promptQueue: QueueItem[];
   queueBySessionId: Record<string, QueueItem[]>;
-  pendingDeferredPromptsBySessionId?: Record<string, PendingDeferredPrompt[]>;
   pendingUserMessagesBySessionId?: Record<string, PendingUserMessage[]>;
   isExecutingQueue: boolean; // Legacy global flag, to be removed or used carefully
   executingQueueSessionIds: Set<string>;
@@ -917,6 +903,7 @@ export interface AppState {
   attachments?: AttachmentItem[];
   thinkingLevel?: ThinkingLevel;
   todoItems?: TodoItem[];
+  subagentStore: SubagentEntityStore;
   subagentsByParentMessageId: Record<string, SubagentSummary[]>;
   subagentDetailsById: Record<string, SubagentDetail>;
   selectedSubagentId: string | null;
