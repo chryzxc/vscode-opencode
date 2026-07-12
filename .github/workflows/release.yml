@@ -110,14 +110,24 @@ jobs:
           path: "*.vsix"
 
       - name: Publish to VS Code Marketplace
-        if: (github.event_name != 'workflow_dispatch' || inputs.publish_marketplace) && secrets.VSCE_PAT != ''
-        run: npx @vscode/vsce publish --packagePath "opencode-vscode-chryzxc-${{ steps.version.outputs.version }}.vsix"
+        if: github.event_name != 'workflow_dispatch' || inputs.publish_marketplace
+        run: |
+          if [ -n "${{ secrets.VSCE_PAT }}" ]; then
+            npx @vscode/vsce publish --packagePath "opencode-vscode-chryzxc-${{ steps.version.outputs.version }}.vsix"
+          else
+            echo "VSCE_PAT secret not set, skipping marketplace publish"
+          fi
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
 
       - name: Publish to Open VSX
-        if: (github.event_name != 'workflow_dispatch' || inputs.publish_open_vsx) && secrets.OVSX_PAT != ''
-        run: npx ovsx publish "opencode-vscode-chryzxc-${{ steps.version.outputs.version }}.vsix"
+        if: github.event_name != 'workflow_dispatch' || inputs.publish_open_vsx
+        run: |
+          if [ -n "${{ secrets.OVSX_PAT }}" ]; then
+            npx ovsx publish "opencode-vscode-chryzxc-${{ steps.version.outputs.version }}.vsix"
+          else
+            echo "OVSX_PAT secret not set, skipping Open VSX publish"
+          fi
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
 
