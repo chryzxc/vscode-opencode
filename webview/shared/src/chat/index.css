@@ -1259,6 +1259,57 @@ body {
   backdrop-filter: blur(8px);
 }
 
+/* A queued user turn is metadata, not a competing control. Keep it visually
+ * connected to the bubble while letting the message content remain dominant. */
+.oc-user-message-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-height: 20px;
+  margin-top: 4px;
+  gap: 6px;
+}
+
+.oc-user-message-queue-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--oc-text-soft);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.045em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.oc-user-message-queue-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--oc-green);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--oc-green) 12%, transparent);
+  animation: oc-queue-status-pulse 1.8s ease-in-out infinite;
+}
+
+.oc-user-message-queue-next {
+  padding-left: 6px;
+  border-left: 1px solid var(--oc-border-soft);
+  color: var(--oc-text-muted);
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+@keyframes oc-queue-status-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--oc-green) 10%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--oc-green) 2%, transparent);
+  }
+}
+
 /* ── Avatar ──────────────────────────────────────────────────────────────── */
 .oc-system-message {
   --oc-system-accent: var(--oc-accent);
@@ -1318,9 +1369,8 @@ body {
   gap: 6px;
   color: var(--oc-text-secondary);
   font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
+  font-weight: 400;
+  letter-spacing: 0.02em;
   flex-shrink: 0;
 }
 
@@ -1354,9 +1404,8 @@ body {
   min-width: 0;
   color: var(--oc-text-secondary);
   font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  font-weight: 400;
+  letter-spacing: 0.02em;
 }
 
 .oc-system-message__preview {
@@ -1598,6 +1647,20 @@ body {
   border-color: color-mix(in srgb, var(--oc-green) 30%, var(--oc-border));
   background: color-mix(in srgb, var(--oc-green) 10%, var(--oc-panel-soft));
   animation: oc-copy-check-pop 180ms ease-out;
+}
+
+.oc-user-message-copy-btn {
+  width: 24px;
+  height: 24px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.oc-user-message-meta:hover .oc-user-message-copy-btn,
+.oc-user-message-copy-btn:focus-visible,
+.oc-user-message-copy-btn.is-copied {
+  border-color: var(--oc-border-soft);
+  background: color-mix(in srgb, var(--oc-panel-soft) 72%, transparent);
 }
 
 /* ── Plan Card ───────────────────────────────────────────────────────────── */

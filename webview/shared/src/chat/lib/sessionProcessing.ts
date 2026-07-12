@@ -511,32 +511,47 @@ export function shouldDeferComposerSendInCurrentSession(
 }
 
 /**
- * Derives the ID of the "pending" (last incomplete) assistant message from the
- * centralized message tape. Mirrors the opencode TUI `pending` memo: a user
- * message is considered QUEUED when its ID is greater than this value, meaning
- * it was sent after the still-running assistant turn started and the server has
- * queued it for processing once the current turn completes.
- *
- * Returns null when no assistant turn is in flight.
+ * Returns the transcript positions of user turns that were sent after a live
+ * assistant response began. Ordering comes from the transcript, while the
+ * active-assistant ID is used only as an identity match—not as an ordering key.
  */
-export function computePendingAssistantMessageId<T extends { role?: string; info?: { role?: string; time?: { completed?: unknown } }; id: string }>(
-  messages: T[],
-): string | null {
-  let lastCompletedAssistantId: string | null = null;
-  let pendingId: string | null = null;
+export function computeQueuedUserMessageIndexes<
+  T extends {
+    id?: string;
+    messageId?: string;
+    role?: string;
+    info?: { id?: string; role?: string };
+  },
+>(messages: T[], activeAssistantMessageId?: string | null): Set<number> {
+  let latestAssistantIndex = -1;
 
-  for (const message of messages) {
-    const role = message.role ?? message.info?.role;
-    if (role !== "assistant") continue;
-    const completed = message.info?.time?.completed;
-    if (completed) {
-      lastCompletedAssistantId = message.id;
+  messages.forEach((message, index) => {
+    if ((message.role ?? message.info?.role) === "assistant") {
+      latestAssistantIndex = index;
+    }
+  });
+
+  const latestAssistant = messages[latestAssistantIndex];
+  const latestAssistantId =
+    latestAssistant?.info?.id ?? latestAssistant?.id ?? latestAssistant?.messageId;
+  const transcriptOwnsActiveAssistant =
+    !!activeAssistantMessageId && latestAssistantId === activeAssistantMessageId;
+  const queuedIndexes = new Set<number>();
+  let foundCurrentTurnUser = transcriptOwnsActiveAssistant;
+
+  for (let index = latestAssistantIndex + 1; index < messages.length; index += 1) {
+    const message = messages[index];
+    if ((message.role ?? message.info?.role) !== "user") continue;
+
+    // With an active assistant rendered in the transcript, every following
+    // user turn is queued. When its stream is rendered separately, the first
+    // user turn is the one that started it; later adjacent user turns are queued.
+    if (foundCurrentTurnUser) {
+      queuedIndexes.add(index);
     } else {
-      if (!lastCompletedAssistantId || message.id > lastCompletedAssistantId) {
-        pendingId = message.id;
-      }
+      foundCurrentTurnUser = true;
     }
   }
 
-  return pendingId;
+  return queuedIndexes;
 }

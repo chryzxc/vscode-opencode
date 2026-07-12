@@ -46,16 +46,14 @@ export function installInspectorNetworkCompatibility(): void {
 
   network.dataReceived = (params: NetworkDataReceivedPayload) => {
     // In the affected VS Code/Electron Node builds this function is an
-    // internal response-data listener. Calling it without a chunk causes the
-    // runtime's `originalDataReceived` to throw "Missing data in event".
-    // There is no valid inspector event to reconstruct without that chunk, so
-    // discard only the malformed diagnostic event and leave the HTTP response
-    // itself untouched.
-    // Checking only for the key is insufficient: the affected runtime can
-    // produce `{ data: undefined }`, which still reaches its internal
-    // listener and throws "Missing data in event". Empty chunks remain valid,
-    // so reject only absent or nullish data.
-    if (!params || params.data === undefined || params.data === null) {
+    // internal response-data listener. Calling it without a usable chunk
+    // causes the runtime's `originalDataReceived` to throw "Missing data in
+    // event". Node's internal `broadcastToFrontend` validates `data` with a
+    // truthy check, so ANY falsy value (undefined, null, "", 0, false, NaN)
+    // triggers the throw — not just absent keys. Reject falsy chunks here and
+    // leave the HTTP response itself untouched; these are diagnostic events
+    // for DevTools only and suppressing them does not affect real traffic.
+    if (!params || !params.data) {
       return;
     }
 
@@ -68,6 +66,19 @@ export function installInspectorNetworkCompatibility(): void {
       normalized.encodedDataLength = normalized.dataLength;
     }
 
-    originalDataReceived(normalized);
+    try {
+      originalDataReceived(normalized);
+    } catch (error) {
+      // Belt-and-suspenders guard: the affected runtime's internal validation
+      // can still reject chunks that pass our truthy check (e.g. wrong-typed
+      // data or version-specific protocol checks such as
+      // "Expected data to be Uint8Array in event"). These TypeErrors are all
+      // diagnostic-event validation failures and do not affect the HTTP
+      // response itself, so swallow them to keep the Extension Host log clean.
+      if (error instanceof TypeError && /in event/i.test(String(error.message))) {
+        return;
+      }
+      throw error;
+    }
   };
 }

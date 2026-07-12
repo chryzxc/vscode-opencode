@@ -15,7 +15,7 @@ export const config = {
     showBrowserConsole: false,
     // This panel serializes the full raw/live event tapes. Keep it opt-in so
     // its diagnostic rendering never competes with the streaming UI.
-    showCentralizedDebug: true,
+    showCentralizedDebug: false,
   },
 };
 

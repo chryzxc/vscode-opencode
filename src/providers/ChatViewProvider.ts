@@ -1148,12 +1148,43 @@ export class ChatViewProvider
     }
 
     const isMainTurnProcessing = this.isSessionMainTurnProcessing(sessionId);
-    // Keep mode ownership explicit. Do not auto-convert a normal send-now
-    // request into steer or the extension QueueManager from processing flags;
-    // those flags can include stale or child/subagent work after the top-level
-    // assistant block is already complete, which makes the next user message
-    // appear in the wrong queue path.
-    const effectiveMode = mode;
+    let effectiveMode = mode;
+
+    // The SDK exposes session status as the authoritative live-turn signal.
+    // Do not infer a queue from transcript/message IDs or from our local
+    // processing set: both can lag behind the server and incorrectly label an
+    // ordinary turn as queued. The SDK has no per-message queue status, so once
+    // it reports busy/retry the extension QueueManager owns each queued item.
+    if (
+      mode === "send-now" &&
+      !payload.interactiveSubmit &&
+      !payload.forceSendNow
+    ) {
+      try {
+        const client = await this.serverManager.ensureRunning();
+        const statusResponse = await client.session.status({
+          ...(this.getWorkspaceDirectory()
+            ? { directory: this.getWorkspaceDirectory() }
+            : {}),
+        });
+        const statusBySession =
+          (statusResponse as any)?.data ?? statusResponse;
+        const statusType =
+          statusBySession && typeof statusBySession === "object"
+            ? (statusBySession as Record<string, any>)[sessionId]?.type
+            : undefined;
+        if (statusType === "busy" || statusType === "retry") {
+          effectiveMode = "queue";
+        }
+      } catch (error) {
+        // Preserve the existing direct-send behavior if status cannot be read;
+        // a failed status lookup must not manufacture a queue state.
+        this.logger.debug("[MessageFlow] SDK session status unavailable", {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
 
     this.logger.debug('[MessageFlow] Mode resolution', {
       requestedMode: mode,
@@ -4038,7 +4069,7 @@ export class ChatViewProvider
     this.unsubscribe = this.streamService.subscribe(async (event, rawEvent) => {
       // Log stream events for debugging
       const eventRec = event as Record<string, unknown>;
-      const eventType = eventRec?.type || "unknown";
+      const eventType = (eventRec?.type as string) || "unknown";
       const properties = (eventRec?.properties as Record<string, unknown> | undefined) || {};
       const part = (properties?.part as Record<string, unknown> | undefined) || {};
       const eventKind = (part?.type as string | undefined) || "unknown";
@@ -4436,6 +4467,14 @@ export class ChatViewProvider
             const fin = info?.finish;
             return fin === true || (typeof fin === "string" && ["true", "done", "stop", "complete", "completed", "success", "finished", "error"].includes(fin.trim().toLowerCase()));
           })()
+        ) ||
+        // Tool/progress activity is the first visible evidence of work. Do not
+        // leave it behind the 50 ms presentation batch while the raw tape has
+        // already been persisted; the webview must be able to replace its
+        // loading placeholder as soon as this event reaches the host.
+        (
+          eventType.startsWith("message.part.") &&
+          ["tool", "step-start", "step-finish", "step-stop", "patch", "subtask", "agent"].includes(partType)
         );
       this.enqueueStreamWebviewEvent(
         eventForWebview,

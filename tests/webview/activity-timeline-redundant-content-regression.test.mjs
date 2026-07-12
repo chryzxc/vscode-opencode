@@ -166,3 +166,11 @@ test("implementation plan card renders through the dedicated plan card component
     "implementation plan response presentation should be derived through the dedicated helper",
   );
 });
+
+test("implementation plan cards recognize hydrated system-role approval turns", () => {
+  assert.match(
+    messageComponentsSource,
+    /const messageRole = \(m\.role \?\? m\.info\?\.role \?\? ""\)\.toLowerCase\(\);[\s\S]*isPlanProceedMessageContent\(text\)[\s\S]*messageRole === "user" \|\| messageRole === "system"[\s\S]*status = "Executing";/,
+    "a persisted Proceed on this plan instruction must mark its plan as approved even when hydration presents it as a system message",
+  );
+});

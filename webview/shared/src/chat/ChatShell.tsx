@@ -25,7 +25,7 @@ import type { TranscriptMessageRenderKind } from "./lib/transcriptMessageClassif
 import {
   isProcessingInCurrentSession,
   latestAssistantMessageIdFromCentralizedTape,
-  computePendingAssistantMessageId,
+  computeQueuedUserMessageIndexes,
   shouldDeferComposerSendInCurrentSession,
 } from "./lib/sessionProcessing";
 import {
@@ -2049,6 +2049,7 @@ type ConversationTranscriptProps = {
   currentSessionId: string | null;
   diffByBlockKey: Map<string, CentralizedSessionDiffEvent>;
   hasLiveAssistantTurn: boolean;
+  assistantTurnMessageId: string | null;
   interactiveEvents: AppState["interactiveEvents"];
   isCompressed: boolean;
   isProcessing: boolean;
@@ -2202,6 +2203,7 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
   currentSessionId,
   diffByBlockKey,
   hasLiveAssistantTurn,
+  assistantTurnMessageId,
   interactiveEvents,
   isCompressed,
   isProcessing,
@@ -2223,9 +2225,12 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const [measuredHeightsVersion, setMeasuredHeightsVersion] = useState(0);
 
-  const pendingAssistantId = useMemo(
-    () => computePendingAssistantMessageId(renderMessages),
-    [renderMessages],
+  const queuedUserMessageIndexes = useMemo(
+    () =>
+      hasLiveAssistantTurn
+        ? computeQueuedUserMessageIndexes(renderMessages, assistantTurnMessageId)
+        : new Set<number>(),
+    [assistantTurnMessageId, hasLiveAssistantTurn, renderMessages],
   );
 
   // Ref-based callback cache to keep onSetBlockExpanded references stable across renders.
@@ -2467,7 +2472,12 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
           let messageNode: JSX.Element | null;
           let entryHiddenByBlock = false;
           if (entry.renderKind === "user") {
-            messageNode = <UserMessage message={message} pendingAssistantId={pendingAssistantId} />;
+            messageNode = (
+              <UserMessage
+                message={message}
+                isQueued={queuedUserMessageIndexes.has(index)}
+              />
+            );
           } else if (entry.renderKind === "background-task-reminder") {
             messageNode = (
               <BackgroundTaskReminderMessage
@@ -2607,39 +2617,30 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
               >
                 <div className="mb-2">
                   <div
-                    className="w-full rounded-[14px] border px-3 py-2.5 text-left"
+                    className="w-full rounded-[10px] border px-3 py-2.5 text-left transition-colors"
                     style={{
-                      background:
-                        "color-mix(in srgb, var(--vscode-errorForeground) 6%, var(--oc-panel-soft))",
-                      borderColor:
-                        "color-mix(in srgb, var(--vscode-errorForeground) 18%, var(--oc-border))",
+                      background: "color-mix(in srgb, var(--vscode-errorForeground) 8%, transparent)",
+                      borderColor: "color-mix(in srgb, var(--vscode-errorForeground) 15%, transparent)",
                     }}
                   >
-                    <div className="mb-1.5 flex min-w-0 items-center gap-2">
+                    <div className="flex min-w-0 items-center gap-3">
                       <div
-                        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full"
+                        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full"
                         style={{
-                          background:
-                            "color-mix(in srgb, var(--vscode-errorForeground) 14%, transparent)",
+                          background: "color-mix(in srgb, var(--vscode-errorForeground) 15%, transparent)",
                           color: "var(--vscode-errorForeground)",
                         }}
                       >
-                        <AlertTriangle className="h-3 w-3" />
+                        <AlertTriangle className="h-3.5 w-3.5" />
                       </div>
-                      <div className="min-w-0">
+                      <div className="min-w-0 flex-1">
                         <div
-                          className="text-[10px] font-semibold uppercase tracking-[0.12em]"
-                          style={{ color: "color-mix(in srgb, var(--vscode-errorForeground) 82%, var(--oc-text-soft))" }}
+                          className="text-[13px] leading-snug font-medium"
+                          style={{ color: "var(--vscode-errorForeground)" }}
                         >
-                          Session error
-                        </div>
-                        <div className="text-[11px] text-oc-text-soft opacity-75">
-                          Response could not be completed
+                          {entry.error.message}
                         </div>
                       </div>
-                    </div>
-                    <div className="text-[12.5px] leading-relaxed text-oc-text">
-                      {entry.error.message}
                     </div>
                   </div>
                 </div>
@@ -3850,6 +3851,7 @@ function ChatContent() {
             currentSessionId={state.currentSessionId}
             diffByBlockKey={diffByBlockKey}
             hasLiveAssistantTurn={hasLiveAssistantTurn}
+            assistantTurnMessageId={state.assistantTurnMessageId}
             interactiveEvents={deferredInteractiveEvents}
             isCompressed={isCompressed}
             isProcessing={state.isProcessing}

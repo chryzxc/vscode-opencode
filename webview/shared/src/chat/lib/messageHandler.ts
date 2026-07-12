@@ -2428,7 +2428,6 @@ type StructuredOutput = {
     parentMessageId?: string;
     items: StructuredSubagent[];
   };
-  raw?: UnknownRecord;
 };
 
 function buildStructuredOutputLogPreview(value: unknown): {
@@ -2611,14 +2610,9 @@ function warnOnStructuredFieldDrop(
   }
 }
 
-function preserveStructuredOutputRawFields(
-  rawRecord: UnknownRecord,
-  normalizedRecord: StructuredOutput,
-): StructuredOutput {
+function finalizeStructuredOutput(normalizedRecord: StructuredOutput): StructuredOutput {
   return {
-    ...(rawRecord as StructuredOutput),
     ...normalizedRecord,
-    raw: rawRecord,
   };
 }
 
@@ -2652,7 +2646,7 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
         validationErrors: validation.errors,
       });
     }
-    return salvaged ? preserveStructuredOutputRawFields(rec, salvaged) : undefined;
+    return salvaged ? finalizeStructuredOutput(salvaged) : undefined;
   }
   const rawResponseType =
     asString(sanitizedRec.responseType) || asString(rec.type) || asString(rec.kind) || undefined;
@@ -3092,7 +3086,7 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
   warnOnStructuredFieldDrop(rec, normalizedStructured as UnknownRecord, {
     stage: "normalized",
   });
-  return preserveStructuredOutputRawFields(rec, normalizedStructured);
+  return finalizeStructuredOutput(normalizedStructured);
 }
 
 function salvageStructuredOutput(value: unknown): StructuredOutput | undefined {
@@ -3153,7 +3147,7 @@ function salvageStructuredOutput(value: unknown): StructuredOutput | undefined {
     return undefined;
   }
 
-  return preserveStructuredOutputRawFields(rec, {
+  return finalizeStructuredOutput({
     responseType: effectiveResponseType,
     message,
     plan: hasPlan ? plan : undefined,
@@ -4382,6 +4376,26 @@ function isActivityLikePart(part: UnknownRecord): boolean {
   ];
 
   return activityKeys.some((key) => typeof part[key] !== "undefined");
+}
+
+function isImmediateActivityStreamPayload(payload: UnknownRecord): boolean {
+  const eventType = asString(payload.type) || asString(payload.event) || asString(payload.kind);
+  if (!eventType.startsWith("message.part.")) {
+    return false;
+  }
+
+  const properties = asRecord(payload.properties);
+  const part = asRecord(payload.part) ?? asRecord(properties?.part);
+  const partType = normalizePartType(part?.type);
+  return (
+    partType === "tool" ||
+    partType === "step-start" ||
+    partType === "step-finish" ||
+    partType === "step-stop" ||
+    partType === "patch" ||
+    partType === "subtask" ||
+    partType === "agent"
+  );
 }
 
 function isRenderableAssistantTextPart(part: UnknownRecord): boolean {
@@ -8444,12 +8458,16 @@ function handleStreamEvent(
   const messageId =
     asString(payload.messageId) ||
     asString((payload as UnknownRecord).messageID) ||
-    asString(payload.id) ||
     asString(properties?.messageId) ||
     asString(properties?.messageID) ||
     asString(partRecord?.messageId) ||
     asString(partRecord?.messageID) ||
     asString(infoRecord?.id) ||
+    // Event envelopes use `evt_*` ids. Those identify a transport frame, not
+    // the assistant message that owns a live tool update. Prefer every
+    // semantic message-id field above so successive tool snapshots remain on
+    // one streaming card instead of being treated as stray assistant turns.
+    asString(payload.id) ||
     current?.messageId ||
     null;
 
@@ -9140,6 +9158,18 @@ function handleStreamEvent(
           asString((stateObj as UnknownRecord)?.sessionId) ||
           undefined;
         const title = asString(part.title) || (tool ? `Running ${tool}...` : inferredStepTitle(part));
+        const normalizedPartStatus = normalizeProgressStatus(asString(part.status));
+        const normalizedStateStatus = normalizeProgressStatus(
+          asString(stateObj?.status),
+        );
+        const reportedToolStatus =
+          normalizedPartStatus === "error" || normalizedStateStatus === "error"
+            ? "error"
+            : normalizedPartStatus === "done" || normalizedStateStatus === "done"
+              ? "done"
+              : normalizedPartStatus === "running" || normalizedStateStatus === "running"
+                ? "running"
+                : "pending";
 
         // Extract output from multiple possible sources
         // 1. From state.output (tool state)
@@ -9204,7 +9234,7 @@ function handleStreamEvent(
             callID,
             title,
             type: "tool",
-            status: asString(part.status) === "error" ? "error" : "pending",
+            status: reportedToolStatus,
             source: "stream",
             partType: "tool",
             internal: isInternalToolName(tool),
@@ -9221,20 +9251,15 @@ function handleStreamEvent(
           //   1. part.status === 'done' (direct top-level field)
           //   2. part.state.status === 'done' (nested state object)
           //   3. part.state.result exists (implicit done — tool produced a result)
-          const normalizedPartStatus = normalizeProgressStatus(asString(part.status));
-          const normalizedStateStatus = normalizeProgressStatus(
-            asString(stateObj?.status),
-          );
           const hasResult = stateObj && "result" in stateObj;
           const resolvedStatus =
-            normalizedPartStatus === "done" ||
-            normalizedStateStatus === "done" ||
-            hasResult
-              ? "done"
-              : normalizedPartStatus === "error" ||
-                  normalizedStateStatus === "error"
-                ? "error"
-                : existing.status; // keep current status if no new info
+            existing.status === "done" || existing.status === "error"
+              ? existing.status
+              : hasResult
+                ? "done"
+                : reportedToolStatus === "pending"
+                  ? existing.status
+                  : reportedToolStatus;
 
           upsertStreamingStep(dispatch, getState, {
             id: asString(part.id) || existing.id,
@@ -12490,7 +12515,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                   break;
               }
             };
-            startTransition(() => {
+            const processScopedStreamEvent = () => {
               handleStreamEvent(
                 scopedDispatch,
                 scopedGetState,
@@ -12506,12 +12531,22 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                   streaming: scopedState.streaming,
                 },
               });
-            });
+            };
+            if (isImmediateActivityStreamPayload(payload)) {
+              processScopedStreamEvent();
+            } else {
+              startTransition(processScopedStreamEvent);
+            }
             break;
           }
-          startTransition(() => {
+          const processStreamEvent = () => {
             handleStreamEvent(dispatch, getState, payload, terminalErrorReached, shouldSuppressProcessingBootstrap, markAssistantTurnClosed);
-          });
+          };
+          if (isImmediateActivityStreamPayload(payload)) {
+            processStreamEvent();
+          } else {
+            startTransition(processStreamEvent);
+          }
           const streamingAfter = getState().streaming;
           if (streamingAfter) {
             latestStreamingSnapshot = streamingAfter;
@@ -12546,7 +12581,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           const events = Array.isArray(data.events) ? data.events : [];
           const batchStartedAt = performance.now();
           const rawEventsBySessionId = new Map<string, unknown[]>();
-          startTransition(() => {
+          const processBatchEvents = () => {
             for (const [eventIndex, item] of events.entries()) {
               const evtPayload = asRecord(item.event) ?? item;
               const evtType = asString(evtPayload.type) || asString(evtPayload.event) || "unknown";
@@ -12656,7 +12691,15 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                 payload: { sessionId, events: rawEvents },
               });
             }
-          });
+          };
+          const hasImmediateActivity = events.some((item) =>
+            isImmediateActivityStreamPayload(asRecord(item.event) ?? item),
+          );
+          if (hasImmediateActivity) {
+            processBatchEvents();
+          } else {
+            startTransition(processBatchEvents);
+          }
           const streamingAfter = getState().streaming;
           if (streamingAfter) {
             latestStreamingSnapshot = streamingAfter;

@@ -104,6 +104,53 @@ describe('createMessageHandler - chatHistory hydration guards', () => {
   });
 });
 
+describe('createMessageHandler - live tool activity identity', () => {
+  it('keeps tool snapshots with distinct wrapper event ids on their assistant message', () => {
+    let state: AppState = {
+      ...initialState,
+      currentSessionId: 'ses-live-tool',
+      isProcessing: true,
+    };
+    const dispatch = (action: Parameters<typeof appReducer>[1]) => {
+      state = appReducer(state, action);
+    };
+    const handler = createMessageHandler(dispatch, () => state);
+
+    const toolEvent = (eventId: string, status: string) => ({
+      data: {
+        type: 'streamEvent',
+        sessionId: 'ses-live-tool',
+        event: {
+          id: eventId,
+          type: 'message.part.updated',
+          properties: {
+            sessionID: 'ses-live-tool',
+            part: {
+              id: 'prt-live-tool',
+              type: 'tool',
+              tool: 'read',
+              callID: 'call-live-tool',
+              messageID: 'msg-live-tool',
+              state: {
+                status,
+                input: { filePath: '/workspace/package.json' },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    handler(toolEvent('evt-tool-pending', 'pending') as never);
+    handler(toolEvent('evt-tool-running', 'running') as never);
+
+    assert.strictEqual(state.streaming?.messageId, 'msg-live-tool');
+    assert.strictEqual(state.streaming?.steps.length, 1);
+    assert.strictEqual(state.streaming?.steps[0]?.callID, 'call-live-tool');
+    assert.strictEqual(state.streaming?.steps[0]?.status, 'running');
+  });
+});
+
 describe('coalesceAdjacentAssistantHistoryMessages - rawSdkEventPayloads ordering', () => {
   it('preserves raw event order when assistant bursts are coalesced', () => {
     const result = coalesceAdjacentAssistantHistoryMessages([

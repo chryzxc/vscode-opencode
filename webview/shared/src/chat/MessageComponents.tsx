@@ -1834,7 +1834,7 @@ function ImplementationPlanCard({
       </div>
       <button
         type="button"
-        title="Core Feature: View Implementation Plan"
+        title={`View ${plan.title || "Implementation Plan"}`}
         onClick={() => vscode.postMessage({ type: "viewPlan", plan })}
         className="oc-plan-btn plan-card-action shrink-0 self-start"
       >
@@ -6335,13 +6335,13 @@ export const SystemMessage = memo(function SystemMessage({
   content: string;
   accentColor?: string;
 }) {
-  const [isExpanded, setIsExpanded] = useState(true);
+  const [isExpanded, setIsExpanded] = useState(false);
   const { title, displayContent, collapsedPreview } = useMemo(() => {
     const trimmedContent = content.trim();
     const lines = trimmedContent.split("\n");
     const firstLine = lines[0]?.trim() ?? "";
 
-    let nextTitle = "SYSTEM MESSAGE";
+    let nextTitle = "";
     let nextDisplayContent = trimmedContent;
 
     if (firstLine.startsWith("[") && firstLine.includes("]")) {
@@ -6350,7 +6350,7 @@ export const SystemMessage = memo(function SystemMessage({
       const remainderOnFirstLine = firstLine.slice(closingIdx + 1).trim();
       const remainingLines = lines.slice(1).join("\n").trim();
 
-      nextTitle = rawTitle.toUpperCase();
+      nextTitle = rawTitle;
       nextDisplayContent = [remainderOnFirstLine, remainingLines]
         .filter(Boolean)
         .join("\n")
@@ -6359,7 +6359,7 @@ export const SystemMessage = memo(function SystemMessage({
 
     if (!nextDisplayContent) {
       nextDisplayContent = nextTitle;
-      nextTitle = "SYSTEM MESSAGE";
+      nextTitle = "";
     }
 
     const nextCollapsedPreview = nextDisplayContent
@@ -6396,9 +6396,8 @@ export const SystemMessage = memo(function SystemMessage({
               <div className="oc-system-message__title-row">
                 <span className="oc-system-message__meta" aria-hidden="true">
                   <Info className="h-3.5 w-3.5" />
-                  <span>System</span>
                 </span>
-                <span className="oc-system-message__title">{title}</span>
+                {title && <span className="oc-system-message__title">{title}</span>}
               </div>
               {!isExpanded && collapsedPreview ? (
                 <p className="oc-system-message__preview">{collapsedPreview}</p>
@@ -6512,7 +6511,7 @@ export const BackgroundTaskReminderMessage = memo(function BackgroundTaskReminde
   );
 });
 
-export const UserMessage = memo(function UserMessage({ message, pendingAssistantId }: { message?: Message; pendingAssistantId?: string | null }) {
+export const UserMessage = memo(function UserMessage({ message, isQueued = false }: { message?: Message; isQueued?: boolean }) {
   const [previewImageSrc, setPreviewImageSrc] = useState<string | null>(null);
   const [previewSelection, setPreviewSelection] = useState<CodeSelectionChipData | null>(null);
   const [copied, setCopied] = useState(false);
@@ -6618,8 +6617,6 @@ export const UserMessage = memo(function UserMessage({ message, pendingAssistant
     return null;
   }
 
-  const isQueued = !!pendingAssistantId && !!message?.id && message.id > pendingAssistantId;
-
   return (
       <div className="oc-message-enter flex flex-col mt-6 mb-3.5 gap-1.5" style={DEFERRED_CHAT_CARD_STYLE}>
       {(content || hasImages || codeSelections.length > 0 || fileChips.length > 0) ? (
@@ -6699,14 +6696,15 @@ export const UserMessage = memo(function UserMessage({ message, pendingAssistant
                 </div>
               )}
             </div>
-            <div className="flex items-center justify-end gap-1.5 mt-1">
+            <div className="oc-user-message-meta">
               {isQueued ? (
                 <span
-                  className="inline-flex items-center gap-1.5 rounded-full border border-oc-border bg-oc-panel px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-oc-text shadow-sm"
+                  className="oc-user-message-queue-state"
                   title="This message is queued and will be processed after the current response completes"
                 >
-                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-oc-green" />
-                  Queued
+                  <span className="oc-user-message-queue-dot" aria-hidden="true" />
+                  <span>Queued</span>
+                  <span className="oc-user-message-queue-next">Up next</span>
                 </span>
               ) : null}
               {(() => {
@@ -6721,7 +6719,7 @@ export const UserMessage = memo(function UserMessage({ message, pendingAssistant
               })()}
               <button
                 type="button"
-                className={cn("oc-bubble-copy-btn h-7 w-7", copied && "is-copied")}
+                className={cn("oc-bubble-copy-btn oc-user-message-copy-btn", copied && "is-copied")}
                 onClick={handleCopy}
                 title="Copy message"
               >
@@ -8618,15 +8616,21 @@ const centralizedRawResponse = message?.rawResponse;
               break; // Stop checking only when a different plan was spawned
             }
           }
-          if (m.role === "user") {
-            const text = normalizedUserMessageText(m);
-            if (isPlanProceedMessageContent(text)) {
-              status = "Executing";
-              break;
-            } else if (isPlanRevisionMessageContent(text)) {
-              status = "Revision Requested";
-              break;
-            }
+          const messageRole = (m.role ?? m.info?.role ?? "").toLowerCase();
+          const text = normalizedUserMessageText(m);
+          // Plan approval is dispatched by the extension as a user turn, but
+          // older hydrated histories may render that transport instruction as
+          // a system message. Both represent the same approved plan state.
+          if (
+            isPlanProceedMessageContent(text) &&
+            (messageRole === "user" || messageRole === "system")
+          ) {
+            status = "Executing";
+            break;
+          }
+          if (messageRole === "user" && isPlanRevisionMessageContent(text)) {
+            status = "Revision Requested";
+            break;
           }
         }
       }
@@ -9533,58 +9537,58 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
                 {hasLiveSessionStatus ? (
                   <div className="mb-2 px-2.5">
                     <div
-                      className="w-full rounded-[14px] border px-3 py-2.5 text-left"
+                      className="w-full rounded-[10px] border px-3 py-2.5 text-left transition-colors"
                       style={{
                         background: liveSessionStatus.statusType === "retry"
-                          ? "color-mix(in srgb, var(--vscode-warningForeground) 6%, var(--oc-panel-soft))"
-                          : "color-mix(in srgb, var(--oc-accent) 7%, var(--oc-panel-soft))",
+                          ? "color-mix(in srgb, var(--vscode-warningForeground) 8%, transparent)"
+                          : "color-mix(in srgb, var(--oc-text) 3%, transparent)",
                         borderColor: liveSessionStatus.statusType === "retry"
-                          ? "color-mix(in srgb, var(--vscode-warningForeground) 18%, var(--oc-border))"
-                          : "color-mix(in srgb, var(--oc-accent) 18%, var(--oc-border))",
+                          ? "color-mix(in srgb, var(--vscode-warningForeground) 15%, transparent)"
+                          : "color-mix(in srgb, var(--oc-border) 80%, transparent)",
                       }}
                     >
-                      <div className="mb-1.5 flex min-w-0 items-center gap-2">
+                      <div className="flex min-w-0 items-center gap-3">
                         <div
-                          className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full"
+                          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full"
                           style={{
                             background: liveSessionStatus.statusType === "retry"
-                              ? "color-mix(in srgb, var(--vscode-warningForeground) 14%, transparent)"
-                              : "color-mix(in srgb, var(--oc-accent) 14%, transparent)",
+                              ? "color-mix(in srgb, var(--vscode-warningForeground) 15%, transparent)"
+                              : "color-mix(in srgb, var(--oc-text) 6%, transparent)",
                             color: liveSessionStatus.statusType === "retry"
                               ? "var(--vscode-warningForeground)"
-                              : "var(--oc-accent)",
+                              : "var(--oc-text)",
                           }}
                         >
                           {liveSessionStatus.statusType === "retry" ? (
-                            <AlertTriangle className="h-3 w-3" />
+                            <AlertTriangle className="h-3.5 w-3.5" />
                           ) : (
-                            <div className="h-2 w-2 rounded-full animate-pulse" style={{ background: "currentColor" }} />
+                            <div className="h-2 w-2 rounded-full animate-pulse bg-current" />
                           )}
                         </div>
-                        <div className="min-w-0">
+                        <div className="min-w-0 flex-1">
                           <div
-                            className="text-[10px] font-semibold uppercase tracking-[0.12em]"
+                            className="text-[11px] font-medium uppercase tracking-[0.06em]"
                             style={{
                               color: liveSessionStatus.statusType === "retry"
-                                ? "color-mix(in srgb, var(--vscode-warningForeground) 82%, var(--oc-text-soft))"
-                                : "color-mix(in srgb, var(--oc-accent) 82%, var(--oc-text-soft))",
+                                ? "var(--vscode-warningForeground)"
+                                : "var(--oc-text-secondary)",
                             }}
                           >
                             {liveStatusTitle}
                           </div>
+                          {liveStatusSubtitle ? (
+                            <div className="text-[13px] leading-snug mt-0.5 text-oc-text">
+                              {liveStatusSubtitle}
+                            </div>
+                          ) : null}
                           {liveStatusCountdown ? (
-                            <div className="flex items-center gap-1 text-[11px] text-oc-text-soft opacity-75">
+                            <div className="flex items-center gap-1 mt-1 text-[11px] text-oc-text-soft">
                               <Clock className="h-3 w-3" />
                               <span>Next retry in {liveStatusCountdown}</span>
                             </div>
                           ) : null}
                         </div>
                       </div>
-                      {liveStatusSubtitle ? (
-                        <div className="text-[12.5px] leading-relaxed text-oc-text">
-                          {liveStatusSubtitle}
-                        </div>
-                      ) : null}
                     </div>
                   </div>
                 ) : null}

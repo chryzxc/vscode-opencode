@@ -7,6 +7,7 @@ import {
   hasBusySessionStatusInCentralizedTape,
   hasCompletedAssistantReplyInCentralizedTape,
   isAssistantRespondingInCurrentSession,
+  computeQueuedUserMessageIndexes,
 } from './sessionProcessing';
 
 describe('isAssistantRespondingInCurrentSession', () => {
@@ -531,5 +532,36 @@ describe('hasActiveAssistantTurnContext', () => {
     );
 
     assert.strictEqual(result, false);
+  });
+});
+
+describe('computeQueuedUserMessageIndexes', () => {
+  it('marks adjacent user turns after the active streamed response as queued', () => {
+    const queuedIndexes = computeQueuedUserMessageIndexes([
+      { id: 'assistant-old', role: 'assistant' },
+      { id: 'user-current', role: 'user' },
+      { id: 'user-queued', role: 'user' },
+    ]);
+
+    assert.deepStrictEqual([...queuedIndexes], [2]);
+  });
+
+  it('marks a user turn after the active assistant owned by the transcript', () => {
+    const queuedIndexes = computeQueuedUserMessageIndexes([
+      { id: 'user-current', role: 'user' },
+      { id: 'assistant-active', role: 'assistant' },
+      { id: 'user-queued', role: 'user' },
+    ], 'assistant-active');
+
+    assert.deepStrictEqual([...queuedIndexes], [2]);
+  });
+
+  it('does not mark the initial user turn that starts a separately rendered response', () => {
+    const queuedIndexes = computeQueuedUserMessageIndexes([
+      { id: 'assistant-old', role: 'assistant' },
+      { id: 'user-current', role: 'user' },
+    ]);
+
+    assert.deepStrictEqual([...queuedIndexes], []);
   });
 });
