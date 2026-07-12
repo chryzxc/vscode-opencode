@@ -504,7 +504,7 @@ export class StructuredOutputProcessor {
       success: "done",
       failed: "error",
       error: "error",
-      cancelled: "error",
+      cancelled: "cancelled",
       canceled: "error",
       pending: "pending",
       queued: "pending",

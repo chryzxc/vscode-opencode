@@ -1,9 +1,9 @@
 import * as React from "react"
-import { Check, X, Loader2 } from "lucide-react"
+import { Ban, Check, X, Loader2 } from "lucide-react"
 import { cn } from "@/utils"
 
 export interface StepIndicatorProps {
-  status: 'pending' | 'done' | 'error' | 'running'
+  status: 'pending' | 'done' | 'error' | 'running' | 'cancelled'
   className?: string
 }
 
@@ -23,6 +23,8 @@ export const StepIndicator = React.forwardRef<
         return <X size={12} className="oc-step-indicator-error" />
       case 'running':
         return <Loader2 size={12} className="oc-step-indicator-running animate-spin" />
+      case 'cancelled':
+        return <Ban size={12} className="oc-step-indicator-cancelled" />
       default:
         return null
     }

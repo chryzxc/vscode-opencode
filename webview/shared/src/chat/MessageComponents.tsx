@@ -17,7 +17,6 @@ import {
   FileText as FileTextIcon,
   Loader2,
   X,
-  Sparkles,
   CornerDownLeft,
   AtSign,
   Terminal,
@@ -35,6 +34,7 @@ import {
   ArrowUp,
   ArrowDown,
   Brain,
+  Ban,
   Database,
   RotateCcw,
 } from "lucide-react";
@@ -58,6 +58,8 @@ import {
 import { CallOmoAgentStep } from "./components/activity-steps/CallOmoAgentStep";
 import { BackgroundOutputStep } from "./components/activity-steps/BackgroundOutputStep";
 import { DiffPreviewStep } from "./components/activity-steps/DiffPreviewStep";
+import { ActivityTimelineItem } from "./components/activity-steps/ActivityTimelineItem";
+import { SearchActivityPreview } from "./components/activity-steps/SearchActivityPreview";
 import { ActivityDiffExcerpt } from "./components/ActivityDiffExcerpt";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 import { CodeSelectionPreviewModal } from "./CodeSelectionPreviewModal";
@@ -413,15 +415,6 @@ function patchMessageRetryState(
   };
 }
 
-// Deterministic accent colors for subagents
-const SUBAGENT_COLORS = [
-  "text-oc-orange",
-  "text-oc-green",
-  "text-oc-yellow",
-  "text-oc-red",
-  "text-oc-accent",
-];
-
 const SUBAGENT_HUES = [12, 36, 58, 92, 128, 166, 198, 228, 264, 312, 338];
 
 function getStableHash(value: string): number {
@@ -430,12 +423,6 @@ function getStableHash(value: string): number {
     hash = value.charCodeAt(i) + ((hash << 5) - hash);
   }
   return Math.abs(hash);
-}
-
-function getSubagentColor(id: string): string {
-  if (!id) return "text-oc-accent";
-  const hash = getStableHash(id);
-  return SUBAGENT_COLORS[Math.abs(hash) % SUBAGENT_COLORS.length];
 }
 
 function getSubagentHue(id: string): number {
@@ -468,7 +455,19 @@ function deriveSubagentRole(subagent: SubagentSummary): string | undefined {
 function resolveSubagentStatus(
   subagent: SubagentSummary,
   detail?: SubagentDetail,
+  parentResponseFinished = false,
 ): SubagentSummary["status"] {
+  // A parent response is authoritative for this UI. If it has already
+  // finalized, a child that never emitted its own terminal event cannot still
+  // be running; retain the source data but present the stale live state as
+  // cancelled.
+  const sourceStatus = detail?.status || subagent.status;
+  if (
+    parentResponseFinished &&
+    (sourceStatus === "running" || sourceStatus === "pending")
+  ) {
+    return "cancelled";
+  }
   const hasTerminalStopMarker = !!(
     detail &&
     (
@@ -491,15 +490,24 @@ function resolveSubagentStatus(
     )
   );
 
-  // If subagent has ended, don't show it as running
+  // A persisted end time is a terminal signal even when a provider omits a
+  // literal `stop` part (some tool-driven agents finish with tool-calls).
+  // Do not downgrade that completed record back to Running.
   const hasEnded = subagent.endedAt || detail?.endedAt;
-  if (hasEnded && !detail?.errorText && subagent.status === "running") {
+  if (
+    hasEnded &&
+    !detail?.errorText &&
+    (sourceStatus === "running" || sourceStatus === "pending" || sourceStatus === "done")
+  ) {
     return "done";
   }
 
   const detailStatus = detail?.status;
-  if (detailStatus === "error" || detailStatus === "orphaned") {
+  if (detailStatus === "error" || detailStatus === "orphaned" || detailStatus === "cancelled") {
     return detailStatus;
+  }
+  if (subagent.status === "cancelled") {
+    return "cancelled";
   }
   if (detailStatus === "done") {
     return hasTerminalStopMarker ? "done" : "running";
@@ -2441,30 +2449,7 @@ function DetailedSearchActivityPreview({
   event: DisplayEvent;
   isGlobSearch: boolean;
 }) {
-  return (
-    <div className={cn("flex flex-col gap-1.5", isGlobSearch && "max-h-64 overflow-y-auto")}>
-      <CollapsedSearchBlockPreview
-        title={event.label}
-        pattern={
-          isGlobSearch
-            ? buildSearchPattern(
-                event.activityDetail?.input?.pattern as string,
-                event.description,
-              )
-            : buildSearchPattern(
-                event.activityDetail?.query || event.summary,
-                event.description,
-              )
-        }
-        patternInHeader={isGlobSearch}
-        path={isGlobSearch ? undefined : event.filePath}
-        include={event.activityDetail?.input?.include as string || event.activityDetail?.input?.Include as string}
-        outputMode={event.activityDetail?.input?.output_mode as string || event.activityDetail?.input?.outputMode as string}
-        headLimit={event.activityDetail?.input?.head_limit as number || event.activityDetail?.input?.headLimit as number}
-        output={event.activityDetail?.output}
-      />
-    </div>
-  );
+  return <SearchActivityPreview title={event.label} pattern={isGlobSearch ? buildSearchPattern(event.activityDetail?.input?.pattern as string, event.description) : buildSearchPattern(event.activityDetail?.query || event.summary, event.description)} patternInHeader={isGlobSearch} path={isGlobSearch ? undefined : event.filePath} include={event.activityDetail?.input?.include as string || event.activityDetail?.input?.Include as string} outputMode={event.activityDetail?.input?.output_mode as string || event.activityDetail?.input?.outputMode as string} headLimit={event.activityDetail?.input?.head_limit as number || event.activityDetail?.input?.headLimit as number} output={event.activityDetail?.output} isGlobSearch={isGlobSearch} />;
 }
 
 type ThoughtItem = {
@@ -4788,7 +4773,7 @@ type DisplayEvent = {
   summary: string;
   description?: string;
   detail?: string;
-  status: "pending" | "running" | "done" | "error";
+  status: "pending" | "running" | "done" | "error" | "cancelled";
   source?: "stream" | "final" | "raw_debug";
   partType?: string;
   internal?: boolean;
@@ -4806,6 +4791,61 @@ type DisplayEvent = {
   updateCount: number;
   streamSeq?: number;
 };
+
+/**
+ * The shared activity-row surface.  This is deliberately kept beside the
+ * transcript renderer: subagent events are the same tool-part contract as
+ * normal assistant activity and must not have a second, simplified UI.
+ */
+export type SharedActivityEvent = DisplayEvent;
+
+export function SharedActivityStep({
+  event,
+  messageContent = "",
+}: {
+  event: SharedActivityEvent;
+  messageContent?: string;
+}) {
+  const labelText = (event.label ?? "").toString();
+  const labelLower = labelText.trim().toLowerCase();
+  const isGlobSearch = labelLower === "glob";
+  const isReadActivity = labelLower === "read";
+  const isEditLike = ["edit", "modify", "patch", "write", "apply_patch"].includes(labelLower);
+  const filePath = event.filePath || (event.activityDetail?.input as Record<string, unknown> | undefined)?.filePath as string | undefined;
+  const description = (event.activityDetail?.metadata?.description as string | undefined) || (event.activityDetail?.input?.description as string | undefined);
+  const visibleSummary = getVisibleDefaultActivitySummary(event.label, event.summary, event.filePath);
+
+  return (
+    <div className="flex items-start justify-between gap-2 w-full">
+      <ExpandableStep className="flex-1">
+        <div className={cn("oc-activity-step-surface flex flex-col items-start w-full min-w-0", isReadActivity ? "gap-0" : "gap-2")}>
+          <div className="flex items-center gap-2 flex-wrap w-full min-h-[20px]">
+            <span className="oc-activity-step-title font-medium text-oc-text capitalize">{event.label}</span>
+            {description ? <span className="oc-activity-step-meta flex items-center gap-2 text-oc-text-soft"><span>&middot;</span><span>{description}</span></span> : null}
+            {(labelLower === "read" || isGlobSearch || isEditLike) && filePath && !isUrl(filePath) ? (
+              <button type="button" className="oc-refined-file-link oc-refined-file-link-with-tooltip oc-refined-file-link-inline oc-refined-file-link-plain" onClick={() => vscode.postMessage({ type: "openFile", file: filePath })}>
+                <FileIcon filePath={filePath} isDirectory={isDirectoryActivityPath(filePath, event.activityDetail)} />
+                <span className="truncate">{filePath.split(/[\\/]/).pop() || filePath}</span>
+                <span className="oc-refined-file-link-tooltip oc-refined-file-link-tooltip-below" role="tooltip">{filePath}</span>
+              </button>
+            ) : null}
+          </div>
+          {!isReadActivity ? (
+            <div className="flex flex-col gap-1 w-full">
+              {labelLower === "bash" ? (
+                <div className="oc-refined-event-summary"><TerminalBlockWithOutput event={event} messageContent={messageContent} /></div>
+              ) : SEARCH_LABELS.has(event.label) ? (
+                <DetailedSearchActivityPreview event={event} isGlobSearch={isGlobSearch} />
+              ) : visibleSummary ? (
+                <div className="oc-refined-event-summary"><CollapsedMarkdownPreview title={event.label} content={visibleSummary} /></div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      </ExpandableStep>
+    </div>
+  );
+}
 
 const ACTIVITY_TIMELINE_DIAGNOSTIC_LOG = "[ACTIVITY-TIMELINE-DIAG]";
 
@@ -5197,6 +5237,8 @@ function subagentStatusLabel(status: SubagentSummary["status"]): string {
       return "Running";
     case "error":
       return "Error";
+    case "cancelled":
+      return "Cancelled";
     case "orphaned":
       return "Orphaned";
     case "pending":
@@ -5279,6 +5321,7 @@ function SubagentsInlineCard({
   showAllSubagents,
   setShowAllSubagents,
   openSubagentModal,
+  parentResponseFinished,
 }: {
   subagents: SubagentSummary[];
   subagentDetailsById: AppState["subagentDetailsById"];
@@ -5287,6 +5330,7 @@ function SubagentsInlineCard({
   showAllSubagents: boolean;
   setShowAllSubagents: (next: boolean) => void;
   openSubagentModal: (subagentId: string) => void;
+  parentResponseFinished: boolean;
 }) {
   const [durationNow, setDurationNow] = useState(() => Date.now());
   // Show all subagents including orphaned ones - they should be visible in the UI
@@ -5303,10 +5347,10 @@ function SubagentsInlineCard({
         const detail = subagentDetailsById?.[subagent.id] as
           | SubagentDetail
           | undefined;
-        const status = resolveSubagentStatus(subagent, detail);
+        const status = resolveSubagentStatus(subagent, detail, parentResponseFinished);
         return status === "running" || status === "pending";
       }),
-    [showSubagents, visibleSubagents, subagentDetailsById],
+    [showSubagents, visibleSubagents, subagentDetailsById, parentResponseFinished],
   );
 
   useEffect(() => {
@@ -5327,7 +5371,7 @@ function SubagentsInlineCard({
   const resolvedStatusCounts = visibleSubagents.reduce(
     (acc, subagent) => {
       const detail = subagentDetailsById?.[subagent.id] as SubagentDetail | undefined;
-      const status = resolveSubagentStatus(subagent, detail);
+      const status = resolveSubagentStatus(subagent, detail, parentResponseFinished);
       if (status === "running") acc.running += 1;
       else if (status === "done") acc.done += 1;
       else if (status === "error") acc.error += 1;
@@ -5348,7 +5392,6 @@ function SubagentsInlineCard({
       >
         <div className="flex items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-2">
-            <Sparkles className="h-3.5 w-3.5 oc-subagents-header-icon" />
             <span className="text-[11px] font-semibold uppercase tracking-wider text-oc-text-soft">
               Subagents
             </span>
@@ -5411,7 +5454,7 @@ function SubagentsInlineCard({
               });
               }
 
-              const resolvedStatus = resolveSubagentStatus(subagent, detail);
+              const resolvedStatus = resolveSubagentStatus(subagent, detail, parentResponseFinished);
               const hasTerminalStopMarker = !!(
                 detail &&
                 (
@@ -5460,6 +5503,7 @@ function SubagentsInlineCard({
                   : undefined;
               const agentRole = deriveSubagentRole(subagent);
               const shouldShowActivity =
+                resolvedStatus !== "cancelled" &&
                 activityText.trim().toLowerCase() !==
                 statusText.trim().toLowerCase();
 
@@ -5481,8 +5525,14 @@ function SubagentsInlineCard({
                           <Loader2 className="h-3 w-3 animate-spin" />
                         ) : resolvedStatus === "error" ? (
                           <X className="h-3 w-3 text-oc-red" />
-                        ) : (
+                        ) : resolvedStatus === "orphaned" ? (
+                          <AlertCircle className="h-3 w-3 text-oc-yellow" />
+                        ) : resolvedStatus === "cancelled" ? (
+                          <Ban className="h-3 w-3 oc-text-secondary" />
+                        ) : resolvedStatus === "done" ? (
                           <Check className="h-3 w-3" />
+                        ) : (
+                          <Circle className="h-3 w-3 oc-text-secondary" />
                         )}
                       </div>
                       <span className="truncate text-oc-xs font-semibold text-oc-text-soft">
@@ -5765,6 +5815,7 @@ function buildDisplayEvents(
   fileChanges: StructuredFileChange[] | undefined,
   messageScopeIds?: Set<string>,
   currentMessageId?: string | null,
+  parentResponseFinished = false,
 ): DisplayEvent[] {
   const stripTrailingEllipsis = (value?: string) =>
     (value || "").replace(/\s*(?:\.{3}|…)\s*$/u, "").trim();
@@ -5965,7 +6016,10 @@ function buildDisplayEvents(
         kind: "reasoning",
         label: "Reasoning",
         summary: text,
-        status: item.status || "done",
+        status:
+          parentResponseFinished && (item.status === "pending" || item.status === "running")
+            ? "cancelled"
+            : item.status || "done",
         source,
         messageID: item.messageID,
         partID: item.partID,
@@ -5991,7 +6045,10 @@ function buildDisplayEvents(
         kind: "commentary",
         label: item.kind === "ai_response" ? "Assistant Response" : "Commentary",
         summary: text,
-        status: item.status || "done",
+        status:
+          parentResponseFinished && (item.status === "pending" || item.status === "running")
+            ? "cancelled"
+            : item.status || "done",
         messageID: item.messageID,
         partID: item.partID,
         isImportant: false,
@@ -6182,7 +6239,10 @@ function buildDisplayEvents(
       summary: summary || cleanedRawTitle || "Activity update",
       description,
       detail: detail || undefined,
-      status: event.status,
+      status:
+        parentResponseFinished && (event.status === "pending" || event.status === "running")
+          ? "cancelled"
+          : event.status,
       source,
       partType,
       // NOTE: lifecycle markers (step-start / step-finish) are flagged as internal
@@ -6452,7 +6512,7 @@ export const BackgroundTaskReminderMessage = memo(function BackgroundTaskReminde
   );
 });
 
-export const UserMessage = memo(function UserMessage({ message }: { message?: Message }) {
+export const UserMessage = memo(function UserMessage({ message, pendingAssistantId }: { message?: Message; pendingAssistantId?: string | null }) {
   const [previewImageSrc, setPreviewImageSrc] = useState<string | null>(null);
   const [previewSelection, setPreviewSelection] = useState<CodeSelectionChipData | null>(null);
   const [copied, setCopied] = useState(false);
@@ -6558,8 +6618,10 @@ export const UserMessage = memo(function UserMessage({ message }: { message?: Me
     return null;
   }
 
+  const isQueued = !!pendingAssistantId && !!message?.id && message.id > pendingAssistantId;
+
   return (
-      <div className="oc-message-enter mt-6 mb-3.5 flex flex-col gap-1.5" style={DEFERRED_CHAT_CARD_STYLE}>
+      <div className="oc-message-enter flex flex-col mt-6 mb-3.5 gap-1.5" style={DEFERRED_CHAT_CARD_STYLE}>
       {(content || hasImages || codeSelections.length > 0 || fileChips.length > 0) ? (
         <div className="flex items-end justify-end gap-1.5">
           <div className="w-fit max-w-[78%]">
@@ -6637,14 +6699,20 @@ export const UserMessage = memo(function UserMessage({ message }: { message?: Me
                 </div>
               )}
             </div>
-            <div className="mt-1 flex items-center justify-end gap-1.5">
-              {message.pendingDeferredPrompt ? (
-                <span className="oc-text-secondary text-[10px] font-medium opacity-75">
-                  {message.pendingDeferredPromptLabel ?? "Sent - waiting"}
+            <div className="flex items-center justify-end gap-1.5 mt-1">
+              {isQueued ? (
+                <span
+                  className="inline-flex items-center gap-1.5 rounded-full border border-oc-border bg-oc-panel px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-oc-text shadow-sm"
+                  title="This message is queued and will be processed after the current response completes"
+                >
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-oc-green" />
+                  Queued
                 </span>
               ) : null}
               {(() => {
-                const ts = formatMessageTime(getMessageTimestamp(message));
+                const ts = isQueued
+                  ? null
+                  : formatMessageTime(getMessageTimestamp(message));
                 return ts ? (
                   <span className="oc-text-secondary text-[10px] tabular-nums opacity-70">
                     {ts}
@@ -7280,6 +7348,38 @@ function getCentralizedEventInfo(payload: unknown): Record<string, unknown> | nu
   return asRecord(event.info);
 }
 
+/** Returns assistant response IDs with an explicit terminal signal. */
+function finishedAssistantResponseMessageIds(payloads: unknown[]): Set<string> {
+  const finishedIds = new Set<string>();
+  for (const payload of payloads) {
+    const event = asRecord(payload);
+    const info = getCentralizedEventInfo(payload);
+    const messageId = extractSemanticEventMessageId(payload);
+    if (
+      !event ||
+      !info ||
+      !messageId ||
+      (asString(info.role).toLowerCase() !== "assistant" && !isAiResponseEvent(payload))
+    ) {
+      continue;
+    }
+    const time = asRecord(info.time);
+    const finish = info.finish;
+    const hasFinishReason =
+      (typeof finish === "string" && finish.trim().length > 0) || finish === true;
+    if (
+      info.aborted === true ||
+      event.aborted === true ||
+      hasFinishReason ||
+      time?.completed !== undefined ||
+      time?.end !== undefined
+    ) {
+      finishedIds.add(messageId);
+    }
+  }
+  return finishedIds;
+}
+
 function ResponseMessageInner({
   message,
   streaming,
@@ -7342,12 +7442,14 @@ function ResponseMessageInner({
     assistantTurnMessageId,
     streamingBySessionId,
     rawSdkEventPayloadsBySessionId,
+    selectedSubagentId,
   } = useAppState(
     (state) => ({
       assistantTurnPending: state.assistantTurnPending,
       assistantTurnMessageId: state.assistantTurnMessageId,
       streamingBySessionId: state.streamingBySessionId,
       rawSdkEventPayloadsBySessionId: state.rawSdkEventPayloadsBySessionId,
+      selectedSubagentId: state.selectedSubagentId,
     }),
     shallowEqual,
   );
@@ -7382,7 +7484,6 @@ function ResponseMessageInner({
   const [showSubagents, setShowSubagents] = useState(true);
   const [showAllSubagents, setShowAllSubagents] = useState(false);
   const [showTodoChecklist, setShowTodoChecklist] = useState(true);
-  const [selectedSubagentId, setSelectedSubagentId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [previewImageSrc, setPreviewImageSrc] = useState<string | null>(null);
   const messageBodyRef = useRef<HTMLDivElement>(null);
@@ -7735,6 +7836,21 @@ const centralizedRawResponse = message?.rawResponse;
   const hasActiveReasoningPart = scopedActivityTimelineStreaming?.inReasoningPart === true;
   const hasTerminalStepSignal =
     scopedActivityTimelineStreaming?.hasTerminalStepSignal === true;
+  const finishedResponseMessageIds = useMemo(
+    () => finishedAssistantResponseMessageIds([
+      ...sessionScopedRawSdkEventPayloads,
+      ...messageAttachedRawSdkEventPayloads,
+    ]),
+    [sessionScopedRawSdkEventPayloads, messageAttachedRawSdkEventPayloads],
+  );
+  const isParentResponseFinished =
+    cardMessage?.aborted === true ||
+    asString(asRecord(cardMessage?.info)?.finish).trim().length > 0 ||
+    asRecord(asRecord(cardMessage?.info)?.time)?.completed !== undefined ||
+    hasAssistantFinishSignal ||
+    Array.from(assistantScopeMessageIds).some((id) =>
+      finishedResponseMessageIds.has(id),
+    );
   const resolvedContentChunks =
     rawContentChunks.length > 0
       ? rawContentChunks
@@ -7829,10 +7945,11 @@ const centralizedRawResponse = message?.rawResponse;
         fileChanges,
         assistantScopeMessageIds,
         messageId,
+        isParentResponseFinished,
       );
       return events;
     },
-    [thoughtItems, mergedProgressItems, commentaryItems, fileChanges, assistantScopeMessageIds, messageId],
+    [thoughtItems, mergedProgressItems, commentaryItems, fileChanges, assistantScopeMessageIds, messageId, isParentResponseFinished],
   );
   // Centralized debug is the long-term source of truth for this assistant turn.
   // Keep it raw and complete so future UI rendering can consume the same data
@@ -8110,11 +8227,18 @@ const centralizedRawResponse = message?.rawResponse;
   // compact UI is intentionally hidden. They must not leave an empty
   // collapsed summary that can be expanded into no visible content.
   const isHiddenLifecycleTimelineEvent = (event: DisplayEvent) => {
+    if (event.internal !== true) return false;
     const labelLower = (event.label || "").trim().toLowerCase();
     const summaryLower = (event.summary || "").trim().toLowerCase();
-    return event.internal === true && (
+    const partTypeLower = (event.partType || "").trim().toLowerCase();
+    if (partTypeLower === "step-start" || partTypeLower === "step-finish") {
+      return true;
+    }
+    return (
       labelLower === "step-start" ||
       labelLower === "step-finish" ||
+      labelLower === "starting step" ||
+      labelLower === "finishing step" ||
       (labelLower === "step" && (summaryLower === "start" || summaryLower === "finish")) ||
       (labelLower === "start" && summaryLower === "start") ||
       (labelLower === "finish" && summaryLower === "finish")
@@ -8534,6 +8658,12 @@ const centralizedRawResponse = message?.rawResponse;
 
 		return Array.from(new Map(filtered.map((subagent) => [subagent.id, subagent])).values());
 	}, [messageId, currentSessionId, formattedSubagents, orphanSubagentsForBlock, isLastInBlock]);
+  // A response block can consist of several assistant messages (for example,
+  // a tool phase followed by the text answer). Render its shared subagent
+  // panel only on the final visible message. The live streaming card has no
+  // persisted message or block position, so it remains responsible for its
+  // own panel while the turn is in flight.
+  const shouldRenderSubagentsInlineCard = !message || isLastInBlock !== false;
   const previousSubagentCount = useRef(subagents.length);
 
   useEffect(() => {
@@ -8545,7 +8675,6 @@ const centralizedRawResponse = message?.rawResponse;
   }, [streaming, subagents.length]);
   useEffect(() => {
     if (subagents.length === 0) {
-      setSelectedSubagentId(null);
       dispatch({ type: "SELECT_SUBAGENT", payload: null });
     }
   }, [subagents.length, dispatch]);
@@ -8957,6 +9086,16 @@ const centralizedRawResponse = message?.rawResponse;
     };
   }, [centralizedRawResponse]);
 const responseBodyChunks = useMemo(() => {
+    // Delta events are intentionally excluded from the centralized tape. The
+    // live card has no message payload, so use only explicitly renderable
+    // stream text here to paint each safe chunk as it arrives.
+    if (
+      !cardMessage &&
+      streaming?.hasRenderableContent === true &&
+      streaming.content.trim().length > 0
+    ) {
+      return [streaming.content];
+    }
     const orderedChunks = orderedAssistantResponseChunksFromCentralizedData(
       responseBodyRawSdkEventPayloads,
       assistantScopeMessageIds,
@@ -8969,7 +9108,10 @@ const responseBodyChunks = useMemo(() => {
     );
   }, [
     assistantScopeMessageIds,
+    cardMessage,
     responseBodyRawSdkEventPayloads,
+    streaming?.content,
+    streaming?.hasRenderableContent,
   ]);
   const visibleResponseBodyChunks = useMemo(() => {
     const renderedQuestionOutputs = new Set(
@@ -9161,33 +9303,12 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
     });
   };
   const openSubagentModal = (subagentId: string) => {
-    setSelectedSubagentId(subagentId);
     dispatch({ type: "SELECT_SUBAGENT", payload: subagentId });
   };
 
   const closeSubagentModal = () => {
-    setSelectedSubagentId(null);
     dispatch({ type: "SELECT_SUBAGENT", payload: null });
   };
-  const copyRefs = async (detail: SubagentDetail) => {
-    const refs = [
-      `parentSessionID=${detail.parentSessionId}`,
-      `parentMessageID=${detail.parentMessageId}`,
-      detail.childSessionId ? `childSessionID=${detail.childSessionId}` : null,
-      ...detail.references.map((ref, index) => {
-        const parts = [
-          ref.messageID ? `messageID=${ref.messageID}` : null,
-          ref.partID ? `partID=${ref.partID}` : null,
-          ref.callID ? `callID=${ref.callID}` : null,
-        ].filter(Boolean);
-        return parts.length > 0 ? `ref${index + 1}: ${parts.join(" ")}` : null;
-      }),
-    ]
-      .filter((item): item is string => !!item)
-      .join("\n");
-    await navigator.clipboard.writeText(refs);
-  };
-
   useEffect(() => {
     const root = messageBodyRef.current;
     if (!root) return;
@@ -9534,6 +9655,12 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
                           (isActivityTextRedundantWithTitle(event.label, event.detail) ||
                             isActivityTextRedundantWithTitle(visibleSummary, event.detail) ||
                             isActivityTextRedundantWithTitle(event.description, event.detail));
+                        // A file-read row is intentionally a compact timeline marker.
+                        // Its payload can be a complete source file, and mounting an
+                        // otherwise-empty detail column leaves a clipped surface and
+                        // vertical gap between consecutive Read/Thought rows.
+                        const isReadActivity = labelLower === "read";
+                        const shouldRenderActivityBody = !isReadActivity;
 
                         // Lifecycle markers (step-start / step-finish) are used internally by the 
                         // message handler to group and structure the activity timeline.
@@ -9542,8 +9669,12 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
                         // to ensure they are visually hidden from the user in the UI.
                         const isLifecycleMarkerEvent =
                           event.internal === true && (
+                            (event.partType || "").trim().toLowerCase() === "step-start" ||
+                            (event.partType || "").trim().toLowerCase() === "step-finish" ||
                             labelLower === "step-start" ||
                             labelLower === "step-finish" ||
+                            labelLower === "starting step" ||
+                            labelLower === "finishing step" ||
                             (labelLower === "step" && (
                               (event.summary || "").trim().toLowerCase() === "start" ||
                               (event.summary || "").trim().toLowerCase() === "finish"
@@ -9552,7 +9683,11 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
                             (labelLower === "finish" && (event.summary || "").trim().toLowerCase() === "finish")
                           );
                         if (isLifecycleMarkerEvent) {
-                          const isStart = labelLower === "step-start" || labelLower === "start" ||
+                          const partTypeLower = (event.partType || "").trim().toLowerCase();
+                          const isStart = partTypeLower === "step-start" ||
+                            labelLower === "step-start" ||
+                            labelLower === "starting step" ||
+                            labelLower === "start" ||
                             (event.summary || "").trim().toLowerCase() === "start";
                           return (
                             <StepperItem
@@ -9595,17 +9730,7 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
                           );
 
                         return (
-                          <StepperItem
-                            key={event.key}
-                            isLast={isLast}
-                            indicator={indicatorNode}
-                            className={cn(
-                              "oc-refined-stepper-item group",
-                              event.status === "running"
-                                ? "is-streaming"
-                                : "",
-                            )}
-                          >
+                          <ActivityTimelineItem id={event.key} isLast={isLast} status={event.status}>
                             {(() => {
                               if (event.kind === "reasoning") {
                                 const isExpanded = viewState.expandedReasoningSteps.has(event.key);
@@ -9703,7 +9828,10 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
                                           activityDetail={event.activityDetail}
                                         />
                                       ) : (
-                                        <div className="oc-activity-step-surface flex flex-col items-start gap-2 w-full min-w-0">
+                                        <div className={cn(
+                                          "oc-activity-step-surface flex flex-col items-start w-full min-w-0",
+                                          shouldRenderActivityBody ? "gap-2" : "gap-0",
+                                        )}>
                                           <div className="flex items-center gap-2 flex-wrap w-full min-h-[20px]">
                                             <span className="oc-activity-step-title font-medium text-oc-text capitalize">
                                               {event.label}
@@ -9755,6 +9883,7 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
                                             })()}
                                           </div>
 
+                                          {shouldRenderActivityBody ? (
                                           <div className="flex flex-col gap-1 w-full">
                                               {/* For read, todowrite, and edit events, skip the generic summary block here — they have their own custom UI below.
                                                   For all other events, render the file link or summary as usual. */}
@@ -9879,6 +10008,7 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
                                                 </div>
                                               )}
                                           </div>
+                                          ) : null}
                                       </div>
                                     )}
                                   </ExpandableStep>
@@ -9923,7 +10053,7 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
                                 );
                               }
                             })()}
-                          </StepperItem>
+                          </ActivityTimelineItem>
                         );
                       })}
                     </Stepper>
@@ -9987,15 +10117,18 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
             </section>
           )}
 
-          <SubagentsInlineCard
-            subagents={subagents}
-            subagentDetailsById={subagentDetailsById || {}}
-            showSubagents={showSubagents}
-            setShowSubagents={setShowSubagents}
-            showAllSubagents={showAllSubagents}
-            setShowAllSubagents={setShowAllSubagents}
-            openSubagentModal={openSubagentModal}
-          />
+          {shouldRenderSubagentsInlineCard && (
+            <SubagentsInlineCard
+              subagents={subagents}
+              subagentDetailsById={subagentDetailsById || {}}
+              showSubagents={showSubagents}
+              setShowSubagents={setShowSubagents}
+              showAllSubagents={showAllSubagents}
+              setShowAllSubagents={setShowAllSubagents}
+              openSubagentModal={openSubagentModal}
+              parentResponseFinished={isParentResponseFinished}
+            />
+          )}
 
               {showResponseSection && hasVisibleResponseSectionContent && (
             <section
@@ -10241,13 +10374,8 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
                 isOpen={Boolean(selectedSubagentId)}
                 title={title}
                 detail={detailData}
-                colorClass={getSubagentColor(selected.id)}
+                parentResponseFinished={isParentResponseFinished}
                 onClose={closeSubagentModal}
-                onCopyRefs={copyRefs}
-                onJumpToParent={() => {
-                  closeSubagentModal();
-                  jumpToMessage(selected.parentMessageId || messageId || "");
-                }}
               />
             );
           })()}
@@ -11086,6 +11214,13 @@ export function MessageStatus({
 }
 
 export const CentralizedDebugPanel = memo(function CentralizedDebugPanel() {
+  if (!config.debug.showCentralizedDebug) {
+    return null;
+  }
+  return <CentralizedDebugPanelContents />;
+});
+
+const CentralizedDebugPanelContents = memo(function CentralizedDebugPanelContents() {
   const [copiedDebugPanel, setCopiedDebugPanel] = useState<"centralized" | null>(null);
   const {
     currentSessionId,
@@ -11129,10 +11264,6 @@ export const CentralizedDebugPanel = memo(function CentralizedDebugPanel() {
       detailsById: subagentDetailsById,
     },
   };
-
-  if (!config.debug.showCentralizedDebug) {
-    return null;
-  }
 
   return (
     <div className="mx-4 my-2 rounded-md border border-oc-border bg-oc-panel overflow-hidden text-[10px] font-mono">

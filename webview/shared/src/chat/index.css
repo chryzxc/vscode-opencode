@@ -4962,6 +4962,15 @@ body {
   border-color: color-mix(in srgb, var(--oc-accent) 22%, var(--oc-border));
 }
 
+.oc-step-indicator-cancelled {
+  color: var(--oc-text-secondary);
+}
+
+.oc-step-indicator--cancelled {
+  border-color: var(--oc-border);
+  background: var(--oc-panel-soft);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .oc-step-indicator-done,
   .oc-step-indicator-error,

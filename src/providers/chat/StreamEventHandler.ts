@@ -19,11 +19,18 @@ type PendingStreamEvent = {
   sessionId: string | undefined;
 };
 
+// 20 presentation batches/sec remains visually smooth while leaving main
+// thread time for scrolling and input during 30-60 event/sec token streams.
+const STREAM_WEBVIEW_FLUSH_INTERVAL_MS = 50;
+const MAX_STREAM_WEBVIEW_EVENTS_PER_BATCH = 8;
+const STREAM_WEBVIEW_BACKLOG_YIELD_MS = 16;
+
 export class StreamEventHandler {
   private streamStartTime?: number;
   private eventCount = 0;
   private pendingEvents: PendingStreamEvent[] = [];
   private flushRafId: ReturnType<typeof setTimeout> | null = null;
+  private lastStreamPerformanceLogAt = 0;
 
   constructor(
     private structuredOutputProcessor: StructuredOutputProcessor,
@@ -105,15 +112,18 @@ export class StreamEventHandler {
     }
 
     // Buffer event for batched delivery. During active streaming this
-    // coalesces high-frequency text chunks (30-60/sec) into ~1 postMessage
-    // per animation frame, preventing the VS Code webview IPC boundary from
+    // coalesces high-frequency text chunks (30-60/sec) into bounded batches,
+    // preventing the VS Code webview IPC boundary from
     // becoming a scroll-jank bottleneck.
     this.pendingEvents.push({ enrichedEvent, event, sessionId });
 
     if (this.isTerminalEvent(eventType)) {
       this.flushPendingEvents();
     } else if (this.flushRafId === null) {
-      this.flushRafId = setTimeout(() => this.flushPendingEvents(), 16);
+      this.flushRafId = setTimeout(
+        () => this.flushPendingEvents(),
+        STREAM_WEBVIEW_FLUSH_INTERVAL_MS,
+      );
     }
 
     this.persistRawSdkEventPayload(sessionId, event, rawEvent);
@@ -251,14 +261,15 @@ export class StreamEventHandler {
   }
 
   private flushPendingEvents(): void {
+    const startedAt = performance.now();
     if (this.flushRafId !== null) {
       clearTimeout(this.flushRafId);
       this.flushRafId = null;
     }
 
-    const batch = this.pendingEvents;
+    const batch = this.pendingEvents.splice(0, MAX_STREAM_WEBVIEW_EVENTS_PER_BATCH);
     if (batch.length === 0) return;
-    this.pendingEvents = [];
+    const hasBacklog = this.pendingEvents.length > 0;
 
     if (batch.length === 1) {
       const { enrichedEvent, event, sessionId } = batch[0];
@@ -275,6 +286,20 @@ export class StreamEventHandler {
           sessionId,
         })),
       });
+    }
+    const now = Date.now();
+    if (now - this.lastStreamPerformanceLogAt >= 250) {
+      this.lastStreamPerformanceLogAt = now;
+      this.logger.info("[STREAM-PERF] host-stream-flush", {
+        batchSize: batch.length,
+        durationMs: Number((performance.now() - startedAt).toFixed(2)),
+      });
+    }
+    if (hasBacklog && this.flushRafId === null) {
+      this.flushRafId = setTimeout(
+        () => this.flushPendingEvents(),
+        STREAM_WEBVIEW_BACKLOG_YIELD_MS,
+      );
     }
   }
 

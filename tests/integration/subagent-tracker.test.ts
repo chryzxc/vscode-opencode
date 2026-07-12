@@ -389,5 +389,45 @@ describe("SubagentTracker", () => {
         1,
       );
     });
+
+    it("uses the model named by a not-found error instead of the parent-model fallback", () => {
+      const trackerWithParentFallback = new SubagentTracker(() => ({
+        providerID: "zai-coding-plan",
+        modelID: "glm-5.2",
+      }));
+      trackerWithParentFallback.setActiveSession("parent-session-1");
+      trackerWithParentFallback.consumeStreamEvent(
+        makeEvent("message.part.updated", {
+          part: makeSubtaskPart("parent-session-1", "msg-1", "part-1"),
+        }),
+      );
+      trackerWithParentFallback.consumeStreamEvent(
+        makeEvent("session.created", {
+          info: { id: "child-1", parentID: "parent-session-1" },
+        }),
+      );
+
+      const beforeError = Object.values(
+        trackerWithParentFallback.getSnapshotPayload().detailsById,
+      ).find((detail) => detail.childSessionId === "child-1");
+      assert.equal(beforeError?.providerID, "zai-coding-plan");
+      assert.equal(beforeError?.modelID, "glm-5.2");
+
+      const payload = trackerWithParentFallback.consumeStreamEvent(
+        makeEvent("session.error", {
+          sessionID: "child-1",
+          error: {
+            message:
+              "Model not found: opencode/gpt-5-nano. Did you mean: gpt-5-nano?",
+          },
+        }),
+      );
+      const erroredDetail = Object.values(payload!.detailsById).find(
+        (detail) => detail.childSessionId === "child-1",
+      );
+
+      assert.equal(erroredDetail?.providerID, "opencode");
+      assert.equal(erroredDetail?.modelID, "gpt-5-nano");
+    });
   });
 });

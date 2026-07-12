@@ -82,6 +82,24 @@ test("activity timeline also suppresses redundant descriptions and details", () 
   );
 });
 
+test("read activities are header-only and do not reserve an empty payload row", () => {
+  assert.match(
+    messageComponentsSource,
+    /const isReadActivity = labelLower === "read";/,
+    "read events should be identified before the activity body is rendered",
+  );
+  assert.match(
+    messageComponentsSource,
+    /const shouldRenderActivityBody = !isReadActivity;/,
+    "read events should not mount an otherwise-empty body container",
+  );
+  assert.match(
+    messageComponentsSource,
+    /shouldRenderActivityBody \? \(\s*<div className="flex flex-col gap-1 w-full">/s,
+    "the activity body should render only when it has a visible purpose",
+  );
+});
+
 test("question prelude activity rows also suppress redundant summary text", () => {
   assert.match(
     messageComponentsSource,

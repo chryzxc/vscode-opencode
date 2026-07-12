@@ -23,6 +23,11 @@ const messageHandlerSource = readSource(
   'messageHandler.ts',
 );
 
+const chatShellSource = readSource(
+  [joinFromRoot('webview', 'shared', 'src', 'chat', 'ChatShell.tsx')],
+  'ChatShell.tsx',
+);
+
 const liveEventRouterSource = readSource(
   [joinFromRoot('webview', 'shared', 'src', 'chat', 'lib', 'liveEventRouter.ts')],
   'liveEventRouter.ts',
@@ -128,6 +133,22 @@ describe('Live-only event parsing and leak prevention', () => {
     );
   });
 
+  test('client-only live event batches route tui.show notifications into the toast overlay', () => {
+    assert.match(
+      messageHandlerSource,
+      /case "liveEventStreamDebugBatch": \{[\s\S]*?routeLiveEventToUi\(event, sessionId, "liveEventStreamDebugBatch", eventIndex\)/s,
+      'startup tui.show events that only reach the client-only live stream should still be rendered as toasts',
+    );
+  });
+
+  test('chat shell subscribes to the per-session live toast state it passes to the overlay', () => {
+    assert.match(
+      chatShellSource,
+      /liveToastNotificationsBySessionId: appState\.liveToastNotificationsBySessionId/,
+      'the overlay must receive live toast changes through the ChatContent state selector',
+    );
+  });
+
   test('liveEventRouter is the canonical discoverable routing table for live-only events', () => {
     assert.match(
       liveEventRouterSource,
@@ -156,8 +177,8 @@ describe('Live-only event parsing and leak prevention', () => {
     );
     assert.match(
       messageHandlerSource,
-      /const liveRoute = routeLiveEvent\(payload\)/,
-      'streamEvent should use the router for live-event dispatch',
+      /const routeLiveEventToUi = \([\s\S]*?routeLiveEvent\(payload, index\)/s,
+      'stream events should use the centralized router for live-event dispatch',
     );
   });
 });

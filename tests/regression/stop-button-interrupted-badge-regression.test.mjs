@@ -31,6 +31,29 @@ test("stopRequestHandled finalizes aborted assistant turns without stale interac
   );
 });
 
+test("late stream events cannot restart a turn after the user stops it", () => {
+  assert.match(
+    messageHandlerSource,
+    /const isStoppedSession =[\s\S]*?stoppedSessionIds\.has\(sessionId\)/s,
+    "the handler should keep a session-scoped stop fence",
+  );
+  assert.match(
+    messageHandlerSource,
+    /case "streamEvent": \{[\s\S]*?isStoppedSession\(eventSessionId, activeSessionId\)[\s\S]*?break;/s,
+    "single late stream events should be ignored after stop",
+  );
+  assert.match(
+    messageHandlerSource,
+    /case "streamEventBatch": \{[\s\S]*?isStoppedSession\(eventSessionId, activeSessionId\)[\s\S]*?continue;/s,
+    "batched late stream events should be ignored after stop",
+  );
+  assert.match(
+    messageHandlerSource,
+    /case "userMessageAppended":[\s\S]*?stoppedSessionIds\.delete\(resumedSessionId\)/s,
+    "only a newly appended user message should allow the session to stream again",
+  );
+});
+
 test("assistant renderer still shows the Interrupted badge for aborted turns", () => {
   assert.match(
     messageComponentsSource,

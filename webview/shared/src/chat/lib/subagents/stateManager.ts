@@ -8,6 +8,7 @@
 import type {
   SubagentSummary,
   SubagentDetail,
+  SubagentEntityStore,
 } from './types';
 import { asRecord, asString, asNumber } from '../messageHandler';
 import { sanitizeSubagentLabel } from './dataNormalizer';
@@ -16,6 +17,133 @@ import {
   normalizeSubagentTimelineEventsForPresentation
 } from './eventBuilder';
 
+function subagentStatusRank(status: SubagentSummary["status"] | undefined): number {
+  switch (status) {
+    case "done":
+    case "error":
+    case "orphaned":
+    case "cancelled":
+      return 2;
+    case "running":
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+/** Do not let an older live projection revive an already-terminal subagent. */
+function mergeSubagentStatus(
+  existing: SubagentSummary["status"] | undefined,
+  incoming: SubagentSummary["status"] | undefined,
+): SubagentSummary["status"] {
+  if (!incoming) return existing || "pending";
+  return subagentStatusRank(existing) > subagentStatusRank(incoming)
+    ? existing!
+    : incoming;
+}
+
+function emptySubagentEventCollections(): Pick<SubagentDetail,
+  'references' | 'thinkingEvents' | 'conversationEvents' | 'rawEvents' | 'progressEvents' | 'timelineEvents'> {
+  // Each stub must own its collections: streaming merges append/replace arrays
+  // over time, and shared empty array references make that behavior fragile.
+  return {
+    references: [],
+    thinkingEvents: [],
+    conversationEvents: [],
+    rawEvents: [],
+    progressEvents: [],
+    timelineEvents: [],
+  };
+}
+
+export function createSubagentEntityStore(): SubagentEntityStore {
+  return {
+    version: 1,
+    byId: {},
+    idsByParentMessageId: {},
+    idByChildSessionId: {},
+    updatedAt: 0,
+  };
+}
+
+function detailFromSummary(summary: SubagentSummary): SubagentDetail {
+  return {
+    ...summary,
+    ...emptySubagentEventCollections(),
+    references: [...summary.references],
+  };
+}
+
+function buildSubagentIndexes(byId: Record<string, SubagentDetail>): Pick<SubagentEntityStore,
+  'idsByParentMessageId' | 'idByChildSessionId'> {
+  const idsByParentMessageId: Record<string, string[]> = {};
+  const idByChildSessionId: Record<string, string> = {};
+
+  for (const detail of Object.values(byId)) {
+    if (!detail?.id) continue;
+    if (detail.parentMessageId) {
+      (idsByParentMessageId[detail.parentMessageId] ??= []).push(detail.id);
+    }
+    if (detail.childSessionId) {
+      idByChildSessionId[detail.childSessionId] = detail.id;
+    }
+  }
+
+  return { idsByParentMessageId, idByChildSessionId };
+}
+
+function finalizeSubagentEntityStore(byId: Record<string, SubagentDetail>): SubagentEntityStore {
+  return {
+    version: 1,
+    byId,
+    ...buildSubagentIndexes(byId),
+    updatedAt: Date.now(),
+  };
+}
+
+/** Merge incoming compatibility summaries into the canonical entity store. */
+export function upsertSubagentSummariesIntoStore(
+  store: SubagentEntityStore,
+  incomingByParentId: Record<string, SubagentSummary[]>,
+): SubagentEntityStore {
+  const byId = { ...store.byId };
+  for (const summaries of Object.values(incomingByParentId)) {
+    for (const summary of summaries ?? []) {
+      if (!summary?.id) continue;
+      byId[summary.id] = mergeSubagentDetailRecord(
+        byId[summary.id],
+        detailFromSummary(summary),
+      );
+    }
+  }
+  return finalizeSubagentEntityStore(byId);
+}
+
+/** Merge incoming detailed records into the canonical entity store. */
+export function upsertSubagentDetailsIntoStore(
+  store: SubagentEntityStore,
+  incomingById: Record<string, SubagentDetail>,
+): SubagentEntityStore {
+  const byId = { ...store.byId };
+  for (const detail of Object.values(incomingById)) {
+    if (!detail?.id) continue;
+    byId[detail.id] = mergeSubagentDetailRecord(byId[detail.id], detail);
+  }
+  return finalizeSubagentEntityStore(byId);
+}
+
+/** Compatibility selector for the existing message-oriented UI. */
+export function selectSubagentSummariesByParentMessageId(
+  store: SubagentEntityStore,
+): Record<string, SubagentSummary[]> {
+  const summaries: Record<string, SubagentSummary[]> = {};
+  for (const [parentMessageId, ids] of Object.entries(store.idsByParentMessageId)) {
+    const entries = ids.map((id) => store.byId[id]).filter((detail): detail is SubagentDetail => Boolean(detail));
+    if (entries.length > 0) summaries[parentMessageId] = entries;
+  }
+  return summaries;
+}
+
 /**
  * Merge subagent summaries with existing state
  */
@@ -23,12 +151,6 @@ export function mergeSubagentSummaries(
   existing: SubagentSummary[] | undefined,
   incoming: SubagentSummary[],
 ): SubagentSummary[] {
-  const statusRank = (status: SubagentSummary["status"] | undefined): number => {
-    if (status === "done" || status === "error" || status === "orphaned") return 2;
-    if (status === "running") return 1;
-    return 0;
-  };
-
   const byId = new Map<string, SubagentSummary>();
   const source = Array.isArray(existing) ? existing : [];
 
@@ -50,9 +172,7 @@ export function mergeSubagentSummaries(
 
     // Merge with preference for higher rank status
     const merged = { ...prev, ...entry, id: entry.id };
-    if (statusRank(prev.status) > statusRank(entry.status)) {
-      merged.status = prev.status;
-    }
+    merged.status = mergeSubagentStatus(prev.status, entry.status);
     byId.set(entry.id, merged);
   });
 
@@ -79,7 +199,7 @@ export function mergeUniqueSubagentEntries<T>(
   keyBuilder: (item: T, index: number) => string,
 ): T[] {
   const out: T[] = [];
-  const byKey = new Map<string, T>();
+  const indexByKey = new Map<string, number>();
 
   const push = (items: T[] | undefined) => {
     if (!Array.isArray(items) || items.length === 0) {
@@ -93,18 +213,14 @@ export function mergeUniqueSubagentEntries<T>(
         return;
       }
 
-      if (byKey.has(key)) {
-        const existingItemIndex = out.findIndex((entry, entryIndex) => {
-          const entryKey = keyBuilder(entry, entryIndex);
-          return entryKey === key;
-        });
-        if (existingItemIndex >= 0) {
-          out[existingItemIndex] = item;
-        }
-      } else {
-        out.push(item);
+      const existingItemIndex = indexByKey.get(key);
+      if (typeof existingItemIndex === "number") {
+        out[existingItemIndex] = item;
+        return;
       }
-      byKey.set(key, item);
+
+      indexByKey.set(key, out.length);
+      out.push(item);
     });
   };
 
@@ -159,6 +275,15 @@ export function mergeSubagentDetailRecord(
     },
   );
 
+  const rawEvents = mergeUniqueSubagentEntries(
+    existing?.rawEvents,
+    incoming.rawEvents,
+    (event, index) => {
+      const rec = asRecord(event);
+      return asString(rec?.id) || `${asString(rec?.type)}:${index}`;
+    },
+  );
+
   const progressEvents = normalizeSubagentProgressEventsForPresentation(
     mergeUniqueSubagentEntries(
       existing?.progressEvents,
@@ -188,12 +313,13 @@ export function mergeSubagentDetailRecord(
       incoming.parentSessionId || existing?.parentSessionId || "",
     parentMessageId:
       incoming.parentMessageId || existing?.parentMessageId || "",
-    status: incoming.status || existing?.status || "pending",
+    status: mergeSubagentStatus(existing?.status, incoming.status),
     latestActivity,
     references,
     thinkingEvents,
     conversationEvents,
     rawConversationEvents,
+    rawEvents,
     progressEvents,
     timelineEvents,
   };

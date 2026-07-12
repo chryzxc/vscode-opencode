@@ -20,7 +20,7 @@ import { asRecord, asString } from '../messageHandler';
  * Check if value is a valid subagent status
  */
 export function isSubagentStatus(value: unknown): value is SubagentSummary['status'] {
-  return value === 'pending' || value === 'running' || value === 'done' || value === 'error' || value === 'orphaned';
+  return value === 'pending' || value === 'running' || value === 'done' || value === 'error' || value === 'orphaned' || value === 'cancelled';
 }
 
 /**
@@ -190,6 +190,7 @@ export function normalizeSubagentDetail(value: unknown): SubagentDetail | null {
   const rawConversationEvents = Array.isArray(rec.conversationEvents)
     ? [...rec.conversationEvents]
     : [];
+  const rawEvents = Array.isArray(rec.rawEvents) ? [...rec.rawEvents] : [];
 
   const progressEvents = Array.isArray(rec.progressEvents)
     ? rec.progressEvents
@@ -256,6 +257,7 @@ export function normalizeSubagentDetail(value: unknown): SubagentDetail | null {
   return {
     ...summary,
     thinkingEvents,
+    rawEvents,
     conversationEvents,
     rawConversationEvents,
     progressEvents: normalizedProgressEvents,

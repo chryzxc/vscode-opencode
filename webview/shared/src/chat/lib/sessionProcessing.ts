@@ -509,3 +509,34 @@ export function shouldDeferComposerSendInCurrentSession(
     processingSessionIds.includes(currentSessionId)
   );
 }
+
+/**
+ * Derives the ID of the "pending" (last incomplete) assistant message from the
+ * centralized message tape. Mirrors the opencode TUI `pending` memo: a user
+ * message is considered QUEUED when its ID is greater than this value, meaning
+ * it was sent after the still-running assistant turn started and the server has
+ * queued it for processing once the current turn completes.
+ *
+ * Returns null when no assistant turn is in flight.
+ */
+export function computePendingAssistantMessageId<T extends { role?: string; info?: { role?: string; time?: { completed?: unknown } }; id: string }>(
+  messages: T[],
+): string | null {
+  let lastCompletedAssistantId: string | null = null;
+  let pendingId: string | null = null;
+
+  for (const message of messages) {
+    const role = message.role ?? message.info?.role;
+    if (role !== "assistant") continue;
+    const completed = message.info?.time?.completed;
+    if (completed) {
+      lastCompletedAssistantId = message.id;
+    } else {
+      if (!lastCompletedAssistantId || message.id > lastCompletedAssistantId) {
+        pendingId = message.id;
+      }
+    }
+  }
+
+  return pendingId;
+}

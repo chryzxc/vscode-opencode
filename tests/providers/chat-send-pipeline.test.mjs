@@ -121,6 +121,17 @@ test('handleStopRequest aborts the SDK session and cleans up processing state', 
   assert.match(source, /processingSessionIds|clear|cleanup|delete/, 'should clean up processing state');
 });
 
+test('handleStopRequest finalizes the UI before the best-effort SDK abort completes', () => {
+  const body = extractFunctionBody(source, '  private async handleStopRequest(');
+  const localFinalization = body.indexOf('this.processingSessionIds.delete(resolvedSessionId);');
+  const abortRequest = body.indexOf('client.session.abort({');
+
+  assert.ok(localFinalization >= 0, 'stop should clear local processing state immediately');
+  assert.ok(abortRequest > localFinalization, 'local finalization must not wait for the abort request');
+  assert.match(body, /type: "stopRequestHandled"/, 'stop should always notify the webview to end loading');
+  assert.match(body, /Failed to abort active request/, 'abort failures should remain diagnostic after UI finalization');
+});
+
 
 test('handleLoadSession does not borrow AI processing markers for session loading', () => {
   const body = extractFunctionBody(source, '  private async handleLoadSession(');

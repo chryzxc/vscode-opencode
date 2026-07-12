@@ -68,6 +68,32 @@ test("lifecycle-only timeline events do not enable an empty expand control", () 
   );
 });
 
+test("lifecycle hide check keys off partType so label-text drift cannot re-enable the empty expand control", () => {
+  assert.match(
+    messageComponentsSource,
+    /const isHiddenLifecycleTimelineEvent = \(event: DisplayEvent\) => \{[\s\S]*partTypeLower[\s\S]*partTypeLower === "step-start" \|\| partTypeLower === "step-finish"/,
+    "the hide check must treat step-start / step-finish partType values as lifecycle markers regardless of label text",
+  );
+  assert.match(
+    messageComponentsSource,
+    /const isHiddenLifecycleTimelineEvent = \(event: DisplayEvent\) => \{[\s\S]*if \(partTypeLower === "step-start" \|\| partTypeLower === "step-finish"\) \{[\s\S]*return true;/,
+    "a step lifecycle partType should short-circuit the hide check to true without relying on label formatting",
+  );
+});
+
+test("render-loop lifecycle marker detection keys off partType to keep hiding consistent with the count check", () => {
+  assert.match(
+    messageComponentsSource,
+    /const isLifecycleMarkerEvent =[\s\S]*\(event\.partType \|\| ""\)\.trim\(\)\.toLowerCase\(\) === "step-start"[\s\S]*\(event\.partType \|\| ""\)\.trim\(\)\.toLowerCase\(\) === "step-finish"/,
+    "the render-loop lifecycle marker check must prefer the canonical partType signal so visible-row hiding stays in sync with the expand/collapse count check",
+  );
+  assert.match(
+    messageComponentsSource,
+    /if \(isLifecycleMarkerEvent\) \{[\s\S]*const partTypeLower = \(event\.partType \|\| ""\)\.trim\(\)\.toLowerCase\(\);[\s\S]*const isStart = partTypeLower === "step-start"/,
+    "the start-vs-finish determination inside the lifecycle branch must derive from partType so step-start rows are correctly classified even when their label text is the human-readable 'Starting step' form",
+  );
+});
+
 test("collapsed activity timeline renders the worked-for summary affordance", () => {
   assert.match(
     messageComponentsSource,

@@ -7,6 +7,10 @@ const chatShellSource = readSource(
   [joinFromRoot("webview", "shared", "src", "chat", "ChatShell.tsx")],
   "ChatShell.tsx",
 );
+const messageHandlerSource = readSource(
+  [joinFromRoot("webview", "shared", "src", "chat", "lib", "messageHandler.ts")],
+  "messageHandler.ts",
+);
 
 test("ChatShell routes large transcript rendering through a memoized transcript component", () => {
   assert.match(
@@ -77,7 +81,43 @@ test("ChatShell virtualizes very large conversation lists", () => {
   );
   assert.match(
     chatShellSource,
-    /<MemoizedConversationTranscript[\s\S]*scrollViewport=\{scrollRenderViewport\}/,
-    "chat shell should pass scroll viewport metrics into the transcript virtualizer",
+    /const transcriptScrollViewport =[\s\S]*deferredVisibleConversationEntries\.length >= VIRTUALIZED_TRANSCRIPT_MIN_ENTRIES[\s\S]*\? scrollRenderViewport[\s\S]*: STATIC_TRANSCRIPT_VIEWPORT/,
+    "chat shell should avoid invalidating non-virtualized transcripts on every scroll frame",
+  );
+  assert.match(
+    chatShellSource,
+    /<MemoizedConversationTranscript[\s\S]*scrollViewport=\{transcriptScrollViewport\}/,
+    "chat shell should pass the stabilized viewport into the transcript virtualizer",
+  );
+});
+
+test("ChatShell isolates the transcript from token-by-token streaming objects", () => {
+  assert.doesNotMatch(
+    chatShellSource,
+    /<MemoizedConversationTranscript[^>]*streaming=\{state\.streaming\}/s,
+    "the memoized transcript should not receive the mutable streaming object",
+  );
+  assert.match(
+    chatShellSource,
+    /<MemoizedConversationTranscript[^>]*streamingAgent=\{(?:deferredStreamingAgent|state\.streaming\?\.agent)\}[^>]*isStreamingActive=\{Boolean\(state\.streaming\?\.isActive\)\}/s,
+    "the transcript should receive only stable streaming scalars it actually consumes",
+  );
+  assert.match(
+    chatShellSource,
+    /if \(!streamViewport\.isFollowing && state\.streaming\?\.isActive\) \{[\s\S]*return;/,
+    "centralized transcript projection should pause while the user scrolls through an active stream",
+  );
+  assert.match(
+    chatShellSource,
+    /const streamingPresentationRef = useRef\(state\.streaming\);[\s\S]*const presentedStreaming = streamViewport\.isFollowing[\s\S]*streaming=\{presentedStreaming\}/,
+    "the off-screen streaming card should remain on a stable frame while the user scrolls",
+  );
+});
+
+test("stream events do not echo raw payloads back across the webview IPC boundary", () => {
+  assert.doesNotMatch(
+    messageHandlerSource,
+    /vscode\.postMessage\(\{\s*type: ["']persistRawSdkEventPayload["']/,
+    "the extension host already persists stream events before forwarding them to the webview",
   );
 });

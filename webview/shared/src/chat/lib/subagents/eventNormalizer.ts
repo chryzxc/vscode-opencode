@@ -58,29 +58,9 @@ export function findUltimateParentMessageId(toolEvent: unknown, allEvents: unkno
   const toolMessageId = extractEventMessageId(event, extractEventPart(event) || {});
   if (!toolMessageId) return null;
 
-  // Step 2: Find the assistant's message.event to get its parentID (the user's message)
-  // The assistant message has info.parentID that links back to the user's message
-  for (const e of allEvents) {
-    const evt = asRecord(e);
-    if (!evt) continue;
-
-    // Use existing centralized logic to extract event info
-    // This handles multiple event formats: properties.info, syncEvent.data.info, etc.
-    const info = extractCentralizedEventInfo(evt);
-    if (!info) continue;
-
-    // Check if this event is for the assistant's message
-    const messageId = asString(info?.id || info?.messageID || info?.messageId);
-    if (messageId === toolMessageId) {
-      // Found the assistant's message - return its parentID (user's message)
-      // This is the key parent-child relationship: assistant.message.parentID = user.message.id
-      const parentId = asString(info?.parentID || info?.parentId);
-      if (parentId) return parentId;
-    }
-  }
-
-  // Fallback: if we can't find the parent relationship, return the tool's message ID
-  // This maintains backward compatibility if parentID is missing
+  // The part is already attached to the assistant message. Do not walk
+  // `info.parentID`: that identifies the initiating user message and would
+  // attach this subagent to the wrong transcript block.
   return toolMessageId;
 }
 

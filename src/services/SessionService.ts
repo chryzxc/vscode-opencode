@@ -62,6 +62,7 @@ import {
 } from "../shared/centralizedDebugPayloadFilter";
 import { createPlainObjectSnapshot } from "../shared/createPlainObjectSnapshot";
 import type { SubagentUpdatePayload } from "./SubagentTracker";
+import { recoverSubagentProjectionAfterRestart } from "./subagents/SubagentProjectionRecovery";
 
 const log = createLogger(LoggingCategories.SESSION_SERVICE);
 const MAX_CACHED_MESSAGES_PER_SESSION = 200;
@@ -381,6 +382,11 @@ function compactSubagentForPersistence(subagent: unknown): unknown {
   }
   if (Array.isArray(rec.conversationEvents)) {
     compact.conversationEvents = rec.conversationEvents
+      .slice(-MAX_COMPACT_SUBAGENT_EVENTS)
+      .map((item) => sanitizeForPersistence(item));
+  }
+  if (Array.isArray(rec.rawEvents)) {
+    compact.rawEvents = rec.rawEvents
       .slice(-MAX_COMPACT_SUBAGENT_EVENTS)
       .map((item) => sanitizeForPersistence(item));
   }
@@ -2328,6 +2334,24 @@ export class SessionService {
       rawEventStream: { events },
       subagents,
     };
+  }
+
+  /**
+   * Finalize subagents left live by a previous extension-host instance.
+   *
+   * The tracker itself is in-memory. A persisted pending/running projection
+   * cannot be live after activation, so make that terminal state durable
+   * before replaying the session into the webview.
+   */
+  async cancelStaleSubagentsAfterExtensionRestart(
+    sessionId: string,
+  ): Promise<CentralizedSubagentProjection> {
+    await this.updateCentralizedSessionData(sessionId, (current) => ({
+      ...current,
+      subagents: recoverSubagentProjectionAfterRestart(current.subagents),
+    }));
+
+    return this.centralizedSubagentProjectionCache.get(sessionId) || this.emptySubagentProjection();
   }
 
   /** Merge a live subagent update into the centralized session payload. */

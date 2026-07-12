@@ -148,9 +148,9 @@ test.skip('todo_update events are batched before posting to the webview', () => 
 
 test('enriched stream events are forwarded to the webview', () => {
   assert.match(
-    streamSubscribeBody,
-    /type: "streamEvent"[\s\S]*sessionId: resolvedSessionId/s,
-    'streamEvent forwarding should include the resolved session id',
+    chatViewProviderSource,
+    /type: "streamEvent"[\s\S]*sessionId: item\.sessionId[\s\S]*type: "streamEventBatch"[\s\S]*sessionId: item\.sessionId/s,
+    'stream forwarding should preserve the resolved session id for single and batched events',
   );
   assert.match(
     streamSubscribeBody,

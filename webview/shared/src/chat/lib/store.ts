@@ -24,6 +24,12 @@ import {
   shouldIncludeCentralizedDebugPayload,
 } from "./generated/centralizedDebugPayloadFilter";
 import type { CentralizedToastNotification } from "./toastEvents";
+import {
+  createSubagentEntityStore,
+  selectSubagentSummariesByParentMessageId,
+  upsertSubagentDetailsIntoStore,
+  upsertSubagentSummariesIntoStore,
+} from "./subagents/stateManager";
 
 const globalQuestionRequestIDMap = new Map<string, { requestID: string, questionIndex?: number }>();
 
@@ -41,7 +47,6 @@ import type {
   FileResult,
   Message,
   Model,
-  PendingDeferredPrompt,
   PendingUserMessage,
   QueueItem,
   QuotaData,
@@ -78,7 +83,6 @@ export const initialState: AppState = {
   liveToastNotificationsBySessionId: {},
   promptQueue: [],
   queueBySessionId: {},
-  pendingDeferredPromptsBySessionId: {},
   pendingUserMessagesBySessionId: {},
   isExecutingQueue: false,
   executingQueueSessionIds: new Set<string>(),
@@ -137,6 +141,7 @@ export const initialState: AppState = {
   assistantTurnMessageId: null,
   modelCapability: null,
   todoItems: [],
+  subagentStore: createSubagentEntityStore(),
   subagentsByParentMessageId: {},
   subagentDetailsById: {},
   selectedSubagentId: null,
@@ -196,6 +201,10 @@ export type AppAction =
     payload: { sessionId: string; events: unknown[] };
   }
   | { type: "APPEND_RAW_SDK_EVENT_PAYLOAD"; payload: { sessionId?: string | null; event: unknown } }
+  | {
+    type: "APPEND_RAW_SDK_EVENT_PAYLOAD_BATCH";
+    payload: { sessionId?: string | null; events: unknown[] };
+  }
   | { type: "APPEND_LIVE_EVENT_STREAM_DEBUG"; payload: { sessionId?: string | null; event: unknown } }
   | { type: "CLEAR_LIVE_EVENT_STREAM_DEBUG" }
   | {
@@ -266,7 +275,6 @@ export type AppAction =
     type: "SET_QUEUE";
     payload: { sessionId: string | null; queue: QueueItem[] };
   }
-  | { type: "ADD_PENDING_DEFERRED_PROMPT"; payload: PendingDeferredPrompt }
   | { type: "ADD_PENDING_USER_MESSAGE"; payload: PendingUserMessage }
   | {
     type: "CONFIRM_PENDING_USER_MESSAGE";
@@ -2423,6 +2431,7 @@ export function mergeStreamingReasoning(
   current: string,
   incoming: string,
   append?: boolean,
+  delta?: boolean,
 ): ReasoningMergeResult {
   const incomingChunk = incoming.trim();
   if (!append) {
@@ -2437,6 +2446,18 @@ export function mergeStreamingReasoning(
   }
   if (!current) {
     return { reasoning: incoming, eventChunk: incomingChunk };
+  }
+
+  // True transport deltas are already ordered and non-overlapping. Avoid
+  // normalizing and searching the entire accumulated reasoning buffer for
+  // every token; that made long reasoning streams progressively quadratic
+  // and could monopolize the webview thread during scroll gestures.
+  if (delta) {
+    return {
+      reasoning: appendStreamingReasoning(current, incoming),
+      eventChunk: incomingChunk,
+      replaceLastEvent: false,
+    };
   }
 
   const currentNorm = normalizeReasoningText(current);
@@ -2958,6 +2979,40 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         }, sessionId),
       };
     }
+    case "APPEND_RAW_SDK_EVENT_PAYLOAD_BATCH": {
+      const sessionId = action.payload.sessionId ?? state.currentSessionId ?? "";
+      const incoming = Array.isArray(action.payload.events)
+        ? action.payload.events.filter(shouldIncludeCentralizedDebugPayload)
+        : [];
+      if (!sessionId || incoming.length === 0) {
+        return state;
+      }
+      const existing = state.rawSdkEventPayloadsBySessionId?.[sessionId] ?? [];
+      let next = existing;
+      for (const rawEvent of incoming) {
+        next = appendAndDedupeCentralizedDebugPayload(
+          next,
+          sanitizeCentralizedDebugPayload(rawEvent),
+        ) as unknown[];
+      }
+      if (next === existing) {
+        return state;
+      }
+      logger.info("[CENTRALIZED-TAPE][WEBVIEW_STORE] append_raw_sdk_event_payload_batch", {
+        sessionId,
+        incomingCount: incoming.length,
+        previousCount: existing.length,
+        nextCount: next.length,
+        currentSessionId: state.currentSessionId,
+      });
+      return {
+        ...state,
+        rawSdkEventPayloadsBySessionId: pruneSessionCache({
+          ...(state.rawSdkEventPayloadsBySessionId ?? {}),
+          [sessionId]: next,
+        }, sessionId),
+      };
+    }
     case "APPEND_LIVE_EVENT_STREAM_DEBUG": {
       const sessionId = action.payload.sessionId ?? state.currentSessionId ?? "";
       if (!sessionId) {
@@ -3281,8 +3336,24 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           currentSessionId: state.currentSessionId ?? null,
         });
       }
-      if (!state.streaming) {
-        if (!action.payload) {
+      const status = action.payload;
+      const statusSessionId = status?.sessionId ?? state.currentSessionId;
+      // A retry status can follow a terminal event from the previous attempt.
+      // Treat it as a new live phase of that same assistant turn, otherwise the
+      // StreamingCard's completed-turn guard hides the inline status row.
+      const keepsAssistantTurnLive = Boolean(
+        status && status.statusType !== "idle" && status.statusType !== "completed",
+      );
+      const existingSessionStreaming = statusSessionId
+        ? state.streamingBySessionId?.[statusSessionId] ?? null
+        : null;
+      const activeStreaming =
+        state.currentSessionId === statusSessionId
+          ? state.streaming
+          : existingSessionStreaming;
+
+      if (!activeStreaming) {
+        if (!status) {
           return state;
         }
         const streaming: StreamingState = {
@@ -3293,32 +3364,35 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           steps: [],
           progressEvents: [],
           edits: [],
-          liveSessionStatus: action.payload,
-          isActive: true,
+          liveSessionStatus: status,
+          isActive: keepsAssistantTurnLive,
           agent: state.selectedAgent || undefined,
         };
+        const streamingBySessionId = cacheStreamingForSession(
+          state.streamingBySessionId,
+          statusSessionId,
+          streaming,
+        );
         return {
           ...state,
-          streaming,
-          streamingBySessionId: cacheStreamingForSession(
-            state.streamingBySessionId,
-            state.currentSessionId,
-            streaming,
-          ),
+          ...(state.currentSessionId === statusSessionId ? { streaming } : {}),
+          streamingBySessionId,
         };
       }
       const streaming = {
-        ...state.streaming,
-        liveSessionStatus: action.payload,
+        ...activeStreaming,
+        liveSessionStatus: status,
+        isActive: keepsAssistantTurnLive ? true : activeStreaming.isActive,
       };
+      const streamingBySessionId = cacheStreamingForSession(
+        state.streamingBySessionId,
+        statusSessionId,
+        streaming,
+      );
       return {
         ...state,
-        streaming,
-        streamingBySessionId: cacheStreamingForSession(
-          state.streamingBySessionId,
-          state.currentSessionId,
-          streaming,
-        ),
+        ...(state.currentSessionId === statusSessionId ? { streaming } : {}),
+        streamingBySessionId,
       };
     }
     case "APPEND_SDK_EVENT_PAYLOAD": {
@@ -3429,6 +3503,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         state.streaming.reasoning,
         action.payload.reasoning,
         action.payload.append,
+        action.payload.delta,
       );
       const reasoning = merged.reasoning;
       const chunk = merged.eventChunk?.trim() ?? "";
@@ -3462,6 +3537,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
                   existingText,
                   action.payload.reasoning,
                   action.payload.append,
+                  action.payload.delta,
                 ).reasoning
               : chunk;
           const replaceIndex =
@@ -3719,32 +3795,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           state.currentSessionId === targetSessionId
             ? sessionQueue
             : state.promptQueue,
-      };
-    }
-    case "ADD_PENDING_DEFERRED_PROMPT": {
-      const item = action.payload;
-      if (!item.sessionId || !item.id || !item.text.trim()) {
-        return state;
-      }
-      const nextBySession = { ...(state.pendingDeferredPromptsBySessionId ?? {}) };
-      const existing = nextBySession[item.sessionId] ?? [];
-      const alreadyExists = existing.some(
-        (prompt) =>
-          prompt.id === item.id ||
-          (prompt.clientRequestId &&
-            item.clientRequestId &&
-            prompt.clientRequestId === item.clientRequestId),
-      );
-      if (alreadyExists) {
-        return state;
-      }
-      nextBySession[item.sessionId] = [...existing, item];
-      return {
-        ...state,
-        pendingDeferredPromptsBySessionId: pruneSessionCache(
-          nextBySession,
-          state.currentSessionId,
-        ),
       };
     }
     case "ADD_PENDING_USER_MESSAGE": {
@@ -4157,21 +4207,27 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       };
     }
     case "UPSERT_SUBAGENT_SUMMARIES": {
+      const subagentStore = upsertSubagentSummariesIntoStore(
+        state.subagentStore,
+        action.payload,
+      );
       return {
         ...state,
-        subagentsByParentMessageId: {
-          ...state.subagentsByParentMessageId,
-          ...action.payload,
-        },
+        subagentStore,
+        subagentsByParentMessageId: selectSubagentSummariesByParentMessageId(subagentStore),
+        subagentDetailsById: subagentStore.byId,
       };
     }
     case "UPSERT_SUBAGENT_DETAIL": {
+      const subagentStore = upsertSubagentDetailsIntoStore(
+        state.subagentStore,
+        action.payload,
+      );
       return {
         ...state,
-        subagentDetailsById: {
-          ...state.subagentDetailsById,
-          ...action.payload,
-        },
+        subagentStore,
+        subagentsByParentMessageId: selectSubagentSummariesByParentMessageId(subagentStore),
+        subagentDetailsById: subagentStore.byId,
       };
     }
     case "SELECT_SUBAGENT": {
@@ -4183,6 +4239,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case "CLEAR_SUBAGENTS_FOR_SESSION": {
       return {
         ...state,
+        subagentStore: createSubagentEntityStore(),
         subagentsByParentMessageId: {},
         subagentDetailsById: {},
         selectedSubagentId: null,

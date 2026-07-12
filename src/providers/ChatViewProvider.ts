@@ -211,6 +211,11 @@ type MessageChangeSummary = {
  */
 export class ChatViewProvider
   implements vscode.WebviewViewProvider, FileThemeProcessorObserver {
+  private static readonly STREAM_WEBVIEW_FLUSH_INTERVAL_MS = 50;
+  private static readonly MAX_STREAM_WEBVIEW_EVENTS_PER_BATCH = 8;
+  private static readonly STREAM_WEBVIEW_BACKLOG_YIELD_MS = 16;
+  private static readonly MAX_STREAM_WEBVIEW_TOOL_OUTPUT_CHARS = 16_384;
+
   private static readonly SUBAGENT_SNAPSHOT_PREFIX =
     "opencode.session.subagents.";
   private static readonly COMPACTION_VIEW_STATE_PREFIX =
@@ -234,6 +239,8 @@ export class ChatViewProvider
   /** Service for monitoring AI platform quota usage */
   private quotaService: QuotaService;
   private subagentTracker: SubagentTracker;
+  /** Sessions whose persisted live subagents were finalized for this host instance. */
+  private recoveredSubagentSessions = new Set<string>();
 
   /** Provider for managing configuration files */
   private configFilesProvider: ConfigFilesProvider;
@@ -287,6 +294,7 @@ export class ChatViewProvider
   private activeStreamSessionId: string | undefined;
   private pendingStreamWebviewEvents: Array<{ event: unknown; sessionId?: string }> = [];
   private streamWebviewFlushTimer: ReturnType<typeof setTimeout> | undefined;
+  private lastStreamPerformanceLogAt = 0;
   /**
    * Debug-only mirror of every event that reaches this provider. This is sent
    * to the webview but deliberately never enters SessionService persistence.
@@ -350,6 +358,10 @@ export class ChatViewProvider
     this.pendingStreamWebviewEvents.push({ event, sessionId });
 
     if (flushImmediately) {
+      // Lifecycle events should start delivery immediately, but must not
+      // bypass the per-message cap. A terminal event can arrive behind a large
+      // tool/subagent burst; posting that entire backlog in one IPC message
+      // blocks the webview and makes scrolling freeze.
       this.flushStreamWebviewEvents();
       return;
     }
@@ -360,20 +372,76 @@ export class ChatViewProvider
 
     this.streamWebviewFlushTimer = setTimeout(() => {
       this.flushStreamWebviewEvents();
-    }, 32);
+    }, ChatViewProvider.STREAM_WEBVIEW_FLUSH_INTERVAL_MS);
+  }
+
+  private truncateStreamToolTextForWebview(value: unknown): unknown {
+    if (typeof value !== "string") {
+      return value;
+    }
+    const limit = ChatViewProvider.MAX_STREAM_WEBVIEW_TOOL_OUTPUT_CHARS;
+    if (value.length <= limit) {
+      return value;
+    }
+    return `${value.slice(0, limit)}\n\n[Output truncated in the live chat view: ${value.length - limit} characters omitted]`;
+  }
+
+  private buildWebviewStreamEvent(event: unknown, sessionId: string | undefined): unknown {
+    const eventRecord = this.asRecord(event);
+    if (!eventRecord) {
+      return event;
+    }
+    const trimPart = (value: unknown): unknown => {
+      const part = this.asRecord(value);
+      if (!part) return value;
+      const state = this.asRecord(part.state);
+      const metadata = this.asRecord(part.metadata);
+      const trimmedState = state
+        ? {
+            ...state,
+            output: this.truncateStreamToolTextForWebview(state.output),
+            result: this.truncateStreamToolTextForWebview(state.result),
+          }
+        : state;
+      const trimmedMetadata = metadata
+        ? {
+            ...metadata,
+            preview: this.truncateStreamToolTextForWebview(metadata.preview),
+          }
+        : metadata;
+      return {
+        ...part,
+        output: this.truncateStreamToolTextForWebview(part.output),
+        state: trimmedState,
+        metadata: trimmedMetadata,
+      };
+    };
+    const properties = this.asRecord(eventRecord.properties);
+    return {
+      ...eventRecord,
+      sessionId,
+      part: trimPart(eventRecord.part),
+      properties: properties
+        ? { ...properties, part: trimPart(properties.part) }
+        : eventRecord.properties,
+    };
   }
 
   private flushStreamWebviewEvents(): void {
+    const startedAt = performance.now();
     if (this.streamWebviewFlushTimer) {
       clearTimeout(this.streamWebviewFlushTimer);
       this.streamWebviewFlushTimer = undefined;
     }
 
-    const pending = this.pendingStreamWebviewEvents;
+    const pending = this.pendingStreamWebviewEvents.splice(
+      0,
+      ChatViewProvider.MAX_STREAM_WEBVIEW_EVENTS_PER_BATCH,
+    );
     if (pending.length === 0) {
       return;
     }
-    this.pendingStreamWebviewEvents = [];
+    const hasBacklog = this.pendingStreamWebviewEvents.length > 0;
 
     if (pending.length === 1) {
       const item = pending[0];
@@ -382,6 +450,8 @@ export class ChatViewProvider
         event: item.event,
         sessionId: item.sessionId,
       });
+      this.logStreamPerformance("provider-webview-flush", startedAt, 1);
+      this.scheduleStreamWebviewBacklogFlush(hasBacklog);
       return;
     }
 
@@ -391,6 +461,33 @@ export class ChatViewProvider
         event: item.event,
         sessionId: item.sessionId,
       })),
+    });
+    this.logStreamPerformance("provider-webview-flush", startedAt, pending.length);
+    this.scheduleStreamWebviewBacklogFlush(hasBacklog);
+  }
+
+  private scheduleStreamWebviewBacklogFlush(hasBacklog: boolean): void {
+    if (!hasBacklog || this.streamWebviewFlushTimer) {
+      return;
+    }
+    this.streamWebviewFlushTimer = setTimeout(() => {
+      this.flushStreamWebviewEvents();
+    }, ChatViewProvider.STREAM_WEBVIEW_BACKLOG_YIELD_MS);
+  }
+
+  private logStreamPerformance(
+    metric: string,
+    startedAt: number,
+    batchSize: number,
+  ): void {
+    const now = Date.now();
+    if (now - this.lastStreamPerformanceLogAt < 250) {
+      return;
+    }
+    this.lastStreamPerformanceLogAt = now;
+    this.logger.info(`[STREAM-PERF] ${metric}`, {
+      batchSize,
+      durationMs: Number((performance.now() - startedAt).toFixed(2)),
     });
   }
 
@@ -956,7 +1053,6 @@ export class ChatViewProvider
       interactiveSubmit?: boolean;
       avoidAbortIfProcessing?: boolean;
       forceSendNow?: boolean;
-      delivery?: "immediate" | "deferred";
     },
   ): Promise<void> {
     const text = typeof payload.text === "string" ? payload.text.trim() : "";
@@ -1026,7 +1122,6 @@ export class ChatViewProvider
           : [],
         agent: payload.agent ?? null,
         interactiveSubmit: payload.interactiveSubmit === true,
-        delivery: payload.delivery ?? null,
       });
       const now = Date.now();
       if (
@@ -1053,12 +1148,11 @@ export class ChatViewProvider
     }
 
     const isMainTurnProcessing = this.isSessionMainTurnProcessing(sessionId);
-    // Keep mode ownership explicit. The webview marks active-assistant composer
-    // sends with payload.delivery="deferred" so OpenCode's agent loop can enqueue
-    // them server-side. Do not auto-convert a normal send-now request into steer
-    // or the extension QueueManager from processing flags; those flags can include
-    // stale or child/subagent work after the top-level assistant block is already
-    // complete, which makes the next user message appear in the wrong queue path.
+    // Keep mode ownership explicit. Do not auto-convert a normal send-now
+    // request into steer or the extension QueueManager from processing flags;
+    // those flags can include stale or child/subagent work after the top-level
+    // assistant block is already complete, which makes the next user message
+    // appear in the wrong queue path.
     const effectiveMode = mode;
 
     this.logger.debug('[MessageFlow] Mode resolution', {
@@ -1067,7 +1161,6 @@ export class ChatViewProvider
       sessionId,
       isProcessing: isMainTurnProcessing,
       effectiveProcessing: this.getEffectiveProcessingSessionIds().includes(sessionId),
-      delivery: payload.delivery,
       forceSendNow: payload.forceSendNow
     });
 
@@ -1089,34 +1182,6 @@ export class ChatViewProvider
         suppressWebviewNotification: true,
         skipQueueDrain: true,
       });
-    }
-
-    // For normal sends, bypass queue persistence entirely so the queue panel
-    // does not show transient "queued" items when there is no active backlog.
-    if (
-      effectiveMode === "send-now" &&
-      payload.delivery === "deferred"
-    ) {
-      const acceptedPrompt = await this.sendDeferredPromptToAgentLoop(sessionId, {
-        text,
-        files: payload.files,
-        contexts: payload.contexts,
-        images: payload.images,
-        agent: payload.agent,
-        clientRequestId: clientRequestId || undefined,
-      });
-      this.view?.webview.postMessage({
-        type: "deferredPromptAccepted",
-        sessionId,
-        clientRequestId: clientRequestId || undefined,
-        text,
-        files: payload.files,
-        contexts: payload.contexts,
-        images: payload.images,
-        agent: payload.agent,
-        message: acceptedPrompt,
-      });
-      return;
     }
 
     if (effectiveMode === "send-now") {
@@ -1618,6 +1683,7 @@ export class ChatViewProvider
         
         rawEventStream: { events: sessionHistory.events },
         subagents: sessionHistory.subagents,
+        subagentsRecoveredAfterRestart: sessionHistory.subagentsRecoveredAfterRestart,
         processingSessionIds: this.getEffectiveProcessingSessionIds(),
       });
       await this.compactionManager.sendCompactionViewStateForMessages(
@@ -2350,9 +2416,9 @@ export class ChatViewProvider
     // actively processing. If the main turn has already finished (not in
     // processingSessionIds), dangling "pending"/"running" subagents from the
     // previous turn must NOT re-inflate the effective list — otherwise the
-    // webview sees the session as processing and marks the next user message
-    // as delivery="deferred", causing it to be silently swallowed by the
-    // agent loop instead of starting a new turn.
+    // webview sees the session as busy and defers the next user message,
+    // causing it to wait behind a non-existent turn instead of starting
+    // a new one immediately.
     if (this.processingSessionIds.size > 0) {
       for (const sessionId of this.subagentTracker.getActiveProcessingSessionIds()) {
         // Only include if the parent session is itself still processing
@@ -2931,6 +2997,7 @@ export class ChatViewProvider
                 
                 rawEventStream: { events: sessionHistory.events },
                 subagents: sessionHistory.subagents,
+                subagentsRecoveredAfterRestart: sessionHistory.subagentsRecoveredAfterRestart,
                 processingSessionIds: this.getEffectiveProcessingSessionIds(),
               });
               await this.sendPersistedCompactionViewState(currentSession.id);
@@ -2994,7 +3061,6 @@ export class ChatViewProvider
               contexts: message.contexts,
               images: message.images,
               agent: message.agent,
-              delivery: message.delivery === "deferred" ? "deferred" : undefined,
               // Interactive popover submits should behave like a normal direct
               // user send, even if stale processing flags briefly linger from
               // the preceding question turn.
@@ -3825,6 +3891,7 @@ export class ChatViewProvider
               
               rawEventStream: { events: sessionHistory.events },
               subagents: sessionHistory.subagents,
+              subagentsRecoveredAfterRestart: sessionHistory.subagentsRecoveredAfterRestart,
               processingSessionIds: this.getEffectiveProcessingSessionIds(),
             });
           } catch (err) {
@@ -4068,16 +4135,37 @@ export class ChatViewProvider
         }
       }
 
-      // Keep an unfiltered, client-only mirror for diagnosing why a live event
-      // is absent from the persisted event stream. This path stays ahead of all
-      // persistence/presentation gates and never calls SessionService.
-      this.enqueueLiveEventDebugEvent(
-        event,
-        subagentParentSessionId ||
-          eventSessionId ||
-          this.activeStreamSessionId ||
-          this.currentSessionId,
-      );
+      // The client-only mirror is only needed for live-only UI events that
+      // deliberately bypass the persisted transcript. Mirroring every token
+      // doubled IPC and reducer work during normal streams.
+      if (
+        eventType === "tui.show" ||
+        eventType === "tui.toast.show" ||
+        eventType === "session.status"
+      ) {
+        this.enqueueLiveEventDebugEvent(
+          event,
+          subagentParentSessionId ||
+            eventSessionId ||
+            this.activeStreamSessionId ||
+            this.currentSessionId,
+        );
+      }
+      if (eventType === "tui.show" || eventType === "tui.toast.show") {
+        this.logger.info("[LIVE-TOAST][HOST] captured", {
+          eventType,
+          eventId: typeof (event as Record<string, unknown>).id === "string"
+            ? (event as Record<string, unknown>).id
+            : undefined,
+          eventSessionId,
+          resolvedSessionId:
+            subagentParentSessionId ||
+            eventSessionId ||
+            this.activeStreamSessionId ||
+            this.currentSessionId,
+          properties: (event as Record<string, unknown>).properties,
+        });
+      }
 
       // Persist the raw event before any presentation/session-processing gate.
       // Subagent tracker updates intentionally run ahead of those gates; keeping
@@ -4158,7 +4246,8 @@ export class ChatViewProvider
         eventType === "question.asked" ||
         eventType === "message.updated" ||
         eventType === "message.completed" ||
-        eventType === "session.diff";
+        eventType === "session.diff" ||
+        eventType === "session.status";
       if (
         eventSessionId &&
         !shouldBypassProcessingGate &&
@@ -4330,7 +4419,10 @@ export class ChatViewProvider
         });
       }
 
-      const eventForWebview = { ...enrichedEvent, sessionId: resolvedSessionId };
+      const eventForWebview = this.buildWebviewStreamEvent(
+        enrichedEvent,
+        resolvedSessionId,
+      );
       const shouldFlushWebviewImmediately =
         eventType === "question.asked" ||
         eventType === "message.completed" ||
@@ -4352,7 +4444,7 @@ export class ChatViewProvider
       );
       if (resolvedSessionId) {
         const centralizedEventPayload = {
-          ...eventForWebview,
+          ...enrichedEvent,
           sessionId: resolvedSessionId,
         };
         if (this.shouldVerboseStreamDebug()) {
@@ -4656,13 +4748,22 @@ export class ChatViewProvider
     events: unknown[];
     subagents: import("../services/SessionService").CentralizedSubagentProjection;
     messages: any[];
+    subagentsRecoveredAfterRestart: boolean;
   }> {
     this.logger.debug(`[loadCentralizedRenderableHistory] START sessionId=${sessionId}`);
     const start = Date.now();
     try {
-      const rawSessionPayloads = await this.sessionService.loadCentralizedSessionData(
+      let rawSessionPayloads = await this.sessionService.loadCentralizedSessionData(
         sessionId,
       );
+      if (!this.recoveredSubagentSessions.has(sessionId)) {
+        rawSessionPayloads = {
+          ...rawSessionPayloads,
+          subagents: await this.sessionService.cancelStaleSubagentsAfterExtensionRestart(sessionId),
+        };
+        this.recoveredSubagentSessions.add(sessionId);
+      }
+      const subagentsRecoveredAfterRestart = this.recoveredSubagentSessions.has(sessionId);
       
       const rawArray = Array.isArray(rawSessionPayloads.rawEventStream.events)
         ? rawSessionPayloads.rawEventStream.events
@@ -4679,6 +4780,17 @@ export class ChatViewProvider
         safeRawSdkEventPayloads,
         sessionId,
       );
+      const cancelledDetailsById = new Map(
+        Object.entries(rawSessionPayloads.subagents.detailsById)
+          .filter(([, detail]) => detail?.status === "cancelled"),
+      );
+      for (const message of messages) {
+        if (!Array.isArray(message?.subagents)) continue;
+        message.subagents = message.subagents.map((subagent: any) => {
+          const cancelledDetail = cancelledDetailsById.get(subagent?.id);
+          return cancelledDetail ? { ...subagent, ...cancelledDetail } : subagent;
+        });
+      }
       this.logger.debug(`[loadCentralizedRenderableHistory] Processed ${messages.length} messages in ${Date.now() - t2}ms`);
 
       this.logger.debug("[CENTRALIZED-TAPE][HOST] loaded_renderable_history", {
@@ -4691,6 +4803,7 @@ export class ChatViewProvider
         events: safeRawSdkEventPayloads,
         subagents: rawSessionPayloads.subagents,
         messages,
+        subagentsRecoveredAfterRestart,
       };
     } catch (err: any) {
       this.logger.error(`[loadCentralizedRenderableHistory] ERROR: ${err.message}`, { stack: err.stack });
@@ -4698,6 +4811,7 @@ export class ChatViewProvider
         events: [],
         subagents: { summariesByParentMessageId: {}, detailsById: {} },
         messages: [],
+        subagentsRecoveredAfterRestart: false,
       };
     }
   }
@@ -5064,147 +5178,6 @@ export class ChatViewProvider
       "</auto-slash-command>",
     );
     return lines.join("\n");
-  }
-
-
-  private buildDeferredSdkPrompt(options: {
-    text: string;
-    files?: string[];
-    contexts?: any[];
-    images?: any[];
-    agent?: string;
-  }): { text: string; files?: any[]; agents?: any[] } {
-    const promptFiles: any[] = [];
-    for (const filePath of options.files ?? []) {
-      if (typeof filePath !== "string" || !filePath.trim()) {
-        continue;
-      }
-      promptFiles.push({
-        uri: path.isAbsolute(filePath) ? vscode.Uri.file(filePath).toString() : filePath,
-        mime: "text/plain",
-        name: filePath,
-      });
-    }
-    for (const context of options.contexts ?? []) {
-      const filePath = typeof context?.file === "string" ? context.file : "";
-      if (!filePath || filePath.startsWith("resource:")) {
-        continue;
-      }
-      const content = typeof context?.content === "string" ? context.content : "";
-      if (content) {
-        // Code selection: use data URI so the server only sees the selected lines,
-        // not the whole file from disk. Without this, the server resolves the raw
-        // file path and the AI reads the entire file instead of the selection.
-        const dataUri = `data:text/plain;base64,${Buffer.from(
-          content,
-          "utf-8",
-        ).toString("base64")}`;
-        const lineInfo =
-          typeof context?.lineInfo === "string" ? context.lineInfo : "";
-        const nameWithLine =
-          filePath && lineInfo ? `${filePath}:${lineInfo}` : filePath;
-        promptFiles.push({
-          uri: dataUri,
-          mime: "text/plain",
-          name: nameWithLine,
-          source: {
-            type: "file",
-            path: filePath,
-            text: {
-              value: content,
-              start: 0,
-              end: content.length,
-            },
-            lineInfo,
-            languageId:
-              typeof context?.languageId === "string" ? context.languageId : "",
-          },
-        });
-      } else {
-        promptFiles.push({
-          uri: path.isAbsolute(filePath)
-            ? vscode.Uri.file(filePath).toString()
-            : filePath,
-          mime: "text/plain",
-          name: filePath,
-        });
-      }
-    }
-    for (const image of options.images ?? []) {
-      const dataUrl =
-        typeof image === "string"
-          ? image
-          : typeof image?.dataUrl === "string"
-            ? image.dataUrl
-            : "";
-      if (!dataUrl) {
-        continue;
-      }
-      promptFiles.push({
-        uri: dataUrl,
-        mime: dataUrl.match(/^data:([^;]+);/)?.[1] ?? "image/png",
-        name:
-          typeof image === "object" && typeof image?.filename === "string"
-            ? image.filename
-            : "image",
-      });
-    }
-
-    return {
-      text: options.text,
-      ...(promptFiles.length > 0 ? { files: promptFiles } : {}),
-      ...(options.agent ? { agents: [{ name: options.agent }] } : {}),
-    };
-  }
-
-  private async sendDeferredPromptToAgentLoop(
-    sessionId: string,
-    options: {
-      text: string;
-      files?: string[];
-      contexts?: any[];
-      images?: any[];
-      agent?: string;
-      clientRequestId?: string;
-    },
-  ): Promise<void> {
-    const client = await this.serverManager.ensureRunning();
-    const promptFn = (client as any)?.v2?.session?.prompt;
-    if (typeof promptFn !== "function") {
-      this.logger.warn("[MessageFlow] SDK v2 deferred prompt unavailable; falling back to direct send", {
-        sessionId,
-        clientRequestId: options.clientRequestId,
-      });
-      await this.handleSendMessage(
-        options.text,
-        options.files,
-        options.contexts,
-        options.images,
-        options.agent,
-        false,
-        undefined,
-        false,
-        undefined,
-        undefined,
-        { clientRequestId: options.clientRequestId },
-      );
-      return undefined;
-    }
-
-    const workspaceDirectory = this.getWorkspaceDirectory();
-    const prompt = this.buildDeferredSdkPrompt(options);
-    // This is OpenCode's server-side prompt delivery, not the extension's
-    // visible QueueManager. While the assistant is responding, `delivery:
-    // "deferred"` appends the user's next prompt to the agent loop so OpenCode
-    // runs it after the current turn instead of us showing a local queue item or
-    // aborting the current response.
-    const response = await promptFn.call((client as any).v2.session, {
-      sessionID: sessionId,
-      ...(workspaceDirectory ? { directory: workspaceDirectory } : {}),
-      prompt,
-      delivery: "deferred",
-    });
-    return getSdkResponseData(response) ?? (response as any)?.data ?? response;
   }
 
   // PROMPT-OWNERSHIP: do not modify — transport-only path
@@ -5812,14 +5785,15 @@ export class ChatViewProvider
 
   private normalizeSubagentStatus(
     value: unknown,
-  ): "pending" | "running" | "done" | "error" | "orphaned" {
+  ): "pending" | "running" | "done" | "error" | "orphaned" | "cancelled" {
     const status = this.firstNonEmptyString(value)?.toLowerCase();
     if (
       status === "pending" ||
       status === "running" ||
       status === "done" ||
       status === "error" ||
-      status === "orphaned"
+      status === "orphaned" ||
+      status === "cancelled"
     ) {
       return status;
     }
@@ -8109,9 +8083,28 @@ export class ChatViewProvider
         return;
       }
 
+      // A stop is a local user decision first.  Do not leave the webview
+      // waiting for either the abort HTTP request or its terminal SSE event:
+      // both can fail while the server/stream is unhealthy.  Finalize locally
+      // so late events for this request are obsolete and cannot keep the UI
+      // loading forever.
+      this.processingSessionIds.delete(resolvedSessionId);
+      this.sessionsWithFileChangeEvidence.delete(resolvedSessionId);
+      if (this.activeStreamSessionId === resolvedSessionId) {
+        this.activeStreamSessionId = undefined;
+      }
+      this.sendProcessingSessionsUpdate();
+
+      if (!options?.suppressWebviewNotification) {
+        this.view?.webview.postMessage({
+          type: "stopRequestHandled",
+          sessionId: resolvedSessionId,
+        });
+      }
+
       const client = this.serverManager.getClient();
       if (!client) {
-        this.logger.warn("stopRequest skipped: no client available", {
+        this.logger.warn("stopRequest finalized locally: no client available", {
           sessionId: resolvedSessionId,
         });
         return;
@@ -8122,19 +8115,9 @@ export class ChatViewProvider
       });
 
       const workspaceDirectory = this.getWorkspaceDirectory();
-      
-      // Send the abort signal to the backend. We do NOT clear the local
-      // processingSessionIds or send a synthetic stopRequestHandled payload.
-      //
-      // ARCHITECTURE (Single Source of Truth):
-      // The UI shouldn't manually synthetically end the AI's turn. Instead, 
-      // we fire this abort and let the Centralized Tape (event stream) handle it natively.
-      // When the server successfully kills its process, it will emit a final 
-      // terminal lifecycle event (`message.updated` with aborted state, or 
-      // `session.status: idle`) over the stream.
-      // The stream handler catches this terminal event, updates the data layer, 
-      // removes the session from processingSessionIds, and React will 
-      // sync the UI correctly.
+
+      // Abort remains best-effort after local finalization.  An error here is
+      // diagnostic only; the user has already stopped this turn in the UI.
       client.session.abort({
         sessionID: resolvedSessionId,
         ...(workspaceDirectory ? { directory: workspaceDirectory } : {}),
@@ -8145,8 +8128,7 @@ export class ChatViewProvider
         }, error as Error);
       });
     } finally {
-      // Intentionally empty. 
-      // Turn ending is handled reactively by the data stream, not here.
+      // Local finalization above intentionally does not depend on stream health.
     }
   }
 

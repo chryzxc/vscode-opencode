@@ -15,14 +15,17 @@ import {
   normalizeSubagentDetail,
 } from "./lib/messageHandler";
 import {
-  getBackgroundTaskReminderTaskId,
-  hasBackgroundTaskLaunchForTaskId,
   isBackgroundTaskReminderMessage,
-  isBackgroundTaskChildAssistantMessage,
 } from "./lib/backgroundTaskOwnership";
+import {
+  classifyCentralizedTranscriptMessage,
+  isExplicitSystemTransportText,
+} from "./lib/transcriptMessageClassification";
+import type { TranscriptMessageRenderKind } from "./lib/transcriptMessageClassification";
 import {
   isProcessingInCurrentSession,
   latestAssistantMessageIdFromCentralizedTape,
+  computePendingAssistantMessageId,
   shouldDeferComposerSendInCurrentSession,
 } from "./lib/sessionProcessing";
 import {
@@ -54,7 +57,7 @@ import {
   SkillsPanel,
   SettingsPanel,
 } from "./PanelComponents";
-import { CentralizedToastOverlay } from "./ToastOverlay";
+import { LiveEventBanner } from "./ToastOverlay";
 import { StreamingCard } from "./StreamingComponents";
 import {
   AIStatusTicker,
@@ -209,18 +212,6 @@ function hasInjectedSystemPromptShape(value: string): boolean {
   );
 }
 
-function looksLikeStandaloneSystemMessage(value: string): boolean {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return false;
-  }
-  return (
-    /^\[[a-z][a-z0-9_\- ]*\]/i.test(trimmed) ||
-    /^<[a-z][a-z0-9_\-]*>/i.test(trimmed) ||
-    /^<!--\s*[a-z][a-z0-9_\-]*/i.test(trimmed)
-  );
-}
-
 function splitInjectedSystemPromptFromUserText(raw: string): string {
   const sanitized = raw.trim();
   if (!sanitized) {
@@ -323,60 +314,6 @@ function getCanonicalMessageId(message: Message): string | undefined {
 const logBackgroundTaskReminderTrace = (_stage: string, _payload: Record<string, unknown>) => {
   // NOOP - logging disabled for performance
 };
-
-type ConversationMessageRenderKind =
-  | "user"
-  | "assistant"
-  | "system"
-  | "permission"
-  | "background-task-reminder"
-  | "hidden";
-
-function classifyConversationMessageRenderKind(params: {
-  message: Message;
-  rawSdkEventPayloads: unknown[];
-  messages: Message[];
-}): ConversationMessageRenderKind {
-  const { message, rawSdkEventPayloads, messages } = params;
-  const role = firstNonEmptyString(message.role, message.info?.role)?.toLowerCase() ?? "user";
-  const text = firstNonEmptyString(
-    message.content,
-    message.text,
-    message.info?.content,
-    message.info?.text,
-  ) ?? "";
-
-  if (
-    isBackgroundTaskChildAssistantMessage({
-      message,
-      rawSdkEventPayloads,
-      messages,
-    })
-  ) {
-    return "hidden";
-  }
-
-  if (isBackgroundTaskReminderMessage(message)) {
-    const backgroundTaskId = getBackgroundTaskReminderTaskId(message);
-    return hasBackgroundTaskLaunchForTaskId(rawSdkEventPayloads, backgroundTaskId)
-      ? "hidden"
-      : "background-task-reminder";
-  }
-
-  if (role === "system") {
-    return text.length > 0 ? "system" : "hidden";
-  }
-
-  if ((message as Record<string, unknown>).type === "permission") {
-    return "permission";
-  }
-
-  if (role === "user") {
-    return "user";
-  }
-
-  return "assistant";
-}
 
 function getCanonicalMessageCreatedAt(message: Message): number {
   if (typeof message.created === "number") {
@@ -877,7 +814,29 @@ function buildCentralizedRenderMessages(
       }
     }
 
+    // A tape containing only text parts has no definitive assistant boundary,
+    // so latestAssistantMessageIdFromCentralizedTape may use its last-text
+    // fallback. Do not let that fallback claim transport system prompts such
+    // as `[search-mode]` before they reach the system-message classifier.
+    const isStandaloneSystemTextPart =
+      firstNonEmptyString(part?.type)?.toLowerCase() === "text" &&
+        isExplicitSystemTransportText(
+        firstNonEmptyString(part?.text, part?.content) ?? "",
+      );
+
+    // OpenCode transports mode directives as user-role messages, even though
+    // they are server-authored context. The explicit `[search-mode]` / tag
+    // shape is more specific than that transport role, so retain it as a
+    // system message for this messageID. Without this override a matching
+    // message.updated event makes the directive disappear from SystemMessage
+    // rendering (or turn into a right-aligned user bubble).
+    if (messageId && isStandaloneSystemTextPart) {
+      systemMessageIds.add(messageId);
+      messageRolesById.set(messageId, "system");
+      userMessageIds.delete(messageId);
+    }
     const isAssistantOwnedPart =
+      !isStandaloneSystemTextPart &&
       messageId &&
       isAssistantOwnedCentralizedPartEvent(
         event,
@@ -947,7 +906,7 @@ function buildCentralizedRenderMessages(
       !isKnownUserMessage &&
       centralizedRole !== "assistant" &&
       !assistantMessageIds.has(descriptor.messageId) &&
-      looksLikeStandaloneSystemMessage(descriptor.text)
+      isExplicitSystemTransportText(descriptor.text)
     ) {
       if (!systemDescriptors.some((entry) => entry.messageId === descriptor.messageId)) {
         systemDescriptors.push(descriptor);
@@ -1326,15 +1285,8 @@ function buildCentralizedRenderMessages(
     // Extract subagents from this message's centralized events
     const messageEvents = message.rawSdkEventPayloads ?? [];
 
-    // For assistant messages, use the parentID (user message) as the parent message ID
-    // This ensures subagents are associated with the user message that triggered them
-    const role = firstNonEmptyString(message.role, message.info?.role)?.toLowerCase();
-
-    const parentMessageId = role === "assistant"
-      ? getCentralizedAssistantParentId(message, centralizedAssistantTurnIndex)
-      : messageId;
-
-    const { detailsById } = extractSubagentsFromCentralizedEvents(messageEvents, parentMessageId);
+    // Attach the card to the assistant response that emitted the tool part.
+    const { detailsById } = extractSubagentsFromCentralizedEvents(messageEvents, messageId);
 
     // Convert details to subagent format
     const subagents = Object.values(detailsById).map(detail => normalizeSubagentDetail(detail));
@@ -1365,7 +1317,7 @@ type ConversationRenderEntry =
       message: Message;
       messageIndex: number;
       order: number;
-      renderKind: ConversationMessageRenderKind;
+      renderKind: TranscriptMessageRenderKind;
     }
   | {
       kind: "session.diff";
@@ -1564,7 +1516,7 @@ function buildCentralizedTranscriptProjection(
     ids: getMessageAndCoalescedIds(message),
     rawOrder: getRawOrderForMessage(message),
     role: firstNonEmptyString(message.role, message.info?.role)?.toLowerCase() ?? "",
-    renderKind: classifyConversationMessageRenderKind({
+    renderKind: classifyCentralizedTranscriptMessage({
       message,
       rawSdkEventPayloads: normalizedRawSdkEventPayloads,
       messages: renderMessages,
@@ -1962,6 +1914,10 @@ const WEBVIEW_BOOTSTRAP_MAX_EVENT_PAYLOADS = 400;
 const VIRTUALIZED_TRANSCRIPT_MIN_ENTRIES = 250;
 const VIRTUALIZED_TRANSCRIPT_OVERSCAN_PX = 1400;
 const VIRTUALIZED_TRANSCRIPT_FALLBACK_VIEWPORT_PX = 800;
+const STATIC_TRANSCRIPT_VIEWPORT: ScrollRenderViewport = {
+  scrollTop: 0,
+  viewportHeight: VIRTUALIZED_TRANSCRIPT_FALLBACK_VIEWPORT_PX,
+};
 const COMPACTION_DIVIDER_ESTIMATED_HEIGHT = 72;
 // content-visibility: auto renders off-screen entries lazily using
 // contain-intrinsic-size placeholders. After snapping to bottom on session
@@ -2100,7 +2056,8 @@ type ConversationTranscriptProps = {
   renderMessages: Message[];
   resolveAgentColor: (agentId?: string) => string;
   selectedAgent: string;
-  streaming: AppState["streaming"];
+  streamingAgent?: string;
+  isStreamingActive: boolean;
   subagentDetailsById: AppState["subagentDetailsById"];
   subagentsByParentMessageId: AppState["subagentsByParentMessageId"];
   todoItems: AppState["todoItems"];
@@ -2252,7 +2209,8 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
   renderMessages,
   resolveAgentColor,
   selectedAgent,
-  streaming,
+  streamingAgent,
+  isStreamingActive,
   subagentDetailsById,
   subagentsByParentMessageId,
   todoItems,
@@ -2264,6 +2222,11 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
   const observedEntryNodesRef = useRef<Map<string, HTMLDivElement>>(new Map());
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const [measuredHeightsVersion, setMeasuredHeightsVersion] = useState(0);
+
+  const pendingAssistantId = useMemo(
+    () => computePendingAssistantMessageId(renderMessages),
+    [renderMessages],
+  );
 
   // Ref-based callback cache to keep onSetBlockExpanded references stable across renders.
   // The parent's onSetBlockExpanded is useCallback([], []) so it's already stable, but the
@@ -2504,7 +2467,7 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
           let messageNode: JSX.Element | null;
           let entryHiddenByBlock = false;
           if (entry.renderKind === "user") {
-            messageNode = <UserMessage message={message} />;
+            messageNode = <UserMessage message={message} pendingAssistantId={pendingAssistantId} />;
           } else if (entry.renderKind === "background-task-reminder") {
             messageNode = (
               <BackgroundTaskReminderMessage
@@ -2514,7 +2477,7 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
             );
           } else if (entry.renderKind === "system") {
             const systemAgentId =
-              message.info?.agent ?? streaming?.agent ?? selectedAgent;
+              message.info?.agent ?? streamingAgent ?? selectedAgent;
 
             messageNode = (
               <SystemMessage
@@ -2557,7 +2520,7 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
                 centralizedDiffEvent={
                   isLastInBlock &&
                   blockGroupKey &&
-                  !(isLiveBlock && (isProcessing || streaming?.isActive))
+                  !(isLiveBlock && (isProcessing || isStreamingActive))
                     ? diffByBlockKey.get(blockGroupKey)
                     : undefined
                 }
@@ -2724,7 +2687,7 @@ function ChatContent() {
       isProcessing: appState.isProcessing,
       isSessionModalOpen: appState.isSessionModalOpen,
       lastCompactedAt: appState.lastCompactedAt,
-      pendingDeferredPromptsBySessionId: appState.pendingDeferredPromptsBySessionId,
+      liveToastNotificationsBySessionId: appState.liveToastNotificationsBySessionId,
       pendingUserMessagesBySessionId: appState.pendingUserMessagesBySessionId,
       processingSessionIds: appState.processingSessionIds,
       rawSdkEventPayloadsBySessionId: appState.rawSdkEventPayloadsBySessionId,
@@ -2889,6 +2852,18 @@ function ChatContent() {
 
   useEffect(() => {
     if (centralizedSessionRawSdkEventPayloads === throttledPayloads) return;
+    // Rebuilding the centralized projection can include markdown, activity,
+    // block grouping, and height measurement. Keep the currently visible
+    // transcript stable while the user is reading older content. The final
+    // stream frame is still applied even while unfollowed so completed state
+    // is never left stale.
+    if (!streamViewport.isFollowing && state.streaming?.isActive) {
+      if (projectionThrottleRef.current !== null) {
+        clearTimeout(projectionThrottleRef.current);
+        projectionThrottleRef.current = null;
+      }
+      return;
+    }
     if (projectionThrottleRef.current !== null) return;
     projectionThrottleRef.current = setTimeout(() => {
       projectionThrottleRef.current = null;
@@ -2896,7 +2871,12 @@ function ChatContent() {
         setThrottledPayloads(centralizedSessionRawSdkEventPayloads);
       });
     }, 100);
-  }, [centralizedSessionRawSdkEventPayloads, throttledPayloads]);
+  }, [
+    centralizedSessionRawSdkEventPayloads,
+    throttledPayloads,
+    streamViewport.isFollowing,
+    state.streaming?.isActive,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -2913,6 +2893,31 @@ function ChatContent() {
   const deferredTranscriptProjection = useDeferredValue(transcriptProjection);
   const renderMessages = transcriptProjection.renderMessages;
   const deferredRenderMessages = deferredTranscriptProjection.renderMessages;
+  // Priority 2 — Defer streaming-dependent props passed to MemoizedConversationTranscript.
+  // During event streaming, these values change on every stream batch. Without deferral,
+  // they defeat React.memo on the transcript and force full re-renders on the hot path,
+  // blocking the main thread and causing scroll jank. useDeferredValue lets React keep
+  // the previous (stable) reference during urgent scroll/input and only flush the updated
+  // value when the main thread is idle. The transcript may briefly show slightly stale
+  // subagent/todo data during active scrolling — acceptable trade-off for smooth UX.
+  const deferredInteractiveEvents = useDeferredValue(state.interactiveEvents);
+  const deferredStreamingAgent = useDeferredValue(state.streaming?.agent);
+  const deferredSubagentDetailsById = useDeferredValue(state.subagentDetailsById);
+  const deferredSubagentsByParentMessageId = useDeferredValue(
+    state.subagentsByParentMessageId,
+  );
+  const deferredTodoItems = useDeferredValue(state.todoItems);
+  // Once the user scrolls away, keep the off-screen live card on its last
+  // frame. Token events still update canonical state, but they no longer run
+  // the expensive response/activity renderer while the user is interacting
+  // with older transcript content. Resume immediately on follow or completion.
+  const streamingPresentationRef = useRef(state.streaming);
+  if (streamViewport.isFollowing || !state.streaming?.isActive) {
+    streamingPresentationRef.current = state.streaming;
+  }
+  const presentedStreaming = streamViewport.isFollowing
+    ? state.streaming
+    : streamingPresentationRef.current;
   const pendingUserMessages = useMemo(() => {
     const bySessionId = state.pendingUserMessagesBySessionId ?? {};
     const sessionKey = state.currentSessionId ?? PENDING_CURRENT_SESSION_KEY;
@@ -3046,13 +3051,51 @@ function ChatContent() {
     if (!root) return;
 
     let rafId: number | null = null;
+    // A wheel/trackpad gesture can move less than the near-bottom threshold.
+    // Remember the intent briefly so the viewport observer cannot immediately
+    // turn follow mode back on and pull the user to the latest event.
+    let manualScrollIntentUntil = 0;
+    // Cache scrollHeight from rAF callbacks so the hot scroll path never
+    // reads layout-triggering properties synchronously. During streaming,
+    // reading root.scrollHeight in onScroll forces the browser to flush
+    // pending DOM mutations (forced synchronous layout), which causes the
+    // scroll jank/freezes users see during event streams.
+    let cachedScrollHeight = root.scrollHeight;
+    // In-handler throttle for the scroll-input diagnostic. The logger has
+    // its own per-metric throttle, but checking it still constructs a
+    // payload object and reads DOM properties; gate that work here so the
+    // common scroll event stays a near-no-op.
+    let lastScrollInputLogAt = 0;
+    const pauseFollow = (source: "scroll" | "wheel" | "touch") => {
+      manualScrollIntentUntil = Date.now() + 180;
+      if (!streamViewportRef.current.isFollowing) {
+        return;
+      }
+      streamViewportRef.current = {
+        ...streamViewportRef.current,
+        isFollowing: false,
+      };
+      unseenBaselineMessageCountRef.current = null;
+      setStreamViewport((prev) =>
+        prev.isFollowing ? { ...prev, isFollowing: false } : prev,
+      );
+      logger.streamPerformance("scroll-intent", {
+        source,
+        streamingActive: Boolean(stateRef.current.streaming?.isActive),
+      });
+    };
     const updateViewportState = () => {
       rafId = null;
       const nextScrollTop = root.scrollTop;
       const nextViewportHeight = root.clientHeight;
+      // Refresh the cache inside rAF — the browser has already run layout
+      // at this point, so this read does not trigger a forced sync reflow.
+      cachedScrollHeight = root.scrollHeight;
       const nearBottom =
-        root.scrollHeight - nextScrollTop - nextViewportHeight <=
+        cachedScrollHeight - nextScrollTop - nextViewportHeight <=
         AUTO_FOLLOW_THRESHOLD_PX;
+      const isAtBottom =
+        cachedScrollHeight - nextScrollTop - nextViewportHeight <= 2;
       setScrollRenderViewport((prev) =>
         prev.scrollTop === nextScrollTop && prev.viewportHeight === nextViewportHeight
           ? prev
@@ -3062,28 +3105,63 @@ function ChatContent() {
             },
       );
       const wasFollowing = streamViewportRef.current.isFollowing;
-      setStreamViewport((prev) => {
-        if (nearBottom) {
-          if (prev.isFollowing && prev.unseenUpdateCount === 0) {
-            return prev;
-          }
-          return { isFollowing: true, unseenUpdateCount: 0 };
-        }
-        if (!prev.isFollowing) {
-          return prev;
-        }
-        return { ...prev, isFollowing: false };
-      });
       if (wasFollowing && !nearBottom) {
+        streamViewportRef.current = {
+          ...streamViewportRef.current,
+          isFollowing: false,
+        };
         unseenBaselineMessageCountRef.current = null;
+        setStreamViewport((prev) =>
+          prev.isFollowing ? { ...prev, isFollowing: false } : prev,
+        );
+      } else if (
+        !wasFollowing &&
+        isAtBottom &&
+        Date.now() >= manualScrollIntentUntil
+      ) {
+        streamViewportRef.current = {
+          ...streamViewportRef.current,
+          isFollowing: true,
+          unseenUpdateCount: 0,
+        };
+        setStreamViewport((prev) =>
+          prev.isFollowing && prev.unseenUpdateCount === 0
+            ? prev
+            : { isFollowing: true, unseenUpdateCount: 0 },
+        );
       }
     };
     const onScroll = () => {
+      const currentScrollTop = root.scrollTop;
+      const distanceFromBottom =
+        cachedScrollHeight - currentScrollTop - root.clientHeight;
+      const now = performance.now();
+      if (now - lastScrollInputLogAt >= 250) {
+        lastScrollInputLogAt = now;
+        logger.streamPerformance("scroll-input", {
+          scrollTop: Math.round(currentScrollTop),
+          distanceFromBottom: Math.round(distanceFromBottom),
+          following: streamViewportRef.current.isFollowing,
+          streamingActive: Boolean(stateRef.current.streaming?.isActive),
+        });
+      }
+      if (
+        distanceFromBottom > AUTO_FOLLOW_THRESHOLD_PX &&
+        streamViewportRef.current.isFollowing
+      ) {
+        pauseFollow("scroll");
+      }
       if (rafId !== null) {
         return;
       }
       rafId = requestAnimationFrame(updateViewportState);
     };
+    const onWheel = (event: WheelEvent) => {
+      if (event.deltaY !== 0) {
+        pauseFollow("wheel");
+      }
+    };
+    const onTouchStart = () => pauseFollow("touch");
     updateViewportState();
 
     let resizeObserver: ResizeObserver | null = null;
@@ -3098,8 +3176,12 @@ function ChatContent() {
     }
 
     root.addEventListener("scroll", onScroll, { passive: true });
+    root.addEventListener("wheel", onWheel, { passive: true });
+    root.addEventListener("touchstart", onTouchStart, { passive: true });
     return () => {
       root.removeEventListener("scroll", onScroll);
+      root.removeEventListener("wheel", onWheel);
+      root.removeEventListener("touchstart", onTouchStart);
       resizeObserver?.disconnect();
       if (rafId !== null) {
         cancelAnimationFrame(rafId);
@@ -3242,41 +3324,86 @@ function ChatContent() {
   // FIXED: Use hasRenderableContent from SDK instead of checking content length
   const hasRenderableStreamingContent = Boolean(state.streaming?.hasRenderableContent);
 
-  let isLastAssistantMessageFinished = false;
-  // 1. Check centralized tape first (source of truth for finished streams)
-  for (let i = renderMessages.length - 1; i >= 0; i--) {
+  let hasTerminalAssistantBlock = false;
+  let terminalAssistantMessageId: string | null = null;
+  let hasNewerUserMessageAfterTerminalAssistant = false;
+  // The centralized tape is authoritative for a completed assistant turn. A
+  // delayed progress/status event must not re-open its loading bubble after
+  // the message has already reported `finish: "stop"`. We deliberately only
+  // unlock this guard once a later user block (or a differently identified
+  // live assistant turn) starts.
+  for (let i = renderMessages.length - 1; i >= 0; i -= 1) {
     const message = renderMessages[i];
-    if (message.info?.role === "assistant" || message.role === "assistant") {
-      // Check normalized aborted flag first
-      if (message.aborted === true || message.info?.aborted === true) {
-        isLastAssistantMessageFinished = true;
-      } else {
-        // buildCentralizedRenderMessages does NOT copy `finish` or `time.completed` into the normalized
-        // message.info, so we must scan the raw event payloads attached to the message.
-        const rawEvents = (message as any).rawSdkEventPayloads;
-        if (Array.isArray(rawEvents)) {
-          for (const raw of rawEvents) {
-            const rawInfo = raw?.properties?.info || raw?.info;
-            if (rawInfo?.finish === "stop" || rawInfo?.finish === "length" || rawInfo?.time?.completed) {
-              isLastAssistantMessageFinished = true;
-              break;
-            }
-          }
-        }
-      }
-      break;
+    const role = firstNonEmptyString(message.info?.role, message.role)
+      ?.trim()
+      .toLowerCase();
+    if (role === "user") {
+      hasNewerUserMessageAfterTerminalAssistant = true;
+      continue;
     }
+    if (role !== "assistant") {
+      continue;
+    }
+
+    const rawEvents = (message as Record<string, unknown>).rawSdkEventPayloads;
+    const hasTerminalFinishSignal =
+      message.aborted === true ||
+      message.info?.aborted === true ||
+      message.finish === "stop" ||
+      message.info?.finish === "stop" ||
+      (Array.isArray(rawEvents) &&
+        rawEvents.some((rawEvent) => {
+          const raw = asRecord(rawEvent);
+          const properties = asRecord(raw?.properties);
+          const data = asRecord(raw?.data);
+          const info =
+            getCentralizedEventInfo(raw ?? {}) ??
+            asRecord(properties?.info) ??
+            asRecord(data?.info) ??
+            asRecord(asRecord(data?.properties)?.info);
+          const finish = firstNonEmptyString(
+            info?.finish,
+            raw?.finish,
+            properties?.finish,
+            data?.finish,
+          )?.trim().toLowerCase();
+          return (
+            finish === "stop" ||
+            finish === "length" ||
+            finish === "done" ||
+            finish === "completed" ||
+            Boolean(asRecord(info?.time)?.completed)
+          );
+        }));
+
+    if (hasTerminalFinishSignal) {
+      hasTerminalAssistantBlock = true;
+      terminalAssistantMessageId = firstNonEmptyString(
+        message.info?.id,
+        message.id,
+      );
+    }
+    break;
   }
 
+  const activeStreamingMessageId = firstNonEmptyString(state.streaming?.messageId);
+  const hasStartedNewAssistantTurn =
+    Boolean(state.streaming?.isActive) &&
+    Boolean(activeStreamingMessageId) &&
+    Boolean(terminalAssistantMessageId) &&
+    activeStreamingMessageId !== terminalAssistantMessageId;
   const isAiResponseBlockFinished = Boolean(
     (state.streaming && !state.streaming.isActive) ||
-    isLastAssistantMessageFinished
+    (hasTerminalAssistantBlock &&
+      !hasNewerUserMessageAfterTerminalAssistant &&
+      !hasStartedNewAssistantTurn)
   );
 
   const showAiResponseLoading =
     !state.isLoadingSession && // Direct state check to avoid timing issues
     hasLiveAssistantTurn &&
     !state.isCompacting &&
+    !hasRenderableStreamingContent &&
     !isAiResponseBlockFinished;
 
   // Enforce minimum display duration for loading state
@@ -3297,6 +3424,7 @@ function ChatContent() {
     showAiResponseLoading || // Normal loading state
     (loadingStartTimeRef.current &&
       loadingElapsedTime < LOADING_MIN_DISPLAY_MS &&
+      !hasRenderableStreamingContent &&
       hasLiveAssistantTurn); // Extended for minimum duration
 
   const compactionDividerIndex =
@@ -3313,7 +3441,7 @@ function ChatContent() {
   const visibleStartIndex = isCompressed ? compactionDividerIndex : 0;
   const hasCentralizedSessionDiffEntries = useMemo(
     () =>
-      centralizedSessionRawSdkEventPayloads.some((payload) => {
+      throttledPayloads.some((payload) => {
         const event = asRecord(payload);
         if (!event) return false;
         const type = getCentralizedEventType(event);
@@ -3325,7 +3453,7 @@ function ChatContent() {
         }
         return false;
       }),
-    [centralizedSessionRawSdkEventPayloads],
+    [throttledPayloads],
   );
   const conversationEntries = transcriptProjection.conversationEntries;
   const baseVisibleConversationEntries = useMemo(() => {
@@ -3349,9 +3477,7 @@ function ChatContent() {
       return baseVisibleConversationEntries;
     }
 
-    const sortedPending = [...visiblePendingUserMessages].sort(
-      (a, b) => a.createdAt - b.createdAt,
-    );
+    const sortedPending = [...visiblePendingUserMessages].sort((a, b) => a.createdAt - b.createdAt);
     const combined: ConversationRenderEntry[] = [];
     let pendingIdx = 0;
 
@@ -3400,6 +3526,10 @@ function ChatContent() {
     return combined;
   }, [baseVisibleConversationEntries, visiblePendingUserMessages]);
   const deferredVisibleConversationEntries = useDeferredValue(visibleConversationEntries);
+  const transcriptScrollViewport =
+    deferredVisibleConversationEntries.length >= VIRTUALIZED_TRANSCRIPT_MIN_ENTRIES
+      ? scrollRenderViewport
+      : STATIC_TRANSCRIPT_VIEWPORT;
   const visibleMessages = useMemo(
     () =>
       visibleConversationEntries
@@ -3578,28 +3708,28 @@ function ChatContent() {
         </div>
       ) : null}
 
-      {/* Raw centralized SDK toast events are rendered here so the UI stays driven by the same event tape. */}
-      <CentralizedToastOverlay
-        sessionId={state.currentSessionId}
-        rawSdkEventPayloads={
-          state.currentSessionId
-            ? state.rawSdkEventPayloadsBySessionId?.[state.currentSessionId]
-            : undefined
-        }
-        liveNotifications={
-          state.currentSessionId
-            ? state.liveToastNotificationsBySessionId?.[state.currentSessionId]
-            : undefined
-        }
-      />
-
       {/* === LEFT: History sidebar overlay (hamburger-toggled, absolute positioned) === */}
       <HistorySidebar />
 
       {/* === MIDDLE: Main conversation column (flex-1, scrollable message list + input) === */}
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
         {/* FORBIDDEN TO REMOVE: StickyHeader (token/session stats) - core UX for token visibility */}
         <StickyHeader />
+
+        {/* In-flow notification row: it reserves space instead of obscuring the transcript. */}
+        <LiveEventBanner
+          sessionId={state.currentSessionId}
+          rawSdkEventPayloads={
+            state.currentSessionId
+              ? state.rawSdkEventPayloadsBySessionId?.[state.currentSessionId]
+              : undefined
+          }
+          liveNotifications={
+            state.currentSessionId
+              ? state.liveToastNotificationsBySessionId?.[state.currentSessionId]
+              : undefined
+          }
+        />
 
         {/* Mobile-only extended panel summary and collapsible details */}
         <MobileRightSummary />
@@ -3720,7 +3850,7 @@ function ChatContent() {
             currentSessionId={state.currentSessionId}
             diffByBlockKey={diffByBlockKey}
             hasLiveAssistantTurn={hasLiveAssistantTurn}
-            interactiveEvents={state.interactiveEvents}
+            interactiveEvents={deferredInteractiveEvents}
             isCompressed={isCompressed}
             isProcessing={state.isProcessing}
             lastCompactedAt={state.lastCompactedAt}
@@ -3728,12 +3858,13 @@ function ChatContent() {
             renderMessages={deferredRenderMessages}
             resolveAgentColor={resolveAgentColor}
             selectedAgent={state.selectedAgent}
-            streaming={state.streaming}
-            subagentDetailsById={state.subagentDetailsById}
-            subagentsByParentMessageId={state.subagentsByParentMessageId}
-            todoItems={state.todoItems}
+            streamingAgent={deferredStreamingAgent}
+            isStreamingActive={Boolean(state.streaming?.isActive)}
+            subagentDetailsById={deferredSubagentDetailsById}
+            subagentsByParentMessageId={deferredSubagentsByParentMessageId}
+            todoItems={deferredTodoItems}
             visibleConversationEntries={deferredVisibleConversationEntries}
-            scrollViewport={scrollRenderViewport}
+            scrollViewport={transcriptScrollViewport}
           />
 
               {!isCompressed && compactionDividerIndex === renderMessages.length ? (
@@ -3743,9 +3874,9 @@ function ChatContent() {
               {/* Keep the live wrapper only until the centralized transcript owns the
                   current assistant turn. After that, render a single assistant card
                   from the transcript so activity and response content stay unified. */}
-          {!hasTranscriptAssistantForCurrentTurn ? (
+          {!(hasTranscriptAssistantForCurrentTurn && !presentedStreaming?.isActive) ? (
             <StreamingCard
-              streaming={state.streaming}
+              streaming={presentedStreaming}
               isContiguous={
                 visibleMessages.length > 0 &&
                 visibleMessages[visibleMessages.length - 1].role === "assistant"
