@@ -11,9 +11,9 @@
   "bugs": {
     "url": "https://github.com/chryzxc/vscode-opencode/issues"
   },
-  "version": "0.1.15",
+  "version": "0.1.16",
   "opencodeCompatibility": {
-    "extensionVersion": "0.1.15",
+    "extensionVersion": "0.1.16",
     "sdk": {
       "package": "@opencode-ai/sdk",
       "supportedRange": ">=1.15.12 <1.16.0",
