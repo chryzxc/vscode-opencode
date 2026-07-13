@@ -164,8 +164,15 @@ export function pendingUserMessageToMessage(pending: PendingUserMessage): Messag
         type: "text",
         text: pending.text,
       },
+      ...(pending.attachments ?? []).map((attachment) => ({
+        type: "file" as const,
+        mime: attachment.mimeType,
+        filename: attachment.filename,
+        url: attachment.dataUrl,
+      })),
     ],
     images: pending.images,
+    attachments: pending.attachments,
     created: pending.createdAt,
     time: {
       created: pending.createdAt,

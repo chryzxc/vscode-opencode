@@ -56,7 +56,7 @@ test("large text paste converts to txt without checking for image items", () => 
   const thresholdIdx = handler.indexOf("PASTE_TEXT_ATTACHMENT_THRESHOLD");
   assert.ok(thresholdIdx > -1, "threshold constant must appear in handler");
   const textBranch = handler.slice(
-    thresholdIdx,
+    Math.max(0, thresholdIdx - 80),
     handler.indexOf("return;", thresholdIdx) + 6,
   );
 

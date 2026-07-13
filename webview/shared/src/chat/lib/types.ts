@@ -191,6 +191,7 @@ export interface PendingUserMessage {
   text: string;
   clientRequestId?: string;
   images?: string[];
+  attachments?: AttachmentItem[];
   interactiveSubmit?: boolean;
   confirmedMessageId?: string;
   confirmedAt?: number;

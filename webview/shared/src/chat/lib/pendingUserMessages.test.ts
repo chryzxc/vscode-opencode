@@ -101,6 +101,29 @@ describe("pendingUserMessages helpers", () => {
     assert.strictEqual(message.info?.time?.created, 10_000);
   });
 
+  it("preserves a pasted text attachment as a file part", () => {
+    const message = pendingUserMessageToMessage({
+      id: "pending-text-file",
+      sessionId: "session-1",
+      createdAt: 10_000,
+      text: "Can you see this?",
+      attachments: [{
+        id: "pasted-snippet",
+        dataUrl: "data:text/plain;charset=utf-8,pasted%20text",
+        filename: "pasted-snippet.txt",
+        mimeType: "text/plain",
+      }],
+    });
+
+    assert.deepStrictEqual(message.images, undefined);
+    assert.deepStrictEqual(message.parts?.slice(1), [{
+      type: "file",
+      mime: "text/plain",
+      filename: "pasted-snippet.txt",
+      url: "data:text/plain;charset=utf-8,pasted%20text",
+    }]);
+  });
+
   it("finds optimistic pending ids by client request id", () => {
     const pending: PendingUserMessage[] = [
       {

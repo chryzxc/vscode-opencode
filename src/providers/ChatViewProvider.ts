@@ -158,6 +158,27 @@ import { PlanViewProvider } from "./PlanViewProvider";
 
 const log = createLogger(LoggingCategories.CHAT_VIEW);
 
+function decodeTextDataUrl(dataUrl: string, mimeType: string): string | undefined {
+  if (!mimeType.toLowerCase().startsWith("text/")) {
+    return undefined;
+  }
+
+  const separator = dataUrl.indexOf(",");
+  if (separator < 0) {
+    return undefined;
+  }
+
+  const metadata = dataUrl.slice(0, separator).toLowerCase();
+  const payload = dataUrl.slice(separator + 1);
+  try {
+    return metadata.includes(";base64")
+      ? Buffer.from(payload, "base64").toString("utf8")
+      : decodeURIComponent(payload);
+  } catch {
+    return undefined;
+  }
+}
+
 type MessageChangeSummary = {
   messageId: string;
   filesChanged: number;
@@ -6967,22 +6988,51 @@ export class ChatViewProvider
     let debugSessionId: string | undefined;
     let baselineAssistantMarker: AssistantHistoryMarker | undefined;
     try {
-      const normalizedImages = (Array.isArray(images) ? images : [])
+      // `images` is the legacy transport field used by the composer for every
+      // pasted attachment. Preserve its MIME type here so text snippets remain
+      // files instead of being converted into image parts downstream.
+      const normalizedAttachments = (Array.isArray(images) ? images : [])
         .map((img) => {
           if (typeof img === "string") {
-            return { dataUrl: img, filename: "image" };
+            const mimeMatch = img.match(/^data:([^;,]+)/);
+            return {
+              dataUrl: img,
+              filename: "image",
+              mimeType: mimeMatch ? mimeMatch[1] : "image/jpeg",
+              textContent: decodeTextDataUrl(
+                img,
+                mimeMatch ? mimeMatch[1] : "image/jpeg",
+              ),
+            };
           }
           if (img?.dataUrl && typeof img.dataUrl === "string") {
+            const mimeType =
+              typeof img.mimeType === "string"
+                ? img.mimeType
+                : (img.dataUrl.match(/^data:([^;,]+)/)?.[1] ?? "image/jpeg");
             return {
               dataUrl: img.dataUrl,
               filename:
                 typeof img.filename === "string" ? img.filename : "image",
+              mimeType,
+              textContent: decodeTextDataUrl(img.dataUrl, mimeType),
             };
           }
           return null;
         })
-        .filter((img): img is { dataUrl: string; filename: string } => !!img);
-      const imageUrls = normalizedImages.map((img) => img.dataUrl);
+        .filter(
+          (
+            attachment,
+          ): attachment is {
+            dataUrl: string;
+            filename: string;
+            mimeType: string;
+            textContent?: string;
+          } => !!attachment,
+        );
+      const imageUrls = normalizedAttachments
+        .filter((attachment) => attachment.mimeType.toLowerCase().startsWith("image/"))
+        .map((attachment) => attachment.dataUrl);
 
       const serverStartTime = Date.now();
       this.logger.debug("Ensuring server is running", { sessionId: this.currentSessionId });
@@ -7089,6 +7139,12 @@ export class ChatViewProvider
               type: "text",
               text: text,
             },
+            ...normalizedAttachments.map((attachment) => ({
+              type: "file" as const,
+              mime: attachment.mimeType,
+              filename: attachment.filename,
+              url: attachment.dataUrl,
+            })),
           ],
           images: imageUrls,
           time: {
@@ -7268,18 +7324,20 @@ export class ChatViewProvider
         }
       }
 
-      if (normalizedImages.length > 0) {
-        for (const img of normalizedImages) {
-          // Extract mime type from data URL, default to image/jpeg
-          const mimeMatch = img.dataUrl.match(/^data:([^;]+);/);
-          const mimeType = mimeMatch ? mimeMatch[1] : "image/jpeg";
-
+      if (normalizedAttachments.length > 0) {
+        for (const attachment of normalizedAttachments) {
           parts.push({
             type: "file",
-            mime: mimeType,
-            filename: img.filename || "image",
-            url: img.dataUrl,
+            mime: attachment.mimeType,
+            filename: attachment.filename || "attachment",
+            url: attachment.dataUrl,
           });
+          // Unlike image inputs, text snippets cannot be consumed by a vision
+          // model. Include their exact contents as a prompt part so the model
+          // does not need to resolve the display filename from the workspace.
+          if (attachment.textContent !== undefined) {
+            parts.push({ type: "text", text: attachment.textContent });
+          }
         }
       }
 

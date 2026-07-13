@@ -2486,7 +2486,10 @@ export const InputWrapper = memo(function InputWrapper() {
           sessionId: pendingSessionId,
           createdAt: Date.now(),
           text,
-          images: currentAttachments.map((attachment) => attachment.dataUrl),
+          images: currentAttachments
+            .filter((attachment) => isImageAttachment(attachment.mimeType, attachment.dataUrl))
+            .map((attachment) => attachment.dataUrl),
+          attachments: currentAttachments,
           interactiveSubmit: hasPendingQuestion,
         },
       });

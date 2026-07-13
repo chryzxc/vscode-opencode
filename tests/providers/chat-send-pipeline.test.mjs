@@ -169,6 +169,14 @@ test('file contexts include content with start and end positions', () => {
   assert.match(body, /end:\s*textContent\.length/, 'file contexts should end at content length');
 });
 
+test('pasted text attachments retain their content without requiring a workspace file', () => {
+  const body = extractFunctionBody(source, '  private async handleSendMessage(');
+  assert.match(source, /function decodeTextDataUrl\(dataUrl: string, mimeType: string\)/, 'provider should decode text data URLs');
+  assert.match(body, /textContent: decodeTextDataUrl/, 'normalized attachments should retain decoded text content');
+  assert.match(body, /parts\.push\(\{ type: "text", text: attachment\.textContent \}\)/, 'pasted text must be sent as a text prompt part instead of relying on a filename lookup');
+  assert.doesNotMatch(body, /path:\s*attachment\.filename/, 'pasted data URLs must not claim their display filename is a workspace path');
+});
+
 test('provider uses a centralized-first history loader for chat hydration paths', () => {
   assert.match(source, /private async loadCentralizedRenderableHistory\(sessionId: string\): Promise</, 'provider should define a centralized-first history loader');
   assert.match(source, /const rawSessionPayloads = await this\.sessionService\.loadCentralizedSessionData\(\s*sessionId,\s*\)/, 'centralized-first loader should read centralized session data directly');
