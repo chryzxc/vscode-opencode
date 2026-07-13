@@ -138,6 +138,7 @@ jobs:
 
       - name: Publish to Open VSX
         if: steps.version.outputs.skip != 'true' && (github.event_name != 'workflow_dispatch' || inputs.publish_open_vsx)
+        continue-on-error: true
         run: |
           if [ -n "${{ secrets.OVSX_PAT }}" ]; then
             npx ovsx publish "opencode-vscode-chryzxc-${{ steps.version.outputs.version }}.vsix"
