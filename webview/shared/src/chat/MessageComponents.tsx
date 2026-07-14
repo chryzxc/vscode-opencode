@@ -6394,9 +6394,6 @@ export const SystemMessage = memo(function SystemMessage({
           <div className="oc-system-message__header">
             <div className="oc-system-message__title-block">
               <div className="oc-system-message__title-row">
-                <span className="oc-system-message__meta" aria-hidden="true">
-                  <Info className="h-3.5 w-3.5" />
-                </span>
                 {title && <span className="oc-system-message__title">{title}</span>}
               </div>
               {!isExpanded && collapsedPreview ? (

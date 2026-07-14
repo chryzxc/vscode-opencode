@@ -104,6 +104,49 @@ describe('createMessageHandler - chatHistory hydration guards', () => {
   });
 });
 
+describe('createMessageHandler - SDK context usage', () => {
+  it('uses tokens.input from a streaming SDK message.updated event', () => {
+    let state: AppState = {
+      ...initialState,
+      currentSessionId: 'ses-sdk-context',
+      isProcessing: true,
+      selectedModel: { providerID: 'openai', modelID: 'gpt-test' },
+      availableModels: [
+        {
+          providerID: 'openai',
+          modelID: 'gpt-test',
+          name: 'GPT test',
+          contextLimit: 1_000_000,
+        },
+      ],
+    };
+    const dispatch = (action: Parameters<typeof appReducer>[1]) => {
+      state = appReducer(state, action);
+    };
+    const handler = createMessageHandler(dispatch, () => state);
+
+    handler({
+      data: {
+        type: 'streamEvent',
+        sessionId: 'ses-sdk-context',
+        event: {
+          type: 'message.updated',
+          info: {
+            id: 'msg-sdk-context',
+            role: 'assistant',
+            providerID: 'openai',
+            modelID: 'gpt-test',
+            tokens: { input: 12_345 },
+          },
+        },
+      },
+    } as MessageEvent);
+
+    assert.equal(state.contextInputTokens, 12_345);
+    assert.equal(state.contextUsagePct, 1);
+  });
+});
+
 describe('createMessageHandler - live tool activity identity', () => {
   it('keeps tool snapshots with distinct wrapper event ids on their assistant message', () => {
     let state: AppState = {
@@ -148,6 +191,46 @@ describe('createMessageHandler - live tool activity identity', () => {
     assert.strictEqual(state.streaming?.steps.length, 1);
     assert.strictEqual(state.streaming?.steps[0]?.callID, 'call-live-tool');
     assert.strictEqual(state.streaming?.steps[0]?.status, 'running');
+  });
+
+  it('renders a sync-wrapped centralized tool event without waiting for hydration', () => {
+    let state: AppState = {
+      ...initialState,
+      currentSessionId: 'ses-sync-tool',
+      isProcessing: true,
+    };
+    const dispatch = (action: Parameters<typeof appReducer>[1]) => {
+      state = appReducer(state, action);
+    };
+    const handler = createMessageHandler(dispatch, () => state);
+
+    handler({
+      data: {
+        type: 'streamEvent',
+        sessionId: 'ses-sync-tool',
+        event: {
+          id: 'evt-sync-tool',
+          type: 'sync',
+          syncEvent: {
+            type: 'message.part.updated',
+            data: {
+              part: {
+                id: 'prt-sync-tool',
+                type: 'tool',
+                tool: 'bash',
+                callID: 'call-sync-tool',
+                messageID: 'msg-sync-tool',
+                state: { status: 'running', input: { command: 'pwd' } },
+              },
+            },
+          },
+        },
+      },
+    } as never);
+
+    assert.strictEqual(state.streaming?.messageId, 'msg-sync-tool');
+    assert.strictEqual(state.streaming?.steps.length, 1);
+    assert.strictEqual(state.streaming?.steps[0]?.callID, 'call-sync-tool');
   });
 });
 

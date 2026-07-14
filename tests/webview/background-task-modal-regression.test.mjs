@@ -75,17 +75,33 @@ test("background output modal renders assistant updates above raw task output", 
   );
 });
 
-test("transport reminder parents stay hidden in the transcript renderer", () => {
+test("transport reminder parents do not render a duplicate standalone card", () => {
   const chatShellSource = readSource(
     [joinFromRoot("webview", "shared", "src", "chat", "ChatShell.tsx")],
     "ChatShell.tsx",
   );
+  const transcriptClassificationSource = readSource(
+    [
+      joinFromRoot(
+        "webview",
+        "shared",
+        "src",
+        "chat",
+        "lib",
+        "transcriptMessageClassification.ts",
+      ),
+    ],
+    "transcriptMessageClassification.ts",
+  );
 
-  // Transport reminder and background task handling has been refactored
-  // The filtering now happens through the centralized event processing system
-  assert.match(
+  assert.doesNotMatch(
     chatShellSource,
-    /isBackgroundTaskReminderMessage|buildCentralizedTranscriptProjection/s,
-    "transport reminder and background task filtering should exist in transcript rendering",
+    /\bBackgroundTaskReminderMessage\b/,
+    "the transcript must not mount a second background task card outside the activity timeline",
+  );
+  assert.match(
+    transcriptClassificationSource,
+    /if \(isBackgroundTaskReminderMessage\(message\)\)\s*\{[\s\S]*?return "hidden";/,
+    "background task transport reminders should be hidden after their timeline event is rendered",
   );
 });

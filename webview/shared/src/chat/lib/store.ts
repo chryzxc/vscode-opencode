@@ -150,6 +150,7 @@ export const initialState: AppState = {
   dismissedInteractiveEventKeys: new Set<string>(),
   mcpServers: [],
   lspServers: [],
+  contextInputTokens: undefined,
   contextUsagePct: undefined,
   opencodeConfig: undefined,
   opencodeConfigSaveStatus: undefined,
@@ -360,6 +361,7 @@ export type AppAction =
   | { type: "SET_MCP_SERVERS"; payload: McpServerInfo[] }
   | { type: "SET_LSP_SERVERS"; payload: LspServerInfo[] }
   | { type: "SET_SERVER_VERSION"; payload: string | undefined }
+  | { type: "SET_CONTEXT_INPUT_TOKENS"; payload: number | undefined }
   | { type: "SET_CONTEXT_USAGE_PCT"; payload: number | undefined }
   | { type: "SET_OPENCODE_CONFIG"; payload: AppState["opencodeConfig"] }
   | { type: "SET_SHOW_LOGGER"; payload: boolean }
@@ -2773,6 +2775,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         compactionDividerBeforeMessageId: undefined,
         compactionDividerAfterMessageId: undefined,
         compactedMessagesCollapsed: false,
+        contextInputTokens: undefined,
         contextUsagePct: undefined,
       };
     }
@@ -4355,6 +4358,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, mcpServers: action.payload };
     case "SET_LSP_SERVERS":
       return { ...state, lspServers: action.payload };
+    case "SET_CONTEXT_INPUT_TOKENS":
+      return { ...state, contextInputTokens: action.payload };
     case "SET_CONTEXT_USAGE_PCT":
       return { ...state, contextUsagePct: action.payload };
     case "SET_OPENCODE_CONFIG":

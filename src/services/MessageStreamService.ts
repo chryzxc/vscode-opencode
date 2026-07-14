@@ -686,17 +686,6 @@ export class MessageStreamService {
             undefined,
         );
 
-        if (!this.isHeartbeatEvent(normalizedEvent.type)) {
-          this.logger.info("[CENTRALIZED-TAPE][STREAM] raw_event_received", {
-            source,
-            type: normalizedEvent.type,
-            sessionId,
-            messageId,
-            partType,
-            preview,
-          });
-        }
-
         if (!this.isHeartbeatEvent(normalizedEvent.type) && verboseDebug) {
           this.logger.debug("[CHAT-STREAMING][KEY1] Stream event received from server", {
             source,
@@ -773,6 +762,22 @@ export class MessageStreamService {
             });
           }
           continue;
+        }
+
+        // Token-level events are extremely frequent and arrive on both the
+        // scoped and global streams. Keep this diagnostic available for
+        // investigations, but never write it at info level or before dedupe:
+        // doing either can flood the extension-host console and make the UI
+        // feel sluggish while a response is streaming.
+        if (!this.isHeartbeatEvent(eventWithSource.type) && verboseDebug) {
+          this.logger.debug("[CENTRALIZED-TAPE][STREAM] raw_event_received", {
+            source,
+            type: eventWithSource.type,
+            sessionId,
+            messageId,
+            partType,
+            preview,
+          });
         }
 
         this.notifyCallbacks(eventWithSource, rawEventSnapshot);

@@ -107,10 +107,15 @@ test("ChatShell isolates the transcript from token-by-token streaming objects", 
     /if \(!streamViewport\.isFollowing && state\.streaming\?\.isActive\) \{[\s\S]*return;/,
     "centralized transcript projection should pause while the user scrolls through an active stream",
   );
+  assert.doesNotMatch(
+    chatShellSource,
+    /streamingPresentationRef/,
+    "the live response card must not freeze an old streaming snapshot while centralized events continue arriving",
+  );
   assert.match(
     chatShellSource,
-    /const streamingPresentationRef = useRef\(state\.streaming\);[\s\S]*const presentedStreaming = streamViewport\.isFollowing[\s\S]*streaming=\{presentedStreaming\}/,
-    "the off-screen streaming card should remain on a stable frame while the user scrolls",
+    /const presentedStreaming = state\.streaming;/,
+    "the live response card should receive the current stream state on every accepted event",
   );
 });
 

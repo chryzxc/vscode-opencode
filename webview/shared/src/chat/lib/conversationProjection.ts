@@ -123,3 +123,31 @@ export function countCanonicalMessagesAtOrBeforeRawIndex(
     (entry) => entry.renderKind !== "hidden" && entry.rawOrder <= rawIndex,
   ).length;
 }
+
+/**
+ * Collapse only message cards from archived history. Non-message transcript
+ * rows are evidence of what happened in that history and therefore remain in
+ * their existing relative order. In particular, a session error must not
+ * disappear simply because the turn containing it is collapsed.
+ */
+export function getCollapsedConversationEntries<
+  T extends { kind: string },
+>(
+  conversationEntries: T[],
+  visibleStartMessageIndex: number,
+): T[] {
+  let messageCount = 0;
+  const visible: T[] = [];
+
+  for (const entry of conversationEntries) {
+    const isVisibleMessage = messageCount >= visibleStartMessageIndex;
+    if (entry.kind === "session.error" || isVisibleMessage) {
+      visible.push(entry);
+    }
+    if (entry.kind === "message") {
+      messageCount += 1;
+    }
+  }
+
+  return visible;
+}

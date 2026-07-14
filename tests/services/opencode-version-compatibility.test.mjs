@@ -59,3 +59,29 @@ test("server manager runs sdk compatibility checks at startup and server version
     "server manager should probe the CLI binary for a version when health omits one",
   );
 });
+
+test("server manager preserves SDK method receivers while probing version and health", () => {
+  assert.match(
+    serverManagerSource,
+    /healthFn\.call\(globalRec\)/,
+    "global.health must retain its generated SDK receiver so it can access this.client",
+  );
+  assert.match(
+    serverManagerSource,
+    /pathRec\.get as \(\) => Promise<unknown>\)\.call\(pathRec\)/,
+    "path.get compatibility probe must retain its generated SDK receiver",
+  );
+  assert.match(
+    serverManagerSource,
+    /configRec\.get as \(\) => Promise<unknown>\)\.call\(configRec\)/,
+    "config.get compatibility probe must retain its generated SDK receiver",
+  );
+});
+
+test("server manager still probes the CLI after a failed SDK health request", () => {
+  assert.match(
+    serverManagerSource,
+    /catch \(error\) \{[\s\S]*?const healthy = await compatibilityProbe\(\);[\s\S]*?if \(healthy\) \{[\s\S]*?probeOpencodeBinaryVersion\(/,
+    "a healthy compatibility endpoint must not bypass the CLI version fallback",
+  );
+});

@@ -2152,6 +2152,33 @@ export class SessionService {
   }
 
   /**
+   * Gets token usage directly from the OpenCode SDK session record. This
+   * intentionally bypasses local-cache merging and per-message reconstruction:
+   * the server maintains `session.tokens.input` as the authoritative total.
+   */
+  async getLatestContextInputTokens(sessionId: string): Promise<number | undefined> {
+    try {
+      const client = await this.serverManager.ensureRunning();
+      const response = await client.session.get({ sessionID: sessionId });
+      // The current SDK type declaration predates the server's `tokens`
+      // addition, so keep this narrow runtime read until the generated types
+      // catch up.
+      const input = (response.data as unknown as {
+        tokens?: { input?: unknown };
+      })?.tokens?.input;
+      if (typeof input === "number" && Number.isFinite(input) && input >= 0) {
+        return Math.floor(input);
+      }
+    } catch (error) {
+      log.debug("Unable to read SDK context token count", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return undefined;
+  }
+
+  /**
    * Saves messages for a specific session to local workspace storage.
    *
    * **Storage Key Format:**

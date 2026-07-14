@@ -490,14 +490,14 @@ function MiniSection({
 }) {
   const [open, setOpen] = useMiniSectionState(defaultOpen);
   return (
-    <div className="oc-panel-section mb-1.5 overflow-hidden p-0">
+    <section className="oc-panel-section oc-inspector-section mb-1.5 overflow-hidden p-0">
       <Button
         type="button"
         variant="ghost"
         size="sm"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs rounded-none"
+        className="oc-inspector-section-toggle flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs rounded-none"
       >
         <span
           className={`inline-block h-1.5 w-1.5 rounded-full transition-colors ${open ? "bg-oc-accent" : "bg-oc-border-soft"
@@ -518,8 +518,8 @@ function MiniSection({
           <ChevronDown className="h-3 w-3 text-[var(--oc-text-soft)] opacity-70" />
         </span>
       </Button>
-      {open && <div className="px-2.5 pb-2.5 pt-1.5">{children}</div>}
-    </div>
+      {open && <div className="oc-inspector-section-content px-2.5 pb-2.5 pt-1.5">{children}</div>}
+    </section>
   );
 }
 
@@ -623,6 +623,8 @@ export const ActiveTaskPanel = memo(function ActiveTaskPanel() {
     compactionDividerIndex,
     sdkVersion,
     serverVersion,
+    contextInputTokens,
+    contextUsagePct,
   } = useAppState(
     (state) => ({
       sessionStats: state.sessionStats,
@@ -644,6 +646,8 @@ export const ActiveTaskPanel = memo(function ActiveTaskPanel() {
       compactionDividerIndex: state.compactionDividerIndex,
       sdkVersion: state.sdkVersion,
       serverVersion: state.serverVersion,
+      contextInputTokens: state.contextInputTokens,
+      contextUsagePct: state.contextUsagePct,
     }),
     shallowEqual,
   );
@@ -738,7 +742,10 @@ export const ActiveTaskPanel = memo(function ActiveTaskPanel() {
 
   const maxContext = selectedModelContextLimit ?? 128_000;
   const usingContextFallback = selectedModelContextLimit === undefined;
-  const contextUsedTokens = contextStats.input;
+  // This must remain SDK-backed. `tokens.input` is the actual context passed
+  // to the model for the latest request; sessionStats is cumulative usage and
+  // cannot accurately describe the current context window.
+  const contextUsedTokens = contextInputTokens ?? 0;
   const pct =
     typeof contextUsagePct === "number" && Number.isFinite(contextUsagePct)
       ? Math.max(0, Math.min(100, Math.round(contextUsagePct)))
@@ -835,7 +842,7 @@ export const ActiveTaskPanel = memo(function ActiveTaskPanel() {
   return (
     <div className="oc-active-task-panel flex flex-col w-full bg-oc-bg-soft">
       {/* Panel title */}
-      <div className="border-b border-oc-border px-3 py-2.5">
+      <div className="oc-active-task-heading border-b border-oc-border px-3 py-2.5">
         <div className="flex items-center gap-2">
           <div
             className={`h-1.5 w-1.5 rounded-full ${isActive ? "bg-oc-accent animate-pulse" : "bg-oc-border-soft"
@@ -845,7 +852,7 @@ export const ActiveTaskPanel = memo(function ActiveTaskPanel() {
         </div>
       </div>
 
-      <div className="p-2">
+      <div className="oc-active-task-content p-2">
         {sortedTodoItems.length > 0 ? (
           <MiniSection title="Todo Checklist">
             <div className="mb-2 flex items-center justify-between text-[11px] oc-text-secondary">
@@ -949,7 +956,7 @@ export const ActiveTaskPanel = memo(function ActiveTaskPanel() {
         {(
           <MiniSection title="Context">
             {/* Token usage bar */}
-            <div className="mb-2 rounded-md border border-oc-border-soft bg-oc-panel-soft p-2 transition-colors hover:border-oc-border">
+            <div className="oc-inspector-context-summary mb-2 rounded-md border border-oc-border-soft bg-oc-panel-soft p-2 transition-colors hover:border-oc-border">
               <div className="mb-1.5 flex flex-col gap-1">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-1.5">
@@ -1013,7 +1020,7 @@ export const ActiveTaskPanel = memo(function ActiveTaskPanel() {
             </div>
 
             {/* Compaction Controls */}
-            <div className="mb-2 rounded-md border border-oc-border-soft bg-oc-panel-soft px-2.5 py-1.5 transition-colors hover:border-oc-border">
+            <div className="oc-inspector-compaction mb-2 rounded-md border border-oc-border-soft bg-oc-panel-soft px-2.5 py-1.5 transition-colors hover:border-oc-border">
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
                   <span className="text-[10px] uppercase tracking-wider font-medium text-[var(--oc-text-soft)] opacity-90">
@@ -1072,20 +1079,20 @@ export const ActiveTaskPanel = memo(function ActiveTaskPanel() {
 
 
             {/* Detailed Token Stats */}
-            <div className="grid grid-cols-2 gap-1.5 text-xs">
-              <div className="flex flex-col gap-0.5 rounded-md border border-oc-border-soft bg-oc-panel-soft p-1.5 transition-colors hover:border-oc-border">
+            <div className="oc-inspector-stat-grid grid grid-cols-2 gap-1.5 text-xs">
+              <div className="oc-inspector-stat flex flex-col gap-0.5 rounded-md border border-oc-border-soft bg-oc-panel-soft p-1.5 transition-colors hover:border-oc-border">
                 <span className="text-[9px] uppercase tracking-wider text-[var(--oc-text-soft)] opacity-70">Input</span>
                 <span className="font-semibold tabular-nums text-[var(--oc-text-soft)]">
                   {contextStats.input.toLocaleString()}
                 </span>
               </div>
-              <div className="flex flex-col gap-0.5 rounded-md border border-oc-border-soft bg-oc-panel-soft p-1.5 transition-colors hover:border-oc-border">
+              <div className="oc-inspector-stat flex flex-col gap-0.5 rounded-md border border-oc-border-soft bg-oc-panel-soft p-1.5 transition-colors hover:border-oc-border">
                 <span className="text-[9px] uppercase tracking-wider text-[var(--oc-text-soft)] opacity-70">Output</span>
                 <span className="font-semibold tabular-nums text-[var(--oc-text-soft)]">
                   {contextStats.output.toLocaleString()}
                 </span>
               </div>
-              <div className="flex flex-col gap-0.5 rounded-md border border-oc-border-soft bg-oc-panel-soft p-1.5 transition-colors hover:border-oc-border">
+              <div className="oc-inspector-stat flex flex-col gap-0.5 rounded-md border border-oc-border-soft bg-oc-panel-soft p-1.5 transition-colors hover:border-oc-border">
                 <span className="text-[9px] uppercase tracking-wider text-[var(--oc-text-soft)] opacity-70">Cache hits</span>
                 <span
                   className={`font-semibold tabular-nums transition-colors duration-300 ${contextStats.read > 0
@@ -1096,7 +1103,7 @@ export const ActiveTaskPanel = memo(function ActiveTaskPanel() {
                   {contextStats.read.toLocaleString()}
                 </span>
               </div>
-              <div className="flex flex-col gap-0.5 rounded-md border border-oc-border-soft bg-oc-panel-soft p-1.5 transition-colors hover:border-oc-border">
+              <div className="oc-inspector-stat flex flex-col gap-0.5 rounded-md border border-oc-border-soft bg-oc-panel-soft p-1.5 transition-colors hover:border-oc-border">
                 <span className="text-[9px] uppercase tracking-wider text-[var(--oc-text-soft)] opacity-70">
                   Cache writes
                 </span>
@@ -1104,7 +1111,7 @@ export const ActiveTaskPanel = memo(function ActiveTaskPanel() {
                   {contextStats.write.toLocaleString()}
                 </span>
               </div>
-              <div className="col-span-2 flex items-center justify-between rounded-md border border-oc-border-soft bg-oc-panel-soft px-2 py-1.5 transition-colors hover:border-oc-border">
+              <div className="oc-inspector-stat col-span-2 flex items-center justify-between rounded-md border border-oc-border-soft bg-oc-panel-soft px-2 py-1.5 transition-colors hover:border-oc-border">
                 <span className="text-[9px] uppercase tracking-wider text-[var(--oc-text-soft)] opacity-70">Duration</span>
                 <span className="font-semibold tabular-nums text-[var(--oc-text-soft)]">
                   {formatDuration(sessionStats.duration)}
@@ -1115,8 +1122,8 @@ export const ActiveTaskPanel = memo(function ActiveTaskPanel() {
         )}
 
         <MiniSection title="Runtime">
-          <div className="flex flex-col gap-1.5 text-xs">
-            <div className="flex items-center justify-between rounded-md border border-oc-border-soft bg-oc-panel-soft px-2 py-1.5 transition-colors hover:border-oc-border">
+          <div className="oc-inspector-data-list flex flex-col gap-1.5 text-xs">
+            <div className="oc-inspector-data-row flex items-center justify-between rounded-md border border-oc-border-soft bg-oc-panel-soft px-2 py-1.5 transition-colors hover:border-oc-border">
               <span className="text-[10px] uppercase tracking-wider font-medium text-[var(--oc-text-soft)] opacity-90">
                 OpenCode TUI
               </span>
@@ -1124,7 +1131,7 @@ export const ActiveTaskPanel = memo(function ActiveTaskPanel() {
                 {runtimeTuiVersion}
               </span>
             </div>
-            <div className="flex items-center justify-between rounded-md border border-oc-border-soft bg-oc-panel-soft px-2 py-1.5 transition-colors hover:border-oc-border">
+            <div className="oc-inspector-data-row flex items-center justify-between rounded-md border border-oc-border-soft bg-oc-panel-soft px-2 py-1.5 transition-colors hover:border-oc-border">
               <span className="text-[10px] uppercase tracking-wider font-medium text-[var(--oc-text-soft)] opacity-90">
                 OpenCode SDK
               </span>
@@ -1136,14 +1143,14 @@ export const ActiveTaskPanel = memo(function ActiveTaskPanel() {
         </MiniSection>
 
         <MiniSection title="Session">
-          <div className="grid grid-cols-2 gap-1.5 text-xs">
-            <div className="col-span-2 flex items-center justify-between rounded-md border border-oc-border-soft bg-oc-panel-soft px-2 py-1.5 transition-colors hover:border-oc-border">
+          <div className="oc-inspector-session-grid grid grid-cols-2 gap-1.5 text-xs">
+            <div className="oc-inspector-data-row col-span-2 flex items-center justify-between rounded-md border border-oc-border-soft bg-oc-panel-soft px-2 py-1.5 transition-colors hover:border-oc-border">
               <span className="text-[10px] uppercase tracking-wider font-medium text-[var(--oc-text-soft)] opacity-90">ID</span>
               <span className="font-mono text-[10px] font-medium text-[var(--oc-text-soft)] opacity-70">
                 {currentSessionId ? currentSessionId.slice(0, 16) : "—"}
               </span>
             </div>
-            <div className="flex flex-col gap-0.5 rounded-md border border-oc-border-soft bg-oc-panel-soft p-1.5 transition-colors hover:border-oc-border">
+            <div className="oc-inspector-stat flex flex-col gap-0.5 rounded-md border border-oc-border-soft bg-oc-panel-soft p-1.5 transition-colors hover:border-oc-border">
               <span className="text-[9px] uppercase tracking-wider text-[var(--oc-text-soft)] opacity-70">
                 Messages
               </span>
@@ -1151,7 +1158,7 @@ export const ActiveTaskPanel = memo(function ActiveTaskPanel() {
                 {messageCount}
               </span>
             </div>
-            <div className="flex flex-col gap-0.5 rounded-md border border-oc-border-soft bg-oc-panel-soft p-1.5 transition-colors hover:border-oc-border">
+            <div className="oc-inspector-stat flex flex-col gap-0.5 rounded-md border border-oc-border-soft bg-oc-panel-soft p-1.5 transition-colors hover:border-oc-border">
               <span className="text-[9px] uppercase tracking-wider text-[var(--oc-text-soft)] opacity-70">
                 Status
               </span>
@@ -1164,12 +1171,12 @@ export const ActiveTaskPanel = memo(function ActiveTaskPanel() {
                 {isActive ? "ACTIVE" : "IDLE"}
               </span>
             </div>
-            <div className="col-span-2 flex items-center justify-between rounded-md border border-oc-border-soft bg-oc-panel-soft px-2 py-1.5 transition-colors hover:border-oc-border">
+            <div className="oc-inspector-data-row col-span-2 flex items-center justify-between rounded-md border border-oc-border-soft bg-oc-panel-soft px-2 py-1.5 transition-colors hover:border-oc-border">
               <span className="text-[10px] uppercase tracking-wider font-medium text-[var(--oc-text-soft)] opacity-90">
                 Date started
               </span>
               <span
-                className={`font-medium tabular-nums ${isActive ? "text-oc-accent" : "text-[var(--oc-text-soft)] opacity-80"
+                className={`oc-inspector-session-date font-medium tabular-nums ${isActive ? "text-oc-accent" : "text-[var(--oc-text-soft)] opacity-80"
                   }`}
               >
                 {startedLabel}
@@ -1229,7 +1236,7 @@ export const MobileRightSummary = memo(function MobileRightSummary() {
   }
 
   return (
-    <div className="fixed inset-0 z-40 [@media(min-width:1100px)]:hidden">
+    <div className="fixed inset-0 z-40">
       <button
         type="button"
         className="absolute inset-0 bg-oc-bg/35"
@@ -1237,9 +1244,9 @@ export const MobileRightSummary = memo(function MobileRightSummary() {
         onClick={() => dispatch({ type: "SET_EXTENDED_PANEL_OPEN", payload: false })}
       />
 
-      <div className="pointer-events-none absolute inset-x-2 top-[3.25rem] bottom-2 overflow-hidden rounded-xl border border-oc-border bg-oc-panel shadow-[0_18px_44px_rgba(0,0,0,0.28)]">
+      <div className="oc-details-sheet pointer-events-none absolute inset-x-2 top-[3.25rem] bottom-2 overflow-hidden rounded-xl border border-oc-border bg-oc-panel shadow-[0_18px_44px_rgba(0,0,0,0.28)]">
         <div className="pointer-events-auto flex h-full flex-col">
-          <div className="flex items-center justify-between gap-3 border-b border-oc-border bg-[linear-gradient(180deg,var(--oc-panel)_0%,color-mix(in_srgb,var(--oc-panel)_88%,var(--oc-bg-soft)_12%)_100%)] px-3 py-2.5">
+          <div className="oc-details-sheet-header flex items-center justify-between gap-3 border-b border-oc-border px-3 py-2.5">
             <div className="min-w-0">
               <div className="truncate text-[10px] font-semibold uppercase tracking-[0.14em] oc-text-secondary">
                 Details
@@ -1270,15 +1277,15 @@ export const MobileRightSummary = memo(function MobileRightSummary() {
             </div>
           </div>
 
-          <div className="flex-1 overflow-hidden px-3 py-3">
+          <div className="oc-details-sheet-body flex-1 overflow-hidden px-3 py-3">
             <Tabs
               value={activeTab}
               onValueChange={(value) =>
                 setActiveTab(value as "task" | "quota" | "integrations" | "tools")
               }
-              className="flex h-full flex-col gap-3"
+              className="flex h-full flex-col gap-0"
             >
-              <TabsList className="grid h-8 w-full grid-cols-4 border border-oc-border-soft bg-oc-bg-soft/70">
+              <TabsList className="oc-details-tabs grid h-8 w-full grid-cols-4 border border-oc-border-soft bg-oc-bg-soft/70">
                 <TabsTrigger value="task" className="text-[11px]">
                   Overview
                 </TabsTrigger>
@@ -1293,23 +1300,23 @@ export const MobileRightSummary = memo(function MobileRightSummary() {
                 </TabsTrigger>
               </TabsList>
 
-              <TabsContent value="task" className="mt-0 min-h-0 flex-1 overflow-y-auto pr-1">
+              <TabsContent value="task" className="oc-details-tab-content oc-details-tab-content--overview mt-0 min-h-0 flex-1 overflow-y-auto">
                 <ActiveTaskPanel />
               </TabsContent>
 
-              <TabsContent value="quota" className="mt-0 min-h-0 flex-1 overflow-y-auto pr-1">
+              <TabsContent value="quota" className="oc-details-tab-content mt-0 min-h-0 flex-1 overflow-y-auto">
                 <QuotaMonitor />
               </TabsContent>
 
-              <TabsContent value="integrations" className="mt-0 min-h-0 flex-1 overflow-y-auto pr-1">
-                <div className="space-y-2">
+              <TabsContent value="integrations" className="oc-details-tab-content mt-0 min-h-0 flex-1 overflow-y-auto">
+                <div className="oc-details-tab-stack">
                   <McpPanel />
                   <LspPanel />
                 </div>
               </TabsContent>
 
-              <TabsContent value="tools" className="mt-0 min-h-0 flex-1 overflow-y-auto pr-1">
-                <div className="space-y-2">
+              <TabsContent value="tools" className="oc-details-tab-content mt-0 min-h-0 flex-1 overflow-y-auto">
+                <div className="oc-details-tab-stack">
                   <SkillsPanel />
                   <AgentsPanel />
                 </div>
@@ -4191,7 +4198,7 @@ export const McpPanel = memo(function McpPanel() {
                   className="oc-panel-section bg-oc-panel-soft p-0"
                 >
                   {/* Server row */}
-                  <div className="flex items-center gap-2 p-2">
+                  <div className="oc-details-list-row flex items-center gap-2 p-2">
                     <span
                       className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${statusDot(server.status)}`}
                       aria-hidden="true"
@@ -4261,7 +4268,7 @@ export const McpPanel = memo(function McpPanel() {
             })
           )}
           {hasServers && (
-            <div className="mt-1.5 text-center text-xs text-[var(--oc-text-soft)] opacity-60">
+            <div className="oc-agent-list-summary mt-1.5 text-center text-xs text-[var(--oc-text-soft)] opacity-60">
               {connectedCount} / {mcpServers.length} connected
             </div>
           )}
@@ -4329,9 +4336,9 @@ export const LspPanel = memo(function LspPanel() {
             lspServers.map((server) => (
               <div
                 key={server.id}
-                className="oc-panel-section bg-oc-panel-soft p-2"
+                className="oc-panel-section bg-oc-panel-soft p-0"
               >
-                <div className="flex items-center justify-between gap-2">
+                <div className="oc-details-list-row flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2 min-w-0">
                     <span
                       className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${server.status === "connected"
@@ -4419,10 +4426,6 @@ export const SkillsPanel = memo(function SkillsPanel() {
     <div className="oc-skills-panel border-t border-oc-border p-3 text-xs">
       <div className="mb-2 flex items-center justify-between">
         <div className="oc-panel-title flex items-center gap-1.5">
-          <Zap
-            className="h-3 w-3 text-[var(--oc-text-soft)]"
-            aria-hidden="true"
-          />
           <span>Skills</span>
           {hasSkills && (
             <span className="text-[10px] text-[var(--oc-text-soft)] opacity-50">
@@ -4474,7 +4477,7 @@ export const SkillsPanel = memo(function SkillsPanel() {
                   key={skill.name}
                   className="oc-panel-section bg-oc-panel-soft p-0"
                 >
-                  <div className="flex items-center gap-2 p-2">
+                  <div className="oc-details-list-row flex items-center gap-2 p-2">
                     <span className="flex-1 truncate font-medium text-xs font-medium text-[var(--oc-text-soft)]">
                       {skill.name}
                     </span>
@@ -4587,10 +4590,6 @@ export const AgentsPanel = memo(function AgentsPanel() {
     <div className="oc-agents-panel border-t border-oc-border p-3 text-xs">
       <div className="mb-2 flex items-center justify-between">
         <div className="oc-panel-title flex items-center gap-1.5">
-          <Bot
-            className="h-3 w-3 text-[var(--oc-text-soft)]"
-            aria-hidden="true"
-          />
           <span>Agents</span>
         </div>
         <div className="flex items-center gap-1">
@@ -4626,13 +4625,15 @@ export const AgentsPanel = memo(function AgentsPanel() {
       </div>
 
       {open ? (
-        <div className="space-y-1.5">
+        <div className="oc-agent-panel-content">
           {!hasAgents ? (
             <div className="py-2 text-center text-xs text-[var(--oc-text-soft)] opacity-60">
               No agents available
             </div>
           ) : (
-            availableAgents.map((agent) => {
+            <>
+            <div className="oc-agent-list">
+            {availableAgents.map((agent) => {
               const isExpanded = expandedAgents.has(agent.id);
               const hasDescription = !!agent.description;
               return (
@@ -4640,10 +4641,9 @@ export const AgentsPanel = memo(function AgentsPanel() {
                   key={agent.id}
                   className="oc-panel-section bg-oc-panel-soft p-0"
                 >
-                  <div className="flex items-center gap-2 p-2">
-                    {/* Color dot — uses agent's color if set, else accent */}
+                  <div className="oc-details-list-row flex items-center gap-2 p-2">
                     <span
-                      className="inline-block h-1.5 w-1.5 shrink-0 rounded-full"
+                      className="oc-agent-color-dot inline-block h-1.5 w-1.5 shrink-0 rounded-full"
                       style={{
                         backgroundColor: agent.color ?? "var(--oc-accent)",
                       }}
@@ -4698,14 +4698,14 @@ export const AgentsPanel = memo(function AgentsPanel() {
                   )}
                 </div>
               );
-            })
-          )}
-          {hasAgents && (
-            <div className="mt-1.5 text-center text-xs text-[var(--oc-text-soft)] opacity-60">
+            })}
+            </div>
+            <div className="oc-agent-list-summary text-center text-[var(--oc-text-soft)] opacity-60">
               {customCount > 0
                 ? `${customCount} custom · ${builtInCount} built-in`
                 : `${builtInCount} built-in`}
             </div>
+            </>
           )}
         </div>
       ) : null}

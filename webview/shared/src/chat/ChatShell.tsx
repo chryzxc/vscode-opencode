@@ -37,6 +37,7 @@ import {
 import {
   buildMessageConversationEntries,
   countCanonicalMessagesAtOrBeforeRawIndex,
+  getCollapsedConversationEntries,
 } from "./lib/conversationProjection";
 import { buildAssistantBlockPresentation } from "./lib/assistantBlockPresentation";
 import vscode from "./lib/vscode";
@@ -48,14 +49,6 @@ import {
   HistorySidebar,
   MobileRightSummary,
   InputWrapper,
-  ActiveTaskPanel,
-  QuotaMonitor,
-  TodoPanel,
-  McpPanel,
-  LspPanel,
-  AgentsPanel,
-  SkillsPanel,
-  SettingsPanel,
 } from "./PanelComponents";
 import { LiveEventBanner } from "./ToastOverlay";
 import { StreamingCard } from "./StreamingComponents";
@@ -2604,48 +2597,12 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
 
         if (entry.kind === "session.error") {
           return (
-            <div
-              key={entry.key}
-              ref={(node) => attachMeasuredEntryNode(entry.key, node)}
-            >
-              {dividerHere ? <CompactionDivider at={lastCompactedAt} /> : null}
-              <div
-                style={{
-                  contentVisibility: "auto",
-                  containIntrinsicSize: getTranscriptEntryContainIntrinsicSize(entry),
-                }}
-              >
-                <div className="mb-2">
-                  <div
-                    className="w-full rounded-[10px] border px-3 py-2.5 text-left transition-colors"
-                    style={{
-                      background: "color-mix(in srgb, var(--vscode-errorForeground) 8%, transparent)",
-                      borderColor: "color-mix(in srgb, var(--vscode-errorForeground) 15%, transparent)",
-                    }}
-                  >
-                    <div className="flex min-w-0 items-center gap-3">
-                      <div
-                        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full"
-                        style={{
-                          background: "color-mix(in srgb, var(--vscode-errorForeground) 15%, transparent)",
-                          color: "var(--vscode-errorForeground)",
-                        }}
-                      >
-                        <AlertTriangle className="h-3.5 w-3.5" />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div
-                          className="text-[13px] leading-snug font-medium"
-                          style={{ color: "var(--vscode-errorForeground)" }}
-                        >
-                          {entry.error.message}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
+            <CompactErrorItem 
+              key={entry.key} 
+              entry={entry} 
+              dividerHere={dividerHere} 
+              lastCompactedAt={lastCompactedAt} 
+            />
           );
         }
 
@@ -2667,6 +2624,67 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
     </>
   );
 });
+
+function CompactErrorItem({ entry, dividerHere, lastCompactedAt }: { entry: any; dividerHere: boolean; lastCompactedAt: number }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const errorMessage = entry.error?.message || "Unknown error";
+  const isExpandable = errorMessage.length > 150 || errorMessage.includes("\n");
+
+  return (
+    <div>
+      {dividerHere ? <CompactionDivider at={lastCompactedAt} /> : null}
+      <div
+        style={{
+          contentVisibility: "auto",
+          containIntrinsicSize: "auto 50px",
+        }}
+      >
+        <div className="mb-2">
+          <div
+            className="w-full rounded-[10px] border px-3 py-2.5 text-left transition-colors"
+            style={{
+              background: "color-mix(in srgb, var(--vscode-errorForeground) 8%, transparent)",
+              borderColor: "color-mix(in srgb, var(--vscode-errorForeground) 15%, transparent)",
+            }}
+          >
+            <div className="flex min-w-0 items-start gap-3">
+              <div
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full mt-0.5"
+                style={{
+                  background: "color-mix(in srgb, var(--vscode-errorForeground) 15%, transparent)",
+                  color: "var(--vscode-errorForeground)",
+                }}
+              >
+                <AlertTriangle className="h-3.5 w-3.5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div
+                  className="text-[13px] leading-relaxed font-medium cursor-pointer"
+                  style={{ color: "var(--vscode-errorForeground)", wordBreak: "break-word" }}
+                  onClick={() => isExpandable && setIsExpanded(!isExpanded)}
+                >
+                  <div className={isExpanded ? "" : "line-clamp-2"}>
+                    {errorMessage}
+                  </div>
+                </div>
+                {isExpandable && (
+                  <button
+                    type="button"
+                    onClick={() => setIsExpanded(!isExpanded)}
+                    className="mt-1.5 text-[11px] font-semibold opacity-80 hover:opacity-100 transition-opacity"
+                    style={{ color: "var(--vscode-errorForeground)" }}
+                  >
+                    {isExpanded ? "Show less" : "Show more"}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function ChatContent() {
   const state = useAppState(
@@ -2908,17 +2926,16 @@ function ChatContent() {
     state.subagentsByParentMessageId,
   );
   const deferredTodoItems = useDeferredValue(state.todoItems);
-  // Once the user scrolls away, keep the off-screen live card on its last
-  // frame. Token events still update canonical state, but they no longer run
-  // the expensive response/activity renderer while the user is interacting
-  // with older transcript content. Resume immediately on follow or completion.
-  const streamingPresentationRef = useRef(state.streaming);
-  if (streamViewport.isFollowing || !state.streaming?.isActive) {
-    streamingPresentationRef.current = state.streaming;
-  }
-  const presentedStreaming = streamViewport.isFollowing
-    ? state.streaming
-    : streamingPresentationRef.current;
+  // STREAMING RENDER INVARIANT: the live response card must always receive
+  // the current StreamingState. The centralized tape can update while layout
+  // code temporarily considers the viewport not "following" (including on
+  // initial mount and during automatic scroll adjustment). Freezing a prior
+  // streaming snapshot here leaves the loading ticker visible even though the
+  // raw centralized tape already contains tool/reasoning activity.
+  //
+  // Transcript rendering remains deferred/virtualized above; only this one
+  // live response card stays synchronous with accepted stream events.
+  const presentedStreaming = state.streaming;
   const pendingUserMessages = useMemo(() => {
     const bySessionId = state.pendingUserMessagesBySessionId ?? {};
     const sessionKey = state.currentSessionId ?? PENDING_CURRENT_SESSION_KEY;
@@ -3458,19 +3475,13 @@ function ChatContent() {
   );
   const conversationEntries = transcriptProjection.conversationEntries;
   const baseVisibleConversationEntries = useMemo(() => {
-    let messageCount = 0;
-    const visible: ConversationRenderEntry[] = [];
-
-    for (const entry of conversationEntries) {
-      if (!isCompressed || messageCount >= visibleStartIndex) {
-        visible.push(entry);
-      }
-      if (entry.kind === "message") {
-        messageCount += 1;
-      }
+    if (!isCompressed) {
+      return conversationEntries;
     }
-
-    return visible;
+    return getCollapsedConversationEntries(
+      conversationEntries,
+      visibleStartIndex,
+    );
   }, [conversationEntries, isCompressed, visibleStartIndex]);
 
   const visibleConversationEntries = useMemo(() => {
@@ -3928,19 +3939,6 @@ function ChatContent() {
         {/* Input area (queue panel is embedded inside InputWrapper) */}
         {!isSwitchingSession && <InputWrapper />}
       </div>
-
-      {/* === RIGHT: Extended panel — desktop only (>= 1100px), contains stats/quota/tasks === */}
-      <aside className="oc-right-panel hidden w-[368px] shrink-0 overflow-y-auto self-stretch border-l border-oc-border bg-oc-panel [@media(min-width:1100px)]:block">
-        <ActiveTaskPanel />
-        <QuotaMonitor />
-        {/* TEMPORARY: Hidden during modularization; keep TodoPanel implementation intact for later re-enable. */}
-        {false && <TodoPanel />}
-        <McpPanel />
-        <LspPanel />
-        <SkillsPanel />
-        <AgentsPanel />
-        <SettingsPanel />
-      </aside>
 
       {/* Skill Installer Modal */}
       <SkillInstallerModal

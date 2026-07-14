@@ -949,7 +949,7 @@ export class OpencodeServerManager {
             ? (clientRec.path as Record<string, unknown>)
             : null;
         if (pathRec && typeof pathRec.get === "function") {
-          await (pathRec.get as () => Promise<unknown>)();
+          await (pathRec.get as () => Promise<unknown>).call(pathRec);
           return true;
         }
 
@@ -958,7 +958,7 @@ export class OpencodeServerManager {
             ? (clientRec.config as Record<string, unknown>)
             : null;
         if (configRec && typeof configRec.get === "function") {
-          await (configRec.get as () => Promise<unknown>)();
+          await (configRec.get as () => Promise<unknown>).call(configRec);
           return true;
         }
       } catch (error) {
@@ -981,7 +981,10 @@ export class OpencodeServerManager {
           : null;
 
       if (healthFn) {
-        const health = (await healthFn()) as
+        // Generated SDK methods read their client through `this`. Calling a
+        // detached method loses that receiver and makes a healthy version
+        // endpoint look unavailable.
+        const health = (await healthFn.call(globalRec)) as
           | { data?: { version?: unknown } }
           | undefined;
         if (health?.data && typeof health.data.version === "string") {
@@ -1043,6 +1046,21 @@ export class OpencodeServerManager {
     } catch (error) {
       const healthy = await compatibilityProbe();
       if (healthy) {
+        if (!this.serverVersion) {
+          const binaryVersion = this.probeOpencodeBinaryVersion(
+            this.resolveOpencodeBinaryPath(),
+          );
+          if (binaryVersion) {
+            this.serverVersion = binaryVersion;
+            log.info(`OpenCode CLI version: ${this.serverVersion}`);
+            const compatibility = checkOpencodeServerVersion(this.serverVersion);
+            if (compatibility.status !== "supported") {
+              log.warn("OpenCode server compatibility warning", { ...compatibility });
+            } else {
+              log.debug("OpenCode server compatibility check", { ...compatibility });
+            }
+          }
+        }
         return true;
       }
 

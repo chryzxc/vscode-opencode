@@ -1732,6 +1732,7 @@ export class ChatViewProvider
         type: "chatHistory",
         sessionId: sessionId,
         messages: messages,
+        contextInputTokens: sessionHistory.contextInputTokens,
         
         rawEventStream: { events: sessionHistory.events },
         subagents: sessionHistory.subagents,
@@ -3046,6 +3047,7 @@ export class ChatViewProvider
                 type: "chatHistory",
                 sessionId: currentSession.id,
                 messages: messages,
+                contextInputTokens: sessionHistory.contextInputTokens,
                 
                 rawEventStream: { events: sessionHistory.events },
                 subagents: sessionHistory.subagents,
@@ -3940,6 +3942,7 @@ export class ChatViewProvider
               type: "chatHistory",
               sessionId: retrySessionId,
               messages: messages,
+              contextInputTokens: sessionHistory.contextInputTokens,
               
               rawEventStream: { events: sessionHistory.events },
               subagents: sessionHistory.subagents,
@@ -4808,11 +4811,18 @@ export class ChatViewProvider
     events: unknown[];
     subagents: import("../services/SessionService").CentralizedSubagentProjection;
     messages: any[];
+    /** Latest SDK-reported context size for the session's most recent assistant turn. */
+    contextInputTokens?: number;
     subagentsRecoveredAfterRestart: boolean;
   }> {
     this.logger.debug(`[loadCentralizedRenderableHistory] START sessionId=${sessionId}`);
     const start = Date.now();
     try {
+      // Fetch the SDK session messages independently of the renderable event
+      // tape. The event tape is optimized for UI hydration, while the SDK
+      // message record's `info.tokens.input` is the authoritative context size.
+      const contextInputTokens =
+        await this.sessionService.getLatestContextInputTokens(sessionId);
       let rawSessionPayloads = await this.sessionService.loadCentralizedSessionData(
         sessionId,
       );
@@ -4863,6 +4873,7 @@ export class ChatViewProvider
         events: safeRawSdkEventPayloads,
         subagents: rawSessionPayloads.subagents,
         messages,
+        contextInputTokens,
         subagentsRecoveredAfterRestart,
       };
     } catch (err: any) {
@@ -4871,6 +4882,7 @@ export class ChatViewProvider
         events: [],
         subagents: { summariesByParentMessageId: {}, detailsById: {} },
         messages: [],
+        contextInputTokens: undefined,
         subagentsRecoveredAfterRestart: false,
       };
     }
@@ -8864,7 +8876,7 @@ export class ChatViewProvider
         "dist",
         "chat.css",
       ),
-    );
+    ).with({ query: `t=${Date.now()}` });
     const scriptUri = webview.asWebviewUri(
       vscode.Uri.joinPath(
         this.context.extensionUri,
@@ -8873,7 +8885,7 @@ export class ChatViewProvider
         "dist",
         "chat.js",
       ),
-    );
+    ).with({ query: `t=${Date.now()}` });
 
     const themeCssBlock = this.currentThemeCss
       ? `<style id="vscode-theme-icons">${this.currentThemeCss}</style>`

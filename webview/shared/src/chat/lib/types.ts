@@ -913,6 +913,8 @@ export interface AppState {
   dismissedInteractiveEventKeys: Set<string>;
   mcpServers: McpServerInfo[];
   lspServers: LspServerInfo[];
+  /** Latest SDK-reported input tokens, i.e. the current model context size. */
+  contextInputTokens?: number;
   contextUsagePct?: number; // 0–100, context window usage from tokens.input / contextLimit
   opencodeConfig?: {
     content: string;

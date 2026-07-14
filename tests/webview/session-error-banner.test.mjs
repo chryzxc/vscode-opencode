@@ -44,8 +44,8 @@ describe('Session error banner rendering', () => {
     );
     assert.match(
       chatShellSource,
-      /if \(entry\.kind === "session\.error"\)[\s\S]*?Session error/s,
-      'ChatShell must render Session error from the transcript entry renderer, not a pinned top block',
+      /if \(entry\.kind === "session\.error"\)[\s\S]*?<CompactErrorItem/s,
+      'ChatShell must render session errors from the ordered transcript entry renderer, not a pinned top block',
     );
     assert.doesNotMatch(
       chatShellSource,
@@ -54,8 +54,8 @@ describe('Session error banner rendering', () => {
     );
     assert.match(
       chatShellSource,
-      /w-full[\s\S]*?rounded-\[14px\][\s\S]*?Response could not be completed/s,
-      'session error should render as a compact full-width row instead of a floating bubble card',
+      /function CompactErrorItem[\s\S]*?rounded-\[10px\]/s,
+      'session error should render as a compact transcript row instead of a floating bubble card',
     );
     assert.doesNotMatch(
       sessionErrorBranch,
@@ -77,6 +77,11 @@ describe('Session error banner rendering', () => {
       /The session failed before a normal assistant reply was added\./,
       'the redesigned error bubble should drop the extra explainer copy',
     );
+    assert.match(
+      chatShellSource,
+      /getCollapsedConversationEntries[\s\S]*?entry\.kind === "session\.error"/s,
+      'collapsed compaction must retain session errors from hidden history',
+    );
   });
 
   test('banner shows the exact parsed error message without a dismiss button', () => {
@@ -87,7 +92,7 @@ describe('Session error banner rendering', () => {
     );
     assert.match(
       chatShellSource,
-      /\{entry\.error\.message\}/,
+      /const errorMessage = entry\.error\?\.message \|\| "Unknown error"[\s\S]*?\{errorMessage\}/s,
       'the rendered session error card must show the exact parsed error message',
     );
   });

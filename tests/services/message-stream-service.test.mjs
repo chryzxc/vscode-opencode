@@ -61,6 +61,29 @@ test('MessageStreamService handles abort and auto-reconnect on errors', () => {
   );
 });
 
+test('MessageStreamService keeps high-frequency raw event diagnostics behind debug and dedupe', () => {
+  const consumeBody = extractFunctionBody(
+    messageStreamSource,
+    '  private async consumeEventStream(',
+  );
+
+  assert.doesNotMatch(
+    consumeBody,
+    /logger\.info\("\[CENTRALIZED-TAPE\]\[STREAM\] raw_event_received"/,
+    'raw per-event stream diagnostics must not run at info level',
+  );
+  assert.match(
+    consumeBody,
+    /if \(!this\.isHeartbeatEvent\(eventWithSource\.type\) && verboseDebug\) \{[\s\S]*logger\.debug\("\[CENTRALIZED-TAPE\]\[STREAM\] raw_event_received"/,
+    'raw per-event stream diagnostics must require debug logging',
+  );
+  assert.match(
+    consumeBody,
+    /if \(this\.isDuplicateEvent\(eventWithSource\)\)[\s\S]*continue;[\s\S]*raw_event_received/,
+    'raw per-event stream diagnostics must run only after duplicate suppression',
+  );
+});
+
 test('MessageStreamService cleans up resources properly on dispose', () => {
   // Verify dispose stops connection and clears all state
   assert.match(messageStreamSource, /dispose\(\): void/, 'MessageStreamService should expose dispose method');

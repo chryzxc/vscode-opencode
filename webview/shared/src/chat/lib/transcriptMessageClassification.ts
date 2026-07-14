@@ -1,6 +1,4 @@
 import {
-  getBackgroundTaskReminderTaskId,
-  hasBackgroundTaskLaunchForTaskId,
   isBackgroundTaskChildAssistantMessage,
   isBackgroundTaskReminderMessage,
   isCrossSessionSubagentMessage,
@@ -14,7 +12,6 @@ export type TranscriptMessageRenderKind =
   | "assistant"
   | "system"
   | "permission"
-  | "background-task-reminder"
   | "hidden";
 
 function firstNonEmptyString(...values: unknown[]): string | undefined {
@@ -76,10 +73,10 @@ export function classifyCentralizedTranscriptMessage(params: {
   }
 
   if (isBackgroundTaskReminderMessage(message)) {
-    const backgroundTaskId = getBackgroundTaskReminderTaskId(message);
-    return hasBackgroundTaskLaunchForTaskId(rawSdkEventPayloads, backgroundTaskId)
-      ? "hidden"
-      : "background-task-reminder";
+    // Reminder rows are transport metadata. Their corresponding
+    // `background_output` event is rendered in the owning assistant activity
+    // timeline, so rendering this row as a separate card duplicates the task.
+    return "hidden";
   }
 
   if (role === "system") {

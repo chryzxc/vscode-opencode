@@ -163,7 +163,7 @@ export function extractEventMessageId(event: unknown): string | null {
     asRecord(payloadRecord?.message) ||
     asRecord(asRecord(payloadRecord?.properties)?.message);
 
-  return firstNonEmptyString(
+  const candidate = firstNonEmptyString(
     asString(info?.id),
     asString(info?.messageID),
     asString(info?.messageId),
@@ -184,7 +184,14 @@ export function extractEventMessageId(event: unknown): string | null {
     // Finally fall back to the wrapper's own ID
     asString(payloadRecord?.id),
     asString(eventRecord.id)
-  ) || null;
+  );
+
+  // `evt_*` identifies a transport frame, not an assistant response. Never
+  // let it become StreamingState.messageId: each event then looks like a new
+  // assistant turn and the next real tool part can be discarded as stray.
+  return candidate && !candidate.toLowerCase().startsWith("evt_")
+    ? candidate
+    : null;
 }
 
 function summarizeStreamEventForLog(payload: UnknownRecord): Record<string, unknown> {
@@ -1238,6 +1245,10 @@ function dispatchContextUsageFromMessages(
   messages: Message[],
 ): void {
   const latest = findLatestContextInputTokens(messages);
+  dispatch({
+    type: "SET_CONTEXT_INPUT_TOKENS",
+    payload: latest?.inputTokens,
+  });
   dispatch({
     type: "SET_CONTEXT_USAGE_PCT",
     payload: calculateContextUsagePct(latest?.inputTokens, state, latest),
@@ -4379,13 +4390,20 @@ function isActivityLikePart(part: UnknownRecord): boolean {
 }
 
 function isImmediateActivityStreamPayload(payload: UnknownRecord): boolean {
-  const eventType = asString(payload.type) || asString(payload.event) || asString(payload.kind);
+  // The server may wrap the semantic SDK event in a `sync` envelope. Use the
+  // same canonical extractors as centralized-data hydration; otherwise the
+  // event is persisted to the tape as `message.part.updated` but scheduled as
+  // an unimportant transport `sync` event for live rendering.
+  const eventType = getCentralizedEventType(payload);
   if (!eventType.startsWith("message.part.")) {
     return false;
   }
 
   const properties = asRecord(payload.properties);
-  const part = asRecord(payload.part) ?? asRecord(properties?.part);
+  const part =
+    getCentralizedEventPart(payload) ??
+    asRecord(payload.part) ??
+    asRecord(properties?.part);
   const partType = normalizePartType(part?.type);
   return (
     partType === "tool" ||
@@ -8388,7 +8406,11 @@ function handleStreamEvent(
   };
 
   // Log every stream event for comprehensive debugging
-  const eventType = asString(payload.type) || asString(payload.event) || asString(payload.kind);
+  // Keep live routing semantically identical to centralized-data hydration.
+  // A top-level `sync` envelope is transport metadata; the actual event type,
+  // part, and info belong to `syncEvent`. Reading the envelope here caused
+  // activity to be persisted but not rendered until a later hydration pass.
+  const eventType = getCentralizedEventType(payload);
   logger.debug(`Handling Stream Event: ${eventType}`, {
     timestamp: new Date().toISOString(),
     eventType,
@@ -8412,9 +8434,14 @@ function handleStreamEvent(
   const state = getState();
   const current = state.streaming;
   const properties = asRecord(payload.properties);
-  const partRecord = asRecord(properties?.part);
-  const infoRecord = asRecord(payload.info) ?? asRecord(properties?.info);
+  const partRecord =
+    getCentralizedEventPart(payload) ?? asRecord(properties?.part);
+  const infoRecord =
+    getCentralizedEventInfo(payload) ??
+    asRecord(payload.info) ??
+    asRecord(properties?.info);
   const eventPart =
+    getCentralizedEventPart(payload) ??
     asRecord(payload.part) ??
     partRecord ??
     (isPartUpdateEvent ? asRecord(properties) : null);
@@ -8753,7 +8780,15 @@ function handleStreamEvent(
         hasProperties: !!asRecord(payload.properties),
       });
       const properties = asRecord(payload.properties);
-      const part = asRecord(payload.part) ?? asRecord(properties?.part) ?? properties;
+      // Keep this in lockstep with stream classification. A sync envelope
+      // stores the actual part at `syncEvent.data.part`; using only the
+      // top-level shape accepts/persists the event but drops it before it can
+      // update StreamingState and the live activity timeline.
+      const part =
+        eventPart ??
+        asRecord(payload.part) ??
+        asRecord(properties?.part) ??
+        properties;
       if (!part) {
         if (awaitingInteractiveTurnStart || isHeartbeatEvent) {
           logger.debug(
@@ -9440,6 +9475,38 @@ function handleStreamEvent(
       break;
     }
     case 'message.updated': {
+      // `tokens.input` is the SDK's authoritative size of the context sent for
+      // this turn. It arrives on the streaming update before the final response
+      // is persisted, so update the inspector immediately instead of waiting
+      // for a later history reload.
+      const eventTokens =
+        asRecord(infoRecord?.tokens) ??
+        asRecord(properties?.tokens) ??
+        asRecord(payload.tokens);
+      const contextInputTokens = normalizeTokenCount(eventTokens?.input);
+      if (contextInputTokens !== undefined) {
+        const modelIdentity = {
+          providerID: firstNonEmptyString(
+            infoRecord?.providerID,
+            asRecord(infoRecord?.model)?.providerID,
+            payload.providerID,
+          ),
+          modelID: firstNonEmptyString(
+            infoRecord?.modelID,
+            asRecord(infoRecord?.model)?.modelID,
+            payload.modelID,
+          ),
+        };
+        dispatch({ type: "SET_CONTEXT_INPUT_TOKENS", payload: contextInputTokens });
+        dispatch({
+          type: "SET_CONTEXT_USAGE_PCT",
+          payload: calculateContextUsagePct(
+            contextInputTokens,
+            getState(),
+            modelIdentity,
+          ),
+        });
+      }
       const updatedText =
         asRichString(payload.text) ||
         asRichString(payload.content) ||
@@ -11217,6 +11284,10 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               getMessageModelIdentity(msg),
             ),
           });
+          dispatch({
+            type: "SET_CONTEXT_INPUT_TOKENS",
+            payload: getMessageInputTokens(msg),
+          });
 
           const responseMessageId = getMessageId(msg);
           const currentStateForResponse = getState();
@@ -11504,6 +11575,9 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         case "chatHistory": {
           let canonicalMessages: Message[] = [];
           let chatHistorySessionId = "";
+          const sdkContextInputTokens = normalizeTokenCount(
+            (data as UnknownRecord).contextInputTokens,
+          );
           let persistedSubagents: UnknownRecord | undefined;
           let hydrationPresentationPolicy: SubagentPresentationPolicy = {
             mode: "hydration",
@@ -11658,6 +11732,18 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           });
           dispatch({ type: "RESET_SESSION_STATS", payload: stats });
           dispatchContextUsageFromMessages(dispatch, getState(), canonicalMessages);
+          // The extension resolves this from `client.session.messages()` rather
+          // than from the renderable transcript. Prefer it whenever available.
+          if (sdkContextInputTokens !== undefined) {
+            dispatch({
+              type: "SET_CONTEXT_INPUT_TOKENS",
+              payload: sdkContextInputTokens,
+            });
+            dispatch({
+              type: "SET_CONTEXT_USAGE_PCT",
+              payload: calculateContextUsagePct(sdkContextInputTokens, getState()),
+            });
+          }
           dispatch({ type: "CLEAR_SUBAGENTS_FOR_SESSION" });
 
           const postHydrationState = getState();

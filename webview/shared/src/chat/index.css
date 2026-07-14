@@ -432,6 +432,942 @@ body {
   color: var(--oc-text-soft);
 }
 
+/* ── Details inspector ────────────────────────────────────────────────────
+ * The compact panel uses one enclosing surface and flat, inspectable sections.
+ * Its content should read like a technical sidebar, not a stack of cards. */
+.oc-details-sheet {
+  background: var(--oc-bg);
+  border-color: color-mix(in srgb, var(--oc-border) 92%, transparent);
+  border-radius: 12px;
+  box-shadow: 0 18px 44px color-mix(in srgb, black 26%, transparent);
+}
+
+.oc-details-sheet-header {
+  min-height: 44px;
+  background: color-mix(in srgb, var(--oc-panel) 94%, var(--oc-bg));
+}
+
+.oc-details-sheet-header > div:first-child > div {
+  color: var(--oc-text-secondary);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+}
+
+.oc-details-sheet-body {
+  padding: 10px 12px 12px;
+}
+
+.oc-details-tabs {
+  height: 34px !important;
+  gap: 0;
+  border: 0 !important;
+  border-bottom: 1px solid var(--oc-surface-divider) !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  padding: 0 !important;
+}
+
+.oc-details-tabs button {
+  position: relative;
+  height: 34px;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: var(--oc-text-secondary);
+  font-size: 11px;
+  font-weight: 400;
+  box-shadow: none !important;
+}
+
+.oc-details-tabs button:hover {
+  background: color-mix(in srgb, var(--oc-text) 4%, transparent) !important;
+  color: var(--oc-text);
+}
+
+.oc-details-tabs button.bg-oc-bg {
+  color: var(--oc-text) !important;
+  font-weight: 600;
+}
+
+.oc-details-tabs button.bg-oc-bg::after {
+  content: "";
+  position: absolute;
+  right: 18%;
+  bottom: -1px;
+  left: 18%;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: var(--oc-accent);
+}
+
+.oc-details-sheet .oc-active-task-panel {
+  background: transparent;
+}
+
+.oc-details-sheet .oc-active-task-heading {
+  display: flex;
+  min-height: 40px;
+  align-items: center;
+  border-color: var(--oc-surface-divider);
+  padding: 0 2px;
+}
+
+.oc-details-sheet .oc-active-task-heading > div {
+  gap: 7px;
+}
+
+.oc-details-sheet .oc-active-task-heading .oc-panel-title {
+  color: var(--oc-text);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.oc-details-sheet .oc-active-task-content {
+  padding: 0;
+}
+
+.oc-details-sheet .oc-inspector-section {
+  margin: 0;
+  border: 0;
+  border-bottom: 1px solid var(--oc-surface-divider);
+  border-radius: 0;
+  background: transparent;
+}
+
+.oc-details-sheet .oc-inspector-section:last-child {
+  border-bottom: 0;
+}
+
+.oc-details-sheet .oc-inspector-section-toggle {
+  min-height: 38px;
+  padding: 0 2px;
+}
+
+.oc-details-sheet .oc-inspector-section-toggle:hover {
+  background: transparent;
+  color: var(--oc-text);
+}
+
+.oc-details-sheet .oc-inspector-section-toggle > span:first-child {
+  width: 5px;
+  height: 5px;
+  background: color-mix(in srgb, var(--oc-accent) 56%, transparent);
+}
+
+.oc-details-sheet .oc-inspector-section-toggle > span:nth-child(2) {
+  color: var(--oc-text-secondary);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+}
+
+.oc-details-sheet .oc-inspector-section-content {
+  padding: 0 2px 12px;
+}
+
+.oc-details-sheet .oc-inspector-context-summary {
+  border: 1px solid var(--oc-surface-border-soft);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--oc-panel-soft) 54%, transparent);
+  padding: 10px;
+}
+
+.oc-details-sheet .oc-inspector-context-summary:hover,
+.oc-details-sheet .oc-inspector-compaction:hover {
+  border-color: var(--oc-surface-border);
+}
+
+.oc-details-sheet .oc-inspector-context-summary .rounded-full {
+  border-radius: 5px;
+}
+
+.oc-details-sheet .oc-inspector-compaction {
+  border-width: 0 0 1px;
+  border-color: var(--oc-surface-divider);
+  border-radius: 0;
+  background: transparent;
+  padding: 8px 2px;
+}
+
+.oc-details-sheet .oc-inspector-stat-grid,
+.oc-details-sheet .oc-inspector-session-grid {
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--oc-surface-border-soft);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--oc-panel-soft) 34%, transparent);
+}
+
+.oc-details-sheet .oc-inspector-stat {
+  min-height: 48px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 8px;
+}
+
+.oc-details-sheet .oc-inspector-stat:nth-child(odd):not(:last-child) {
+  border-right: 1px solid var(--oc-surface-divider);
+}
+
+.oc-details-sheet .oc-inspector-stat:nth-child(-n + 4) {
+  border-bottom: 1px solid var(--oc-surface-divider);
+}
+
+.oc-details-sheet .oc-inspector-stat:hover {
+  border-color: var(--oc-surface-divider);
+  background: color-mix(in srgb, var(--oc-text) 3%, transparent);
+}
+
+.oc-details-sheet .oc-inspector-data-list {
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--oc-surface-border-soft);
+  border-radius: 8px;
+}
+
+.oc-details-sheet .oc-inspector-data-row {
+  min-height: 34px;
+  border: 0;
+  border-radius: 0;
+  border-bottom: 1px solid var(--oc-surface-divider);
+  background: transparent;
+  padding: 7px 8px;
+}
+
+.oc-details-sheet .oc-inspector-data-row:last-child {
+  border-bottom: 0;
+}
+
+.oc-details-sheet .oc-inspector-data-row:hover {
+  background: color-mix(in srgb, var(--oc-text) 3%, transparent);
+}
+
+.oc-details-sheet .oc-inspector-session-grid .oc-inspector-data-row {
+  border-bottom: 1px solid var(--oc-surface-divider);
+}
+
+/* Quota, integrations, and tools use the same inspector grammar as Overview:
+ * section header → one grouped list → flat rows. */
+.oc-details-sheet .oc-quota-monitor,
+.oc-details-sheet .oc-mcp-panel,
+.oc-details-sheet .oc-lsp-panel,
+.oc-details-sheet .oc-skills-panel,
+.oc-details-sheet .oc-agents-panel {
+  border-top: 0;
+  padding: 0;
+}
+
+.oc-details-sheet .oc-quota-monitor > div:first-child,
+.oc-details-sheet .oc-mcp-panel > div:first-child,
+.oc-details-sheet .oc-lsp-panel > div:first-child,
+.oc-details-sheet .oc-skills-panel > div:first-child,
+.oc-details-sheet .oc-agents-panel > div:first-child {
+  min-height: 40px;
+  margin: 0;
+  border-bottom: 1px solid var(--oc-surface-divider);
+  padding: 0 2px;
+}
+
+.oc-details-sheet .oc-quota-monitor .oc-panel-title,
+.oc-details-sheet .oc-mcp-panel .oc-panel-title,
+.oc-details-sheet .oc-lsp-panel .oc-panel-title,
+.oc-details-sheet .oc-skills-panel .oc-panel-title,
+.oc-details-sheet .oc-agents-panel .oc-panel-title {
+  color: var(--oc-text-secondary);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.oc-details-sheet .oc-quota-monitor > div:last-child,
+.oc-details-sheet .oc-mcp-panel > div:last-child,
+.oc-details-sheet .oc-lsp-panel > div:last-child,
+.oc-details-sheet .oc-skills-panel > div:last-child,
+.oc-details-sheet .oc-agents-panel > div:last-child {
+  padding: 10px 2px 12px;
+}
+
+.oc-details-sheet .oc-quota-monitor .oc-modal-shell {
+  border: 1px solid var(--oc-surface-border-soft) !important;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--oc-panel-soft) 42%, transparent) !important;
+  box-shadow: none !important;
+}
+
+.oc-details-sheet .oc-quota-monitor .oc-modal-header {
+  border-color: var(--oc-surface-divider);
+  padding: 10px !important;
+}
+
+.oc-details-sheet .oc-quota-monitor .oc-modal-content {
+  padding: 8px 10px 10px !important;
+}
+
+.oc-details-sheet .oc-quota-monitor .oc-quota-item {
+  border: 0;
+  border-top: 1px solid var(--oc-surface-divider);
+  border-radius: 0;
+  background: transparent;
+  padding: 8px 0 0;
+}
+
+.oc-details-sheet .oc-quota-monitor .oc-quota-item:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.oc-details-sheet .oc-quota-monitor .oc-quota-item .h-1 {
+  height: 3px;
+  background: color-mix(in srgb, var(--oc-border) 74%, transparent);
+}
+
+.oc-details-sheet .oc-quota-monitor .oc-quota-item .rounded-full {
+  border-radius: 2px;
+}
+
+.oc-details-sheet .oc-mcp-panel > div:last-child,
+.oc-details-sheet .oc-lsp-panel > div:last-child,
+.oc-details-sheet .oc-skills-panel > div:last-child,
+.oc-details-sheet .oc-agents-panel > div:last-child {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--oc-surface-border-soft);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--oc-panel-soft) 28%, transparent);
+}
+
+.oc-details-sheet .oc-mcp-panel .oc-panel-section,
+.oc-details-sheet .oc-lsp-panel .oc-panel-section,
+.oc-details-sheet .oc-skills-panel .oc-panel-section,
+.oc-details-sheet .oc-agents-panel .oc-panel-section {
+  margin: 0;
+  border: 0;
+  border-bottom: 1px solid var(--oc-surface-divider);
+  border-radius: 0;
+  background: transparent;
+}
+
+.oc-details-sheet .oc-mcp-panel .oc-panel-section:last-of-type,
+.oc-details-sheet .oc-lsp-panel .oc-panel-section:last-of-type,
+.oc-details-sheet .oc-skills-panel .oc-panel-section:last-of-type,
+.oc-details-sheet .oc-agents-panel .oc-panel-section:last-of-type {
+  border-bottom: 0;
+}
+
+.oc-details-sheet .oc-mcp-panel .oc-panel-section > div:first-child,
+.oc-details-sheet .oc-lsp-panel .oc-panel-section > div:first-child,
+.oc-details-sheet .oc-skills-panel .oc-panel-section > div:first-child,
+.oc-details-sheet .oc-agents-panel .oc-panel-section > div:first-child {
+  min-height: 38px;
+  padding: 8px 10px;
+}
+
+.oc-details-sheet .oc-mcp-panel .oc-panel-section:hover,
+.oc-details-sheet .oc-lsp-panel .oc-panel-section:hover,
+.oc-details-sheet .oc-skills-panel .oc-panel-section:hover,
+.oc-details-sheet .oc-agents-panel .oc-panel-section:hover {
+  background: color-mix(in srgb, var(--oc-text) 3%, transparent);
+}
+
+.oc-details-sheet .oc-mcp-panel .oc-panel-section > div:not(:first-child),
+.oc-details-sheet .oc-skills-panel .oc-panel-section > div:not(:first-child),
+.oc-details-sheet .oc-agents-panel .oc-panel-section > div:not(:first-child) {
+  border-color: var(--oc-surface-divider);
+}
+
+.oc-details-sheet .oc-mcp-panel > div:last-child > div:last-child,
+.oc-details-sheet .oc-lsp-panel > div:last-child > div:last-child {
+  margin: 0;
+  border-top: 1px solid var(--oc-surface-divider);
+  padding: 8px;
+  color: var(--oc-text-secondary);
+}
+
+.oc-details-sheet .oc-skills-panel > div:last-child,
+.oc-details-sheet .oc-agents-panel > div:last-child {
+  max-height: min(20rem, 48vh);
+  overflow-y: auto;
+}
+
+/* Compact density mode for the entire Details inspector. Keep the information
+ * hierarchy intact while fitting more operational context into the same pane. */
+.oc-details-sheet {
+  border-radius: 10px;
+}
+
+.oc-details-sheet button {
+  min-width: 28px;
+  min-height: 28px;
+}
+
+.oc-details-sheet-header {
+  min-height: 36px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+.oc-details-sheet-body {
+  padding: 6px 8px 8px;
+}
+
+.oc-details-tabs,
+.oc-details-tabs button {
+  height: 30px !important;
+}
+
+.oc-details-tabs button {
+  font-size: 10px;
+}
+
+/* Every Details tab starts from the same content inset. Individual panels own
+ * their internal rows, never their outer gutter. */
+.oc-details-sheet .oc-details-tab-content {
+  box-sizing: border-box;
+  padding: 8px 10px 10px;
+}
+
+.oc-details-sheet .oc-details-tab-content--overview {
+  padding: 0;
+}
+
+.oc-details-sheet .oc-details-tab-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.oc-details-sheet .oc-details-tab-content > .oc-active-task-panel,
+.oc-details-sheet .oc-details-tab-content > .oc-quota-monitor,
+.oc-details-sheet .oc-details-tab-stack > .oc-mcp-panel,
+.oc-details-sheet .oc-details-tab-stack > .oc-lsp-panel,
+.oc-details-sheet .oc-details-tab-stack > .oc-skills-panel,
+.oc-details-sheet .oc-details-tab-stack > .oc-agents-panel {
+  width: 100%;
+  margin: 0;
+  padding-right: 0;
+  padding-left: 0;
+}
+
+.oc-details-sheet .oc-details-tab-content--overview > .oc-active-task-panel {
+  margin-top: 8px;
+}
+
+.oc-details-sheet .oc-active-task-heading,
+.oc-details-sheet .oc-quota-monitor > div:first-child,
+.oc-details-sheet .oc-mcp-panel > div:first-child,
+.oc-details-sheet .oc-lsp-panel > div:first-child,
+.oc-details-sheet .oc-skills-panel > div:first-child,
+.oc-details-sheet .oc-agents-panel > div:first-child {
+  min-height: 34px;
+}
+
+.oc-details-sheet .oc-inspector-section-toggle {
+  min-height: 32px;
+}
+
+.oc-details-sheet .oc-inspector-section-content {
+  padding-bottom: 8px;
+}
+
+.oc-details-sheet .oc-inspector-context-summary {
+  padding: 8px;
+}
+
+.oc-details-sheet .oc-inspector-compaction {
+  padding: 6px 2px;
+}
+
+.oc-details-sheet .oc-inspector-stat {
+  min-height: 42px;
+  padding: 6px 7px;
+}
+
+.oc-details-sheet .oc-inspector-data-row {
+  min-height: 30px;
+  padding: 5px 7px;
+}
+
+.oc-details-sheet .oc-quota-monitor > div:last-child,
+.oc-details-sheet .oc-mcp-panel > div:last-child,
+.oc-details-sheet .oc-lsp-panel > div:last-child,
+.oc-details-sheet .oc-skills-panel > div:last-child,
+.oc-details-sheet .oc-agents-panel > div:last-child {
+  padding: 7px 2px 8px;
+}
+
+.oc-details-sheet .oc-quota-monitor .oc-modal-header {
+  padding: 8px !important;
+}
+
+.oc-details-sheet .oc-quota-monitor .oc-modal-content {
+  padding: 6px 8px 8px !important;
+}
+
+.oc-details-sheet .oc-quota-monitor .oc-quota-item {
+  padding-top: 6px;
+}
+
+.oc-details-sheet .oc-mcp-panel .oc-panel-section > div:first-child,
+.oc-details-sheet .oc-lsp-panel .oc-panel-section > div:first-child,
+.oc-details-sheet .oc-skills-panel .oc-panel-section > div:first-child,
+.oc-details-sheet .oc-agents-panel .oc-panel-section > div:first-child {
+  min-height: 32px;
+  padding: 6px 8px;
+}
+
+/* Desktop extended panel: apply the same compact inspector density as the
+ * modal sheet. This panel intentionally avoids standalone card rows. */
+.oc-right-panel {
+  background: var(--oc-bg);
+}
+
+.oc-right-panel .oc-active-task-panel {
+  background: transparent;
+}
+
+.oc-right-panel .oc-active-task-heading,
+.oc-right-panel .oc-quota-monitor > div:first-child,
+.oc-right-panel .oc-mcp-panel > div:first-child,
+.oc-right-panel .oc-lsp-panel > div:first-child,
+.oc-right-panel .oc-skills-panel > div:first-child,
+.oc-right-panel .oc-agents-panel > div:first-child {
+  min-height: 34px;
+  margin: 0;
+  border-bottom: 1px solid var(--oc-surface-divider);
+  padding: 0 10px;
+}
+
+.oc-right-panel .oc-active-task-heading .oc-panel-title,
+.oc-right-panel .oc-quota-monitor .oc-panel-title,
+.oc-right-panel .oc-mcp-panel .oc-panel-title,
+.oc-right-panel .oc-lsp-panel .oc-panel-title,
+.oc-right-panel .oc-skills-panel .oc-panel-title,
+.oc-right-panel .oc-agents-panel .oc-panel-title {
+  color: var(--oc-text-secondary);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.oc-right-panel .oc-active-task-content {
+  padding: 0 8px;
+}
+
+.oc-right-panel .oc-inspector-section {
+  margin: 0;
+  border: 0;
+  border-bottom: 1px solid var(--oc-surface-divider);
+  border-radius: 0;
+  background: transparent;
+}
+
+.oc-right-panel .oc-inspector-section-toggle {
+  min-height: 32px;
+  padding: 0 2px;
+}
+
+.oc-right-panel .oc-inspector-section-content {
+  padding: 0 2px 8px;
+}
+
+.oc-right-panel .oc-inspector-context-summary {
+  border: 1px solid var(--oc-surface-border-soft);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--oc-panel-soft) 54%, transparent);
+  padding: 8px;
+}
+
+.oc-right-panel .oc-inspector-compaction {
+  border-width: 0 0 1px;
+  border-color: var(--oc-surface-divider);
+  border-radius: 0;
+  background: transparent;
+  padding: 6px 2px;
+}
+
+.oc-right-panel .oc-inspector-stat-grid,
+.oc-right-panel .oc-inspector-session-grid {
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--oc-surface-border-soft);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--oc-panel-soft) 34%, transparent);
+}
+
+.oc-right-panel .oc-inspector-stat {
+  min-height: 42px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 6px 7px;
+}
+
+.oc-right-panel .oc-inspector-stat:nth-child(odd):not(:last-child) {
+  border-right: 1px solid var(--oc-surface-divider);
+}
+
+.oc-right-panel .oc-inspector-stat:nth-child(-n + 4) {
+  border-bottom: 1px solid var(--oc-surface-divider);
+}
+
+.oc-right-panel .oc-inspector-data-list {
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--oc-surface-border-soft);
+  border-radius: 8px;
+}
+
+.oc-right-panel .oc-inspector-data-row {
+  min-height: 30px;
+  border: 0;
+  border-radius: 0;
+  border-bottom: 1px solid var(--oc-surface-divider);
+  background: transparent;
+  padding: 5px 7px;
+}
+
+.oc-inspector-session-date {
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.oc-right-panel .oc-quota-monitor,
+.oc-right-panel .oc-mcp-panel,
+.oc-right-panel .oc-lsp-panel,
+.oc-right-panel .oc-skills-panel,
+.oc-right-panel .oc-agents-panel {
+  border-top: 0;
+  padding: 0 8px;
+}
+
+.oc-right-panel .oc-quota-monitor > div:last-child,
+.oc-right-panel .oc-mcp-panel > div:last-child,
+.oc-right-panel .oc-lsp-panel > div:last-child,
+.oc-right-panel .oc-skills-panel > div:last-child,
+.oc-right-panel .oc-agents-panel > div:last-child {
+  padding: 7px 2px 8px;
+}
+
+.oc-right-panel .oc-quota-monitor .oc-modal-shell {
+  border: 1px solid var(--oc-surface-border-soft) !important;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--oc-panel-soft) 42%, transparent) !important;
+  box-shadow: none !important;
+}
+
+.oc-right-panel .oc-quota-monitor .oc-modal-header {
+  border-color: var(--oc-surface-divider);
+  padding: 8px !important;
+}
+
+.oc-right-panel .oc-quota-monitor .oc-modal-content {
+  padding: 6px 8px 8px !important;
+}
+
+.oc-right-panel .oc-quota-monitor .oc-quota-item {
+  border: 0;
+  border-top: 1px solid var(--oc-surface-divider);
+  border-radius: 0;
+  background: transparent;
+  padding: 6px 0 0;
+}
+
+.oc-right-panel .oc-mcp-panel > div:last-child,
+.oc-right-panel .oc-lsp-panel > div:last-child,
+.oc-right-panel .oc-skills-panel > div:last-child,
+.oc-right-panel .oc-agents-panel > div:last-child {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--oc-surface-border-soft);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--oc-panel-soft) 28%, transparent);
+}
+
+.oc-right-panel .oc-mcp-panel .oc-panel-section,
+.oc-right-panel .oc-lsp-panel .oc-panel-section,
+.oc-right-panel .oc-skills-panel .oc-panel-section,
+.oc-right-panel .oc-agents-panel .oc-panel-section {
+  margin: 0;
+  border: 0;
+  border-bottom: 1px solid var(--oc-surface-divider);
+  border-radius: 0;
+  background: transparent;
+}
+
+.oc-right-panel .oc-mcp-panel .oc-panel-section > div:first-child,
+.oc-right-panel .oc-lsp-panel .oc-panel-section > div:first-child,
+.oc-right-panel .oc-skills-panel .oc-panel-section > div:first-child,
+.oc-right-panel .oc-agents-panel .oc-panel-section > div:first-child {
+  min-height: 32px;
+  padding: 6px 8px;
+}
+
+/* Extra-compact modal mode. The modal can be visually large on wide panes,
+ * so its rows need a denser cadence than the persistent sidebar. */
+.oc-details-sheet-header {
+  min-height: 32px;
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
+.oc-details-sheet-body {
+  padding: 4px 6px 6px;
+}
+
+.oc-details-tabs,
+.oc-details-tabs button {
+  height: 28px !important;
+}
+
+.oc-details-sheet .oc-active-task-heading,
+.oc-details-sheet .oc-quota-monitor > div:first-child,
+.oc-details-sheet .oc-mcp-panel > div:first-child,
+.oc-details-sheet .oc-lsp-panel > div:first-child,
+.oc-details-sheet .oc-skills-panel > div:first-child,
+.oc-details-sheet .oc-agents-panel > div:first-child {
+  min-height: 30px;
+  padding-right: 0;
+  padding-left: 0;
+}
+
+.oc-details-sheet .oc-quota-monitor,
+.oc-details-sheet .oc-mcp-panel,
+.oc-details-sheet .oc-lsp-panel,
+.oc-details-sheet .oc-skills-panel,
+.oc-details-sheet .oc-agents-panel {
+  padding-right: 4px;
+  padding-left: 4px;
+}
+
+.oc-details-sheet .oc-quota-monitor > div:last-child,
+.oc-details-sheet .oc-mcp-panel > div:last-child,
+.oc-details-sheet .oc-lsp-panel > div:last-child,
+.oc-details-sheet .oc-skills-panel > div:last-child,
+.oc-details-sheet .oc-agents-panel > div:last-child {
+  padding: 4px 0 6px;
+}
+
+.oc-details-sheet .oc-mcp-panel > div:last-child > :not([hidden]) ~ :not([hidden]),
+.oc-details-sheet .oc-lsp-panel > div:last-child > :not([hidden]) ~ :not([hidden]),
+.oc-details-sheet .oc-skills-panel > div:last-child > :not([hidden]) ~ :not([hidden]),
+.oc-details-sheet .oc-agents-panel > div:last-child > :not([hidden]) ~ :not([hidden]) {
+  margin-top: 0;
+}
+
+.oc-details-sheet .oc-mcp-panel .oc-panel-section > div:first-child,
+.oc-details-sheet .oc-lsp-panel .oc-panel-section > div:first-child,
+.oc-details-sheet .oc-skills-panel .oc-panel-section > div:first-child,
+.oc-details-sheet .oc-agents-panel .oc-panel-section > div:first-child {
+  min-height: 28px;
+  padding: 4px 7px;
+}
+
+.oc-details-sheet .oc-mcp-panel .oc-panel-section,
+.oc-details-sheet .oc-lsp-panel .oc-panel-section,
+.oc-details-sheet .oc-skills-panel .oc-panel-section,
+.oc-details-sheet .oc-agents-panel .oc-panel-section {
+  min-height: 28px;
+}
+
+/* Shared list-record primitive for MCP, LSP, skills, and agents. The header
+ * row is deliberately fixed to one compact line; expanded detail follows it. */
+.oc-details-list-row {
+  box-sizing: border-box;
+  min-height: 28px;
+  padding: 4px 8px;
+  line-height: 1.2;
+}
+
+.oc-details-sheet .oc-details-list-row {
+  height: 28px;
+  min-height: 28px;
+  padding: 4px 8px;
+}
+
+.oc-details-sheet .oc-details-list-row .text-xs {
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+/* Agent rows are dense reference data: color marker, name, mode, and source
+ * fit on one 26px line without adding a separate card per agent. */
+.oc-details-sheet .oc-agents-panel .oc-details-list-row,
+.oc-right-panel .oc-agents-panel .oc-details-list-row {
+  height: 26px;
+  min-height: 26px;
+  gap: 6px;
+  padding: 3px 7px;
+}
+
+/* Skill names can be long and use the standard row font, so reserve a little
+ * more line box than agents to keep the divider clear of glyph descenders. */
+.oc-details-sheet .oc-skills-panel .oc-details-list-row,
+.oc-right-panel .oc-skills-panel .oc-details-list-row {
+  height: 34px;
+  min-height: 34px;
+  padding: 0 8px;
+  line-height: 1;
+}
+
+.oc-details-sheet .oc-skills-panel .oc-details-list-row .text-xs,
+.oc-right-panel .oc-skills-panel .oc-details-list-row .text-xs {
+  font-size: 10px;
+  line-height: 1;
+}
+
+/* Skills are a dense command list. Use spacing between records instead of a
+ * divider under every label, which can visually collide with small text. */
+.oc-details-sheet .oc-skills-panel > div:last-child,
+.oc-right-panel .oc-skills-panel > div:last-child {
+  gap: 2px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+.oc-details-sheet .oc-skills-panel .oc-panel-section,
+.oc-right-panel .oc-skills-panel .oc-panel-section {
+  border-bottom: 0;
+}
+
+.oc-details-sheet .oc-skills-panel .oc-panel-section:hover,
+.oc-right-panel .oc-skills-panel .oc-panel-section:hover {
+  background: transparent;
+}
+
+.oc-details-sheet .oc-skills-panel .oc-details-list-row:hover,
+.oc-right-panel .oc-skills-panel .oc-details-list-row:hover {
+  background: color-mix(in srgb, var(--oc-text) 4%, transparent);
+}
+
+.oc-details-sheet .oc-agents-panel .oc-details-list-row .text-xs,
+.oc-right-panel .oc-agents-panel .oc-details-list-row .text-xs {
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+.oc-details-sheet .oc-agents-panel .oc-details-list-row .text-\[10px\],
+.oc-right-panel .oc-agents-panel .oc-details-list-row .text-\[10px\] {
+  font-size: 9px;
+  line-height: 1;
+}
+
+.oc-agent-color-dot {
+  width: 6px;
+  height: 6px;
+  box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.oc-agent-list-summary {
+  margin: 8px 0 6px !important;
+  padding: 0;
+  font-size: 8px !important;
+  line-height: 1.2;
+}
+
+/* Keep the summary outside the bordered records list so its text has real
+ * breathing room instead of sitting against the final row divider. */
+.oc-details-sheet .oc-agents-panel > .oc-agent-panel-content,
+.oc-right-panel .oc-agents-panel > .oc-agent-panel-content {
+  display: block;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 4px 0 6px;
+}
+
+.oc-details-sheet .oc-agents-panel .oc-agent-list,
+.oc-right-panel .oc-agents-panel .oc-agent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--oc-surface-border-soft);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--oc-panel-soft) 28%, transparent);
+}
+
+.oc-details-sheet .oc-agents-panel .oc-agent-list-summary,
+.oc-right-panel .oc-agents-panel .oc-agent-list-summary {
+  margin: 8px 0 6px !important;
+  padding: 0;
+  font-size: 8px !important;
+  line-height: 1.2;
+}
+
+/* Quota uses the same compact text rhythm as integration and tool rows. */
+.oc-details-sheet .oc-quota-monitor {
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.oc-details-sheet .oc-quota-monitor .text-xs,
+.oc-details-sheet .oc-quota-monitor .oc-quota-item,
+.oc-details-sheet .oc-quota-monitor .oc-quota-item span {
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.oc-details-sheet .oc-quota-monitor .oc-modal-header,
+.oc-details-sheet .oc-quota-monitor .oc-modal-content {
+  font-size: 11px;
+}
+
+.oc-details-sheet .oc-quota-monitor .oc-quota-item .mt-1\.5 {
+  margin-top: 4px;
+}
+
+/* Overview typography: one compact hierarchy shared by Active Task, Context,
+ * Runtime, and Session. */
+.oc-details-sheet .oc-active-task-heading .oc-panel-title,
+.oc-details-sheet .oc-inspector-section-toggle > span:nth-child(2) {
+  font-size: 10px !important;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: 0.1em;
+}
+
+.oc-details-sheet .oc-inspector-context-summary .text-xs,
+.oc-details-sheet .oc-inspector-context-summary .text-\[10px\],
+.oc-details-sheet .oc-inspector-compaction .text-\[10px\] {
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+.oc-details-sheet .oc-inspector-stat > span:first-child,
+.oc-details-sheet .oc-inspector-data-row > span:first-child {
+  font-size: 9px;
+  line-height: 1.25;
+}
+
+.oc-details-sheet .oc-inspector-stat > span:last-child,
+.oc-details-sheet .oc-inspector-data-row > span:last-child {
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.oc-details-sheet .oc-inspector-context-summary .tabular-nums,
+.oc-details-sheet .oc-inspector-compaction .tabular-nums {
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.oc-details-sheet .oc-mcp-panel > div:last-child,
+.oc-details-sheet .oc-lsp-panel > div:last-child,
+.oc-details-sheet .oc-skills-panel > div:last-child,
+.oc-details-sheet .oc-agents-panel > div:last-child {
+  border-radius: 6px;
+}
+
 /* ── History Sidebar ─────────────────────────────────────────────────────── */
 .oc-history-sidebar {
   background: var(--oc-bg-soft);
