@@ -30,22 +30,10 @@ test("ChatShell routes large transcript rendering through a memoized transcript 
   );
 });
 
-test("ChatShell bounds bootstrap cache persistence for large centralized transcripts", () => {
-  assert.match(
-    chatShellSource,
-    /const WEBVIEW_BOOTSTRAP_MAX_EVENT_PAYLOADS = \d+;/,
-    "chat shell should define a hard cap for cached centralized event payloads",
-  );
-  assert.match(
-    chatShellSource,
-    /function buildWebviewBootstrapSnapshot\(/,
-    "chat shell should route bootstrap persistence through a dedicated snapshot helper",
-  );
-  assert.match(
-    chatShellSource,
-    /const currentSessionPayloads =[\s\S]*rawSdkEventPayloadsBySessionId:[\s\S]*\[currentSessionId\]: currentSessionPayloads\.slice\(-WEBVIEW_BOOTSTRAP_MAX_EVENT_PAYLOADS\)/s,
-    "bootstrap snapshot should persist only the active session and only its most recent centralized payloads",
-  );
+test("ChatShell does not persist a raw event tape for transcript hydration", () => {
+  assert.doesNotMatch(chatShellSource, /WEBVIEW_BOOTSTRAP_MAX_EVENT_PAYLOADS/);
+  assert.doesNotMatch(chatShellSource, /buildWebviewBootstrapSnapshot/);
+  assert.doesNotMatch(chatShellSource, /rawSdkEventPayloadsBySessionId/);
 });
 
 test("ChatShell virtualizes very large conversation lists", () => {
@@ -102,11 +90,8 @@ test("ChatShell isolates the transcript from token-by-token streaming objects", 
     /<MemoizedConversationTranscript[^>]*streamingAgent=\{(?:deferredStreamingAgent|state\.streaming\?\.agent)\}[^>]*isStreamingActive=\{Boolean\(state\.streaming\?\.isActive\)\}/s,
     "the transcript should receive only stable streaming scalars it actually consumes",
   );
-  assert.match(
-    chatShellSource,
-    /if \(!streamViewport\.isFollowing && state\.streaming\?\.isActive\) \{[\s\S]*return;/,
-    "centralized transcript projection should pause while the user scrolls through an active stream",
-  );
+  assert.match(chatShellSource, /const renderMessages = state\.messages;/,
+    "completed transcript should render the SDK-adapted message snapshot directly");
   assert.doesNotMatch(
     chatShellSource,
     /streamingPresentationRef/,

@@ -93,8 +93,6 @@ import { FILE_MENTION_REGEX } from "./PanelComponents";
 import type {
   ActivityDetail,
   AppState,
-  CentralizedDebugData,
-  CentralizedDebugSourceData,
   InteractiveEvent,
   Message,
   MessagePart,
@@ -2789,6 +2787,10 @@ function thoughtItemsFromStreamingReasoningEvents(
 
     const createdAt =
       typeof event?.createdAt === "number" ? event.createdAt : index;
+    const startedAt =
+      typeof event?.startedAt === "number" ? event.startedAt : undefined;
+    const endedAt =
+      typeof event?.endedAt === "number" ? event.endedAt : undefined;
     const partID = asString(event?.partID).trim();
     const messageID = asString(event?.messageID).trim();
     const groupKey = partID || `${createdAt}:${index}`;
@@ -2804,6 +2806,8 @@ function thoughtItemsFromStreamingReasoningEvents(
       status: isLiveChunk ? "pending" : "done",
       messageID: existing?.messageID ?? (messageID || undefined),
       partID: existing?.partID ?? (partID || undefined),
+      startedAt: existing?.startedAt ?? startedAt,
+      endedAt: existing?.endedAt ?? endedAt,
     });
   });
 
@@ -2815,6 +2819,8 @@ function thoughtItemsFromStreamingReasoningEvents(
     status: item.status,
     messageID: item.messageID,
     partID: item.partID,
+    startedAt: item.startedAt,
+    endedAt: item.endedAt,
   }));
 }
 
@@ -2847,8 +2853,9 @@ function mergeThoughtItemsForTimeline(
     const normalizedText = normalizeComparableText(item.text);
     if (item.partID) {
       indexByKey.set(`part:${item.partID}`, index);
-    }
-    if (item.messageID) {
+    } else if (item.messageID) {
+      // A message can contain many reasoning parts. Only fall back to its
+      // message ID when the SDK did not supply the part identity.
       indexByKey.set(`msg:${item.messageID}`, index);
     }
     if (normalizedText) {
@@ -2862,7 +2869,7 @@ function mergeThoughtItemsForTimeline(
     const normalizedText = normalizeComparableText(item.text);
     const keys = [
       item.partID ? `part:${item.partID}` : "",
-      item.messageID ? `msg:${item.messageID}` : "",
+      !item.partID && item.messageID ? `msg:${item.messageID}` : "",
       normalizedText ? `text:${normalizedText}` : "",
     ].filter(Boolean);
 
@@ -2915,11 +2922,11 @@ function mergeProgressItemsForTimeline(
   const addKey = (item: ProgressItem, index: number) => {
     if (item.callID) {
       indexByKey.set(`call:${item.callID}`, index);
-    }
-    if (item.id) {
+    } else if (item.id) {
       indexByKey.set(`id:${item.id}`, index);
-    }
-    if (item.messageID) {
+    } else if (item.messageID) {
+      // Tool calls are siblings under one assistant message. A message ID is
+      // not a tool identity, so use it only when no call/part ID exists.
       indexByKey.set(`msg:${item.messageID}`, index);
     }
     indexByKey.set(`title:${normalizeComparableText(item.title)}`, index);
@@ -2930,8 +2937,8 @@ function mergeProgressItemsForTimeline(
   for (const item of streamingItems) {
     const keys = [
       item.callID ? `call:${item.callID}` : "",
-      item.id ? `id:${item.id}` : "",
-      item.messageID ? `msg:${item.messageID}` : "",
+      !item.callID && item.id ? `id:${item.id}` : "",
+      !item.callID && !item.id && item.messageID ? `msg:${item.messageID}` : "",
       `title:${normalizeComparableText(item.title)}`,
     ].filter(Boolean);
 
@@ -4813,7 +4820,14 @@ export function SharedActivityStep({
   const isEditLike = ["edit", "modify", "patch", "write", "apply_patch"].includes(labelLower);
   const filePath = event.filePath || (event.activityDetail?.input as Record<string, unknown> | undefined)?.filePath as string | undefined;
   const description = (event.activityDetail?.metadata?.description as string | undefined) || (event.activityDetail?.input?.description as string | undefined);
-  const visibleSummary = getVisibleDefaultActivitySummary(event.label, event.summary, event.filePath);
+  // Rehydrated raw SDK tool events can carry their only result in
+  // activityDetail.output. Use it as the last summary fallback so those events
+  // share the same collapsible preview as streamed activity rows.
+  const visibleSummary = getVisibleDefaultActivitySummary(
+    event.label,
+    event.summary,
+    event.filePath || event.activityDetail?.output,
+  );
 
   return (
     <div className="flex items-start justify-between gap-2 w-full">
@@ -7436,14 +7450,12 @@ function ResponseMessageInner({
     assistantTurnPending,
     assistantTurnMessageId,
     streamingBySessionId,
-    rawSdkEventPayloadsBySessionId,
     selectedSubagentId,
   } = useAppState(
     (state) => ({
       assistantTurnPending: state.assistantTurnPending,
       assistantTurnMessageId: state.assistantTurnMessageId,
       streamingBySessionId: state.streamingBySessionId,
-      rawSdkEventPayloadsBySessionId: state.rawSdkEventPayloadsBySessionId,
       selectedSubagentId: state.selectedSubagentId,
     }),
     shallowEqual,
@@ -7503,18 +7515,13 @@ const centralizedRawResponse = message?.rawResponse;
     asString(centralizedMessageRec?.sessionID) ||
     asString(centralizedMessageRec?.sessionId) ||
     null;
-  const sessionScopedRawSdkEventPayloads = useMemo(() => {
-    if (!centralizedSessionId) {
-      return [];
-    }
-
-    return Array.isArray(rawSdkEventPayloadsBySessionId?.[centralizedSessionId])
-      ? rawSdkEventPayloadsBySessionId[centralizedSessionId]
-      : [];
-  }, [centralizedSessionId, rawSdkEventPayloadsBySessionId]);
+  // Live raw events are scoped to the active streaming turn. Completed cards
+  // use the SDK snapshot fields on `message` and never consult a session tape.
+  const sessionScopedRawSdkEventPayloads =
+    activityTimelineStreaming?.rawSdkEventPayloads ?? [];
   const hasCentralizedPendingAssistantReply = useMemo(
-    () => hasActiveAssistantReplyInCentralizedTape(sessionScopedRawSdkEventPayloads),
-    [sessionScopedRawSdkEventPayloads],
+    () => hasActiveAssistantReplyInCentralizedTape(activityTimelineStreaming?.rawSdkEventPayloads ?? []),
+    [activityTimelineStreaming?.rawSdkEventPayloads],
   );
   const isLiveAssistantTurn = !!(
     activityTimelineStreaming?.isActive ||
@@ -7807,6 +7814,14 @@ const centralizedRawResponse = message?.rawResponse;
     [normalizedCentralizedRawSdkEventPayloads],
   );
   const rawContent = rawContentChunks.join("");
+  const snapshotContent = firstNonEmptyString(
+    cardMessage?.content,
+    cardMessage?.text,
+    cardMessage?.parts
+      ?.filter((part) => part?.type === "text")
+      .map((part) => firstNonEmptyString(part.text, part.content, part.message) ?? "")
+      .join(""),
+  ) ?? "";
   const stickyStreamingContentRef = useRef<{
     messageId: string | null;
     content: string;
@@ -7825,7 +7840,7 @@ const centralizedRawResponse = message?.rawResponse;
   const content =
     scopedActivityTimelineStreaming?.isActive && rawContent.trim().length === 0
       ? stickyStreamingContentRef.current.content
-      : rawContent;
+      : rawContent || snapshotContent;
   const hasAssistantFinishSignal =
     scopedActivityTimelineStreaming?.hasAssistantFinishSignal === true;
   const hasActiveReasoningPart = scopedActivityTimelineStreaming?.inReasoningPart === true;
@@ -7858,6 +7873,12 @@ const centralizedRawResponse = message?.rawResponse;
     () => thoughtItemsFromRawEventPayloads(normalizedCentralizedRawSdkEventPayloads),
     [normalizedCentralizedRawSdkEventPayloads],
   );
+  // Rehydrated messages come from `session.messages()` and retain reasoning as
+  // typed message parts. Use that snapshot when there is no live/raw overlay.
+  const snapshotThoughtItems = useMemo(
+    () => thoughtItemsFromStreamingReasoningEvents(cardMessage?.reasoningEvents, false),
+    [cardMessage?.reasoningEvents],
+  );
   const liveThoughtItems = useMemo(
     () =>
       thoughtItemsFromStreamingReasoningEvents(
@@ -7867,14 +7888,25 @@ const centralizedRawResponse = message?.rawResponse;
     [scopedActivityTimelineStreaming?.reasoningEvents, scopedActivityTimelineStreaming?.isActive],
   );
   const thoughtItems = useMemo(
-    () => mergeThoughtItemsForTimeline(finalizedThoughtItems, liveThoughtItems, isStreamingActive),
-    [finalizedThoughtItems, liveThoughtItems, isStreamingActive],
+    () => mergeThoughtItemsForTimeline(
+      mergeThoughtItemsForTimeline(finalizedThoughtItems, snapshotThoughtItems),
+      liveThoughtItems,
+      isStreamingActive,
+    ),
+    [finalizedThoughtItems, snapshotThoughtItems, liveThoughtItems, isStreamingActive],
   );
   const progressItems = useMemo(
     () => {
-      return progressItemsFromCentralizedData(normalizedCentralizedRawSdkEventPayloads);
+      const fromRaw = progressItemsFromCentralizedData(normalizedCentralizedRawSdkEventPayloads);
+      if (fromRaw.length > 0) {
+        return fromRaw;
+      }
+      return progressItemsFromSteps(
+        [...(cardMessage?.progressEvents ?? []), ...(cardMessage?.steps ?? [])],
+        "sdk-snapshot",
+      );
     },
-    [normalizedCentralizedRawSdkEventPayloads],
+    [cardMessage?.progressEvents, cardMessage?.steps, normalizedCentralizedRawSdkEventPayloads],
   );
   const liveProgressItems = useMemo(
     () =>
@@ -7903,8 +7935,9 @@ const centralizedRawResponse = message?.rawResponse;
   );
 
   const structured = useMemo(
-    () => structuredOutputFromRawSdkEventPayloads(normalizedCentralizedRawSdkEventPayloads),
-    [normalizedCentralizedRawSdkEventPayloads]
+    () => structuredOutputFromRawSdkEventPayloads(normalizedCentralizedRawSdkEventPayloads)
+      ?? cardMessage?.structuredOutput,
+    [cardMessage?.structuredOutput, normalizedCentralizedRawSdkEventPayloads],
   );
   const responseType = (structured?.type ?? structured?.responseType)?.toLowerCase();
   const plan = structured?.plan;
@@ -7949,27 +7982,6 @@ const centralizedRawResponse = message?.rawResponse;
   // Centralized debug is the long-term source of truth for this assistant turn.
   // Keep it raw and complete so future UI rendering can consume the same data
   // without depending on derived display-only transforms.
-  const centralizedDebugData = useMemo<CentralizedDebugData>(() => {
-    if (!config.debug.showCentralizedDebug) {
-      return {};
-    }
-
-    const rawEventStream: CentralizedDebugSourceData = {
-      sessionId: centralizedSessionId ?? currentSessionId ?? undefined,
-      rawSdkEventPayloads: centralizedRawSdkEventPayloads,
-    };
-
-    // Keep the debug panel mounted even before the assistant responds so the
-    // raw session tape can grow in-place as soon as the first event lands.
-    return {
-      rawEventStream,
-    };
-  }, [
-    centralizedRawSdkEventPayloads,
-    centralizedSessionId,
-    currentSessionId,
-    config.debug.showCentralizedDebug,
-  ]);
   const hasPendingReasoningDisplayEvent = useMemo(
     () =>
       displayEvents.some(
@@ -8927,14 +8939,18 @@ const centralizedRawResponse = message?.rawResponse;
     () => getLegacyMetricsDiagnostics(message, streaming),
     [message, streaming],
   );
+  // Completed cards are SDK snapshots. The live raw overlay can enrich these
+  // values during an active turn, but it must never be required for them.
+  const snapshotTokens = message?.tokens ?? message?.info?.tokens;
+  const snapshotDuration = message?.duration ?? message?.info?.duration;
   const baseTokens = getTokenInfo(
     normalizedCentralizedRawSdkEventPayloads,
     assistantScopeMessageIds,
-  );
+  ) ?? snapshotTokens;
   const baseDuration = getDuration(
     normalizedCentralizedRawSdkEventPayloads,
     assistantScopeMessageIds,
-  );
+  ) ?? snapshotDuration;
 
   const tokens = isAssistantTurnCollapsed && blockTokens ? blockTokens : baseTokens;
   const duration = isAssistantTurnCollapsed && blockDuration !== undefined ? blockDuration : baseDuration;
@@ -9104,15 +9120,20 @@ const responseBodyChunks = useMemo(() => {
     if (orderedChunks.length > 0) {
       return orderedChunks;
     }
-    return getCentralizedAssistantContentChunksFromRawSdkEventPayloads(
+    const rawChunks = getCentralizedAssistantContentChunksFromRawSdkEventPayloads(
       responseBodyRawSdkEventPayloads,
     );
+    if (rawChunks.length > 0) {
+      return rawChunks;
+    }
+    return snapshotContent.trim().length > 0 ? [snapshotContent] : [];
   }, [
     assistantScopeMessageIds,
     cardMessage,
     responseBodyRawSdkEventPayloads,
     streaming?.content,
     streaming?.hasRenderableContent,
+    snapshotContent,
   ]);
   const visibleResponseBodyChunks = useMemo(() => {
     const renderedQuestionOutputs = new Set(
@@ -11101,23 +11122,16 @@ export const EmptyState = memo(function EmptyState({
   serverError,
   receivedInitState,
   currentSessionId,
-  rawSdkEventPayloadsBySessionId,
 }: {
   serverStatus: AppState["serverStatus"];
   serverError?: string;
   receivedInitState: AppState["receivedInitState"];
   currentSessionId: AppState["currentSessionId"];
-  rawSdkEventPayloadsBySessionId: AppState["rawSdkEventPayloadsBySessionId"];
 }) {
   const iconUri =
     typeof document !== "undefined"
       ? document.getElementById("root")?.dataset.opencodeIconUri
       : undefined;
-
-  const hasCachedCurrentSessionMessages = Boolean(
-    currentSessionId &&
-    (rawSdkEventPayloadsBySessionId?.[currentSessionId]?.length ?? 0) > 0,
-  );
 
   const isConnecting = false;
 
@@ -11214,67 +11228,50 @@ export function MessageStatus({
   );
 }
 
-export const CentralizedDebugPanel = memo(function CentralizedDebugPanel() {
-  if (!config.debug.showCentralizedDebug) {
+export const SdkEventDebugPanel = memo(function SdkEventDebugPanel() {
+  if (!config.debug.showSdkEventDebug) {
     return null;
   }
-  return <CentralizedDebugPanelContents />;
+  return <SdkEventDebugPanelContents />;
 });
 
-const CentralizedDebugPanelContents = memo(function CentralizedDebugPanelContents() {
-  const [copiedDebugPanel, setCopiedDebugPanel] = useState<"centralized" | null>(null);
+const SdkEventDebugPanelContents = memo(function SdkEventDebugPanelContents() {
+  const [copiedDebugPanel, setCopiedDebugPanel] = useState(false);
   const {
     currentSessionId,
-    errorMessages,
-    rawSdkEventPayloadsBySessionId,
+    sdkMessagesBySessionId,
     liveEventStreamBySessionId,
-    subagentsByParentMessageId,
-    subagentDetailsById,
-    receivedInitState,
-    serverStatus,
   } = useAppState(
     (state) => ({
       currentSessionId: state.currentSessionId,
-      errorMessages: state.errorMessages,
-      rawSdkEventPayloadsBySessionId: state.rawSdkEventPayloadsBySessionId,
+      sdkMessagesBySessionId: state.sdkMessagesBySessionId,
       liveEventStreamBySessionId: state.liveEventStreamBySessionId,
-      subagentsByParentMessageId: state.subagentsByParentMessageId,
-      subagentDetailsById: state.subagentDetailsById,
-      receivedInitState: state.receivedInitState,
-      serverStatus: state.serverStatus,
     }),
     shallowEqual,
   );
 
-  const centralizedSessionId = currentSessionId;
-  const rawSdkEventPayloads = centralizedSessionId && Array.isArray(rawSdkEventPayloadsBySessionId?.[centralizedSessionId])
-    ? rawSdkEventPayloadsBySessionId[centralizedSessionId]
+  const sessionId = currentSessionId;
+  const rehydratedSdkMessages = sessionId && Array.isArray(sdkMessagesBySessionId?.[sessionId])
+    ? sdkMessagesBySessionId[sessionId]
     : [];
-  const liveEventStream = centralizedSessionId && Array.isArray(liveEventStreamBySessionId?.[centralizedSessionId])
-    ? liveEventStreamBySessionId[centralizedSessionId]
+  const liveEvents = sessionId && Array.isArray(liveEventStreamBySessionId?.[sessionId])
+    ? liveEventStreamBySessionId[sessionId]
     : [];
-  const centralizedData = {
-    schemaVersion: 1,
-    sessionId: centralizedSessionId,
-    rawEventStream: { events: rawSdkEventPayloads },
-    // Debug-only: populated only while this webview is alive and intentionally
-    // absent after chatHistory rehydrates a session.
-    liveEventStream: { persistence: "client-only", events: liveEventStream },
-    subagents: {
-      summariesByParentMessageId: subagentsByParentMessageId,
-      detailsById: subagentDetailsById,
-    },
+  const debugData = {
+    sessionId,
+    rehydratedSdkMessages,
+    liveEvents,
   };
 
   return (
     <div className="mx-4 my-2 rounded-md border border-oc-border bg-oc-panel overflow-hidden text-[10px] font-mono">
       <div className="flex items-center justify-between bg-oc-panel-hover px-2 py-1 border-b border-oc-border">
-        <span className="font-semibold text-oc-text">Centralized Data (Debug)</span>
+        <span className="font-semibold text-oc-text">SDK Events (Debug)</span>
         <button 
           onClick={() => {
-            navigator.clipboard.writeText(JSON.stringify(centralizedData, null, 2));
-            setCopiedDebugPanel("centralized");
-            setTimeout(() => setCopiedDebugPanel(null), 2000);
+            navigator.clipboard.writeText(JSON.stringify(debugData, null, 2));
+            setCopiedDebugPanel(true);
+            setTimeout(() => setCopiedDebugPanel(false), 2000);
           }}
           className="text-oc-text-muted hover:text-oc-text"
         >
@@ -11282,7 +11279,7 @@ const CentralizedDebugPanelContents = memo(function CentralizedDebugPanelContent
         </button>
       </div>
       <div className="p-2 max-h-48 overflow-y-auto text-oc-text-muted">
-        <pre>{JSON.stringify(centralizedData, null, 2)}</pre>
+        <pre>{JSON.stringify(debugData, null, 2)}</pre>
       </div>
     </div>
   );

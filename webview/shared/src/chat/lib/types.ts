@@ -231,6 +231,9 @@ export interface ReasoningEvent {
   createdAt: number;
   partID?: string;
   messageID?: string;
+  /** Unix-ms timestamps supplied by the SDK reasoning part. */
+  startedAt?: number;
+  endedAt?: number;
   delta?: boolean;
 }
 
@@ -318,6 +321,8 @@ export interface StreamingState {
 
 export interface MessageInfo {
   id?: string;
+  /** Parent user-message ID for an SDK assistant envelope. */
+  parentID?: string;
   agent?: string;
   role?: string;
   model?: { modelID: string; providerID: string };
@@ -491,6 +496,12 @@ export interface MessageStep {
   callID?: string;
   /** Step identity key, mirrors StreamingStep.id */
   id?: string;
+  /** SDK message/session ownership retained for hydrated tool parts. */
+  messageID?: string;
+  sessionID?: string;
+  /** SDK tool execution timestamps in Unix milliseconds. */
+  startedAt?: number;
+  endedAt?: number;
   /** Arrival-order sequence number, mirrors StreamingStep.streamSeq — used to replay interleaved timeline on reload */
   streamSeq?: number;
   /** File path associated with this step, used for deduplication */
@@ -838,7 +849,12 @@ export interface AppState {
   currentSessionId: string | null;
   messages: Message[];
   messagesBySessionId?: Record<string, Message[]>;
-  rawSdkEventPayloadsBySessionId?: Record<string, unknown[]>;
+  /**
+   * LOCKED CONTRACT — copied only from the current OpenCode SDK server
+   * `client.session.messages()` response. This is an in-memory debug mirror,
+   * never persisted and never a source/fallback for rehydration.
+   */
+  sdkMessagesBySessionId?: Record<string, unknown[]>;
   /** Unfiltered live stream mirror for debugging; intentionally never persisted. */
   liveEventStreamBySessionId?: Record<string, unknown[]>;
   liveToastNotificationsBySessionId?: Record<string, import("./toastEvents").CentralizedToastNotification[]>;

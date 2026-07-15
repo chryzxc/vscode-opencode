@@ -25,6 +25,10 @@ const messageHandlerSource = readSource(
   [joinFromRoot("webview", "shared", "src", "chat", "lib", "messageHandler.ts")],
   "messageHandler.ts",
 );
+const chatShellSource = readSource(
+  [joinFromRoot("webview", "shared", "src", "chat", "ChatShell.tsx")],
+  "ChatShell.tsx",
+);
 
 test("messageResponse handler preserves streaming state for non-matching messages", () => {
   // Check that finalMessageId is declared
@@ -148,6 +152,50 @@ test("chatHistory handler should not clear rendered messages during active-sessi
     messageHandlerSource,
     /chatHistory|SET_STREAMING|SET_PROCESSING|hasVisibleStreamingSnapshot/,
     "message handler should preserve streaming state during chat history updates",
+  );
+});
+
+test("empty same-session SDK hydration preserves the locked stop snapshot", () => {
+  assert.match(
+    messageHandlerSource,
+    /shouldPreserveEmptySameSessionSnapshot/,
+    "chatHistory should distinguish a transient empty SDK response from an authoritative empty session",
+  );
+  assert.match(
+    messageHandlerSource,
+    /Ignoring empty SDK hydration snapshot for visible session/,
+    "the preservation path should be observable in webview logs",
+  );
+  assert.match(
+    messageHandlerSource,
+    /CLEAR_LIVE_EVENT_STREAM_DEBUG[\s\S]*Hydration renders the SDK/,
+    "live debug events should clear only after the empty-snapshot guard",
+  );
+});
+
+test("a late stream start cannot reopen a stopped session", () => {
+  assert.match(
+    messageHandlerSource,
+    /Only a new user message\s+\/\/ is allowed to open that session for rendering again\./,
+    "late continuation events must remain blocked after Stop",
+  );
+});
+
+test("tagged server directives are normalized to system messages", () => {
+  assert.match(
+    messageHandlerSource,
+    /const angleTagPattern/,
+    "a leading angle-bracket tag should be recognized during hydration",
+  );
+  assert.match(
+    messageHandlerSource,
+    /hasAngleTagPrefix/,
+    "tagged directives should be normalized to the system role",
+  );
+  assert.match(
+    chatShellSource,
+    /role === "user" \? "user" : role === "system" \? "system" : "assistant"/,
+    "system envelopes should select SystemMessage instead of an assistant card",
   );
 });
 

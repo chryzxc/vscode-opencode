@@ -1403,16 +1403,33 @@ describe('canonicalizeMessagesForRender', () => {
     assert.strictEqual(result[1].role, 'assistant');
   });
 
-  it('should coalesce back-to-back assistant messages into a single burst', () => {
+  it('preserves back-to-back SDK assistant messages as separate envelopes', () => {
     const messages: Message[] = [
       { role: 'user', content: 'hi' },
       { role: 'assistant', content: 'thought...', id: 'a1' },
       { role: 'assistant', content: 'reply!', id: 'a2' }
     ];
     const result = canonicalizeMessagesForRender(messages);
-    assert.strictEqual(result.length, 2);
-    assert.strictEqual(result[1].content, 'reply!');
-    assert.strictEqual(result[1].id, 'a2');
+    assert.strictEqual(result.length, 3);
+    assert.strictEqual(result[1].content, 'thought...');
+    assert.strictEqual(result[1].id, 'a1');
+    assert.strictEqual(result[2].content, 'reply!');
+    assert.strictEqual(result[2].id, 'a2');
+  });
+
+  it('keeps an intermediate edit activity before the final assistant response', () => {
+    const messages: Message[] = [
+      { role: 'user', content: 'edit package.json', id: 'u1', created: 1 },
+      { role: 'assistant', id: 'a-read', created: 2, steps: [{ type: 'tool', title: 'read' }] },
+      { role: 'assistant', id: 'a-edit', created: 3, steps: [{ type: 'tool', title: 'edit' }] },
+      { role: 'assistant', id: 'a-final', created: 4, content: 'Done.' },
+    ];
+
+    const result = canonicalizeMessagesForRender(messages);
+
+    assert.deepStrictEqual(result.map((message) => message.id), [
+      'u1', 'a-read', 'a-edit', 'a-final',
+    ]);
   });
 
   it('should collapse an immediately repeated user+assistant turn', () => {

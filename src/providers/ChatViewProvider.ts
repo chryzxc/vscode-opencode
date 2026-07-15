@@ -95,6 +95,7 @@
  */
 
 import type { FileDiff, SessionPromptData } from "@opencode-ai/sdk" with { "resolution-mode": "import" };
+import type { OutputFormatJsonSchema } from "@opencode-ai/sdk/v2";
 import * as cp from "child_process";
 import * as path from "path";
 import * as vscode from "vscode";
@@ -112,7 +113,12 @@ import { MessageStreamService } from "../services/MessageStreamService";
 import { ModelCapabilitiesService } from "../services/ModelCapabilitiesService";
 import { OpencodeServerManager } from "../services/OpencodeServerManager";
 import { QuotaService } from "../services/QuotaService";
+import {
+  adaptSdkMessages,
+  adaptSubtaskPart as sdkAdaptSubtaskPart,
+} from "../services/SdkMessageAdapter";
 import { SessionService } from "../services/SessionService";
+import { SessionSnapshotLoader } from "../services/SessionSnapshotLoader";
 import { SkillManagerService } from "../services/SkillManagerService";
 import { SkillManagementService } from "../services/SkillManagementService";
 import {
@@ -259,7 +265,16 @@ export class ChatViewProvider
 
   /** Service for monitoring AI platform quota usage */
   private quotaService: QuotaService;
+  private sessionSnapshotLoader: SessionSnapshotLoader;
   private subagentTracker: SubagentTracker;
+  private readonly streamedSubtaskPartsBySessionId = new Map<string, {
+    sessionID: string;
+    messageID?: string;
+    agent?: string;
+    parentSessionId?: string;
+    part: Record<string, unknown>;
+  }>();
+  private readonly pendingSdkSubagentRefreshes = new Set<string>();
   /** Sessions whose persisted live subagents were finalized for this host instance. */
   private recoveredSubagentSessions = new Set<string>();
 
@@ -313,6 +328,7 @@ export class ChatViewProvider
    *  cross-session event leakage when the user switches sessions while a
    *  response is still streaming from the server. */
   private activeStreamSessionId: string | undefined;
+  private turnEpochBySession = new Map<string, number>();
   private pendingStreamWebviewEvents: Array<{ event: unknown; sessionId?: string }> = [];
   private streamWebviewFlushTimer: ReturnType<typeof setTimeout> | undefined;
   private lastStreamPerformanceLogAt = 0;
@@ -322,8 +338,6 @@ export class ChatViewProvider
    */
   private pendingLiveEventDebugEvents: Array<{ event: unknown; sessionId?: string }> = [];
   private liveEventDebugFlushTimer: ReturnType<typeof setTimeout> | undefined;
-  private pendingRawSdkPersistenceBySessionId = new Map<string, unknown[]>();
-  private rawSdkPersistenceFlushTimer: ReturnType<typeof setTimeout> | undefined;
   private currentTodoItems: unknown[] = [];
   private compatibilityWarningsOverride: CompatibilityResult[] | null = null;
 
@@ -405,47 +419,6 @@ export class ChatViewProvider
       return value;
     }
     return `${value.slice(0, limit)}\n\n[Output truncated in the live chat view: ${value.length - limit} characters omitted]`;
-  }
-
-  private buildWebviewStreamEvent(event: unknown, sessionId: string | undefined): unknown {
-    const eventRecord = this.asRecord(event);
-    if (!eventRecord) {
-      return event;
-    }
-    const trimPart = (value: unknown): unknown => {
-      const part = this.asRecord(value);
-      if (!part) return value;
-      const state = this.asRecord(part.state);
-      const metadata = this.asRecord(part.metadata);
-      const trimmedState = state
-        ? {
-            ...state,
-            output: this.truncateStreamToolTextForWebview(state.output),
-            result: this.truncateStreamToolTextForWebview(state.result),
-          }
-        : state;
-      const trimmedMetadata = metadata
-        ? {
-            ...metadata,
-            preview: this.truncateStreamToolTextForWebview(metadata.preview),
-          }
-        : metadata;
-      return {
-        ...part,
-        output: this.truncateStreamToolTextForWebview(part.output),
-        state: trimmedState,
-        metadata: trimmedMetadata,
-      };
-    };
-    const properties = this.asRecord(eventRecord.properties);
-    return {
-      ...eventRecord,
-      sessionId,
-      part: trimPart(eventRecord.part),
-      properties: properties
-        ? { ...properties, part: trimPart(properties.part) }
-        : eventRecord.properties,
-    };
   }
 
   private flushStreamWebviewEvents(): void {
@@ -539,59 +512,6 @@ export class ChatViewProvider
       type: "liveEventStreamDebugBatch",
       events,
     });
-  }
-
-  private enqueueRawSdkEventPersistence(
-    sessionId: string,
-    event: unknown,
-    flushImmediately = false,
-  ): void {
-    const pending = this.pendingRawSdkPersistenceBySessionId.get(sessionId) ?? [];
-    pending.push(event);
-    this.pendingRawSdkPersistenceBySessionId.set(sessionId, pending);
-
-    if (flushImmediately) {
-      this.flushRawSdkEventPersistence();
-      return;
-    }
-
-    if (this.rawSdkPersistenceFlushTimer) {
-      return;
-    }
-
-    this.rawSdkPersistenceFlushTimer = setTimeout(() => {
-      this.flushRawSdkEventPersistence();
-    }, 100);
-  }
-
-  private flushRawSdkEventPersistence(): void {
-    if (this.rawSdkPersistenceFlushTimer) {
-      clearTimeout(this.rawSdkPersistenceFlushTimer);
-      this.rawSdkPersistenceFlushTimer = undefined;
-    }
-
-    if (this.pendingRawSdkPersistenceBySessionId.size === 0) {
-      return;
-    }
-
-    const pendingBySession = this.pendingRawSdkPersistenceBySessionId;
-    this.pendingRawSdkPersistenceBySessionId = new Map<string, unknown[]>();
-
-    for (const [sessionId, events] of pendingBySession.entries()) {
-      if (events.length === 0) {
-        continue;
-      }
-      void this.sessionService.appendRawSdkEventPayloads(
-        sessionId,
-        events,
-      ).catch((error) => {
-        this.logger.error("[CENTRALIZED-TAPE][HOST] raw_event_store_append_failed", {
-          sessionId,
-          eventCount: events.length,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-    }
   }
 
   /**
@@ -701,6 +621,78 @@ export class ChatViewProvider
     }
   }
 
+  private async refreshPendingInteractionsFromSdk(sessionId: string): Promise<void> {
+    if (!sessionId) {
+      return;
+    }
+
+    const extractList = (response: unknown, fallbackKey: "questions" | "permissions"): unknown[] => {
+      if (Array.isArray(response)) {
+        return response;
+      }
+      const responseRecord = this.asRecord(response);
+      if (!responseRecord) {
+        return [];
+      }
+      if (Array.isArray(responseRecord.data)) {
+        return responseRecord.data;
+      }
+      if (Array.isArray(responseRecord[fallbackKey])) {
+        return responseRecord[fallbackKey] as unknown[];
+      }
+      return [];
+    };
+
+    const belongsToSession = (entry: unknown): boolean => {
+      const record = this.asRecord(entry);
+      return this.firstNonEmptyString(record?.sessionID, record?.sessionId) === sessionId;
+    };
+
+    try {
+      const client = await this.serverManager.ensureRunning();
+      let questions: unknown[] = [];
+      let permissions: unknown[] = [];
+
+      try {
+        const questionResponse = await (client as any).question.list();
+        questions = extractList(questionResponse, "questions").filter(belongsToSession);
+      } catch (questionError) {
+        this.logger.warn("Failed to list pending SDK questions", {
+          sessionId,
+          error: questionError instanceof Error ? questionError.message : String(questionError),
+        });
+      }
+
+      try {
+        const permissionResponse = await (client as any).permission.list();
+        permissions = extractList(permissionResponse, "permissions").filter(belongsToSession);
+      } catch (permissionError) {
+        this.logger.warn("Failed to list pending SDK permissions", {
+          sessionId,
+          error: permissionError instanceof Error ? permissionError.message : String(permissionError),
+        });
+      }
+
+      this.view?.webview.postMessage({
+        type: "pendingInteractions",
+        sessionId,
+        questions,
+        permissions,
+      });
+
+      this.logger.debug("Refreshed pending interactions from SDK", {
+        sessionId,
+        questionCount: questions.length,
+        permissionCount: permissions.length,
+      });
+    } catch (error) {
+      this.logger.warn("Failed to refresh pending interactions from SDK", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   private async handleSdkTodoUpdatedEvent(
     event: unknown,
     fallbackSessionId?: string,
@@ -803,7 +795,14 @@ export class ChatViewProvider
     images?: any[];
     agent?: string;
   };
-  private structuredOutputMode: "format" | "outputFormat" | "disabled" = "format";
+  /** OpenCode v2 accepts structured output only through the typed `format` field. */
+  private structuredOutputMode: "format" | "disabled" = "format";
+  /**
+   * A successful prompt is insufficient: OpenCode persists `format` on the
+   * user message and validates it again in `session.messages()`. Cache the
+   * round-trip check so each server lifecycle pays for one no-reply probe.
+   */
+  private structuredOutputFormatCompatibility?: Promise<boolean>;
   private readonly promptDebugBySession = new Map<string, Record<string, unknown>>();
   private readonly structuredValidationFailureCounters = new Map<string, number>();
   private readonly structuredOutputIncompatibleModelKeys = new Set<string>();
@@ -862,6 +861,7 @@ export class ChatViewProvider
     this.logger = createLogger(LoggingCategories.CHAT_VIEW);
     this.streamService = new MessageStreamService(serverManager);
     this.quotaService = new QuotaService();
+    this.sessionSnapshotLoader = new SessionSnapshotLoader(serverManager);
     this.subagentTracker = new SubagentTracker(() => this.selectedModel);
     this.configFilesProvider = new ConfigFilesProvider();
     this.skillManager = new SkillManagerService(context);
@@ -994,10 +994,10 @@ export class ChatViewProvider
     // 8. SessionHandler
     this.sessionHandler = new SessionHandler(
       this.sessionService,
-      this.historyProcessor,
       this.compactionManager,
       this.modelAndAgentManager,
       logger,
+      this.sessionSnapshotLoader,
     );
 
     // 9. StreamEventHandler
@@ -1006,7 +1006,6 @@ export class ChatViewProvider
       this.compactionManager,
       this.diagnosticsLogger,
       this.geminiTokenTracker,
-      this.sessionService,
       logger,
     );
 
@@ -1479,11 +1478,22 @@ export class ChatViewProvider
     }
 
     try {
-      const rawMessages = await this.sessionService.getMessages(childSessionId);
-      const processedMessages = await this.processHistoryMessages(
-        Array.isArray(rawMessages) ? rawMessages : [],
-        childSessionId,
-      );
+      let processedMessages: any[];
+      try {
+        const sdkMessages = await this.sessionSnapshotLoader.loadMessagesOnly(childSessionId);
+        processedMessages = adaptSdkMessages(sdkMessages);
+      } catch (sdkError) {
+        this.logger.warn("SDK child session transcript load failed; falling back", {
+          subagentId,
+          childSessionId,
+          error: sdkError instanceof Error ? sdkError.message : String(sdkError),
+        });
+        const rawMessages = await this.sessionService.getMessages(childSessionId);
+        processedMessages = await this.processHistoryMessages(
+          Array.isArray(rawMessages) ? rawMessages : [],
+          childSessionId,
+        );
+      }
 
       const conversationEvents = this.buildAssistantConversationEvents(
         processedMessages,
@@ -1655,10 +1665,251 @@ export class ChatViewProvider
     return events;
   }
 
-  /**
-   * Wrapper: Load session
-   * Loads messages from service and sends to webview
-   */
+  private markTurnStreamStarted(sessionId: string): void {
+    const currentEpoch = (this.turnEpochBySession.get(sessionId) ?? 0) + 1;
+    this.turnEpochBySession.set(sessionId, currentEpoch);
+  }
+
+  private async schedulePostTurnSdkRefresh(sessionId: string, _messageId?: string): Promise<void> {
+    const epoch = this.turnEpochBySession.get(sessionId) ?? 0;
+    // Small delay to let the server finalize the message.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    // Check if a new turn started during the delay.
+    if (this.turnEpochBySession.get(sessionId) !== epoch) return;
+
+    try {
+      // A complete session snapshot is cheap compared with replaying a raw
+      // event tape and uses the established chatHistory protocol, avoiding a
+      // second, partially handled finalization message type.
+      const history = await this.loadSdkRenderableHistory(sessionId);
+      if (!history.available) {
+        this.logger.warn("Post-turn SDK refresh skipped: snapshot unavailable", {
+          sessionId,
+        });
+        return;
+      }
+      this.view?.webview.postMessage({
+        type: "chatHistory",
+        sessionId,
+        messages: history.messages,
+        sdkMessages: history.sdkMessages,
+        contextInputTokens: history.contextInputTokens,
+        processingSessionIds: this.getEffectiveProcessingSessionIds(),
+      });
+      await this.refreshPendingInteractionsFromSdk(sessionId);
+    } catch (err) {
+      this.logger.warn("Post-turn SDK refresh failed", {
+        sessionId,
+        error: String(err),
+      });
+    }
+  }
+
+  private captureStreamedSubtaskPart(
+    parentSessionId: string | undefined,
+    properties: Record<string, unknown>,
+    part: Record<string, unknown>,
+  ): void {
+    if ((typeof part?.type === "string" ? part.type.toLowerCase() : "") !== "subtask") {
+      return;
+    }
+    const childSessionId = this.firstNonEmptyString(part.sessionID, part.sessionId, part.childSessionId);
+    if (!childSessionId) {
+      return;
+    }
+    const info = this.asRecord(properties.info) || {};
+    this.streamedSubtaskPartsBySessionId.set(childSessionId, {
+      sessionID: childSessionId,
+      messageID: this.firstNonEmptyString(part.messageID, part.messageId, info.id),
+      agent: this.firstNonEmptyString(part.agent),
+      parentSessionId,
+      part: { ...part },
+    });
+  }
+
+  private scheduleSdkSubagentChildrenRefresh(parentSessionId: string): void {
+    const hasSubtaskForParent = Array.from(this.streamedSubtaskPartsBySessionId.values()).some(
+      (metadata) => metadata.parentSessionId === parentSessionId,
+    );
+    if (!hasSubtaskForParent || this.pendingSdkSubagentRefreshes.has(parentSessionId)) {
+      return;
+    }
+
+    this.pendingSdkSubagentRefreshes.add(parentSessionId);
+    setTimeout(() => {
+      void this.refreshSubagentsFromSdkChildren(parentSessionId).finally(() => {
+        this.pendingSdkSubagentRefreshes.delete(parentSessionId);
+      });
+    }, 200);
+  }
+
+  private async refreshSubagentsFromSdkChildren(parentSessionId: string): Promise<void> {
+    try {
+      const snapshot = await this.sessionSnapshotLoader.loadSnapshot(parentSessionId);
+      const childrenById = new Map<string, any>();
+      for (const child of snapshot.children ?? []) {
+        const childSession = child?.session;
+        if (typeof childSession?.id === "string" && childSession.id.length > 0) {
+          childrenById.set(childSession.id, childSession);
+        }
+      }
+
+      if (childrenById.size === 0) {
+        return;
+      }
+
+      const detailsById: Record<string, Record<string, unknown>> = {};
+      const subagentDetails: Record<string, unknown>[] = [];
+      const subagentsByParentMessageId: Record<string, Record<string, unknown>[]> = {};
+
+      for (const sdkMessage of snapshot.messages ?? []) {
+        const info = sdkMessage?.info as any;
+        const parts = Array.isArray(sdkMessage?.parts) ? sdkMessage.parts : [];
+        for (const candidatePart of parts) {
+          const subtaskPart = candidatePart as any;
+          if (subtaskPart?.type !== "subtask") {
+            continue;
+          }
+          const childSessionId = this.firstNonEmptyString(subtaskPart.sessionID, subtaskPart.sessionId);
+          const childSession = childSessionId ? childrenById.get(childSessionId) : undefined;
+          if (!childSessionId || !childSession) {
+            continue;
+          }
+
+          const baseDetail = sdkAdaptSubtaskPart(subtaskPart, info);
+          const detail = this.enrichSdkSubtaskDetail(baseDetail as any, subtaskPart, childSession, parentSessionId);
+          detailsById[detail.id as string] = detail;
+          subagentDetails.push(detail);
+          const parentMessageId = this.firstNonEmptyString(detail.parentMessageId, subtaskPart.messageID, info?.id);
+          if (parentMessageId) {
+            subagentsByParentMessageId[parentMessageId] = [
+              ...(subagentsByParentMessageId[parentMessageId] ?? []),
+              detail,
+            ];
+          }
+        }
+      }
+
+      if (subagentDetails.length === 0) {
+        return;
+      }
+
+      this.view?.webview.postMessage({
+        type: "subagentHydrationUpdate",
+        sessionId: parentSessionId,
+        subagentDetails,
+      });
+      this.view?.webview.postMessage({
+        type: "subagentUpdate",
+        sessionId: parentSessionId,
+        detailsById,
+        subagentDetailsById: detailsById,
+        subagentsByParentMessageId,
+      });
+    } catch (error) {
+      this.logger.warn("SDK child-session subagent refresh failed", {
+        sessionId: parentSessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private enrichSdkSubtaskDetail(
+    baseDetail: Record<string, unknown>,
+    part: Record<string, unknown>,
+    childSession: any,
+    parentSessionId: string,
+  ): Record<string, unknown> {
+    const childTime = this.asRecord(childSession?.time) || {};
+    const childModel = this.asRecord(childSession?.model) || {};
+    const partModel = this.asRecord(part?.model) || {};
+    const title = this.firstNonEmptyString(
+      childSession?.title,
+      part.description,
+      part.prompt,
+      childSession?.id,
+    ) || "Subagent";
+    const status = typeof childTime.completed === "number"
+      ? "done"
+      : typeof childTime.updated === "number"
+        ? "running"
+        : this.normalizeSubagentStatus(baseDetail.status);
+
+    return {
+      ...baseDetail,
+      id: this.firstNonEmptyString(baseDetail.id, childSession?.id) || title,
+      name: title,
+      title,
+      parentSessionId,
+      parentMessageId: this.firstNonEmptyString(baseDetail.parentMessageId, part.messageID),
+      childSessionId: childSession?.id,
+      agentId: this.firstNonEmptyString(baseDetail.agentId, part.agent),
+      agent: this.firstNonEmptyString(part.agent, baseDetail.agentId),
+      providerID: this.firstNonEmptyString(childModel.providerID, partModel.providerID, baseDetail.providerID),
+      modelID: this.firstNonEmptyString(childModel.modelID, partModel.modelID, baseDetail.modelID),
+      model: childSession?.model ?? part.model,
+      status,
+      latestActivity: this.firstNonEmptyString(childSession?.summary, baseDetail.latestActivity, title),
+      tokens: childSession?.tokens,
+      cost: childSession?.cost,
+      summary: childSession?.summary,
+      createdAt: typeof childTime.created === "number" ? childTime.created : undefined,
+      updatedAt: typeof childTime.updated === "number" ? childTime.updated : undefined,
+      completedAt: typeof childTime.completed === "number" ? childTime.completed : undefined,
+    };
+  }
+
+  private isTerminalStreamState(
+    eventType: string,
+    properties: Record<string, unknown>,
+    info: Record<string, unknown>,
+  ): boolean {
+    const terminalEventTypes = new Set([
+      "message.complete",
+      "message.completed",
+      "message.error",
+      "message.aborted",
+      "session.completed",
+      "session.error",
+      "error",
+    ]);
+    if (terminalEventTypes.has(eventType)) {
+      return true;
+    }
+
+    const normalize = (value: unknown): string | undefined =>
+      typeof value === "string" ? value.trim().toLowerCase() : undefined;
+    const truthyTerminal = (value: unknown): boolean =>
+      value === true ||
+      ["true", "done", "stop", "complete", "completed", "success", "finished", "finish", "error", "aborted", "abort", "idle"].includes(normalize(value) || "");
+
+    if (eventType === "session.status") {
+      const status = normalize(
+        properties.status ??
+        properties.state ??
+        (properties.session as Record<string, unknown> | undefined)?.status ??
+        (properties.info as Record<string, unknown> | undefined)?.status,
+      );
+      return status === "idle";
+    }
+
+    if (eventType !== "message.updated") {
+      return false;
+    }
+
+    return (
+      truthyTerminal(info.finish) ||
+      truthyTerminal(info.completed) ||
+      truthyTerminal(info.error) ||
+      truthyTerminal(info.aborted) ||
+      truthyTerminal(properties.finish) ||
+      truthyTerminal(properties.completed) ||
+      truthyTerminal(properties.error) ||
+      truthyTerminal(properties.aborted)
+    );
+  }
+
   private async handleLoadSession(sessionId: string): Promise<void> {
     const flow = log.startFeatureFlow('LoadSession', { sessionId });
 
@@ -1700,7 +1951,7 @@ export class ChatViewProvider
       // ============================================================================
 
       // Step 1: Load and process messages for the new session
-      const sessionHistory = await this.loadCentralizedRenderableHistory(
+      const sessionHistory = await this.loadSdkRenderableHistory(
         sessionId,
       );
       const messages = sessionHistory.messages;
@@ -1732,11 +1983,9 @@ export class ChatViewProvider
         type: "chatHistory",
         sessionId: sessionId,
         messages: messages,
+        sdkMessages: sessionHistory.sdkMessages,
         contextInputTokens: sessionHistory.contextInputTokens,
         
-        rawEventStream: { events: sessionHistory.events },
-        subagents: sessionHistory.subagents,
-        subagentsRecoveredAfterRestart: sessionHistory.subagentsRecoveredAfterRestart,
         processingSessionIds: this.getEffectiveProcessingSessionIds(),
       });
       await this.compactionManager.sendCompactionViewStateForMessages(
@@ -1763,6 +2012,7 @@ export class ChatViewProvider
         todoItems: [],
       });
       void this.refreshSdkTodosForSession(this.currentSessionId);
+      void this.refreshPendingInteractionsFromSdk(sessionId);
 
       const sessionThinkingLevel =
         this.modelAndAgentManager.getEffectiveThinkingLevel(sessionId);
@@ -2418,7 +2668,7 @@ export class ChatViewProvider
   /**
    * Structured output methods - delegate to StructuredOutputProcessor
    */
-  private getStructuredOutputFormat(): Record<string, unknown> {
+  private getStructuredOutputFormat(): OutputFormatJsonSchema {
     return this.structuredOutputProcessor.getStructuredOutputFormat();
   }
 
@@ -3033,25 +3283,23 @@ export class ChatViewProvider
             // Fetch and send chat history and sessions list
             if (currentSession) {
               this.subagentTracker.setActiveSession(currentSession.id);
-              const sessionHistory = await this.loadCentralizedRenderableHistory(
+              const sessionHistory = await this.loadSdkRenderableHistory(
                 currentSession.id,
               );
               const messages = sessionHistory.messages;
               this.logHistoryRenderDiagnostics(
                 "webview.ready.current-session",
                 currentSession.id,
-                sessionHistory.events,
+                [],
                 messages,
               );
               this.view?.webview.postMessage({
                 type: "chatHistory",
                 sessionId: currentSession.id,
                 messages: messages,
+                sdkMessages: sessionHistory.sdkMessages,
                 contextInputTokens: sessionHistory.contextInputTokens,
                 
-                rawEventStream: { events: sessionHistory.events },
-                subagents: sessionHistory.subagents,
-                subagentsRecoveredAfterRestart: sessionHistory.subagentsRecoveredAfterRestart,
                 processingSessionIds: this.getEffectiveProcessingSessionIds(),
               });
               await this.sendPersistedCompactionViewState(currentSession.id);
@@ -3165,6 +3413,7 @@ export class ChatViewProvider
             if (replySessionId) {
               this.processingSessionIds.add(replySessionId);
               this.activeStreamSessionId = replySessionId;
+              this.markTurnStreamStarted(replySessionId);
               this.sendProcessingSessionsUpdate();
             }
             let answerMessageId: string | undefined;
@@ -3236,6 +3485,10 @@ export class ChatViewProvider
                     answers,
                     directory: this.getWorkspaceDirectory(),
                   });
+                  const refreshSessionId = replySessionId || this.currentSessionId;
+                  if (refreshSessionId) {
+                    void this.refreshPendingInteractionsFromSdk(refreshSessionId);
+                  }
                   
                   this.logger.error("[DEBUG][HOST] Successfully executed question.reply");
                 }
@@ -3258,6 +3511,10 @@ export class ChatViewProvider
                     answers,
                     directory: this.getWorkspaceDirectory(),
                   });
+                  const refreshSessionId = replySessionId || this.currentSessionId;
+                  if (refreshSessionId) {
+                    void this.refreshPendingInteractionsFromSdk(refreshSessionId);
+                  }
                   this.logger.error("[DEBUG][HOST] question.reply to pre-answer DB succeeded", { requestID });
                 } catch (replyErr) {
                   // Non-fatal: if it fails (e.g. already answered), we still try to kick the loop.
@@ -3268,6 +3525,7 @@ export class ChatViewProvider
                 // so SSE events are properly forwarded to the webview.
                 this.processingSessionIds.add(replySessionId);
                 this.activeStreamSessionId = replySessionId;
+                this.markTurnStreamStarted(replySessionId);
                 this.sendProcessingSessionsUpdate();
                 this.logger.error("[DEBUG][HOST] Processing state set, kicking agent loop via promptAsync", { replySessionId });
 
@@ -3338,29 +3596,6 @@ export class ChatViewProvider
           }
           break;
         }
-        case "persistRawSdkEventPayload": {
-          const sessionId = this.firstNonEmptyString(
-            message.sessionId,
-            this.currentSessionId,
-          );
-          if (!sessionId || typeof message.event === "undefined") {
-            break;
-          }
-          this.logger.info("[CENTRALIZED-TAPE][HOST] persist_raw_sdk_event_requested", {
-            sessionId,
-            eventType: typeof (message.event as Record<string, unknown>)?.type === "string"
-              ? (message.event as Record<string, unknown>).type
-              : undefined,
-          });
-          const eventRecord = this.asRecord(message.event);
-          await this.sessionService.appendRawSdkEventPayload(
-            sessionId,
-            eventRecord
-              ? { ...eventRecord, sessionId }
-              : message.event,
-          );
-          break;
-        }
         case "newSession":
         case "createSession": {
           const correlationId = this.logger.startFeatureFlow('create-session');
@@ -3396,9 +3631,8 @@ export class ChatViewProvider
               type: "chatHistory",
               sessionId: createdSession.id,
               messages: [],
+              sdkMessages: [],
               rawMessages: [],
-              rawEventStream: { events: [] },
-              subagents: { summariesByParentMessageId: {}, detailsById: {} },
             });
 
             // Non-blocking follow-up work:
@@ -3928,25 +4162,23 @@ export class ChatViewProvider
             message.retryWithoutStructuredOutput === true;
           // Reload chat history to show clean state before retry
           try {
-            const sessionHistory = await this.loadCentralizedRenderableHistory(
+            const sessionHistory = await this.loadSdkRenderableHistory(
               retrySessionId,
             );
             const messages = sessionHistory.messages;
             this.logHistoryRenderDiagnostics(
               "retryLastMessage.reload",
               retrySessionId,
-              sessionHistory.events,
+              [],
               messages,
             );
             this.view?.webview.postMessage({
               type: "chatHistory",
               sessionId: retrySessionId,
               messages: messages,
+              sdkMessages: sessionHistory.sdkMessages,
               contextInputTokens: sessionHistory.contextInputTokens,
               
-              rawEventStream: { events: sessionHistory.events },
-              subagents: sessionHistory.subagents,
-              subagentsRecoveredAfterRestart: sessionHistory.subagentsRecoveredAfterRestart,
               processingSessionIds: this.getEffectiveProcessingSessionIds(),
             });
           } catch (err) {
@@ -4161,6 +4393,27 @@ export class ChatViewProvider
           rawPropertiesKeys: Object.keys(props),
         });
       }
+      if (eventType === "permission.asked" || eventType === "permission.request") {
+        const props = (eventRec?.properties as Record<string, unknown> | undefined) || {};
+        const sessionId = this.firstNonEmptyString(
+          props.sessionID,
+          props.sessionId,
+          this.activeStreamSessionId,
+          this.currentSessionId,
+        );
+        this.logger.debug("SDK permission request received", {
+          sessionId,
+          permissionId:
+            typeof props.id === "string"
+              ? props.id
+              : typeof props.requestID === "string"
+                ? props.requestID
+                : undefined,
+          permission: typeof props.permission === "string" ? props.permission : undefined,
+          patternCount: Array.isArray(props.patterns) ? props.patterns.length : 0,
+          rawPropertiesKeys: Object.keys(props),
+        });
+      }
       // Always run subagent tracking before any session-scoped early return so child
       // session events are captured regardless of which session is active in the UI.
       const subagentUpdate = this.subagentTracker.consumeStreamEvent(event);
@@ -4177,17 +4430,6 @@ export class ChatViewProvider
           ...subagentUpdate,
         });
         this.sendProcessingSessionsUpdate();
-        const subagentSessionId =
-          subagentParentSessionId || this.currentSessionId;
-        if (subagentSessionId) {
-          void this.sessionService
-            .persistCentralizedSubagentProjection(subagentSessionId, subagentUpdate)
-            .catch((persistError) => {
-              this.logger.warn("Failed to persist centralized subagent projection", {
-                err: persistError,
-              });
-            });
-        }
       }
 
       // The client-only mirror is only needed for live-only UI events that
@@ -4220,23 +4462,6 @@ export class ChatViewProvider
             this.currentSessionId,
           properties: (event as Record<string, unknown>).properties,
         });
-      }
-
-      // Persist the raw event before any presentation/session-processing gate.
-      // Subagent tracker updates intentionally run ahead of those gates; keeping
-      // persistence here prevents the UI from showing a live subagent that is
-      // absent from the centralized event stream after an early return below.
-      const persistenceSessionId =
-        subagentParentSessionId ||
-        eventSessionId ||
-        this.activeStreamSessionId ||
-        this.currentSessionId;
-      if (persistenceSessionId) {
-        this.enqueueRawSdkEventPersistence(
-          persistenceSessionId,
-          { ...event, sessionId: persistenceSessionId },
-          isTerminalLifecycleEvent,
-        );
       }
 
       // Sync server-generated session title from session.updated events.
@@ -4299,8 +4524,16 @@ export class ChatViewProvider
 
       const shouldBypassProcessingGate =
         eventType === "question.asked" ||
+        eventType === "permission.asked" ||
+        eventType === "permission.request" ||
         eventType === "message.updated" ||
+        eventType === "message.complete" ||
         eventType === "message.completed" ||
+        eventType === "message.error" ||
+        eventType === "message.aborted" ||
+        eventType === "session.completed" ||
+        eventType === "session.error" ||
+        eventType === "error" ||
         eventType === "session.diff" ||
         eventType === "session.status";
       if (
@@ -4442,6 +4675,19 @@ export class ChatViewProvider
         this.currentSessionId;
 
       const info = (properties?.info as Record<string, unknown> | undefined) || {};
+      const messageId =
+        typeof info?.id === "string"
+          ? info.id
+          : typeof properties?.messageId === "string"
+            ? properties.messageId
+            : typeof properties?.messageID === "string"
+              ? properties.messageID
+              : undefined;
+      const isTerminalState = this.isTerminalStreamState(eventType, properties, info);
+      this.captureStreamedSubtaskPart(resolvedSessionId, properties, part);
+      if (resolvedSessionId && isTerminalState) {
+        this.scheduleSdkSubagentChildrenRefresh(resolvedSessionId);
+      }
       const preRenderPreview =
         (typeof part?.delta === "string" && part.delta) ||
         (typeof part?.text === "string" && part.text) ||
@@ -4457,14 +4703,7 @@ export class ChatViewProvider
           sessionId: resolvedSessionId,
           activeStreamSessionId: this.activeStreamSessionId,
           currentSessionId: this.currentSessionId,
-          messageId:
-            typeof info?.id === "string"
-              ? info.id
-              : typeof properties?.messageId === "string"
-                ? properties.messageId
-                : typeof properties?.messageID === "string"
-                  ? properties.messageID
-                  : undefined,
+          messageId,
           partType: typeof part?.type === "string" ? part.type : undefined,
           hasStructuredOutput: Boolean((enrichedEvent as any)?.structuredOutput),
           preview:
@@ -4474,24 +4713,15 @@ export class ChatViewProvider
         });
       }
 
-      const eventForWebview = this.buildWebviewStreamEvent(
-        enrichedEvent,
-        resolvedSessionId,
-      );
+      // Preserve the SDK event object exactly. Session ownership travels in
+      // the surrounding webview protocol envelope, not as a mutation on the
+      // OpenCode event itself.
+      const eventForWebview = event;
       const shouldFlushWebviewImmediately =
         eventType === "question.asked" ||
-        eventType === "message.completed" ||
-        eventType === "session.completed" ||
-        eventType === "session.error" ||
-        eventType === "error" ||
-        eventType === "message.error" ||
-        (
-          eventType === "message.updated" &&
-          (() => {
-            const fin = info?.finish;
-            return fin === true || (typeof fin === "string" && ["true", "done", "stop", "complete", "completed", "success", "finished", "error"].includes(fin.trim().toLowerCase()));
-          })()
-        ) ||
+        eventType === "permission.asked" ||
+        eventType === "permission.request" ||
+        isTerminalState ||
         // Tool/progress activity is the first visible evidence of work. Do not
         // leave it behind the 50 ms presentation batch while the raw tape has
         // already been persisted; the webview must be able to replace its
@@ -4505,31 +4735,22 @@ export class ChatViewProvider
         resolvedSessionId,
         shouldFlushWebviewImmediately,
       );
-      if (resolvedSessionId) {
-        const centralizedEventPayload = {
-          ...enrichedEvent,
-          sessionId: resolvedSessionId,
-        };
-        if (this.shouldVerboseStreamDebug()) {
-          this.logger.debug("[CENTRALIZED-TAPE][HOST] raw_event_before_store", {
-            sessionId: resolvedSessionId,
-            eventType: typeof (centralizedEventPayload as Record<string, unknown>)?.type === "string"
-              ? (centralizedEventPayload as Record<string, unknown>).type
-              : event.type || "unknown",
-            partType: typeof part?.type === "string" ? part.type : undefined,
-            rawSource: typeof rawEvent === "object" && rawEvent !== null
-              ? typeof (rawEvent as Record<string, unknown>).source === "string"
-                ? (rawEvent as Record<string, unknown>).source
-                : undefined
-              : undefined,
-          });
-        }
-        this.enqueueRawSdkEventPersistence(
-          resolvedSessionId,
-          centralizedEventPayload,
-          shouldFlushWebviewImmediately,
+      if (
+        eventType === "question.asked" ||
+        eventType === "permission.asked" ||
+        eventType === "permission.request"
+      ) {
+        const sessionId = this.firstNonEmptyString(
+          properties.sessionID,
+          properties.sessionId,
+          this.activeStreamSessionId,
+          this.currentSessionId,
         );
-      } else {
+        if (sessionId) {
+          void this.refreshPendingInteractionsFromSdk(sessionId);
+        }
+      }
+      if (!resolvedSessionId) {
         this.logger.warn("[CENTRALIZED-TAPE][HOST] skipped_raw_event_without_session", {
           eventType: typeof (enrichedEvent as Record<string, unknown>)?.type === "string"
             ? (enrichedEvent as Record<string, unknown>).type
@@ -4539,18 +4760,8 @@ export class ChatViewProvider
           hasRawEvent: typeof rawEvent !== "undefined",
         });
       }
-      if (resolvedSessionId && (
-        isTerminalLifecycleEvent || (
-          eventType === "message.updated" && (
-            (() => {
-              const props = (eventRec?.properties as Record<string, unknown> | undefined) || {};
-              const info = (props?.info as Record<string, unknown> | undefined) || {};
-              const fin = info?.finish;
-              return fin === true || (typeof fin === "string" && ["true","done","stop","complete","completed","success","finished","error"].includes(fin.trim().toLowerCase()));
-            })()
-          )
-        )
-      )) {
+      if (resolvedSessionId && isTerminalState) {
+        void this.schedulePostTurnSdkRefresh(resolvedSessionId, messageId);
         this.processingSessionIds.delete(resolvedSessionId);
         if (this.activeStreamSessionId === resolvedSessionId) {
           this.activeStreamSessionId = undefined;
@@ -4688,7 +4899,6 @@ export class ChatViewProvider
       }
       this.flushStreamWebviewEvents();
       this.flushLiveEventDebugEvents();
-      this.flushRawSdkEventPersistence();
       this.isBootstrappingWebview = false;
       this.hasInitializedWebview = false;
       this.sessionsListRequestVersion = 0;
@@ -4807,83 +5017,51 @@ export class ChatViewProvider
     return obj;
   }
 
-  private async loadCentralizedRenderableHistory(sessionId: string): Promise<{
-    events: unknown[];
-    subagents: import("../services/SessionService").CentralizedSubagentProjection;
+  private async loadSdkRenderableHistory(sessionId: string): Promise<{
+    /** False only when the SDK request itself failed; an empty session is available. */
+    available: boolean;
     messages: any[];
+    sdkMessages: unknown[];
     /** Latest SDK-reported context size for the session's most recent assistant turn. */
     contextInputTokens?: number;
-    subagentsRecoveredAfterRestart: boolean;
   }> {
-    this.logger.debug(`[loadCentralizedRenderableHistory] START sessionId=${sessionId}`);
+    this.logger.debug(`[loadSdkRenderableHistory] START sessionId=${sessionId}`);
     const start = Date.now();
     try {
-      // Fetch the SDK session messages independently of the renderable event
-      // tape. The event tape is optimized for UI hydration, while the SDK
-      // message record's `info.tokens.input` is the authoritative context size.
-      const contextInputTokens =
-        await this.sessionService.getLatestContextInputTokens(sessionId);
-      let rawSessionPayloads = await this.sessionService.loadCentralizedSessionData(
-        sessionId,
-      );
-      if (!this.recoveredSubagentSessions.has(sessionId)) {
-        rawSessionPayloads = {
-          ...rawSessionPayloads,
-          subagents: await this.sessionService.cancelStaleSubagentsAfterExtensionRestart(sessionId),
-        };
-        this.recoveredSubagentSessions.add(sessionId);
-      }
-      const subagentsRecoveredAfterRestart = this.recoveredSubagentSessions.has(sessionId);
-      
-      const rawArray = Array.isArray(rawSessionPayloads.rawEventStream.events)
-        ? rawSessionPayloads.rawEventStream.events
-        : [];
-      
-      this.logger.debug(`[loadCentralizedRenderableHistory] Loaded ${rawArray.length} items from disk in ${Date.now() - start}ms`);
+      // LOCKED CONTRACT — REHYDRATION SOURCE OF TRUTH
+      // Hydrate directly from the unmodified OpenCode SDK server
+      // `session.messages()` response. The result is adapted only at the
+      // webview boundary; never replace this with centralized event
+      // persistence, SessionService caches, or webview-local data.
+      const sdkMessages = await this.sessionSnapshotLoader.loadMessagesOnly(sessionId);
+      const messages = adaptSdkMessages(sdkMessages);
+      const latestAssistantMessage = [...sdkMessages]
+        .reverse()
+        .find((message) => message.info.role === "assistant");
+      const contextInputTokens = latestAssistantMessage?.info.role === "assistant"
+        ? latestAssistantMessage.info.tokens.input
+        : undefined;
 
-      const t1 = Date.now();
-      const safeRawSdkEventPayloads = this.truncateLargeStrings(rawArray);
-      this.logger.debug(`[loadCentralizedRenderableHistory] Truncated arrays in ${Date.now() - t1}ms`);
-
-      const t2 = Date.now();
-      const messages = await this.processHistoryMessages(
-        safeRawSdkEventPayloads,
+      this.logger.debug("[SDK-DEBUG][HOST] loaded_renderable_history", {
         sessionId,
-      );
-      const cancelledDetailsById = new Map(
-        Object.entries(rawSessionPayloads.subagents.detailsById)
-          .filter(([, detail]) => detail?.status === "cancelled"),
-      );
-      for (const message of messages) {
-        if (!Array.isArray(message?.subagents)) continue;
-        message.subagents = message.subagents.map((subagent: any) => {
-          const cancelledDetail = cancelledDetailsById.get(subagent?.id);
-          return cancelledDetail ? { ...subagent, ...cancelledDetail } : subagent;
-        });
-      }
-      this.logger.debug(`[loadCentralizedRenderableHistory] Processed ${messages.length} messages in ${Date.now() - t2}ms`);
-
-      this.logger.debug("[CENTRALIZED-TAPE][HOST] loaded_renderable_history", {
-        sessionId,
-        rawSdkEventCount: safeRawSdkEventPayloads.length,
+        sdkMessageCount: sdkMessages.length,
         renderableMessageCount: messages.length,
+        durationMs: Date.now() - start,
       });
 
       return {
-        events: safeRawSdkEventPayloads,
-        subagents: rawSessionPayloads.subagents,
+        available: true,
         messages,
+        sdkMessages,
         contextInputTokens,
-        subagentsRecoveredAfterRestart,
       };
     } catch (err: any) {
-      this.logger.error(`[loadCentralizedRenderableHistory] ERROR: ${err.message}`, { stack: err.stack });
+      this.logger.error(`[loadSdkRenderableHistory] ERROR: ${err.message}`, { stack: err.stack });
       return {
-        events: [],
-        subagents: { summariesByParentMessageId: {}, detailsById: {} },
+        available: false,
         messages: [],
+        sdkMessages: [],
         contextInputTokens: undefined,
-        subagentsRecoveredAfterRestart: false,
       };
     }
   }
@@ -5133,6 +5311,101 @@ export class ChatViewProvider
     return mentionsFormat && mentionsUnsupported;
   }
 
+  private structuredFormatValidationError(error: unknown): boolean {
+    const text = JSON.stringify(error || "").toLowerCase();
+    return (
+      text.includes("outputformatjsonschema") ||
+      text.includes("schema rejection") ||
+      this.isStructuredFormatUnsupportedError(error)
+    );
+  }
+
+  /**
+   * Verify the actual server round trip before we persist structured output on
+   * a user session. This uses `noReply`, so it neither invokes a model nor
+   * spends tokens. It deliberately uses the same `format` sent by real prompts.
+   */
+  private ensureStructuredOutputFormatCompatibility(client: any): Promise<boolean> {
+    if (this.structuredOutputFormatCompatibility) {
+      return this.structuredOutputFormatCompatibility;
+    }
+
+    this.structuredOutputFormatCompatibility = (async () => {
+      const workspaceDirectory = this.getWorkspaceDirectory();
+      let probeSessionId: string | undefined;
+
+      try {
+        const created = await client.session.create({
+          ...(workspaceDirectory ? { directory: workspaceDirectory } : {}),
+          title: "OpenCode structured-output compatibility probe",
+        });
+        probeSessionId = this.firstNonEmptyString(created?.data?.id);
+        if (!probeSessionId || created?.error) {
+          this.logger.warn("Structured-output compatibility probe could not create a session", {
+            error: created?.error,
+          });
+          return true;
+        }
+
+        const prompt = await client.session.prompt({
+          sessionID: probeSessionId,
+          ...(workspaceDirectory ? { directory: workspaceDirectory } : {}),
+          noReply: true,
+          parts: [{ type: "text", text: "SDK compatibility probe" }],
+          format: this.getStructuredOutputFormat(),
+        });
+        if (prompt?.error) {
+          if (this.structuredFormatValidationError(prompt.error)) {
+            this.logger.warn("OpenCode rejected the structured-output format during prompt validation", {
+              error: prompt.error,
+            });
+            return false;
+          }
+          // Do not disable a working feature for a transient probe failure.
+          this.logger.warn("Structured-output compatibility probe prompt failed unexpectedly", {
+            error: prompt.error,
+          });
+          return true;
+        }
+
+        const messages = await client.session.messages({
+          sessionID: probeSessionId,
+          ...(workspaceDirectory ? { directory: workspaceDirectory } : {}),
+        });
+        if (messages?.error && this.structuredFormatValidationError(messages.error)) {
+          this.logger.warn("OpenCode rejected the persisted structured-output format during session rehydration", {
+            error: messages.error,
+          });
+          return false;
+        }
+        return true;
+      } catch (error) {
+        // A probe must never prevent a normal user prompt because the server
+        // may be reconnecting. Known validator failures are handled above.
+        this.logger.warn("Structured-output compatibility probe failed unexpectedly", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return true;
+      } finally {
+        if (probeSessionId) {
+          try {
+            await client.session.delete({
+              sessionID: probeSessionId,
+              ...(workspaceDirectory ? { directory: workspaceDirectory } : {}),
+            });
+          } catch (error) {
+            this.logger.warn("Failed to clean up structured-output compatibility probe session", {
+              sessionId: probeSessionId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+      }
+    })();
+
+    return this.structuredOutputFormatCompatibility;
+  }
+
   private parseSlashSkillInvocation(text: string): { name: string; request: string } | null {
     const trimmed = text.trim();
     if (!trimmed.startsWith("/")) {
@@ -5332,20 +5605,24 @@ export class ChatViewProvider
       return callPrompt(body as Record<string, unknown>);
     }
 
-    const withSchema = (
-      mode: "format" | "outputFormat",
-    ): Record<string, unknown> => ({
+    if (!(await this.ensureStructuredOutputFormatCompatibility(client))) {
+      this.structuredOutputMode = "disabled";
+      this.logger.warn(
+        "OpenCode server rejected structured output during the SDK rehydration probe. Falling back to plain text before sending the user prompt.",
+      );
+      return callPrompt(body as Record<string, unknown>);
+    }
+
+    // `outputFormat` was a legacy, untyped compatibility path. Never send it:
+    // the SDK server persists this field on the user message and validates it
+    // again when `session.messages()` rehydrates the session.
+    const withSchema = (): Record<string, unknown> => ({
       ...(body as Record<string, unknown>),
-      [mode]: schema,
+      format: schema,
     });
 
-    const primaryMode: "format" | "outputFormat" =
-      this.structuredOutputMode === "outputFormat"
-        ? "outputFormat"
-        : "format";
-
     // Try structured output with 1 retry (handled by API internally via retryCount)
-    const attempt = await callPrompt(withSchema(primaryMode));
+    const attempt = await callPrompt(withSchema());
     if (!attempt.error) {
       return attempt;
     }
@@ -7039,7 +7316,7 @@ export class ChatViewProvider
             dataUrl: string;
             filename: string;
             mimeType: string;
-            textContent?: string;
+            textContent: string | undefined;
           } => !!attachment,
         );
       const imageUrls = normalizedAttachments
@@ -7064,6 +7341,7 @@ export class ChatViewProvider
 
       drainSessionId = session.id;
       this.processingSessionIds.add(drainSessionId);
+      this.markTurnStreamStarted(drainSessionId);
       this.logger.info("[OPENCOD GO MODEL] Processing started (loading state ON)", {
         sessionId: drainSessionId,
         providerID: this.selectedModel.providerID,
@@ -8203,6 +8481,7 @@ export class ChatViewProvider
         this.activeStreamSessionId = undefined;
       }
       this.sendProcessingSessionsUpdate();
+      void this.schedulePostTurnSdkRefresh(resolvedSessionId);
 
       if (!options?.suppressWebviewNotification) {
         this.view?.webview.postMessage({
@@ -8227,9 +8506,23 @@ export class ChatViewProvider
 
       // Abort remains best-effort after local finalization.  An error here is
       // diagnostic only; the user has already stopped this turn in the UI.
-      client.session.abort({
+      // The extension uses the SDK v2 convenience client. Its typed
+      // `session.abort` parameters are flattened as `{ sessionID, directory }`
+      // and map to POST /session/{sessionID}/abort.
+      void client.session.abort({
         sessionID: resolvedSessionId,
         ...(workspaceDirectory ? { directory: workspaceDirectory } : {}),
+      }).then((result) => {
+        if (result.error) {
+          log.error("Failed to abort active request", {
+            sessionId: resolvedSessionId,
+            error: String(result.error),
+          });
+          return;
+        }
+        this.logger.info("SDK session abort accepted", {
+          sessionId: resolvedSessionId,
+        });
       }).catch((error: unknown) => {
         log.error("Failed to abort active request", {
           sessionId: resolvedSessionId,
@@ -10195,7 +10488,6 @@ export class ChatViewProvider
     }
     this.flushStreamWebviewEvents();
     this.flushLiveEventDebugEvents();
-    this.flushRawSdkEventPersistence();
     this.quotaService.off("quotaUpdate", this.handleQuotaUpdate);
     if (this.webviewMessageListener) {
       this.webviewMessageListener.dispose();

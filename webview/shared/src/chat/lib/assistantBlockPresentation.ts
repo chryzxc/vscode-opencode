@@ -8,6 +8,13 @@ export interface AssistantBlockPresentationEntry {
   role?: string;
   /** Stable user message id, supplied only for user entries. */
   userBlockKey?: string;
+  /**
+   * Stable assistant message id. When available, an SDK message envelope is
+   * its own response block even when it shares a parent user message with
+   * another assistant envelope (for example, a tool-call turn then a final
+   * answer).
+   */
+  assistantBlockKey?: string;
   /** True when the assistant entry has user-visible response text. */
   hasResponseText?: boolean;
   /** True when an aborted assistant entry must be represented inline. */
@@ -45,7 +52,11 @@ export function buildAssistantBlockPresentation(
     if (role === "user") {
       currentBlockKey = entry.userBlockKey || `user:${index}`;
     } else if (role === "assistant") {
-      assistantEntries.push({ index, key: currentBlockKey });
+      const assistantBlockKey = entry.assistantBlockKey?.trim();
+      const key = assistantBlockKey || currentBlockKey;
+      assistantEntries.push({ index, key });
+      entryBlockKeys.push(key);
+      return;
     }
     entryBlockKeys.push(currentBlockKey);
   });

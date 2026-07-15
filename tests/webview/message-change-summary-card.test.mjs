@@ -7,6 +7,11 @@ const messageComponentsSource = readSource(
   "MessageComponents.tsx",
 );
 
+const chatShellSource = readSource(
+  [joinFromRoot("webview", "shared", "src", "chat", "ChatShell.tsx")],
+  "ChatShell.tsx",
+);
+
 const typesSource = readSource(
   [joinFromRoot("webview", "shared", "src", "chat", "lib", "types.ts")],
   "types.ts",
@@ -25,11 +30,11 @@ test("message types include message-level change summary payload", () => {
   );
 });
 
-test("assistant message renders completion change summary card with actions", () => {
+test("message change summary card renders actions", () => {
   assert.match(
     messageComponentsSource,
     /changeSummary|summary|fileChange/i,
-    "AssistantMessage should handle change summary data",
+    "message rendering should handle change summary data",
   );
   assert.match(
     messageComponentsSource,
@@ -43,11 +48,11 @@ test("assistant message renders completion change summary card with actions", ()
   );
 });
 
-test("file change summary card is scoped to the owning assistant message", () => {
+test("file change summary card is scoped to its owning SDK message", () => {
   assert.match(
     messageComponentsSource,
     /ownership|owner|scope|messageId/i,
-    "AssistantMessage should use ownership checks for change summaries",
+    "message rendering should use ownership checks for change summaries",
   );
   assert.match(
     messageComponentsSource,
@@ -86,6 +91,24 @@ test("file change summary card prefers provider-attached message change summarie
     messageComponentsSource,
     /firstNonEmptyString\(messageChangeSummary\?\.messageId,\s*messageId\)/,
     "explicit change summaries should supply the owning message id for undo and preview actions",
+  );
+});
+
+test("rehydrated SDK summaries render after their final assistant envelope", () => {
+  assert.match(
+    chatShellSource,
+    /ownerUserMessageId[\s\S]{0,2200}isLastAssistantForUserTurn/,
+    "the transcript should use the SDK assistant parentID to find a turn's final envelope",
+  );
+  assert.match(
+    chatShellSource,
+    /kind: "fileChanges",\s*key: `file-changes:\$\{ownerUserMessageId\}`/,
+    "the transcript should insert a dedicated summary block after the response",
+  );
+  assert.match(
+    chatShellSource,
+    /entry\.kind === "fileChanges"[\s\S]{0,1200}FileChangesSection/,
+    "the transcript should render the dedicated summary block",
   );
 });
 

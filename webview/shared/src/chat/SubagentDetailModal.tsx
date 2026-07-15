@@ -23,6 +23,19 @@ function record(value: unknown): Record<string, unknown> | undefined {
 		: undefined;
 }
 
+/** Convert persisted SDK tool data into text without losing object-shaped output. */
+function toolDataText(value: unknown): string {
+	if (typeof value === "string") return value.trim();
+	if (typeof value === "number" || typeof value === "boolean") return String(value);
+	if (value === undefined || value === null) return "";
+
+	try {
+		return JSON.stringify(value, null, 2);
+	} catch {
+		return "";
+	}
+}
+
 function rawToolTimeline(detail: SubagentDetail, forceCancelled: boolean): ModalTimelineEvent[] {
 	const events = Array.isArray(detail.rawEvents) ? detail.rawEvents : [];
 	const byPartId = new Map<string, ModalTimelineEvent>();
@@ -49,6 +62,12 @@ function rawToolTimeline(detail: SubagentDetail, forceCancelled: boolean): Modal
 			: typeof startedAt === "number" ? startedAt : Date.now();
 		const key = partId || `${tool}:${createdAt}`;
 		const input = record(state?.input);
+		const output = toolDataText(state?.output);
+		const inputSummary =
+			toolDataText(input?.command) ||
+			toolDataText(input?.pattern) ||
+			toolDataText(input?.url) ||
+			toolDataText(input?.query);
 		const existing = byPartId.get(key);
 		byPartId.set(key, {
 			id: key,
@@ -58,10 +77,14 @@ function rawToolTimeline(detail: SubagentDetail, forceCancelled: boolean): Modal
 				key,
 				kind: "activity",
 				label: tool,
-				summary: typeof input?.command === "string" ? input.command : typeof input?.pattern === "string" ? input.pattern : "",
+				// The raw rehydration tape is the only source for completed tool
+				// results (e.g. webfetch). Keep its output on the normal activity
+				// detail contract so SharedActivityStep renders it in the existing
+				// collapsible content preview.
+				summary: output || inputSummary,
 				status,
 				startedAt: typeof startedAt === "number" ? startedAt : createdAt,
-				activityDetail: { tool, input: input ?? {} },
+				activityDetail: { tool, input: input ?? {}, output },
 				updateCount: 1,
 			},
 		});

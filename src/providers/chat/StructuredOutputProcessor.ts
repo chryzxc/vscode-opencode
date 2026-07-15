@@ -8,6 +8,7 @@
  */
 
 import * as vscode from "vscode";
+import type { OutputFormatJsonSchema } from "@opencode-ai/sdk/v2";
 import type {
   StructuredAssistantOutput,
 } from "./types";
@@ -23,7 +24,7 @@ import type { PlanManager } from "./PlanManager";
 import { PlanParser } from "../../services/PlanParser";
 
 export class StructuredOutputProcessor {
-  private structuredOutputMode: "format" | "outputFormat" | "disabled" = "format";
+  private structuredOutputMode: "format" | "disabled" = "format";
   private readonly structuredValidationFailureCounters = new Map<string, number>();
   private readonly structuredOutputIncompatibleModelKeys = new Set<string>();
 
@@ -67,7 +68,7 @@ export class StructuredOutputProcessor {
   /**
    * Get the structured output format for API requests
    */
-  getStructuredOutputFormat(): Record<string, unknown> {
+  getStructuredOutputFormat(): OutputFormatJsonSchema {
     const topLevel = structuredOutputSchema as unknown as Record<string, unknown>;
     const schemaRecord = this.asRecord(topLevel.schema);
     const properties = this.asRecord(schemaRecord?.properties) ?? {};
@@ -107,13 +108,8 @@ export class StructuredOutputProcessor {
     return true;
   }
 
-  /**
-   * Get the structured output model key
-   */
+  /** Get the structured output model key. */
   getStructuredOutputModelKey(modelKey: string): string {
-    if (this.structuredOutputMode === "outputFormat") {
-      return modelKey;
-    }
     return modelKey;
   }
 

@@ -55,14 +55,6 @@ import type { Session } from "@opencode-ai/sdk/v2";
 import { createLogger } from "../utils/Logger";
 import { LoggingCategories } from "../utils/LoggingSchema";
 import { restoreCheckpointIfPresent } from "./CheckpointRestore";
-import {
-  getCentralizedDebugPayloadIdentity,
-  sanitizeCentralizedDebugPayload,
-  shouldPersistCentralizedSessionEventPayload,
-} from "../shared/centralizedDebugPayloadFilter";
-import { createPlainObjectSnapshot } from "../shared/createPlainObjectSnapshot";
-import type { SubagentUpdatePayload } from "./SubagentTracker";
-import { recoverSubagentProjectionAfterRestart } from "./subagents/SubagentProjectionRecovery";
 
 const log = createLogger(LoggingCategories.SESSION_SERVICE);
 const MAX_CACHED_MESSAGES_PER_SESSION = 200;
@@ -77,23 +69,6 @@ const MAX_COMPACT_STEPS = 200;
 const MAX_COMPACT_SUBAGENTS = 64;
 const MAX_COMPACT_SUBAGENT_EVENTS = 120;
 const MAX_COMPACT_INTERACTIVE_EVENTS = 40;
-
-/**
- * Persisted, normalized projection for the subagent UI.  The event stream
- * remains the authoritative record; this projection is a bounded cache used
- * for fast, deterministic session hydration.
- */
-export type CentralizedSubagentProjection = Pick<
-  SubagentUpdatePayload,
-  "summariesByParentMessageId" | "detailsById"
->;
-
-export type CentralizedSessionData = {
-  schemaVersion: 1;
-  sessionId: string;
-  rawEventStream: { events: unknown[] };
-  subagents: CentralizedSubagentProjection;
-};
 
 function isDataUrl(value: string): boolean {
   return /^data:[^;]+;base64,/i.test(value);
@@ -178,16 +153,6 @@ function sanitizeForPersistence(
         seen,
       );
     }
-    if (
-      !Object.prototype.hasOwnProperty.call(result, "rawSdkEventPayloads") &&
-      Object.prototype.hasOwnProperty.call(obj, "rawSdkEventPayloads")
-    ) {
-      result.rawSdkEventPayloads = sanitizeForPersistence(
-        obj.rawSdkEventPayloads,
-        depth + 1,
-        seen,
-      );
-    }
     return result;
   }
 
@@ -261,73 +226,6 @@ function compactProgressEventForPersistence(event: unknown): unknown {
     return sanitizeForPersistence(event);
   }
   return compact;
-}
-
-function rawSdkEventPersistenceRichness(event: unknown): number {
-  const rec =
-    event && typeof event === "object"
-      ? (event as Record<string, unknown>)
-      : null;
-  if (!rec) {
-    return 0;
-  }
-
-  const properties =
-    rec.properties && typeof rec.properties === "object"
-      ? (rec.properties as Record<string, unknown>)
-      : null;
-  const info =
-    (properties?.info && typeof properties.info === "object"
-      ? (properties.info as Record<string, unknown>)
-      : null) ??
-    (rec.info && typeof rec.info === "object"
-      ? (rec.info as Record<string, unknown>)
-      : null);
-  const part =
-    (properties?.part && typeof properties.part === "object"
-      ? (properties.part as Record<string, unknown>)
-      : null) ??
-    (rec.part && typeof rec.part === "object"
-      ? (rec.part as Record<string, unknown>)
-      : null);
-  const state =
-    part?.state && typeof part.state === "object"
-      ? (part.state as Record<string, unknown>)
-      : null;
-
-  let score = 0;
-  if (typeof rec.id === "string" && rec.id.trim()) score += 2;
-  if (typeof rec.type === "string" && rec.type.trim()) score += 2;
-  if (part) {
-    score += 6;
-    if (typeof part.id === "string" && part.id.trim()) score += 2;
-    if (typeof part.type === "string" && part.type.trim()) score += 2;
-    if (typeof part.tool === "string" && part.tool.trim()) score += 2;
-    if (typeof part.messageID === "string" && part.messageID.trim()) score += 2;
-    if (typeof part.text === "string" && part.text.trim()) score += 3;
-    if (typeof part.content === "string" && part.content.trim()) score += 3;
-  }
-  if (state) {
-    score += 8;
-    if (typeof state.status === "string" && state.status.trim()) score += 2;
-    if (typeof state.input !== "undefined") score += 6;
-    if (typeof state.output !== "undefined") score += 4;
-    if (typeof state.metadata !== "undefined") score += 2;
-    if (typeof state.title === "string" && state.title.trim()) score += 1;
-  }
-  if (info) {
-    score += 4;
-    if (typeof info.id === "string" && info.id.trim()) score += 2;
-    if (typeof info.role === "string" && info.role.trim()) score += 1;
-  }
-
-  try {
-    score += JSON.stringify(rec).length;
-  } catch {
-    // Ignore serialization issues; structural richness already covers the fallback.
-  }
-
-  return score;
 }
 
 function compactSubagentForPersistence(subagent: unknown): unknown {
@@ -442,13 +340,6 @@ function compactMessageForPersistence(message: unknown): unknown {
       .map((part) => sanitizeForPersistence(part));
   }
 
-  if (Array.isArray(rec.rawSdkEventPayloads)) {
-    // Preserve the raw SDK event tape so rehydrated debug views can inspect
-    // the exact event payloads that drove the assistant turn.
-    compact.rawSdkEventPayloads = (rec.rawSdkEventPayloads as unknown[])
-      .slice(-200)
-      .map((item) => sanitizeForPersistence(item));
-  }
 
   if (Array.isArray(rec.reasoningEvents)) {
     compact.reasoningEvents = (rec.reasoningEvents as unknown[])
@@ -1009,7 +900,6 @@ function mergeRicherMessageFields(
   backfillArrayField("steps");
   backfillArrayField("edits");
   backfillArrayField("interactiveEvents");
-  backfillArrayField("rawSdkEventPayloads");
   backfillArrayField("parts");
   backfillArrayField("subagents", true);
   backfillArrayField("images");
@@ -1023,9 +913,6 @@ function mergeRicherMessageFields(
   }
   if (!merged.rawResponse && fallbackRec.rawResponse) {
     merged.rawResponse = fallbackRec.rawResponse;
-  }
-  if (!merged.rawSdkEventPayloads && fallbackRec.rawSdkEventPayloads) {
-    merged.rawSdkEventPayloads = fallbackRec.rawSdkEventPayloads;
   }
   if (!merged.info && fallbackRec.info) {
     merged.info = fallbackRec.info;
@@ -1274,215 +1161,6 @@ export class SessionService {
   /** Track last logged session ID for deduplication */
   private lastLoggedSessionId: string | null = null;
 
-  /** In-memory cache of raw SDK event payloads by session for atomic appends */
-  private rawSdkEventPayloadCache = new Map<string, unknown[]>();
-
-  /** Normalized subagent projection persisted beside the event stream. */
-  private centralizedSubagentProjectionCache = new Map<
-    string,
-    CentralizedSubagentProjection
-  >();
-
-  /** Serializes envelope writes so raw-event and projection updates cannot race. */
-  private centralizedSessionWriteChains = new Map<string, Promise<void>>();
-
-  /** Per-session debounce timer for raw SDK event payload persistence */
-  private rawSdkEventPersistTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
-  private cloneRawSdkEventPayload<T>(value: T): T {
-    return createPlainObjectSnapshot(value);
-  }
-
-  private emptySubagentProjection(): CentralizedSubagentProjection {
-    return { summariesByParentMessageId: {}, detailsById: {} };
-  }
-
-  private normalizeSubagentProjection(
-    value: unknown,
-  ): CentralizedSubagentProjection {
-    const record =
-      value && typeof value === "object" && !Array.isArray(value)
-        ? (value as Record<string, unknown>)
-        : {};
-    const summaries =
-      record.summariesByParentMessageId &&
-      typeof record.summariesByParentMessageId === "object" &&
-      !Array.isArray(record.summariesByParentMessageId)
-        ? record.summariesByParentMessageId
-        : {};
-    const details =
-      record.detailsById &&
-      typeof record.detailsById === "object" &&
-      !Array.isArray(record.detailsById)
-        ? record.detailsById
-        : {};
-    return {
-      summariesByParentMessageId: sanitizeForPersistence(
-        summaries,
-      ) as CentralizedSubagentProjection["summariesByParentMessageId"],
-      detailsById: sanitizeForPersistence(
-        details,
-      ) as CentralizedSubagentProjection["detailsById"],
-    };
-  }
-
-  /** Keep a session envelope from retaining another session's subagent state. */
-  private scopeSubagentProjectionToSession(
-    sessionId: string,
-    projection: CentralizedSubagentProjection,
-  ): CentralizedSubagentProjection {
-    const summariesByParentMessageId: CentralizedSubagentProjection["summariesByParentMessageId"] = {};
-    for (const [parentMessageId, summaries] of Object.entries(
-      projection.summariesByParentMessageId || {},
-    )) {
-      const scoped = (Array.isArray(summaries) ? summaries : []).filter(
-        (summary) => summary?.parentSessionId === sessionId,
-      );
-      if (scoped.length > 0) {
-        summariesByParentMessageId[parentMessageId] = scoped;
-      }
-    }
-
-    const detailsById: CentralizedSubagentProjection["detailsById"] = {};
-    for (const [id, detail] of Object.entries(projection.detailsById || {})) {
-      if (detail?.parentSessionId === sessionId) {
-        detailsById[id] = detail;
-      }
-    }
-    return { summariesByParentMessageId, detailsById };
-  }
-
-  private readCentralizedSessionData(sessionId: string): CentralizedSessionData {
-    const stored = this.context.workspaceState.get<unknown>(
-      `${SessionService.RAW_SDK_EVENT_PAYLOADS_PREFIX}${sessionId}`,
-    );
-    // Legacy storage was a bare event array. Read it without data loss and
-    // rewrite it in the versioned envelope on the next persistence operation.
-    if (Array.isArray(stored)) {
-      return {
-        schemaVersion: 1,
-        sessionId,
-        rawEventStream: { events: stored },
-        subagents: this.emptySubagentProjection(),
-      };
-    }
-    const record =
-      stored && typeof stored === "object" && !Array.isArray(stored)
-        ? (stored as Record<string, unknown>)
-        : {};
-    const rawEventStream =
-      record.rawEventStream &&
-      typeof record.rawEventStream === "object" &&
-      !Array.isArray(record.rawEventStream)
-        ? (record.rawEventStream as Record<string, unknown>)
-        : {};
-    return {
-      schemaVersion: 1,
-      sessionId,
-      rawEventStream: {
-        events: Array.isArray(rawEventStream.events) ? rawEventStream.events : [],
-      },
-      subagents: this.scopeSubagentProjectionToSession(
-        sessionId,
-        this.normalizeSubagentProjection(record.subagents),
-      ),
-    };
-  }
-
-  private async saveCentralizedSessionData(
-    data: CentralizedSessionData,
-  ): Promise<void> {
-    this.rawSdkEventPayloadCache.set(data.sessionId, [...data.rawEventStream.events]);
-    this.centralizedSubagentProjectionCache.set(data.sessionId, data.subagents);
-    await this.context.workspaceState.update(
-      `${SessionService.RAW_SDK_EVENT_PAYLOADS_PREFIX}${data.sessionId}`,
-      data,
-    );
-    await this.context.workspaceState.update(
-      `${SessionService.LEGACY_SUBAGENT_SNAPSHOT_PREFIX}${data.sessionId}`,
-      undefined,
-    );
-  }
-
-  private async updateCentralizedSessionData(
-    sessionId: string,
-    update: (current: CentralizedSessionData) => CentralizedSessionData,
-  ): Promise<void> {
-    const previous = this.centralizedSessionWriteChains.get(sessionId) || Promise.resolve();
-    const operation = previous
-      .catch(() => undefined)
-      .then(async () => {
-        await this.saveCentralizedSessionData(
-          update(this.readCentralizedSessionData(sessionId)),
-        );
-      });
-    this.centralizedSessionWriteChains.set(sessionId, operation);
-    try {
-      await operation;
-    } finally {
-      if (this.centralizedSessionWriteChains.get(sessionId) === operation) {
-        this.centralizedSessionWriteChains.delete(sessionId);
-      }
-    }
-  }
-
-  private shouldPersistRawSdkEventPayload(event: unknown): boolean {
-    return shouldPersistCentralizedSessionEventPayload(event);
-  }
-
-  private describeRawSdkEventPayloadForLog(event: unknown): Record<string, unknown> {
-    const rec =
-      event && typeof event === "object" && !Array.isArray(event)
-        ? (event as Record<string, unknown>)
-        : undefined;
-    const properties =
-      rec?.properties && typeof rec.properties === "object" && !Array.isArray(rec.properties)
-        ? (rec.properties as Record<string, unknown>)
-        : undefined;
-    const info =
-      properties?.info && typeof properties.info === "object" && !Array.isArray(properties.info)
-        ? (properties.info as Record<string, unknown>)
-        : undefined;
-    const part =
-      properties?.part && typeof properties.part === "object" && !Array.isArray(properties.part)
-        ? (properties.part as Record<string, unknown>)
-        : undefined;
-
-    return {
-      eventType: typeof rec?.type === "string" ? rec.type : undefined,
-      source: typeof rec?.source === "string" ? rec.source : undefined,
-      sessionId:
-        typeof rec?.sessionId === "string"
-          ? rec.sessionId
-          : typeof rec?.sessionID === "string"
-            ? rec.sessionID
-            : typeof properties?.sessionId === "string"
-              ? properties.sessionId
-              : typeof properties?.sessionID === "string"
-                ? properties.sessionID
-                : undefined,
-      messageId:
-        typeof info?.id === "string"
-          ? info.id
-          : typeof part?.messageId === "string"
-            ? part.messageId
-            : typeof part?.messageID === "string"
-              ? part.messageID
-              : undefined,
-      partType: typeof part?.type === "string" ? part.type : undefined,
-      hasProperties: !!properties,
-      hasInfo: !!info,
-      hasPart: !!part,
-    };
-  }
-
-  private filterPersistedRawSdkEventPayloads(events: unknown[] | undefined): unknown[] {
-    if (!Array.isArray(events) || events.length === 0) {
-      return [];
-    }
-    return events.filter((event) => this.shouldPersistRawSdkEventPayload(event));
-  }
-
   // ============================================================================
   // PERSISTENCE KEYS
   // ============================================================================
@@ -1494,14 +1172,6 @@ export class SessionService {
 
   /** Prefix for storing messages per session (appended with session ID) */
   private static readonly MESSAGES_PREFIX = "opencode.session.messages.";
-
-  /** Prefix for storing raw SDK event payloads per session (appended with session ID) */
-  private static readonly RAW_SDK_EVENT_PAYLOADS_PREFIX =
-    "opencode.session.raw-sdk-event-payloads.";
-
-  /** Retired independent snapshot; cleared after centralized writes. */
-  private static readonly LEGACY_SUBAGENT_SNAPSHOT_PREFIX =
-    "opencode.session.subagents.";
 
   /** Key for storing current session ID */
   private static readonly SESSION_ID_KEY = "opencode.currentSessionId";
@@ -1818,10 +1488,6 @@ export class SessionService {
     const flow = log.startFeatureFlow('SwitchSession', { sessionId });
 
     try {
-      const currentSessionId = this.currentSession?.id;
-      if (currentSessionId && currentSessionId !== sessionId) {
-        await this.flushRawSdkEventPayloads(currentSessionId);
-      }
       const client = await this.serverManager.ensureRunning();
       log.featureStep(flow, 'fetching_session_from_server');
 
@@ -1919,11 +1585,6 @@ export class SessionService {
       log.debug("Cleared current session (was deleted)", { sessionId });
     }
 
-    await this.flushRawSdkEventPayloads(sessionId);
-    // Memory fix: evict in-memory caches for the deleted session so data
-    // doesn't accumulate indefinitely for sessions that no longer exist.
-    this.rawSdkEventPayloadCache.delete(sessionId);
-    this.centralizedSubagentProjectionCache.delete(sessionId);
     this.sessionHistory = this.sessionHistory.filter((s) => s.id !== sessionId);
     await this.context.workspaceState.update(
       `${SessionService.MESSAGES_PREFIX}${sessionId}`,
@@ -1931,14 +1592,6 @@ export class SessionService {
     );
     await this.context.workspaceState.update(
       `opencode.session.raw-messages.${sessionId}`,
-      undefined,
-    );
-    await this.context.workspaceState.update(
-      `${SessionService.RAW_SDK_EVENT_PAYLOADS_PREFIX}${sessionId}`,
-      undefined,
-    );
-    await this.context.workspaceState.update(
-      `${SessionService.LEGACY_SUBAGENT_SNAPSHOT_PREFIX}${sessionId}`,
       undefined,
     );
     this.persistState();
@@ -2289,122 +1942,6 @@ export class SessionService {
     return Array.isArray(value) ? value : [];
   }
 
-  /**
-   * Saves raw SDK event payloads for a specific session to local workspace storage.
-   *
-   * This stores the untouched event tape so rehydrated sessions can replay the
-   * same raw stream and append future events without normalization.
-   */
-  async saveSessionRawSdkEventPayloads(
-    sessionId: string,
-    events: unknown[],
-  ): Promise<void> {
-    const persisted = events.map((event) =>
-      this.cloneRawSdkEventPayload(event),
-    );
-    const existingTimer = this.rawSdkEventPersistTimers.get(sessionId);
-    if (existingTimer) {
-      clearTimeout(existingTimer);
-      this.rawSdkEventPersistTimers.delete(sessionId);
-    }
-    await this.updateCentralizedSessionData(sessionId, (current) => ({
-      ...current,
-      rawEventStream: { events: persisted },
-    }));
-  }
-
-  /**
-   * Loads raw SDK event payloads for a specific session from local storage.
-   */
-  async loadSessionRawSdkEventPayloads(sessionId: string): Promise<unknown[]> {
-    const cached = this.rawSdkEventPayloadCache.get(sessionId);
-    if (Array.isArray(cached)) {
-      log.debug("[CENTRALIZED-TAPE][SESSION] load_raw_sdk_events_cache_hit", {
-        sessionId,
-        count: cached.length,
-      });
-      return [...cached];
-    }
-    const centralized = this.readCentralizedSessionData(sessionId);
-    const raw = centralized.rawEventStream.events;
-    this.rawSdkEventPayloadCache.set(sessionId, [...raw]);
-    this.centralizedSubagentProjectionCache.set(sessionId, centralized.subagents);
-    log.debug("[CENTRALIZED-TAPE][SESSION] load_raw_sdk_events_workspace_state", {
-      sessionId,
-      count: raw.length,
-      hadStoredArray: raw.length > 0,
-    });
-    return raw;
-  }
-
-  /**
-   * Loads centralized session event data for a session.
-   *
-   * Called from ChatViewProvider and SessionHandler when rehydrating a session
-   * into the webview chat UI (chatHistory message).
-   *
-   * @param sessionId - The ID of the session to load data for
-   * @returns Object containing centralized raw SDK event payloads
-   */
-  async loadCentralizedSessionData(sessionId: string): Promise<CentralizedSessionData> {
-    void this.context.workspaceState.update(
-      `opencode.session.raw-messages.${sessionId}`,
-      undefined,
-    );
-    const events = await this.loadSessionRawSdkEventPayloads(sessionId);
-    const subagents =
-      this.centralizedSubagentProjectionCache.get(sessionId) ||
-      this.emptySubagentProjection();
-    return {
-      schemaVersion: 1,
-      sessionId,
-      rawEventStream: { events },
-      subagents,
-    };
-  }
-
-  /**
-   * Finalize subagents left live by a previous extension-host instance.
-   *
-   * The tracker itself is in-memory. A persisted pending/running projection
-   * cannot be live after activation, so make that terminal state durable
-   * before replaying the session into the webview.
-   */
-  async cancelStaleSubagentsAfterExtensionRestart(
-    sessionId: string,
-  ): Promise<CentralizedSubagentProjection> {
-    await this.updateCentralizedSessionData(sessionId, (current) => ({
-      ...current,
-      subagents: recoverSubagentProjectionAfterRestart(current.subagents),
-    }));
-
-    return this.centralizedSubagentProjectionCache.get(sessionId) || this.emptySubagentProjection();
-  }
-
-  /** Merge a live subagent update into the centralized session payload. */
-  async persistCentralizedSubagentProjection(
-    sessionId: string,
-    update: SubagentUpdatePayload,
-  ): Promise<void> {
-    const incoming = this.scopeSubagentProjectionToSession(
-      sessionId,
-      this.normalizeSubagentProjection(update),
-    );
-    await this.updateCentralizedSessionData(sessionId, (current) => ({
-      ...current,
-      subagents: {
-        summariesByParentMessageId: {
-          ...current.subagents.summariesByParentMessageId,
-          ...incoming.summariesByParentMessageId,
-        },
-        detailsById: {
-          ...current.subagents.detailsById,
-          ...incoming.detailsById,
-        },
-      },
-    }));
-  }
-
 
   /**
    * Appends a new message to the local message history for a session.
@@ -2472,224 +2009,9 @@ export class SessionService {
     await this.saveSessionMessages(sessionId, messages);
   }
 
-  private truncateLargeStrings(obj: any, maxLen: number = 200000): any {
-    if (!obj || typeof obj !== "object") return obj;
-    const seen = new WeakSet();
-    const stack = [obj];
-    
-    while (stack.length > 0) {
-      const current = stack.pop();
-      if (!current || typeof current !== "object" || seen.has(current)) continue;
-      seen.add(current);
-      
-      if (Array.isArray(current)) {
-        for (let i = 0; i < current.length; i++) {
-          const item = current[i];
-          if (typeof item === "string") {
-            if (item.length > maxLen) {
-              current[i] = item.slice(0, maxLen) + "\n...[truncated " + (item.length - maxLen) + " chars]";
-            }
-          } else if (item && typeof item === "object") {
-            stack.push(item);
-          }
-        }
-      } else {
-        for (const key in current) {
-          if (Object.prototype.hasOwnProperty.call(current, key)) {
-            const item = current[key];
-            if (typeof item === "string") {
-              if (item.length > maxLen) {
-                current[key] = item.slice(0, maxLen) + "\n...[truncated " + (item.length - maxLen) + " chars]";
-              }
-            } else if (item && typeof item === "object") {
-              stack.push(item);
-            }
-          }
-        }
-      }
-    }
-    return obj;
-  }
-
-  async appendRawSdkEventPayload(sessionId: string, rawEvent: unknown): Promise<void> {
-    await this.appendRawSdkEventPayloads(sessionId, [rawEvent]);
-  }
-
-  async appendRawSdkEventPayloads(sessionId: string, rawEvents: unknown[]): Promise<void> {
-    if (!Array.isArray(rawEvents) || rawEvents.length === 0) {
-      return;
-    }
-
-    log.debug("[CENTRALIZED-TAPE][SESSION] append_batch_received", {
-      sessionId,
-      count: rawEvents.length,
-    });
-
-    let events = this.rawSdkEventPayloadCache.get(sessionId);
-    let loadedFromState = false;
-    if (!Array.isArray(events)) {
-      const centralized = this.readCentralizedSessionData(sessionId);
-      events = [...centralized.rawEventStream.events];
-      this.centralizedSubagentProjectionCache.set(
-        sessionId,
-        centralized.subagents,
-      );
-      this.rawSdkEventPayloadCache.set(sessionId, events);
-      loadedFromState = true;
-      log.debug("[CENTRALIZED-TAPE][SESSION] append_loaded_existing_events", {
-        sessionId,
-        loadedFromState,
-        existingCount: events.length,
-        hadStoredArray: events.length > 0,
-      });
-    }
-
-    const identityIndex = new Map<string, number>();
-    for (let index = 0; index < events.length; index += 1) {
-      const identity = getCentralizedDebugPayloadIdentity(events[index]);
-      if (identity) {
-        identityIndex.set(identity, index);
-      }
-    }
-
-    let appended = 0;
-    let replaced = 0;
-    let duplicateSkipped = 0;
-    let rejected = 0;
-
-    for (const rawEvent of rawEvents) {
-      const event = this.truncateLargeStrings(this.cloneRawSdkEventPayload(rawEvent));
-      const eventSummary = this.describeRawSdkEventPayloadForLog(event);
-      if (!this.shouldPersistRawSdkEventPayload(event)) {
-        rejected += 1;
-        log.warn("[CENTRALIZED-TAPE][SESSION] append_rejected_by_filter", {
-          sessionId,
-          ...eventSummary,
-        });
-        continue;
-      }
-
-      const sanitizedEvent = sanitizeCentralizedDebugPayload(event);
-      const snapshot = this.cloneRawSdkEventPayload(sanitizedEvent);
-      const eventIdentity = getCentralizedDebugPayloadIdentity(event);
-      if (eventIdentity) {
-        const existingIndex = identityIndex.get(eventIdentity);
-        if (typeof existingIndex === "number") {
-          const existingEvent = events[existingIndex];
-          if (
-            rawSdkEventPersistenceRichness(snapshot) >=
-            rawSdkEventPersistenceRichness(existingEvent)
-          ) {
-            events[existingIndex] = snapshot;
-            replaced += 1;
-          } else {
-            duplicateSkipped += 1;
-          }
-        } else {
-          identityIndex.set(eventIdentity, events.length);
-          events.push(snapshot);
-          appended += 1;
-        }
-      } else {
-        events.push(snapshot);
-        appended += 1;
-      }
-    }
-
-    log.debug("[CENTRALIZED-TAPE][SESSION] append_batch_result", {
-      sessionId,
-      appended,
-      replaced,
-      duplicateSkipped,
-      rejected,
-      currentEventsLength: events.length,
-      loadedFromState,
-    });
-
-    const existingTimer = this.rawSdkEventPersistTimers.get(sessionId);
-    if (existingTimer) {
-      clearTimeout(existingTimer);
-      log.debug("[CENTRALIZED-TAPE][SESSION] append_reset_flush_timer", {
-        sessionId,
-        currentEventsLength: events.length,
-      });
-    }
-
-    this.rawSdkEventPersistTimers.set(
-      sessionId,
-      setTimeout(() => {
-        void this.flushRawSdkEventPayloads(sessionId);
-        this.rawSdkEventPersistTimers.delete(sessionId);
-      }, 250),
-    );
-    log.debug("[CENTRALIZED-TAPE][SESSION] append_scheduled_flush", {
-      sessionId,
-      delayMs: 250,
-      currentEventsLength: events.length,
-    });
-  }
-
-  async flushRawSdkEventPayloads(sessionId: string): Promise<void> {
-    const events = this.rawSdkEventPayloadCache.get(sessionId);
-    if (!Array.isArray(events)) {
-      log.warn("[CENTRALIZED-TAPE][SESSION] flush_skipped_no_cache", {
-        sessionId,
-      });
-      return;
-    }
-    const existingTimer = this.rawSdkEventPersistTimers.get(sessionId);
-    if (existingTimer) {
-      clearTimeout(existingTimer);
-      this.rawSdkEventPersistTimers.delete(sessionId);
-    }
-    const storageKey = `${SessionService.RAW_SDK_EVENT_PAYLOADS_PREFIX}${sessionId}`;
-    log.info("[CENTRALIZED-TAPE][SESSION] flush_start", {
-      sessionId,
-      storageKey,
-      flushedEventsLength: events.length
-    });
-    try {
-      await this.updateCentralizedSessionData(sessionId, (current) => ({
-        ...current,
-        rawEventStream: { events: [...events] },
-      }));
-      const stored = this.readCentralizedSessionData(sessionId);
-      log.info("[CENTRALIZED-TAPE][SESSION] flush_complete", {
-        sessionId,
-        storageKey,
-        flushedEventsLength: events.length,
-        storedEventsLength: stored.rawEventStream.events.length,
-        storedIsArray: false,
-      });
-    } catch (error) {
-      log.error("[CENTRALIZED-TAPE][SESSION] flush_failed", {
-        sessionId,
-        storageKey,
-        flushedEventsLength: events.length,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      throw error;
-    }
-  }
-
-  async flushAllRawSdkEventPayloads(): Promise<void> {
-    const sessionIds = Array.from(this.rawSdkEventPayloadCache.keys());
-    for (const sessionId of sessionIds) {
-      await this.flushRawSdkEventPayloads(sessionId);
-    }
-  }
-
   async dispose(): Promise<void> {
-    // Flush all pending event payloads to workspaceState before clearing timers
-    await this.flushAllRawSdkEventPayloads();
-    for (const timer of this.rawSdkEventPersistTimers.values()) {
-      clearTimeout(timer);
-    }
-    this.rawSdkEventPersistTimers.clear();
-    // Memory fix: release in-memory caches — data has been flushed to disk
-    // above and the service is being torn down.
-    this.rawSdkEventPayloadCache.clear();
-    this.centralizedSubagentProjectionCache.clear();
+    // Session history is authoritative in OpenCode; no local event tape needs
+    // flushing or disposal.
   }
 
   private async mergeMessagesForSessionAliases(

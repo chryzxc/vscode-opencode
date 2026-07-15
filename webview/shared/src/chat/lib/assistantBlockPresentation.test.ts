@@ -44,4 +44,22 @@ describe("buildAssistantBlockPresentation", () => {
     assert.equal(result.isLastTextInBlockByIndex.get(1), false);
     assert.equal(result.blockSizeByKey.get("user-1"), 1);
   });
+
+  it("keeps separate SDK assistant message IDs as separate response blocks", () => {
+    const result = buildAssistantBlockPresentation([
+      { role: "user", userBlockKey: "user-1" },
+      { role: "assistant", assistantBlockKey: "assistant-tool-call", hasResponseText: false },
+      { role: "assistant", assistantBlockKey: "assistant-final", hasResponseText: true },
+    ]);
+
+    assert.deepStrictEqual(result.entryBlockKeys, [
+      "user-1",
+      "assistant-tool-call",
+      "assistant-final",
+    ]);
+    assert.equal(result.blockSizeByKey.get("assistant-tool-call"), 1);
+    assert.equal(result.blockSizeByKey.get("assistant-final"), 1);
+    assert.equal(result.isLastTextInBlockByIndex.get(1), false);
+    assert.equal(result.isLastTextInBlockByIndex.get(2), false);
+  });
 });

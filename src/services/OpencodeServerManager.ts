@@ -406,7 +406,12 @@ export class OpencodeServerManager {
     }
   }
 
-  private getWorkspaceDirectory(): string | undefined {
+  /**
+   * Current workspace directory used to scope OpenCode SDK requests.
+   * Session IDs are workspace-scoped by the server, so callers loading a
+   * session snapshot must pass this value when available.
+   */
+  getWorkspaceDirectory(): string | undefined {
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     if (workspaceFolder && workspaceFolder.uri.scheme === "file") {
       return workspaceFolder.uri.fsPath.replace(/\\/g, "/").replace(/\/+$/, "");
