@@ -34,6 +34,56 @@ test("completed question tools still participate in the activity timeline", () =
   );
 });
 
+test("direct hydrated completed question parts retain their output and assistant ownership", () => {
+  const body = extractFunctionBody(
+    messageHandlerSource,
+    "export function getCentralizedEventPart(",
+  );
+
+  assert.match(
+    body,
+    /directType === "tool"[\s\S]*asRecord\(event\.state\)[\s\S]*return event;/,
+    "a bare hydrated tool part should be treated as the centralized part instead of being discarded",
+  );
+
+  assert.match(
+    messageComponentsSource,
+    /const part = getCentralizedEventPart\(eventRecord\);/,
+    "assistant-card scoping should use the same direct-part-aware extractor",
+  );
+});
+
+test("live completed question tools are marked done", () => {
+  const handlerBody = extractFunctionBody(
+    messageHandlerSource,
+    "function handleStreamEvent(",
+  );
+
+  assert.match(
+    handlerBody,
+    /normalizedStateStatus === "completed"[\s\S]*\? "done"/,
+    "a question tool with state.status=completed should update its activity row as done",
+  );
+});
+
+test("question completion survives the answer-continuation stray-event transition", () => {
+  const handlerBody = extractFunctionBody(
+    messageHandlerSource,
+    "function handleStreamEvent(",
+  );
+
+  assert.match(
+    handlerBody,
+    /strayEventIsCompletedQuestionTool[\s\S]*completedQuestionToolPresentation\([\s\S]*\.isCompleted/,
+    "the original assistant question completion must not be dropped after the reply opens a continuation stream",
+  );
+  assert.match(
+    handlerBody,
+    /isCompletedQuestionTool[\s\S]*questionPresentation\.title[\s\S]*activityDetail: baseActivityDetail/s,
+    "the completed question row should expose its captured-answer output to the activity UI",
+  );
+});
+
 test("question asked events become first-class activity timeline rows", () => {
   const body = extractFunctionBody(
     messageComponentsSource,
@@ -65,7 +115,7 @@ test("completed question tool rows use the professional reply title", () => {
 
   assert.match(
     body,
-    /isQuestionTool && status === "done"[\s\S]*"Captured user response"/,
+    /completedQuestionToolPresentation\(tool, status, output\)[\s\S]*questionPresentation\.title/,
     "completed question tool rows should render as a professional response-capture activity",
   );
 });

@@ -1324,6 +1324,7 @@ type ConversationRenderEntry =
       kind: "fileChanges";
       key: string;
       message: Message;
+      ownerMessageId: string;
       order: number;
     }
   | {
@@ -2018,6 +2019,7 @@ type ConversationTranscriptProps = {
   compactionDividerIndex?: number;
   currentSessionId: string | null;
   diffByBlockKey: Map<string, CentralizedSessionDiffEvent>;
+  hydratedFileChangesByBlockKey: Set<string>;
   hasLiveAssistantTurn: boolean;
   assistantTurnMessageId: string | null;
   interactiveEvents: AppState["interactiveEvents"];
@@ -2178,6 +2180,7 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
   compactionDividerIndex,
   currentSessionId,
   diffByBlockKey,
+  hydratedFileChangesByBlockKey,
   hasLiveAssistantTurn,
   assistantTurnMessageId,
   interactiveEvents,
@@ -2313,17 +2316,9 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
         return {
           role: message.role ?? message.info?.role,
           userBlockKey: firstNonEmptyString(message.info?.id, message.id) ?? `user:${index}`,
-          // Bug A fix: SDK `parentID` is set ONLY on subagent child messages
-          // (parent-child session relationship), NOT on multi-phase assistant
-          // messages within one user-visible turn (reasoning + tool + final).
-          // Falling back to message.info.id made every SDK assistant envelope
-          // its own collapse block — exactly opposite of the product contract
-          // "single AI response block collapses together" (see user report
-          // m0341). Pass undefined for non-subagent assistants so the
-          // presentation builder falls through to currentBlockKey (the
-          // preceding user message's blockKey) — every assistant phase
-          // between two user messages then shares one collapsible block.
-          // Subagent children retain their parentID-driven grouping.
+          // Child assistant messages retain their parentID-driven grouping.
+          // Non-subagent assistant envelopes continue in the current response
+          // block; their exact message ownership is enforced during hydration.
           assistantBlockKey: firstNonEmptyString(message.info?.parentID) ?? undefined,
           hasResponseText: Boolean(
             message.content || message.text || message.info?.content || message.info?.text,
@@ -2521,7 +2516,10 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
                 interactiveEvents={interactiveEvents}
                 messages={renderMessages}
                 currentSessionId={currentSessionId}
-                hideFileChangesSection={diffByBlockKey.size > 0}
+                hideFileChangesSection={
+                  diffByBlockKey.has(blockGroupKey) ||
+                  hydratedFileChangesByBlockKey.has(blockGroupKey)
+                }
                 centralizedDiffEvent={
                   isLastInBlock &&
                   blockGroupKey &&
@@ -2594,6 +2592,11 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
         }
 
         if (entry.kind === "fileChanges") {
+          // SDK rehydration stores `info.summary.diffs` on the user envelope.
+          // This dedicated transcript entry is the only rendering path for
+          // those summaries; centralized `session.diff` events are rendered on
+          // the assistant response card below. Do not remove this row or a
+          // rehydrated diff becomes invisible after a session reload.
           const changeSummary = entry.message.changeSummary;
           return changeSummary?.files?.length ? (
             <div
@@ -2601,9 +2604,7 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
               ref={(node) => attachMeasuredEntryNode(entry.key, node)}
             >
               {dividerHere ? <CompactionDivider at={lastCompactedAt} /> : null}
-              <div
-                className="oc-message-enter mb-4"
-              >
+              <div className="oc-message-enter mb-4">
                 <FileChangesSection
                   structuredFileChanges={[]}
                   changeSummary={changeSummary}
@@ -3484,6 +3485,7 @@ function ChatContent() {
         kind: "fileChanges",
         key: `file-changes:${ownerUserMessageId}`,
         message: fileChangeBlock.message,
+        ownerMessageId: ownerUserMessageId,
         order: entries.length,
       });
     }
@@ -3599,6 +3601,27 @@ function ChatContent() {
       }
     }
     return map;
+  }, [visibleConversationEntries]);
+  // A rehydrated SDK summary belongs to its user envelope and is rendered as a
+  // dedicated transcript row. Suppress only the matching assistant block's
+  // generic file-change fallback, which may independently discover the same
+  // edit from a patch/tool part.
+  const hydratedFileChangesByBlockKey = useMemo(() => {
+    const blockKeys = new Set<string>();
+    let currentBlockKey = "initial";
+    for (let index = 0; index < visibleConversationEntries.length; index += 1) {
+      const entry = visibleConversationEntries[index];
+      if (entry.kind === "message") {
+        const role = firstNonEmptyString(entry.message.role, entry.message.info?.role);
+        if (role === "user") {
+          currentBlockKey = firstNonEmptyString(entry.message.info?.id, entry.message.id) ?? `user:${index}`;
+        }
+      }
+      if (entry.kind === "fileChanges") {
+        blockKeys.add(currentBlockKey);
+      }
+    }
+    return blockKeys;
   }, [visibleConversationEntries]);
   const hasTranscriptAssistantForCurrentTurn = useMemo(() => {
     let lastUserEntryIndex = -1;
@@ -3872,6 +3895,7 @@ function ChatContent() {
             compactionDividerIndex={compactionDividerIndex}
             currentSessionId={state.currentSessionId}
             diffByBlockKey={diffByBlockKey}
+            hydratedFileChangesByBlockKey={hydratedFileChangesByBlockKey}
             hasLiveAssistantTurn={hasLiveAssistantTurn}
             assistantTurnMessageId={state.assistantTurnMessageId}
             interactiveEvents={deferredInteractiveEvents}

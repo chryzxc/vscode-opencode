@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { joinFromRoot, readSource } from '../helpers/source-utils.mjs';
+import { extractFunctionBody, joinFromRoot, readSource } from '../helpers/source-utils.mjs';
 
 const adapterSource = readSource(
   [joinFromRoot('src', 'services', 'SdkMessageAdapter.ts')],
@@ -29,6 +29,7 @@ test('adaptSdkMessages exports batch adapter function', () => {
     'adaptSdkMessages should be exported with array signature',
   );
 });
+
 
 test('adaptStructuredOutput handles all structured response types', () => {
   // Must handle plan, question, and generic message response types

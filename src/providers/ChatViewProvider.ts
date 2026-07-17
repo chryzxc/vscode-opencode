@@ -1235,41 +1235,10 @@ export class ChatViewProvider
     const isMainTurnProcessing = this.isSessionMainTurnProcessing(sessionId);
     let effectiveMode = mode;
 
-    // The SDK exposes session status as the authoritative live-turn signal.
-    // Do not infer a queue from transcript/message IDs or from our local
-    // processing set: both can lag behind the server and incorrectly label an
-    // ordinary turn as queued. The SDK has no per-message queue status, so once
-    // it reports busy/retry the extension QueueManager owns each queued item.
-    if (
-      mode === "send-now" &&
-      !payload.interactiveSubmit &&
-      !payload.forceSendNow
-    ) {
-      try {
-        const client = await this.serverManager.ensureRunning();
-        const statusResponse = await client.session.status({
-          ...(this.getWorkspaceDirectory()
-            ? { directory: this.getWorkspaceDirectory() }
-            : {}),
-        });
-        const statusBySession =
-          (statusResponse as any)?.data ?? statusResponse;
-        const statusType =
-          statusBySession && typeof statusBySession === "object"
-            ? (statusBySession as Record<string, any>)[sessionId]?.type
-            : undefined;
-        if (statusType === "busy" || statusType === "retry") {
-          effectiveMode = "queue";
-        }
-      } catch (error) {
-        // Preserve the existing direct-send behavior if status cannot be read;
-        // a failed status lookup must not manufacture a queue state.
-        this.logger.debug("[MessageFlow] SDK session status unavailable", {
-          sessionId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
+    // Normal composer messages go straight to OpenCode even during an active
+    // turn. Its native transcript/order handling is the only queue presented
+    // to the user; the extension QueueManager is reserved for explicit legacy
+    // queue commands and must not create a second pending-message UI.
 
     this.logger.debug('[MessageFlow] Mode resolution', {
       requestedMode: mode,
@@ -7501,6 +7470,25 @@ export class ChatViewProvider
               filename: attachment.filename,
               url: attachment.dataUrl,
             })),
+            ...(Array.isArray(contexts) ? contexts : [])
+              .filter(
+                (ctx) =>
+                  typeof ctx?.file === "string" && ctx.file.trim().length > 0,
+              )
+              .map((ctx) => ({
+                type: "file" as const,
+                mime: ctx.languageId || "text/plain",
+                filename: ctx.file.split(/[\\/]/).pop(),
+                source: {
+                  type: ctx.file.startsWith("resource:") ? "resource" : "file",
+                  path: ctx.file.startsWith("resource:") ? undefined : ctx.file,
+                  uri: ctx.file.startsWith("resource:")
+                    ? ctx.file.replace("resource:", "")
+                    : undefined,
+                  lineInfo: ctx.lineInfo || undefined,
+                  languageId: ctx.languageId || undefined,
+                },
+              })),
           ],
           images: imageUrls,
           time: {
@@ -9962,6 +9950,7 @@ export class ChatViewProvider
     // Surface the early-return case so the user knows why nothing happened
     // instead of silently failing.
     if (!targetMessageId || !targetSessionId) {
+      this.view?.webview.postMessage({ type: "revertStateUpdate", revertState: null });
       vscode.window.showWarningMessage(
         "Unable to undo changes: missing message or session identifier.",
       );
@@ -10003,6 +9992,7 @@ export class ChatViewProvider
         vscode.window.showErrorMessage(
           `Failed to undo changes: ${errorMessage}`,
         );
+        this.view?.webview.postMessage({ type: "revertStateUpdate", revertState: null });
         return;
       }
 
@@ -10045,6 +10035,7 @@ export class ChatViewProvider
         error: errorMessage,
       });
       vscode.window.showErrorMessage(`Failed to undo changes: ${errorMessage}`);
+      this.view?.webview.postMessage({ type: "revertStateUpdate", revertState: null });
     }
   }
 

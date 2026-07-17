@@ -70,7 +70,10 @@ function detailFromSummary(summary: SubagentSummary): SubagentDetail {
   return {
     ...summary,
     ...emptySubagentEventCollections(),
-    references: [...summary.references],
+    // Persisted/legacy summaries are external data. A malformed references
+    // object must not crash transcript hydration when this compatibility view
+    // is rebuilt.
+    references: Array.isArray(summary.references) ? [...summary.references] : [],
   };
 }
 

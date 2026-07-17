@@ -82,6 +82,7 @@ export interface SdkMessageStep {
   activityDetail?: {
     kind?: string;
     tool?: string;
+    summary?: string;
     command?: string;
     input?: unknown;
     output?: string;

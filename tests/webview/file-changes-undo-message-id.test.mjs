@@ -21,6 +21,10 @@ const messageComponentsSource = readSource(
   [joinFromRoot("webview", "shared", "src", "chat", "MessageComponents.tsx")],
   "MessageComponents.tsx",
 );
+const chatShellSource = readSource(
+  [joinFromRoot("webview", "shared", "src", "chat", "ChatShell.tsx")],
+  "ChatShell.tsx",
+);
 
 function extractCentralizedDiffBranch(source) {
   const start = source.indexOf("centralizedDiffEvent?.files?.length > 0 && (");
@@ -93,5 +97,52 @@ test("undo handler dispatches undoMessageChanges with messageId and sessionId", 
     componentBody,
     /messageId: undoMessageId/,
     "undo handler must include messageId in dispatch",
+  );
+});
+
+test("rehydrated user-owned SDK summary diffs remain visible in the transcript", () => {
+  const transcriptStart = chatShellSource.indexOf("const MemoizedConversationTranscript");
+  const fileChangesBranchStart = chatShellSource.indexOf(
+    'if (entry.kind === "fileChanges")',
+    transcriptStart,
+  );
+  const fileChangesBranch = chatShellSource.slice(
+    fileChangesBranchStart,
+    fileChangesBranchStart + 1400,
+  );
+
+  assert.ok(fileChangesBranchStart >= 0, "ChatShell must handle fileChanges entries");
+  assert.match(
+    fileChangesBranch,
+    /const changeSummary = entry\.message\.changeSummary/,
+    "must read the rehydrated SDK summary from its owning message",
+  );
+  assert.match(
+    fileChangesBranch,
+    /changeSummary\?\.files\?\.length/,
+    "must render a populated rehydrated summary instead of dropping it",
+  );
+  assert.match(
+    fileChangesBranch,
+    /messageId=\{changeSummary\.messageId \|\| entry\.message\.id \|\| null\}/,
+    "must preserve the owning SDK message ID as the Undo target",
+  );
+});
+
+test("a hydrated summary suppresses only its matching assistant block fallback", () => {
+  assert.match(
+    chatShellSource,
+    /const hydratedFileChangesByBlockKey = useMemo\(/,
+    "must track response blocks that already render a hydrated summary",
+  );
+  assert.match(
+    chatShellSource,
+    /hydratedFileChangesByBlockKey\.has\(blockGroupKey\)/,
+    "must hide the duplicate assistant fallback only in the matching block",
+  );
+  assert.match(
+    chatShellSource,
+    /ownerMessageId: ownerUserMessageId/,
+    "must retain the owning user message when creating a hydrated summary row",
   );
 });

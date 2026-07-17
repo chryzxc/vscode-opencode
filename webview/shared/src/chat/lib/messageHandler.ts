@@ -466,6 +466,23 @@ export function asString(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback;
 }
 
+/** One presentation contract for completed SDK question tools, shared by live and hydrated UI. */
+export function completedQuestionToolPresentation(
+  tool: unknown,
+  status: unknown,
+  output?: unknown,
+): { isCompleted: boolean; title?: string; summary?: string } {
+  const normalizedTool = asString(tool).trim().toLowerCase();
+  const normalizedStatus = asString(status).trim().toLowerCase();
+  const summary = asString(output).trim();
+  const isCompleted =
+    normalizedTool === "question" &&
+    ["completed", "complete", "done", "success", "finished"].includes(normalizedStatus);
+  return isCompleted
+    ? { isCompleted: true, title: "Captured user response", summary: summary || undefined }
+    : { isCompleted: false };
+}
+
 export function getCentralizedEventPart(payload: unknown): UnknownRecord | null {
   const event = asRecord(payload);
   if (!event) {
@@ -503,6 +520,25 @@ export function getCentralizedEventPart(payload: unknown): UnknownRecord | null 
   const propertiesPart = asRecord(asRecord(event.properties)?.part) ?? asRecord(event.part);
   if (propertiesPart) {
     return propertiesPart;
+  }
+
+  // Session hydration can supply an SDK message part directly instead of the
+  // usual event envelope. In particular, a completed `question` tool part is
+  // emitted after the user replies and carries the reply text in
+  // `state.output`. Treat that record as the part itself so its message
+  // ownership, terminal status, and output survive centralized rendering.
+  const directType = asString(event.type).trim().toLowerCase();
+  if (
+    directType === "tool" &&
+    !!asRecord(event.state) &&
+    !!firstNonEmptyString(
+      asString(event.messageID),
+      asString(event.messageId),
+      asString(event.callID),
+      asString(event.callId),
+    )
+  ) {
+    return event;
   }
 
   return null;
@@ -4611,6 +4647,7 @@ function upsertStreamingStep(
     payload: {
       index: idx,
       patch: {
+        messageID: step.messageID || current.messageID,
         title,
         type: step.type || current.type,
         status: nextStatus || current.status,
@@ -8868,6 +8905,20 @@ function handleStreamEvent(
   // response than the one currently streaming (e.g. from a background task or a stale
   // previous turn), we must drop the stream-mutating portion of the event to prevent
   // it from bleeding into the active UI streaming card.
+  //
+  // A completed question tool is the intentional exception. OpenCode completes the
+  // question on the assistant message that asked it *after* the user-reply flow has
+  // opened its continuation placeholder. Dropping that event loses `state.output`
+  // (the captured answer) before the activity timeline can render it.
+  const strayEventIsCompletedQuestionTool = (() => {
+    const part = eventPart ?? partRecord;
+    const toolState = asRecord(part?.state);
+    return completedQuestionToolPresentation(
+      part?.tool,
+      toolState?.status ?? part?.status,
+      toolState?.output,
+    ).isCompleted;
+  })();
   const isStrayEvent = (() => {
     if (!messageId) return false;
     const currentStreamingMessageId = getState().streaming?.messageId;
@@ -8880,7 +8931,7 @@ function handleStreamEvent(
     if (normalizedEventType === "start" || normalizedEventType === "streamStart") return false;
     if (normalizedEventType === "message.updated") return false;
     
-    return true;
+    return !strayEventIsCompletedQuestionTool;
   })();
 
   if (isStrayEvent) {
@@ -9405,13 +9456,21 @@ function handleStreamEvent(
           inputObj?.pattern,
         );
         const callID = asString(part.callID) || undefined;
+        // A tool part's message ID identifies the assistant turn that owns the
+        // activity. Do not substitute the currently active stream/parent turn
+        // when the SDK supplied this more specific identity.
+        const activityMessageID = firstNonEmptyString(
+          asString(part.messageID),
+          asString(part.messageId),
+          messageId,
+        ) || undefined;
         const sessionID =
           asString(part.sessionID) ||
           asString(part.sessionId) ||
           asString((stateObj as UnknownRecord)?.sessionID) ||
           asString((stateObj as UnknownRecord)?.sessionId) ||
           undefined;
-        const title = asString(part.title) || (tool ? `Running ${tool}...` : inferredStepTitle(part));
+        const toolName = tool.trim().toLowerCase();
         const normalizedPartStatus = normalizeProgressStatus(asString(part.status));
         const normalizedStateStatus = normalizeProgressStatus(
           asString(stateObj?.status),
@@ -9419,11 +9478,26 @@ function handleStreamEvent(
         const reportedToolStatus =
           normalizedPartStatus === "error" || normalizedStateStatus === "error"
             ? "error"
-            : normalizedPartStatus === "done" || normalizedStateStatus === "done"
+            : normalizedPartStatus === "done" ||
+                normalizedPartStatus === "completed" ||
+                normalizedStateStatus === "done" ||
+                normalizedStateStatus === "completed"
               ? "done"
               : normalizedPartStatus === "running" || normalizedStateStatus === "running"
                 ? "running"
                 : "pending";
+        const questionPresentation = completedQuestionToolPresentation(
+          toolName,
+          stateObj?.status ?? part.status,
+          stateObj?.output,
+        );
+        const isCompletedQuestionTool = questionPresentation.isCompleted;
+        const title =
+          isCompletedQuestionTool
+            ? questionPresentation.title!
+            : asString(part.title) ||
+              asString(stateObj?.title) ||
+              (tool ? `Running ${tool}...` : inferredStepTitle(part));
 
         // Extract output from multiple possible sources
         // 1. From state.output (tool state)
@@ -9467,16 +9541,21 @@ function handleStreamEvent(
           });
         }
 
-        const baseActivityDetail: ActivityDetail | undefined = tool === "question"
-          ? undefined
-          : normalizeActivityDetail({
-              kind: "tool_call",
+        const firstQuestion = asRecord(
+          Array.isArray(inputObj?.questions) ? inputObj.questions[0] : undefined,
+        );
+        const questionPrompt = asOptionalString(firstQuestion?.question);
+        const baseActivityDetail: ActivityDetail | undefined =
+            normalizeActivityDetail({
+              kind: isCompletedQuestionTool ? "other" : "tool_call",
               tool: tool || undefined,
               command: commandValue,
               query: queryValue,
               file: filePath,
               input: inputObj || partInputObj || undefined,
-              summary: asOptionalString(part.meta),
+              summary: isCompletedQuestionTool
+                ? questionPresentation.summary || questionPresentation.title
+                : questionPrompt || asOptionalString(part.meta),
               output: finalOutput,
               diffExcerpt: diffExcerpt,
               metadata: metadataTruncated ? { truncated: true } : undefined,
@@ -9490,6 +9569,7 @@ function handleStreamEvent(
           upsertStreamingStep(dispatch, getState, {
             id: asString(part.id) || undefined,
             callID,
+            messageID: activityMessageID,
             title,
             type: "tool",
             status: reportedToolStatus,
@@ -9522,6 +9602,7 @@ function handleStreamEvent(
           upsertStreamingStep(dispatch, getState, {
             id: asString(part.id) || existing.id,
             callID,
+            messageID: activityMessageID || existing.messageID,
             title,
             type: "tool",
             status: resolvedStatus,
@@ -11560,9 +11641,13 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           const plainTextFallbackFinal =
             asBoolean(asRecord(msg)?.plainTextFallback, false) ||
             asBoolean(asRecord(asRecord(msg)?.info)?.plainTextFallback, false);
-          const snapshotStreaming =
-            currentStreaming ??
-            (shouldDropMismatchedSnapshot ? null : latestStreamingSnapshot);
+          // A terminal SDK envelope with its own message ID (such as a task
+          // tool result) is not a finalization of the card that is currently
+          // streaming. Keep that card live and do not fold its activity into
+          // the distinct envelope.
+          const snapshotStreaming = shouldDropMismatchedSnapshot
+            ? null
+            : currentStreaming ?? latestStreamingSnapshot;
           const hasStreamingSnapshotActivity =
             hasVisibleStreamingSnapshot(snapshotStreaming);
           const interactiveEventsInResponse = isMessage(msg)
@@ -11727,12 +11812,20 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               null;
             dispatch({
               type: "SET_MESSAGES",
-              payload: replaceMatchingAssistantTurn(currentMessages, sanitized, [
-                finalMessageId,
-                responseMessageId,
-                streamingMessageId,
-                snapshotMessageId,
-              ]),
+              payload: replaceMatchingAssistantTurn(
+                currentMessages,
+                sanitized,
+                [
+                  finalMessageId,
+                  responseMessageId,
+                  // A completed SDK envelope with its own parts (for example
+                  // a task tool) owns a distinct message ID. Do not merge it
+                  // into a preceding stream snapshot that has a different ID.
+                  ...(shouldDropMismatchedSnapshot
+                    ? []
+                    : [streamingMessageId, snapshotMessageId]),
+                ],
+              ),
             });
             remapSubagentsToFinalMessageId(
               dispatch,
@@ -11760,8 +11853,8 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             isMatchingStreamingMessage ||
             !currentStreaming ||
             !streamingMessageId ||
-            hasOwnResponsePayload ||
-            interactiveEventsInResponse.length > 0;
+            (!shouldDropMismatchedSnapshot &&
+              (hasOwnResponsePayload || interactiveEventsInResponse.length > 0));
           streamDebug("Stream response: completion decision", {
             responseMessageId: responseMessageId ?? null,
             finalMessageId,
@@ -12939,6 +13032,50 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               });
             }
           }
+          // Perf rationale: React's useReducer dispatch commits state
+          // asynchronously — stateRef.current only updates on the next render
+          // commit, so a post-dispatch getState() snapshot can return
+          // pre-batch state. Combined with startTransition deferral below,
+          // reading getState() here produces false-zero
+          // streamingContentLength / streamingReasoningLength readings in the
+          // perf metric. trackedDispatch mirrors the reducer's append/replace
+          // logic on the dispatched payloads so the metric reflects post-batch
+          // state regardless of commit timing. Removing this accumulator (or
+          // emitting the metric outside processBatchEvents) will reintroduce
+          // the false-zero streaming-perf reports documented in
+          // tests/webview/stream-performance-debug.test.mjs.
+          const stateAtBatchStart = getState();
+          let trackedStreamingContentLength =
+            stateAtBatchStart.streaming?.content?.length ?? 0;
+          let trackedStreamingReasoningLength =
+            stateAtBatchStart.streaming?.reasoning?.length ?? 0;
+          const trackedDispatch: Dispatch<AppAction> = (action) => {
+            if (action && action.type === "UPDATE_STREAMING_CONTENT" && action.payload) {
+              const incomingLen =
+                typeof action.payload.content === "string"
+                  ? action.payload.content.length
+                  : 0;
+              trackedStreamingContentLength = action.payload.append
+                ? trackedStreamingContentLength + incomingLen
+                : incomingLen;
+            } else if (
+              action &&
+              action.type === "UPDATE_STREAMING_REASONING" &&
+              action.payload
+            ) {
+              const incomingLen =
+                typeof action.payload.reasoning === "string"
+                  ? action.payload.reasoning.length
+                  : 0;
+              // Reasoning reducer performs dedupe/merge that can shrink the
+              // resulting string below a naive concat; this upper-bound length
+              // is sufficient for diagnostic signal.
+              trackedStreamingReasoningLength = action.payload.append
+                ? trackedStreamingReasoningLength + incomingLen
+                : incomingLen;
+            }
+            dispatch(action);
+          };
           const processBatchEvents = () => {
             for (const [eventIndex, item] of events.entries()) {
               const evtPayload = asRecord(item.event) ?? item;
@@ -13017,7 +13154,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                   },
                 });
               } else {
-                handleStreamEvent(dispatch, getState, evtPayload, terminalErrorReached, false, markAssistantTurnClosed);
+                handleStreamEvent(trackedDispatch, getState, evtPayload, terminalErrorReached, false, markAssistantTurnClosed);
               }
 
               if (
@@ -13040,6 +13177,14 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                 }
               }
             }
+            // Emit inside processBatchEvents so the tracked accumulators
+            // have observed every dispatched payload before the read.
+            logger.streamPerformance("stream-event-batch", {
+              eventCount: events.length,
+              durationMs: Number((performance.now() - batchStartedAt).toFixed(2)),
+              streamingContentLength: trackedStreamingContentLength,
+              streamingReasoningLength: trackedStreamingReasoningLength,
+            });
           };
           const hasImmediateActivity = events.some((item) =>
             isImmediateActivityStreamPayload(asRecord(item.event) ?? item),
@@ -13053,12 +13198,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           if (streamingAfter) {
             latestStreamingSnapshot = streamingAfter;
           }
-          logger.streamPerformance("stream-event-batch", {
-            eventCount: events.length,
-            durationMs: Number((performance.now() - batchStartedAt).toFixed(2)),
-            streamingContentLength: streamingAfter?.content.length ?? 0,
-            streamingReasoningLength: streamingAfter?.reasoning.length ?? 0,
-          });
           break;
         }
         case "streamEventEnrich": {

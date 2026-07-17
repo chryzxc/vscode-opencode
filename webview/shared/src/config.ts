@@ -14,7 +14,7 @@ export const config = {
      */
     showBrowserConsole: false,
     /** Show copyable raw SDK hydration and live-event payloads. */
-    showSdkEventDebug: true,
+    showSdkEventDebug: false,
   },
 };
 

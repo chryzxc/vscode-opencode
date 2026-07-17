@@ -70,6 +70,7 @@ import { useSubagentsForParentMessage } from "./hooks/useSubagents";
 import { DiffStats } from "./DiffStats";
 import {
   asString,
+  completedQuestionToolPresentation,
   getCentralizedAssistantContentChunksFromRawSdkEventPayloads,
   getCentralizedEventType,
   getCentralizedEventPart,
@@ -327,7 +328,10 @@ function isRenderableUserTextPart(part: MessagePart): boolean {
         : typeof part.content === "string"
           ? part.content
           : "";
-  return !!text && !isSyntheticUserToolTextPart(splitInjectedSystemPromptFromUserText(text));
+  return (
+    !!text &&
+    !isSyntheticUserToolTextPart(splitInjectedSystemPromptFromUserText(text).userText)
+  );
 }
 
 function normalizeErrorLikeValue(value: unknown): string {
@@ -1448,11 +1452,7 @@ function extractSemanticEventMessageId(event: unknown): string | null {
     asRecord(asRecord(payloadRecord?.properties)?.info) ||
     asRecord(payloadRecord?.info);
 
-  const part =
-    asRecord(asRecord(eventRecord.properties)?.part) ||
-    asRecord(eventRecord.part) ||
-    asRecord(asRecord(payloadRecord?.properties)?.part) ||
-    asRecord(payloadRecord?.part);
+  const part = getCentralizedEventPart(eventRecord);
 
   const syncData =
     asRecord(asRecord(eventRecord.syncEvent)?.data) ||
@@ -3292,9 +3292,10 @@ function progressItemsFromRawEventPayloads(
     }
 
     const isQuestionTool = isQuestionToolName(tool);
+    const questionPresentation = completedQuestionToolPresentation(tool, status, output);
     const title =
-      (isQuestionTool && status === "done"
-        ? "Captured user response"
+      (questionPresentation.isCompleted
+        ? questionPresentation.title
         : undefined) ||
       firstNonEmptyString(
         asString(part.title),
@@ -3524,8 +3525,20 @@ function progressItemsFromSteps(
   steps
     .filter((step) => isActionProgressStep(step))
     .forEach((step, index) => {
-      const title = step.title;
+      const rawActivityDetail =
+        "activityDetail" in step
+          ? (step.activityDetail as ActivityDetail | undefined)
+          : undefined;
       const status = normalizeProgressStatus(step.status);
+      const questionPresentation = completedQuestionToolPresentation(
+        rawActivityDetail?.tool,
+        step.status,
+        rawActivityDetail?.output,
+      );
+      const title = questionPresentation.title ?? step.title;
+      const activityDetail = questionPresentation.isCompleted
+        ? { ...rawActivityDetail, summary: questionPresentation.summary ?? rawActivityDetail?.summary }
+        : rawActivityDetail;
       const meta = step.meta;
       const stepId =
         "id" in step && typeof step.id === "string" ? step.id : undefined;
@@ -3566,21 +3579,19 @@ function progressItemsFromSteps(
         "partType" in step ? (step.partType as string | undefined) : undefined;
       const stepInternal =
         "internal" in step ? Boolean(step.internal) : false;
+      const baseMergeKey =
+        progressItemIdentityKey({
+          id: stepId,
+          callID: stepCallId,
+          messageID: stepMessageId,
+          title,
+          filePath: stepFilePath,
+          partType: stepPartType,
+          activityDetail,
+        }) || mergeKey;
       const candidate: ProgressItem = {
         key: `${prefix}-${index}-${title}`,
-        mergeKey:
-          progressItemIdentityKey({
-            id: stepId,
-            callID: stepCallId,
-            messageID: stepMessageId,
-            title,
-            filePath: stepFilePath,
-            partType: stepPartType,
-            activityDetail:
-              "activityDetail" in step
-                ? (step.activityDetail as ActivityDetail | undefined)
-                : undefined,
-          }) || mergeKey,
+        mergeKey: baseMergeKey,
         id: stepId,
         callID: stepCallId,
         messageID: stepMessageId,
@@ -3600,7 +3611,7 @@ function progressItemsFromSteps(
             : undefined,
         activityDetail:
           "activityDetail" in step
-            ? (step.activityDetail as ActivityDetail | undefined)
+                ? activityDetail
             : undefined,
         streamSeq:
           "streamSeq" in step
@@ -3611,16 +3622,16 @@ function progressItemsFromSteps(
       const existing = stepMap.get(candidate.mergeKey);
       if (!existing) {
         stepMap.set(candidate.mergeKey, candidate);
-        return;
+      } else {
+        stepMap.set(candidate.mergeKey, mergeProgressItemRecord(existing, candidate));
       }
-      stepMap.set(candidate.mergeKey, mergeProgressItemRecord(existing, candidate));
     });
 
   return Array.from(stepMap.values());
 }
 
 function progressItemsFromRawResponseParts(
-  rawResponse?: Message["rawResponse"],
+  rawResponse?: unknown,
 ): ProgressItem[] {
   if (!rawResponse) {
     return [];
@@ -3700,7 +3711,11 @@ function progressItemsFromRawResponseParts(
       asString(partRec.output),
     );
     const preview = firstNonEmptyString(asString(metadataRec?.preview));
-    const rawTitle = toolName || "step";
+    const rawTitle = firstNonEmptyString(
+      asString(stateRec?.title),
+      asString(partRec.title),
+      toolName,
+    ) || "step";
 
     const compactMetadata: Record<string, string | number | boolean> = {};
     for (const [key, value] of Object.entries(metadataRec ?? {})) {
@@ -4620,45 +4635,91 @@ function isDeltaCentralizedEventPayload(payload: unknown): boolean {
   );
 }
 
-// Function to parse text and extract file mentions
-function parseFileMentions(text: string) {
-  if (!text) return [];
-  const parts: Array<{ type: 'text' | 'file'; content: string; filename?: string }> = [];
-  let lastIndex = 0;
-  let match;
-  FILE_MENTION_REGEX.lastIndex = 0; // Reset regex state
+type FileMentionTarget = {
+  filename: string;
+  path: string;
+};
 
-  while ((match = FILE_MENTION_REGEX.exec(text)) !== null) {
-    // Add text before the match
-    if (match.index > lastIndex) {
-      parts.push({
-        type: 'text',
-        content: text.slice(lastIndex, match.index)
-      });
+function hasInlineFileMention(text: string, filename: string): boolean {
+  if (!text || !filename) {
+    return false;
+  }
+  const token = `@${filename}`;
+  let index = text.indexOf(token);
+  while (index >= 0) {
+    const nextCharacter = text[index + token.length] || "";
+    if (!/[a-zA-Z0-9_./\\-]/.test(nextCharacter)) {
+      return true;
     }
-    // Add the file mention
-    parts.push({
-      type: 'file',
-      content: match[0],
-      filename: match[1]
-    });
-    lastIndex = match.index + match[0].length;
+    index = text.indexOf(token, index + token.length);
+  }
+  return false;
+}
+
+// Function to parse text and extract file mentions
+function parseFileMentions(text: string, targets: FileMentionTarget[] = []) {
+  if (!text) return [];
+  const parts: Array<{
+    type: 'text' | 'file';
+    content: string;
+    filename?: string;
+    path?: string;
+  }> = [];
+  const sortedTargets = [...targets]
+    .filter((target) => target.filename && target.path)
+    .sort((left, right) => right.filename.length - left.filename.length);
+  let lastIndex = 0;
+
+  // SDK file parts are authoritative: only they can make a blue @ mention
+  // navigable. This avoids consuming adjacent synthetic transport text (for
+  // example, `@.env.exampleCalled the Read tool`) as part of a filename.
+  if (sortedTargets.length > 0) {
+    for (let index = 0; index < text.length; index += 1) {
+      const target = sortedTargets.find((candidate) => {
+        const token = `@${candidate.filename}`;
+        const nextCharacter = text[index + token.length] || "";
+        return (
+          text.startsWith(token, index) &&
+          !/[a-zA-Z0-9_./\\-]/.test(nextCharacter)
+        );
+      });
+      if (!target) {
+        continue;
+      }
+      if (index > lastIndex) {
+        parts.push({ type: 'text', content: text.slice(lastIndex, index) });
+      }
+      parts.push({
+        type: 'file',
+        content: `@${target.filename}`,
+        filename: target.filename,
+        path: target.path,
+      });
+      lastIndex = index + target.filename.length + 1;
+      index = lastIndex - 1;
+    }
+  } else {
+    let match: RegExpExecArray | null;
+    FILE_MENTION_REGEX.lastIndex = 0;
+    while ((match = FILE_MENTION_REGEX.exec(text)) !== null) {
+      if (match.index > lastIndex) {
+        parts.push({ type: 'text', content: text.slice(lastIndex, match.index) });
+      }
+      parts.push({ type: 'file', content: match[0], filename: match[1] });
+      lastIndex = match.index + match[0].length;
+    }
   }
 
-  // Add remaining text
   if (lastIndex < text.length) {
-    parts.push({
-      type: 'text',
-      content: text.slice(lastIndex)
-    });
+    parts.push({ type: 'text', content: text.slice(lastIndex) });
   }
 
   return parts.length > 0 ? parts : [{ type: 'text', content: text }];
 }
 
 // Component to render text with highlighted file mentions
-function renderHighlightedText(text: string) {
-  const parts = parseFileMentions(text);
+function renderHighlightedText(text: string, targets?: FileMentionTarget[]) {
+  const parts = parseFileMentions(text, targets);
 
   return parts.map((part, index) => {
     const key = `${part.type}-${index}`;
@@ -4671,10 +4732,10 @@ function renderHighlightedText(text: string) {
             // Open file when clicked
             vscode.postMessage({
               type: "openFile",
-              file: (part as any).filename,
+              file: part.path || (part as any).filename,
             });
           }}
-          title={`Open ${(part as any).filename}`}
+          title={`Open ${part.path || (part as any).filename}`}
         >
           {part.content}
         </span>
@@ -6538,8 +6599,14 @@ export const UserMessage = memo(function UserMessage({ message, isQueued = false
   const [previewSelection, setPreviewSelection] = useState<CodeSelectionChipData | null>(null);
   const [copied, setCopied] = useState(false);
   const userMessageRef = useRef<HTMLDivElement>(null);
+  // Hydrated user messages can contain SDK synthetic Read-tool echoes beside
+  // the original text part. Prefer renderable user parts so server transport
+  // text and attached file contents never leak into the user bubble.
   const rawUserText =
-    message?.content ?? message?.text ?? messageBodyFromParts(message?.parts, message?.role ?? message?.info?.role);
+    messageBodyFromParts(message?.parts, message?.role ?? message?.info?.role) ||
+    message?.content ||
+    message?.text ||
+    "";
   const codeSelections = useMemo(
     () => collectCodeSelectionsFromParts(message?.parts),
     [message?.parts],
@@ -6560,10 +6627,23 @@ export const UserMessage = memo(function UserMessage({ message, isQueued = false
   }, [message, rawUserText, codeSelections]);
   const content = splitContent.userText;
   const injectedSystemText = splitContent.systemText;
-  const explicitFileChips = (message?.parts ?? [])
+  const attachedFileChips = (message?.parts ?? [])
     .filter((part) => isExplicitFileAttachmentPart(part) && !isImageAttachmentPart(part))
     .map((part) => buildExplicitFileChip(part))
     .filter((value): value is { label: string; path?: string } => !!value);
+  const fileMentionTargets = Array.from(
+    new Map(
+      attachedFileChips
+        .filter((chip): chip is { label: string; path: string } => !!chip.path)
+        .map((chip) => [chip.label, { filename: chip.label, path: chip.path }]),
+    ).values(),
+  );
+  // @ references are represented by their inline blue mention. Do not render a
+  // second attachment chip for the same SDK file part. Explicit uploads remain
+  // visible as chips when they are not referenced inline.
+  const explicitFileChips = attachedFileChips.filter(
+    (chip) => !hasInlineFileMention(content, chip.label),
+  );
   const inferredFileChips = inferAttachmentPathsFromHydratedUserText(
     typeof rawUserText === "string" ? rawUserText : "",
   ).map((filePath) => ({
@@ -6652,11 +6732,11 @@ export const UserMessage = memo(function UserMessage({ message, isQueued = false
                     return (
                       <>
                         <span className="oc-readable-accent font-medium">{match[1]}</span>
-                        {renderHighlightedText(match[2])}
+                        {renderHighlightedText(match[2], fileMentionTargets)}
                       </>
                     );
                   }
-                  return renderHighlightedText(content);
+                  return renderHighlightedText(content, fileMentionTargets);
                 })()}
               </div>
               {hasImages && (
@@ -6685,7 +6765,7 @@ export const UserMessage = memo(function UserMessage({ message, isQueued = false
                     <div
                       key={`file-chip-${index}:${label.label}`}
                       className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-oc-border bg-oc-panel-soft px-2.5 py-1 text-[10px] font-medium text-oc-text-soft"
-                      title={label.label}
+                      title={label.path || label.label}
                     >
                       <FileIcon filePath={label.path || label.label} className="h-3.5 w-3.5 shrink-0" />
                       <span className="truncate">{label.label}</span>
@@ -7929,12 +8009,23 @@ const centralizedRawResponse = message?.rawResponse;
       if (fromRaw.length > 0) {
         return fromRaw;
       }
+      const fromSnapshotParts = progressItemsFromRawResponseParts({
+        parts: cardMessage?.parts,
+      });
+      if (fromSnapshotParts.length > 0) {
+        return fromSnapshotParts;
+      }
       return progressItemsFromSteps(
         [...(cardMessage?.progressEvents ?? []), ...(cardMessage?.steps ?? [])],
         "sdk-snapshot",
       );
     },
-    [cardMessage?.progressEvents, cardMessage?.steps, normalizedCentralizedRawSdkEventPayloads],
+    [
+      cardMessage?.parts,
+      cardMessage?.progressEvents,
+      cardMessage?.steps,
+      normalizedCentralizedRawSdkEventPayloads,
+    ],
   );
   const liveProgressItems = useMemo(
     () =>
@@ -10584,6 +10675,8 @@ export const FileChangesSection = memo(function FileChangesSection({
 }) {
   type DiffExcerpt = { header?: string; lines?: string[]; added?: number; deleted?: number };
   type FileChange = { file: string; added: number; deleted: number; diffExcerpt?: DiffExcerpt };
+  // The SDK envelope that owns the summary/diff is the revert target. In
+  // particular, rehydrated `info.summary.diffs` belong to the user message.
   const summaryMessageId = firstNonEmptyString(centralizedDiffEvent?.messageId, changeSummary?.messageId, messageId) || null;
 
   const compactDisplayDir = (dir: string): string => {

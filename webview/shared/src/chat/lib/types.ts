@@ -192,6 +192,8 @@ export interface PendingUserMessage {
   clientRequestId?: string;
   images?: string[];
   attachments?: AttachmentItem[];
+  /** File/resource contexts selected through @ mentions before SDK hydration. */
+  contexts?: ContextItem[];
   interactiveSubmit?: boolean;
   confirmedMessageId?: string;
   confirmedAt?: number;
