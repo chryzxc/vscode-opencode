@@ -42,18 +42,7 @@ test('subagent tracker consumes stream events before session gating', () => {
   );
 });
 
-test('centralized event persistence is queued before stream events can return through session gates', () => {
-  const persistIndex = streamSubscribeBody.indexOf('enqueueRawSdkEventPersistence(');
-  const todoGateIndex = streamSubscribeBody.indexOf('handleSdkTodoUpdatedEvent(');
-  const compactionGateIndex = streamSubscribeBody.indexOf('handleSdkCompactionStreamEvent(');
-  assert.ok(persistIndex >= 0, 'stream callback should enqueue centralized persistence');
-  assert.ok(todoGateIndex >= 0, 'stream callback should retain the todo gate');
-  assert.ok(compactionGateIndex >= 0, 'stream callback should retain the compaction gate');
-  assert.ok(
-    persistIndex < todoGateIndex && persistIndex < compactionGateIndex,
-    'centralized persistence must happen before early-return gates',
-  );
-});
+// Centralized raw event persistence was removed; live stream gates now forward raw SDK events without writing an event tape.
 
 test('child subagent events are bucketed under their parent session for persistence and live debugging', () => {
   assert.match(
@@ -68,8 +57,8 @@ test('child subagent events are bucketed under their parent session for persiste
   );
   assert.match(
     streamSubscribeBody,
-    /const persistenceSessionId =[\s\S]*?subagentParentSessionId \|\|[\s\S]*?eventSessionId/s,
-    'centralized raw persistence should prefer the parent session bucket',
+    /const resolvedSessionId =[\s\S]*?subagentParentSessionId \|\|[\s\S]*?eventSessionId/s,
+    'stream forwarding should prefer the parent session bucket',
   );
 });
 

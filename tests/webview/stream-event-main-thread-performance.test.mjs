@@ -78,18 +78,18 @@ test("extension-host stream delivery is capped below token event frequency", () 
   );
 });
 
-test("webview appends a streamed raw-event batch with one tape reducer update", () => {
+test("webview appends a streamed live-event debug batch with one reducer update", () => {
   assert.match(
     handlerSource,
-    /const rawEventsBySessionId = new Map<string, unknown\[\]>\(\);/,
+    /const eventsBySessionId = new Map<string, unknown\[\]>\(\);/,
   );
   assert.match(
     handlerSource,
-    /type: "APPEND_RAW_SDK_EVENT_PAYLOAD_BATCH"/,
+    /type: "APPEND_LIVE_EVENT_STREAM_DEBUG_BATCH"/,
   );
   assert.match(
     storeSource,
-    /case "APPEND_RAW_SDK_EVENT_PAYLOAD_BATCH":/,
+    /case "APPEND_LIVE_EVENT_STREAM_DEBUG_BATCH":/,
   );
 });
 

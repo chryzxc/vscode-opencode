@@ -21,11 +21,11 @@ const modalSource = readSource(
   "CodeSelectionPreviewModal.tsx",
 );
 
-test("CodeSelectionPreviewData interface defines all chip data fields", () => {
+test("CodeSelectionPreviewData type defines all chip data fields", () => {
   assert.match(
     modalSource,
-    /interface CodeSelectionPreviewData/,
-    "must export CodeSelectionPreviewData interface",
+    /export type CodeSelectionPreviewData = \{/,
+    "must export CodeSelectionPreviewData type",
   );
   assert.match(
     modalSource,
@@ -78,7 +78,7 @@ test("buildLineLabel formats single and range line numbers correctly", () => {
   // start && end && start !== end → "start-end"
   assert.match(
     body,
-    /\$\{startLine\}-\$\{endLine\}/,
+    /\$\{start\}-\$\{end\}/,
     "must format range as start-end when start differs from end",
   );
 });
@@ -149,7 +149,7 @@ test("modal renders via createPortal to document.body", () => {
 test("modal respects isOpen prop and does not render when closed", () => {
   assert.match(
     modalSource,
-    /if \(!isOpen\) return null/,
+    /if \(!isOpen \|\| !data\) \{\s*return null;\s*\}/,
     "must bail early when isOpen is false",
   );
 });

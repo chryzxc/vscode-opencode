@@ -30,8 +30,8 @@ test("implementation_plan turns do not use a legacy structured text fallback in 
 
   assert.match(
     messageComponentsSource,
-    /return getCentralizedAssistantContentChunksFromRawSdkEventPayloads\(\s*responseBodyRawSdkEventPayloads,\s*\);/s,
-    "assistant response fallback should come from centralized assistant text extraction only",
+    /const rawChunks = getCentralizedAssistantContentChunksFromRawSdkEventPayloads\(\s*responseBodyRawSdkEventPayloads,\s*\);[\s\S]*if \(rawChunks\.length > 0\) \{\s*return rawChunks;\s*\}/s,
+    "assistant response fallback should prefer raw SDK assistant text extraction before snapshot content",
   );
 
   assert.match(

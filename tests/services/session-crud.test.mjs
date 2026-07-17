@@ -204,53 +204,7 @@ test('chat provider no longer accepts legacy assistant snapshot persistence from
   );
 });
 
-test('centralized subagent projections are scoped to their parent session', () => {
-  const scopeBody = extractFunctionBody(
-    sessionServiceSource,
-    'private scopeSubagentProjectionToSession(',
-  );
-  assert.match(
-    scopeBody,
-    /summary\?\.parentSessionId === sessionId/,
-    'summary entries from other sessions must be excluded',
-  );
-  assert.match(
-    scopeBody,
-    /detail\?\.parentSessionId === sessionId/,
-    'detail entries from other sessions must be excluded',
-  );
-  assert.match(
-    sessionServiceSource,
-    /this\.scopeSubagentProjectionToSession\(\s*sessionId,\s*this\.normalizeSubagentProjection\(update\)/s,
-    'live subagent persistence must scope incoming updates before merging them',
-  );
-});
-
-test('session service upgrades duplicate raw sdk event identities to the richer payload', () => {
-  assert.match(
-    sessionServiceSource,
-    /function rawSdkEventPersistenceRichness\(event: unknown\): number/,
-    'session raw SDK persistence should define a richness scorer for duplicate event upgrades',
-  );
-  assert.match(
-    sessionServiceSource,
-    /const existingIndex = identityIndex\.get\(eventIdentity\)[\s\S]*rawSdkEventPersistenceRichness\(snapshot\)\s*>=[\s\S]*rawSdkEventPersistenceRichness\(existingEvent\)/s,
-    'duplicate raw SDK events should keep the richer payload instead of dropping later updates',
-  );
-});
-
-test('session service snapshots raw sdk payloads into plain data before persistence', () => {
-  assert.match(
-    sessionServiceSource,
-    /import \{ createPlainObjectSnapshot \} from "\.\.\/shared\/createPlainObjectSnapshot";/,
-    'SessionService should import the shared plain-object snapshot helper',
-  );
-  assert.match(
-    sessionServiceSource,
-    /private cloneRawSdkEventPayload<T>\(value: T\): T \{\s*return createPlainObjectSnapshot\(value\);\s*\}/,
-    'SessionService should never fall back to returning the original raw SDK event object',
-  );
-});
+// Raw SDK event-tape persistence was removed; hydration now snapshots SDK messages directly through SessionSnapshotLoader/SdkMessageAdapter.
 
 test('history sidebar emits session create/switch/delete events to extension', () => {
   // Verify webview session controls post expected protocol messages.

@@ -21,11 +21,12 @@ const card = readSource(
 );
 
 test("persisted live subagents become cancelled during extension-host recovery", () => {
-  assert.match(sessionService, /cancelStaleSubagentsAfterExtensionRestart/);
-  assert.match(sessionService, /recoverSubagentProjectionAfterRestart/);
+  // SessionService no longer owns subagent recovery after the raw SDK tape refactor.
+  assert.doesNotMatch(sessionService, /cancelStaleSubagentsAfterExtensionRestart/);
   assert.match(recovery, /status !== "pending" && status !== "running" && status !== "orphaned"/);
   assert.match(recovery, /status: "cancelled"/);
-  assert.match(provider, /cancelStaleSubagentsAfterExtensionRestart\(sessionId\)/);
+  assert.match(provider, /finalizeParentMessage\(\{/);
+  assert.match(provider, /parentSessionId:\s*resolvedSessionId/);
 });
 
 test("cancelled is terminal in the inline subagent card", () => {

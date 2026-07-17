@@ -212,9 +212,10 @@ test('provider hydrates history exclusively from SDK session messages', () => {
   assert.match(source, /const sessionHistory = await this\.loadSdkRenderableHistory\(\s*retrySessionId,\s*\)/, 'retry hydration should use the SDK history loader');
 });
 
-test('stream callback forwards the unmodified SDK event without persisting it', () => {
+test('stream callback forwards a detached SDK event payload without persisting it', () => {
   const body = extractFunctionBody(source, '    this.unsubscribe = this.streamService.subscribe(async (event, rawEvent) => {');
-  assert.match(body, /const eventForWebview = event;/, 'stream transport should preserve the SDK event object');
+  assert.match(body, /const eventForWebview = this\.buildWebviewStreamEvent\(enrichedEvent \|\| event\);/, 'stream transport should build a detached webview payload from the SDK event');
+  assert.match(body, /this\.enqueueStreamWebviewEvent\(\s*eventForWebview,\s*resolvedSessionId,/s, 'stream transport should carry session ownership in the webview envelope');
   assert.doesNotMatch(body, /appendRawSdkEventPayload/, 'live SDK events must not be persisted into a centralized tape');
   assert.doesNotMatch(body, /sessionId:\s*resolvedSessionId,\s*\n\s*part:/, 'stream transport must not mutate the SDK event with local fields');
 });

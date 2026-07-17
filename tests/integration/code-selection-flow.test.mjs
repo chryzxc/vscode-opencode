@@ -61,11 +61,16 @@ describe('Code-selection part construction (ChatViewProvider)', () => {
     );
   });
 
-  test('deferred SDK prompt contexts always use text/plain instead of languageId-derived mime', () => {
+  test('code selection and file-reference prompt contexts use text/plain instead of languageId-derived mime', () => {
     assert.match(
       providerSource,
-      /for \(const context of options\.contexts \?\? \[\]\) \{[\s\S]*?promptFiles\.push\(\{[\s\S]*?mime:\s*"text\/plain"/,
-      'deferred SDK prompt contexts must no longer derive mime from context.languageId',
+      /else if \(ctx\.content\)\s*\{[\s\S]*?type:\s*"file"[\s\S]*?mime:\s*"text\/plain"/,
+      'code selection prompt parts must not derive MIME from context.languageId',
+    );
+    assert.match(
+      providerSource,
+      /else if \(ctx\.file && workspaceFolder\)[\s\S]*?type:\s*"file"[\s\S]*?mime:\s*"text\/plain"/,
+      'file-reference prompt parts must use text/plain MIME',
     );
     assert.doesNotMatch(
       providerSource,
@@ -74,23 +79,23 @@ describe('Code-selection part construction (ChatViewProvider)', () => {
     );
   });
 
-  test('deferred SDK prompt files and contexts keep full path metadata instead of basename-only names', () => {
+  test('SDK prompt files and contexts keep full path metadata instead of basename-only names', () => {
     assert.match(
       providerSource,
-      /promptFiles\.push\(\{[\s\S]*?uri:\s*path\.isAbsolute\(filePath\) \? vscode\.Uri\.file\(filePath\)\.toString\(\) : filePath,[\s\S]*?name:\s*filePath/,
-      'plain attached files must preserve full filePath in the prompt file name metadata',
+      /for \(const filePath of files\) \{[\s\S]*?filename:\s*filePath\.split[\s\S]*?source:\s*\{[\s\S]*?path:\s*filePath/,
+      'plain attached files must preserve full filePath in source.path metadata even when the filename is a short label',
     );
-    // Code selections in the deferred path now use a data URI (not raw file path)
+    // Code selections use a data URI (not raw file path)
     // so the server can't resolve the whole file from disk.
     assert.match(
       providerSource,
-      /for \(const context of options\.contexts \?\? \[\]\) \{[\s\S]*?if \(content\) \{[\s\S]*?dataUri[\s\S]*?name:\s*nameWithLine/,
-      'deferred code selections must use data URI with nameWithLine for AI metadata',
+      /else if \(ctx\.content\)\s*\{[\s\S]*?selectionDataUrl[\s\S]*?filename:\s*selectionPathWithLineInfo/,
+      'code selections must use data URI with selectionPathWithLineInfo for AI metadata',
     );
     assert.match(
       providerSource,
-      /const dataUri = `data:text\/plain;base64,\$\{Buffer\.from\([\s\S]*?content[\s\S]*?"base64"\)\}/,
-      'deferred path must base64-encode selection content as data URI',
+      /const selectionDataUrl = `data:text\/plain;base64,\$\{Buffer\.from\([\s\S]*?selectionContent[\s\S]*?"base64"\)\}/,
+      'prompt path must base64-encode selection content as data URI',
     );
   });
 

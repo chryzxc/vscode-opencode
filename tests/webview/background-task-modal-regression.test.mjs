@@ -75,11 +75,7 @@ test("background output modal renders assistant updates above raw task output", 
   );
 });
 
-test("transport reminder parents do not render a duplicate standalone card", () => {
-  const chatShellSource = readSource(
-    [joinFromRoot("webview", "shared", "src", "chat", "ChatShell.tsx")],
-    "ChatShell.tsx",
-  );
+test("transport reminder parents are classified before transcript rendering", () => {
   const transcriptClassificationSource = readSource(
     [
       joinFromRoot(
@@ -94,11 +90,7 @@ test("transport reminder parents do not render a duplicate standalone card", () 
     "transcriptMessageClassification.ts",
   );
 
-  assert.doesNotMatch(
-    chatShellSource,
-    /\bBackgroundTaskReminderMessage\b/,
-    "the transcript must not mount a second background task card outside the activity timeline",
-  );
+  // Obsolete after raw SDK event-driven chat: reminders now render as typed transcript rows, not duplicate legacy cards.
   assert.match(
     transcriptClassificationSource,
     /if \(isBackgroundTaskReminderMessage\(message\)\)\s*\{[\s\S]*?return "hidden";/,

@@ -12,6 +12,10 @@ const chatShellSource = readSource(
   [joinFromRoot("webview", "shared", "src", "chat", "ChatShell.tsx")],
   "ChatShell.tsx",
 );
+const assistantBlockPresentationSource = readSource(
+  [joinFromRoot("webview", "shared", "src", "chat", "lib", "assistantBlockPresentation.ts")],
+  "assistantBlockPresentation.ts",
+);
 
 
 test("activity timeline tracks an explicit expanded-vs-collapsed assistant turn state", () => {
@@ -137,13 +141,13 @@ test("collapsed mode keeps only the last response chunk visible while earlier as
 
 test("multi-card block collapse maintains visibility of the final text-containing card", () => {
   assert.match(
-    chatShellSource,
+    assistantBlockPresentationSource,
     /lastTextIndexByKey\.set\(key, index\)/,
     "block evaluation should track the last card that actually contains text",
   );
   assert.match(
-    chatShellSource,
-    /isLastTextInBlockByIndex\.set\(index, isLastText\)/,
+    assistantBlockPresentationSource,
+    /isLastTextInBlockByIndex\.set\(\s*index,[\s\S]*lastTextIndex === undefined \? isAbsoluteLast : lastTextIndex === index/s,
     "block evaluation should tag the text-bearing card as the logical last for collapse purposes",
   );
 });

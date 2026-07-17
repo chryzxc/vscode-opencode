@@ -160,10 +160,10 @@ test("session.error always resets assistant turn pending regardless of error typ
 
   assert.match(
     block,
-    /SET_ASSISTANT_TURN_PENDING,[\s\S]*?payload:\s*\{ pending:\s*false,\s*messageId:\s*null \}/s,
+    /SET_ASSISTANT_TURN_PENDING["']?,[\s\S]*?payload:\s*\{ pending:\s*false,\s*messageId:\s*null \}/s,
     "must reset assistant turn pending to false with null messageId",
   );
-}
+});
 
 test("session.error handler dispatches SET_PROCESSING false and FINISH_STREAMING", () => {
   const block = extractSessionErrorBlock(messageHandlerSource);

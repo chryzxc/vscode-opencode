@@ -75,8 +75,8 @@ test("webview send actions include a stable client request id", () => {
   );
   assert.match(
     panelComponentsSource,
-    /const hasLiveAssistantTurn = shouldDeferComposerSendInCurrentSession\([\s\S]*\.\.\.\(hasLiveAssistantTurn \? \{ delivery: "deferred" \} : \{\}\)/s,
-    "composer sends should only use deferred delivery for confirmed live turns in the current session",
+    /const hasLiveAssistantTurn = shouldDeferComposerSendInCurrentSession\([\s\S]*const steerPrompt = \(\) => \{[\s\S]*if \(!text \|\| !hasLiveAssistantTurn \|\| isSteering\) return;[\s\S]*type: "steerMessage"/s,
+    "composer should route confirmed live-turn input through the steering path instead of manufacturing queued sends",
   );
   assert.doesNotMatch(
     panelComponentsSource,

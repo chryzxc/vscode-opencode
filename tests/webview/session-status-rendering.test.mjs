@@ -118,8 +118,8 @@ describe('Live-only event parsing and leak prevention', () => {
   test('message handler keeps live-only events out of centralized raw tape', () => {
     assert.match(
       messageHandlerSource,
-      /centralizedDisposition === "persist"[\s\S]*?APPEND_RAW_SDK_EVENT_PAYLOAD/s,
-      'only persist-classified stream events should append into centralized raw tape',
+      /const liveRoute = routeLiveEventToUi\([\s\S]*?const liveSessionStatus = liveRoute\.sessionStatus/s,
+      'stream events should route live-only events through the raw SDK live-event UI path',
     );
     assert.match(
       messageHandlerSource,

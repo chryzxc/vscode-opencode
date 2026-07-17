@@ -577,12 +577,12 @@ test('SessionSnapshotLoader loads all SDK endpoints in parallel', () => {
   );
   assert.match(
     snapshotLoaderSource,
-    /client\.session\.get\(\{ sessionID \}\)/,
+    /client\.session\.get\(\{ sessionID, \.\.\.sessionScope \}\)/,
     'should load session metadata',
   );
   assert.match(
     snapshotLoaderSource,
-    /client\.session\.messages\(\{ sessionID \}\)/,
+    /client\.session\.messages\(\{ sessionID, \.\.\.sessionScope \}\)/,
     'should load session messages',
   );
   assert.match(
@@ -597,7 +597,7 @@ test('SessionSnapshotLoader loads all SDK endpoints in parallel', () => {
   );
   assert.match(
     snapshotLoaderSource,
-    /client\.session\.children\(\{ sessionID \}\)/,
+    /client\.session\.children\(\{ sessionID, \.\.\.sessionScope \}\)/,
     'should load child sessions',
   );
 });

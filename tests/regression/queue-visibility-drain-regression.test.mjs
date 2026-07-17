@@ -191,18 +191,18 @@ test.describe("Queue drain ordering", () => {
 // ---------------------------------------------------------------------------
 
 test.describe("Composer deferred delivery", () => {
-  test("sendPrompt requests deferred delivery only when the assistant is responding", () => {
-    const body = extractFunctionBody(panelSource, "export function InputWrapper()");
+  test("sendPrompt renders normal sends as pending user messages, not extension queue rows", () => {
+    const body = extractFunctionBody(panelSource, "function InputWrapper()");
 
     assert.match(
       body,
-      /\.\.\.\(hasLiveAssistantTurn \? \{ delivery: "deferred" \} : \{\}\)/,
-      "when the assistant is responding, sendPrompt must ask OpenCode to defer delivery server-side",
+      /type:\s*"ADD_PENDING_USER_MESSAGE"/,
+      "normal composer sends must render inline as pending user messages while OpenCode owns ordering",
     );
   });
 
   test("sendPrompt does not post addToQueue to the backend", () => {
-    const body = extractFunctionBody(panelSource, "export function InputWrapper()");
+    const body = extractFunctionBody(panelSource, "function InputWrapper()");
 
     assert.doesNotMatch(
       body,
@@ -212,7 +212,7 @@ test.describe("Composer deferred delivery", () => {
   });
 
   test("sendPrompt does not dispatch ADD_TO_LOCAL_QUEUE", () => {
-    const body = extractFunctionBody(panelSource, "export function InputWrapper()");
+    const body = extractFunctionBody(panelSource, "function InputWrapper()");
 
     assert.doesNotMatch(
       body,
@@ -221,16 +221,16 @@ test.describe("Composer deferred delivery", () => {
     );
   });
 
-  test("accepted deferred prompts render from SDK acknowledgement, not QueueManager", () => {
-    assert.match(
-      messageHandlerSource,
-      /case "deferredPromptAccepted":[\s\S]*ADD_PENDING_DEFERRED_PROMPT/,
-      "SDK-accepted deferred prompts should be tracked separately from QueueManager",
-    );
+  test("normal prompts render from pending user message state, not QueueManager", () => {
     assert.match(
       panelSource,
+      /type:\s*"ADD_PENDING_USER_MESSAGE"/,
+      "composer prompts should be tracked separately from QueueManager",
+    );
+    assert.doesNotMatch(
+      panelSource,
       /delivery:\s*["']deferred["']/,
-      "the composer should still request OpenCode deferred delivery",
+      "the raw SDK event refactor removed the explicit deferred delivery payload field",
     );
   });
 });
@@ -323,7 +323,7 @@ test.describe("Queue store reducer", () => {
 
 test.describe("QueueContainer UI contract", () => {
   test("QueueContainer renders all items by default (no collapsed state)", () => {
-    const body = extractFunctionBody(panelSource, "export function QueueContainer()");
+      const body = extractFunctionBody(panelSource, "function QueueContainer()");
 
     assert.doesNotMatch(
       body,
@@ -339,7 +339,7 @@ test.describe("QueueContainer UI contract", () => {
   });
 
   test("QueueContainer shows Pending label with count badge", () => {
-    const body = extractFunctionBody(panelSource, "export function QueueContainer()");
+      const body = extractFunctionBody(panelSource, "function QueueContainer()");
 
     assert.match(
       body,
@@ -355,7 +355,7 @@ test.describe("QueueContainer UI contract", () => {
   });
 
   test("QueueContainer shows per-item remove button (X icon)", () => {
-    const body = extractFunctionBody(panelSource, "export function QueueContainer()");
+      const body = extractFunctionBody(panelSource, "function QueueContainer()");
 
     assert.match(
       body,
@@ -371,7 +371,7 @@ test.describe("QueueContainer UI contract", () => {
   });
 
   test("QueueContainer supports clear all action", () => {
-    const body = extractFunctionBody(panelSource, "export function QueueContainer()");
+      const body = extractFunctionBody(panelSource, "function QueueContainer()");
 
     assert.match(
       body,
@@ -381,7 +381,7 @@ test.describe("QueueContainer UI contract", () => {
   });
 
   test("QueueContainer does NOT render steer or send-now per-item buttons", () => {
-    const body = extractFunctionBody(panelSource, "export function QueueContainer()");
+      const body = extractFunctionBody(panelSource, "function QueueContainer()");
 
     assert.doesNotMatch(
       body,
@@ -397,7 +397,7 @@ test.describe("QueueContainer UI contract", () => {
   });
 
   test("QueueContainer shows numbered index per item", () => {
-    const body = extractFunctionBody(panelSource, "export function QueueContainer()");
+      const body = extractFunctionBody(panelSource, "function QueueContainer()");
 
     assert.match(
       body,

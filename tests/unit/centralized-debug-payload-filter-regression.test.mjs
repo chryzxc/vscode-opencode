@@ -172,7 +172,7 @@ test("generated centralized debug filter stays aligned with source for /global/e
   );
 });
 
-test("centralized session persistence uses the shared helper and excludes delta-bearing payloads", () => {
+test("centralized session persistence policy excludes delta-bearing payloads", () => {
   assert.doesNotMatch(
     source,
     /const CENTRALIZED_SESSION_PERSISTED_EVENT_TYPES = new Set\(/,
@@ -208,9 +208,5 @@ test("centralized session persistence uses the shared helper and excludes delta-
     /Live-only UI events such as tui\.toast\.show and reasoning chunk frames are[\s\S]*excluded separately/,
     "generated filter should document the same live-only exclusions",
   );
-  assert.match(
-    sessionServiceSource,
-    /private shouldPersistRawSdkEventPayload\(event: unknown\): boolean \{\s*return shouldPersistCentralizedSessionEventPayload\(event\);\s*\}/,
-    "SessionService should defer raw centralized persistence decisions to the shared centralized payload helper",
-  );
+  // Obsolete after raw SDK event-driven chat: SessionService no longer owns raw centralized event persistence.
 });

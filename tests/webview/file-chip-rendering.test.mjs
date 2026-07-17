@@ -78,18 +78,18 @@ test("buildExplicitFileChipLabel derives label from filename or source path", ()
 test("buildExplicitFileChip returns label and optional path", () => {
   const body = extractFunctionBody(
     messageComponentsSource,
-    "function buildExplicitFileChip(",
+    "function buildExplicitFileChip(part: MessagePart): { label: string; path?: string } | undefined",
   );
   assert.ok(body.length > 0, "buildExplicitFileChip must exist");
 
   assert.match(
     body,
-    /label:/,
+    /\blabel\b,?/,
     "must return label field",
   );
   assert.match(
     body,
-    /path:/,
+    /path:\s*sourcePath \|\| undefined/,
     "must return path field",
   );
   assert.match(

@@ -22,7 +22,7 @@ test("AssistantResponseCardInner merges live streaming progress rows into the ac
 
   assert.match(
     messageComponentsSource,
-    /mergeThoughtItemsForTimeline\(finalizedThoughtItems,\s*liveThoughtItems,\s*isStreamingActive\)/,
+    /mergeThoughtItemsForTimeline\([\s\S]*?liveThoughtItems,[\s\S]*?isStreamingActive,[\s\S]*?\)/,
     "Thought items should also prefer live streaming text while the turn is active",
   );
 

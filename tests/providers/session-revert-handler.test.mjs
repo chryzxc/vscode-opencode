@@ -143,7 +143,7 @@ test("handleUndoMessageChanges posts revertStateUpdate to webview before reloadi
     postMessageIndex > -1 && loadSessionIndex > postMessageIndex,
     "revertStateUpdate postMessage must occur before handleLoadSession reload",
   );
-}
+});
 
 test("handleUndoMessageChanges reloads session and sessions list after revert", () => {
   const body = extractHandleUndoMessageChanges(providerSource);
