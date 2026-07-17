@@ -30,7 +30,7 @@ test("SET_MESSAGES uses centralized canonicalization before storing messages", (
   );
 });
 
-test("centralized canonicalization drops internal reminders and coalesces assistant runs", () => {
+test("centralized canonicalization drops internal reminders and preserves per-phase assistant runs without coalescing", () => {
   const canonicalBody = extractFunctionBody(
     storeSource,
     "export function canonicalizeMessagesForRender(",
@@ -45,10 +45,22 @@ test("centralized canonicalization drops internal reminders and coalesces assist
     /isInternalTransportReminderMessage\(message\)/,
     "canonicalization should drop internal transport reminder pseudo-messages",
   );
+  // Design decision: `session.messages()` already returns complete, ordered SDK
+  // message envelopes. Consecutive assistant envelopes are meaningful phases
+  // (read → edit → final response), not duplicate fragments. Identity dedup
+  // removes true duplicates; the remaining assistant turns must NOT be coalesced
+  // here or their activity gets moved into the final card. This test locks in
+  // that decision — if someone re-adds `coalesceAssistantRunForCanonical(burst)`
+  // to this function, the per-phase activity timeline regresses.
+  assert.doesNotMatch(
+    canonicalBody,
+    /coalesceAssistantRunForCanonical\(/,
+    "canonicalization must NOT coalesce adjacent assistant runs — per-phase activity (read/edit/final) must remain visible",
+  );
   assert.match(
     canonicalBody,
-    /coalesceAssistantRunForCanonical\(burst\)/,
-    "canonicalization should coalesce adjacent assistant runs into one canonical turn",
+    /dedupeAdjacentCanonicalTurns\(/,
+    "canonicalization should dedupe adjacent turns via dedupeAdjacentCanonicalTurns (identity-based, not coalescing)",
   );
   assert.match(
     reminderBody,

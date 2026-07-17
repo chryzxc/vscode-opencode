@@ -1,5 +1,6 @@
 import React, {
   createContext,
+  useCallback,
   useContext,
   useLayoutEffect,
   useMemo,
@@ -8,6 +9,7 @@ import React, {
   useSyncExternalStore,
 } from 'react';
 import logger from './logger';
+import { perfProbe } from './streamingPerfProbe';
 import { PENDING_CURRENT_SESSION_KEY } from "./pendingUserMessages";
 import {
   getCentralizedAssistantContentFromRawSdkEventPayloads,
@@ -837,6 +839,40 @@ function mergeStreamingSnapshotLocal(
     !!normalizedIncoming.messageId &&
     existing.messageId !== normalizedIncoming.messageId;
   if (!existing || shouldResetTimeline) {
+    // Multi-phase turn detection (OpenCode emits multiple SDK assistant
+    // message envelopes — reasoning, tool-call, final answer — within a
+    // single user-visible turn, each with a different messageId). Each phase
+    // gets its own message.completed with a finish signal BEFORE the next
+    // phase begins, so checking hasAssistantFinishSignal here is wrong —
+    // it would skip preservation in exactly the case where it's needed.
+    //
+    // This branch only fires when shouldResetTimeline is true, which means
+    // existing snapshot exists AND messageId changed. Truly new turns are
+    // handled by the user-message handler which clears state.streaming
+    // BEFORE the next assistant message.updated arrives, so by the time
+    // shouldStartFreshAssistantTurn fires (messageHandler.ts:9722-9727)
+    // we are inherently in a mid-turn phase transition. Preserve the
+    // accumulated timeline arrays so the activity timeline does not
+    // visually reset to empty. Project rule: "we don't clear the rendered UI".
+    if (shouldResetTimeline) {
+      return {
+        ...normalizedIncoming,
+        // Preserve turn-level activity (accumulates across messages in a multi-phase turn)
+        steps: existing?.steps ?? normalizedIncoming.steps,
+        progressEvents: existing?.progressEvents ?? normalizedIncoming.progressEvents,
+        reasoningEvents: existing?.reasoningEvents ?? normalizedIncoming.reasoningEvents,
+        edits: existing?.edits ?? normalizedIncoming.edits,
+        interactiveEvents: existing?.interactiveEvents ?? normalizedIncoming.interactiveEvents,
+        // Preserve renderable flag so ThinkingBubble does not re-appear mid-turn
+        hasRenderableContent:
+          existing?.hasRenderableContent ||
+          normalizedIncoming.hasRenderableContent ||
+          false,
+        hasAssistantFinishSignal: false,
+        hasTerminalStepSignal: false,
+        liveSessionStatus: normalizedIncoming.liveSessionStatus ?? null,
+      };
+    }
     return {
       ...normalizedIncoming,
       hasRenderableContent: normalizedIncoming.hasRenderableContent ?? false,
@@ -2428,11 +2464,18 @@ export function mergeStreamingReasoning(
   // normalizing and searching the entire accumulated reasoning buffer for
   // every token; that made long reasoning streams progressively quadratic
   // and could monopolize the webview thread during scroll gestures.
+  //
+  // Delta semantics: a delta is a continuation of the SAME reasoning stream,
+  // not a new step. The reducer must APPEND each delta chunk to the most
+  // recent reasoning event rather than creating a new entry. Returning
+  // replaceLastEvent:false here would let findStreamingReasoningEventIndex
+  // miss the match (per-chunk-unique partID OR multiple events under same
+  // messageID) and split the stream into cascading duplicate steps.
   if (delta) {
     return {
       reasoning: appendStreamingReasoning(current, incoming),
       eventChunk: incomingChunk,
-      replaceLastEvent: false,
+      replaceLastEvent: true,
     };
   }
 
@@ -3295,20 +3338,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       const content = action.payload.append
         ? `${state.streaming.content}${action.payload.content}`
         : action.payload.content;
-      if (action.payload.content && action.payload.content.length > 0) {
-        logger.info('[STORE:UPDATE_STREAMING_CONTENT]', {
-          append: action.payload.append,
-          incoming: String(action.payload.content).slice(0, 200),
-          incomingLen: String(action.payload.content).length,
-          priorContent: String(state.streaming.content).slice(0, 200),
-          priorContentLen: String(state.streaming.content).length,
-          newContent: content.slice(0, 200),
-          newContentLen: content.length,
-          renderable: !!action.payload.renderable,
-          reasoning: String(state.streaming.reasoning).slice(0, 200),
-          inReasoningPart: state.streaming.inReasoningPart,
-        });
-      }
       // Record the first moment non-empty content arrives so the timeline can order it correctly
       const contentStartSeq =
         state.streaming.contentStartSeq !== undefined
@@ -3336,6 +3365,21 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         hasRenderableContent === state.streaming.hasRenderableContent
       ) {
         return state;
+      }
+      // Perf: log only on actual state change — per-batch logging here caused main-thread saturation during streaming.
+      if (action.payload.content && action.payload.content.length > 0) {
+        logger.info('[STORE:UPDATE_STREAMING_CONTENT]', {
+          append: action.payload.append,
+          incoming: String(action.payload.content).slice(0, 200),
+          incomingLen: String(action.payload.content).length,
+          priorContent: String(state.streaming.content).slice(0, 200),
+          priorContentLen: String(state.streaming.content).length,
+          newContent: content.slice(0, 200),
+          newContentLen: content.length,
+          renderable: !!action.payload.renderable,
+          reasoning: String(state.streaming.reasoning).slice(0, 200),
+          inReasoningPart: state.streaming.inReasoningPart,
+        });
       }
       const streaming = {
         ...state.streaming,
@@ -4325,6 +4369,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const rafIdRef = useRef<number | null>(null);
   stateRef.current = state;
 
+  // Perf probe: wrap dispatch so we can attribute per-action-type cost during
+  // streaming. Zero overhead when probe is disabled.
+  const timedDispatch = useCallback<React.Dispatch<AppAction>>((action) => {
+    if (!perfProbe.isEnabled()) {
+      dispatch(action);
+      return;
+    }
+    const start = performance.now();
+    dispatch(action);
+    perfProbe.recordDispatch((action as { type?: unknown })?.type, performance.now() - start);
+  }, []);
+
   useLayoutEffect(() => {
     const isStreaming = stateRef.current.streaming?.isActive;
 
@@ -4361,7 +4417,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   return React.createElement(
     AppStoreContext.Provider,
     { value: store },
-    React.createElement(AppDispatchContext.Provider, { value: dispatch }, children),
+    React.createElement(AppDispatchContext.Provider, { value: timedDispatch }, children),
   );
 }
 

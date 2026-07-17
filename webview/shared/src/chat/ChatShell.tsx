@@ -2,6 +2,7 @@ import { Fragment, memo, useCallback, useDeferredValue, useEffect, useMemo, useR
 import { AlertTriangle, Archive, X } from "lucide-react";
 
 import { AppProvider, shallowEqual, useAppDispatch, useAppState } from "./lib/store";
+import { perfProbe } from "./lib/streamingPerfProbe";
 import {
   asString,
   createMessageHandler,
@@ -2312,15 +2313,18 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
         return {
           role: message.role ?? message.info?.role,
           userBlockKey: firstNonEmptyString(message.info?.id, message.id) ?? `user:${index}`,
-          // SDK tool phases have their own message IDs, but every phase of one
-          // response turn shares the assistant envelope's parentID. Collapse
-          // that turn once while retaining each message ID inside the expanded
-          // activity timeline for ordering and ownership.
-          assistantBlockKey: firstNonEmptyString(
-            message.info?.parentID,
-            message.info?.id,
-            message.id,
-          ),
+          // Bug A fix: SDK `parentID` is set ONLY on subagent child messages
+          // (parent-child session relationship), NOT on multi-phase assistant
+          // messages within one user-visible turn (reasoning + tool + final).
+          // Falling back to message.info.id made every SDK assistant envelope
+          // its own collapse block — exactly opposite of the product contract
+          // "single AI response block collapses together" (see user report
+          // m0341). Pass undefined for non-subagent assistants so the
+          // presentation builder falls through to currentBlockKey (the
+          // preceding user message's blockKey) — every assistant phase
+          // between two user messages then shares one collapsible block.
+          // Subagent children retain their parentID-driven grouping.
+          assistantBlockKey: firstNonEmptyString(message.info?.parentID) ?? undefined,
           hasResponseText: Boolean(
             message.content || message.text || message.info?.content || message.info?.text,
           ),
@@ -2707,6 +2711,10 @@ function CompactErrorItem({ entry, dividerHere, lastCompactedAt }: { entry: any;
 }
 
 function ChatContent() {
+  // Perf probe: capture render start timestamp at top of body (cheap read,
+  // only when probe is enabled). Recorded in a no-deps useEffect that runs
+  // after commit, giving us full render+commit time.
+  const renderStart = perfProbe.isEnabled() ? performance.now() : 0;
   const state = useAppState(
     (appState) => ({
       assistantTurnMessageId: appState.assistantTurnMessageId,
@@ -2742,6 +2750,14 @@ function ChatContent() {
     shallowEqual,
   );
   const dispatch = useAppDispatch();
+
+  // Perf probe: record render+commit duration for ChatContent. No deps so it
+  // fires after every commit. Zero work when probe disabled.
+  useEffect(() => {
+    if (renderStart > 0) {
+      perfProbe.recordRender(performance.now() - renderStart);
+    }
+  });
   const stateRef = useRef(state);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesScrollRef = useRef<HTMLDivElement>(null);
@@ -2932,9 +2948,20 @@ function ChatContent() {
     renderMessages.length,
   ]);
 
-  // Register message listener
+  // Register message listener. Wraps createMessageHandler with perf-probe
+  // timing so per-message-type handler cost can be attributed during streaming.
   useEffect(() => {
-    const handler = createMessageHandler(dispatch, () => stateRef.current);
+    const innerHandler = createMessageHandler(dispatch, () => stateRef.current);
+    const handler = (event: MessageEvent) => {
+      if (!perfProbe.isEnabled()) {
+        innerHandler(event);
+        return;
+      }
+      const msgType = (event.data as { type?: unknown })?.type;
+      const start = performance.now();
+      innerHandler(event);
+      perfProbe.recordMessage(msgType, performance.now() - start);
+    };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
   }, [dispatch]);
@@ -3116,8 +3143,23 @@ function ChatContent() {
         // Keep follow-mode pinned, but at a controlled cadence. This replaced a
         // MutationObserver-per-change strategy that was too eager during streaming.
         if (now - lastFollowAutoScrollAtRef.current >= 33) {
-          root.scrollTop = root.scrollHeight;
           lastFollowAutoScrollAtRef.current = now;
+          // Defer the scrollHeight read + scrollTop write to the next animation
+          // frame. Inside rAF the browser has already flushed pending DOM
+          // mutations and run layout, so reading scrollHeight does NOT force a
+          // synchronous layout reflow. The prior synchronous
+          // `root.scrollTop = root.scrollHeight` on every stream batch (this
+          // effect fires per state.streaming identity change, ~20-30+×/sec)
+          // forced the browser to flush pending DOM mutations on each batch and
+          // saturated the main thread, which was the dominant cause of the
+          // streaming lag/freezes users reported. Smooth scrolling resumes once
+          // streaming ends because this effect stops firing.
+          requestAnimationFrame(() => {
+            if (!streamViewportRef.current.isFollowing) return;
+            const el = messagesScrollRef.current;
+            if (!el) return;
+            el.scrollTop = el.scrollHeight;
+          });
         }
       }
       if (streamViewportRef.current.unseenUpdateCount > 0) {
@@ -3240,8 +3282,24 @@ function ChatContent() {
   // Show AI response loading indicator (thinking bubble) when:
   // 1. NOT switching sessions (session loading takes precedence), AND
   // 2. AI is still responding and the assistant turn has not finalized yet.
-  // FIXED: Use hasRenderableContent from SDK instead of checking content length
-  const hasRenderableStreamingContent = Boolean(state.streaming?.hasRenderableContent);
+  // FIXED: Use hasRenderableContent from SDK instead of checking content length.
+  //
+  // Loading must dismiss as soon as ANY visible streaming activity arrives —
+  // not just text content. Tool calls, reasoning, progress events, and
+  // interactive prompts all represent the assistant doing work that belongs
+  // in the streaming card, not behind a ThinkingBubble placeholder. Keeping
+  // the bubble up when these are already in state was causing users to see
+  // "stuck loading" even though tool calls had arrived.
+  const streamingForActivity = state.streaming;
+  const hasRenderableStreamingContent = Boolean(
+    streamingForActivity?.hasRenderableContent ||
+      (streamingForActivity?.isActive &&
+        ((streamingForActivity.reasoning?.length ?? 0) > 0 ||
+          (streamingForActivity.reasoningEvents?.length ?? 0) > 0 ||
+          (streamingForActivity.steps?.length ?? 0) > 0 ||
+          (streamingForActivity.progressEvents?.length ?? 0) > 0 ||
+          (streamingForActivity.interactiveEvents?.length ?? 0) > 0)),
+  );
 
   let hasTerminalAssistantBlock = false;
   let terminalAssistantMessageId: string | null = null;

@@ -421,6 +421,71 @@ export class ChatViewProvider
     return `${value.slice(0, limit)}\n\n[Output truncated in the live chat view: ${value.length - limit} characters omitted]`;
   }
 
+  // Depth cap for cloneAndTruncateStreamPayload. SDK events are flat-ish
+  // (type/properties/part/info/structured/message — typically 3-4 levels),
+  // but we leave headroom for nested tool inputs. Removing this cap risks
+  // unbounded recursion on adversarial payloads.
+  private static readonly STREAM_PAYLOAD_MAX_CLONE_DEPTH = 16;
+
+  /**
+   * Build a webview-bound stream event with oversized string fields bounded
+   * to MAX_STREAM_WEBVIEW_TOOL_OUTPUT_CHARS. The persisted SDK event (the
+   * original reference passed to handleStreamEvent) is never mutated — only
+   * the webview-bound copy is slimmed.
+   *
+   * Perf rationale: VS Code's postMessage uses structured-clone serialization
+   * across the webview IPC boundary. On large SDK events (full accumulated
+   * message content, large tool outputs, full file reads) serialization
+   * blocks the extension host main thread for 30-60ms — empirically
+   * measured as the dominant source of streaming freezes via the
+   * `[STREAM-PERF] provider-webview-flush` metric.
+   *
+   * Contract rationale: webview still receives full content via `chatHistory`
+   * after the stream completes, and MarkdownRenderer already bounds its own
+   * rendering at 150KB, so per-field truncation at 16KB during streaming is
+   * a safe conservative cap that preserves all product behaviour.
+   *
+   * Removing this method, or bypassing it on the postMessage path, will
+   * reintroduce the streaming freezes documented in
+   * tests/webview/stream-event-main-thread-performance.test.mjs.
+   */
+  private buildWebviewStreamEvent(enrichedEvent: unknown): unknown {
+    if (!enrichedEvent || typeof enrichedEvent !== "object") {
+      return enrichedEvent;
+    }
+    // Per the webview transport contract: centralizedEventPayload is built by
+    // spreading enrichedEvent first, then layering on the truncated deep
+    // clone. Last-write-wins means truncated values overwrite the originals
+    // for any oversized field.
+    const truncatedDeepClone = this.cloneAndTruncateStreamPayload(enrichedEvent);
+    const centralizedEventPayload = {
+      ...enrichedEvent,
+      ...(truncatedDeepClone as Record<string, unknown>),
+    };
+    return centralizedEventPayload;
+  }
+
+  private cloneAndTruncateStreamPayload(node: unknown, depth = 0): unknown {
+    if (depth > ChatViewProvider.STREAM_PAYLOAD_MAX_CLONE_DEPTH) {
+      return node;
+    }
+    if (typeof node === "string") {
+      return this.truncateStreamToolTextForWebview(node);
+    }
+    if (Array.isArray(node)) {
+      return node.map((entry) => this.cloneAndTruncateStreamPayload(entry, depth + 1));
+    }
+    if (node && typeof node === "object") {
+      const out: Record<string, unknown> = {};
+      const rec = node as Record<string, unknown>;
+      for (const key of Object.keys(rec)) {
+        out[key] = this.cloneAndTruncateStreamPayload(rec[key], depth + 1);
+      }
+      return out;
+    }
+    return node;
+  }
+
   private flushStreamWebviewEvents(): void {
     const startedAt = performance.now();
     if (this.streamWebviewFlushTimer) {
@@ -4713,10 +4778,11 @@ export class ChatViewProvider
         });
       }
 
-      // Preserve the SDK event object exactly. Session ownership travels in
-      // the surrounding webview protocol envelope, not as a mutation on the
-      // OpenCode event itself.
-      const eventForWebview = event;
+      // Build a detached, truncated webview-bound payload. The persisted SDK
+      // event (the original reference passed to handleStreamEvent) is never
+      // mutated — only the webview-bound copy is slimmed. Session ownership
+      // still travels in the surrounding webview protocol envelope.
+      const eventForWebview = this.buildWebviewStreamEvent(enrichedEvent || event);
       const shouldFlushWebviewImmediately =
         eventType === "question.asked" ||
         eventType === "permission.asked" ||

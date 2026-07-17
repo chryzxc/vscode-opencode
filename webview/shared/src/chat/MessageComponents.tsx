@@ -768,7 +768,7 @@ function buildSearchPattern(...values: Array<string | undefined>): string {
   return lines.join("\n");
 }
 
-// Component to extract bash output from message content
+// Component to render command-like tool input and output in the shared terminal preview.
 function TerminalBlockWithOutput({
   event,
   messageContent,
@@ -776,10 +776,14 @@ function TerminalBlockWithOutput({
   event: DisplayEvent;
   messageContent: string;
 }) {
-  // Use input.command as the authoritative command field
-  const command = (
-    (event.activityDetail?.input as Record<string, unknown> | undefined)?.["command"] as string
-  ) || event.activityDetail?.command || event.summary;
+  const input = event.activityDetail?.input as Record<string, unknown> | undefined;
+  const globPattern = typeof input?.pattern === "string" ? input.pattern.trim() : "";
+  const isGlob = event.label.trim().toLowerCase() === "glob";
+  // Glob has the same input/output contract as Bash. Render the actual glob
+  // pattern as the terminal command so the activity is inspectable at a glance.
+  const command = isGlob && globPattern
+    ? `glob ${globPattern}`
+    : (input?.["command"] as string) || event.activityDetail?.command || event.summary;
 
   // Try to extract bash output from message content
   // Look for text after the command that looks like terminal output
@@ -831,7 +835,7 @@ function TerminalBlockWithOutput({
 
   return (
     <CollapsedTerminalBlockPreview
-      title="Bash output"
+      title={isGlob ? "Glob output" : "Bash output"}
       command={command}
       output={output}
     />
@@ -2540,11 +2544,13 @@ function ResponseMessageBody({
   parts,
   className,
   variant = "default",
+  isStreaming = false,
 }: {
   content?: string[];
   parts?: MessagePart[];
   className?: string;
   variant?: "default" | "bare";
+  isStreaming?: boolean;
 }) {
   const chunkSource = Array.isArray(parts) && parts.length > 0
     ? parts.map((part) => {
@@ -2579,6 +2585,7 @@ function ResponseMessageBody({
           <MarkdownRenderer
             key={`${index}-${chunk.slice(0, 24)}`}
             content={chunk}
+            isStreaming={isStreaming}
             className="markdown-body w-full max-w-none"
           />
         ))}
@@ -4820,6 +4827,9 @@ export function SharedActivityStep({
   const isEditLike = ["edit", "modify", "patch", "write", "apply_patch"].includes(labelLower);
   const filePath = event.filePath || (event.activityDetail?.input as Record<string, unknown> | undefined)?.filePath as string | undefined;
   const description = (event.activityDetail?.metadata?.description as string | undefined) || (event.activityDetail?.input?.description as string | undefined);
+  const globPattern = isGlobSearch && typeof event.activityDetail?.input?.pattern === "string"
+    ? event.activityDetail.input.pattern.trim()
+    : "";
   // Rehydrated raw SDK tool events can carry their only result in
   // activityDetail.output. Use it as the last summary fallback so those events
   // share the same collapsible preview as streamed activity rows.
@@ -4835,6 +4845,7 @@ export function SharedActivityStep({
         <div className={cn("oc-activity-step-surface flex flex-col items-start w-full min-w-0", isReadActivity ? "gap-0" : "gap-2")}>
           <div className="flex items-center gap-2 flex-wrap w-full min-h-[20px]">
             <span className="oc-activity-step-title font-medium text-oc-text capitalize">{event.label}</span>
+            {globPattern ? <span className="max-w-[min(44ch,60vw)] truncate rounded bg-oc-bg-soft px-1.5 py-0.5 font-mono text-xs text-oc-text-soft" title={globPattern}>{globPattern}</span> : null}
             {description ? <span className="oc-activity-step-meta flex items-center gap-2 text-oc-text-soft"><span>&middot;</span><span>{description}</span></span> : null}
             {(labelLower === "read" || isGlobSearch || isEditLike) && filePath && !isUrl(filePath) ? (
               <button type="button" className="oc-refined-file-link oc-refined-file-link-with-tooltip oc-refined-file-link-inline oc-refined-file-link-plain" onClick={() => vscode.postMessage({ type: "openFile", file: filePath })}>
@@ -4846,7 +4857,7 @@ export function SharedActivityStep({
           </div>
           {!isReadActivity ? (
             <div className="flex flex-col gap-1 w-full">
-              {labelLower === "bash" ? (
+              {labelLower === "bash" || isGlobSearch ? (
                 <div className="oc-refined-event-summary"><TerminalBlockWithOutput event={event} messageContent={messageContent} /></div>
               ) : SEARCH_LABELS.has(event.label) ? (
                 <DetailedSearchActivityPreview event={event} isGlobSearch={isGlobSearch} />
@@ -7213,9 +7224,13 @@ function formatThinkingVariantLabel(variant: string): string {
   return trimmed.charAt(0).toUpperCase() + trimmed.slice(1).toLowerCase();
 }
 
-function getStableAgentAccentColor(agentName?: string): string | undefined {
+function getStableAgentAccentColor(agentName?: string): string {
   if (!agentName || agentName === "assistant") {
-    return undefined;
+    // Default accent color so the agent name is always visually distinct in
+    // the header, even when the SDK hasn't surfaced a non-default agent
+    // name on the message envelope. Matches the empty-id hue from
+    // getSubagentHue for visual consistency with the subagent palette.
+    return `hsl(${getSubagentHue("")}, 72%, 68%)`;
   }
   return `hsl(${getSubagentHue(agentName)}, 72%, 68%)`;
 }
@@ -7312,6 +7327,19 @@ function getAssistantTurnMetadataFromCentralizedEvents(
         if (asString(info.role) === "assistant") {
           const agent = asString(info.agent);
           if (agent) metadata.agent = agent;
+          // Mirror session.updated: check the nested info.model object first
+          // (SDK delivers model info as a nested object for parity with
+          // session.updated). Without this, metadata.providerID stays empty
+          // for message.updated-only turns and the header shows model-only.
+          const nestedModel = asRecord(info.model);
+          if (nestedModel) {
+            const nestedModelID = asString(nestedModel.modelID) || asString(nestedModel.id);
+            const nestedProviderID = asString(nestedModel.providerID);
+            const nestedVariant = asString(nestedModel.variant);
+            if (nestedModelID) metadata.modelID = nestedModelID;
+            if (nestedProviderID) metadata.providerID = nestedProviderID;
+            if (nestedVariant) metadata.variant = nestedVariant;
+          }
           const modelID = asString(info.modelID);
           const providerID = asString(info.providerID);
           const variant = asString(info.variant);
@@ -9552,7 +9580,11 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
               showThinkingPlaceholder ||
               nonQuestionTimelineDisplayEventGroups.length > 0) && (
               <section data-assistant-section="activity" className="space-y-2">
-                {hasLiveSessionStatus ? (
+                {/* Hide the session.status banner when statusType is "busy" — the AI response
+                    loading indicator (ThinkingBubble / activity timeline) already conveys busy
+                    state. Other status types (retry, error, idle, ready, etc.) must still
+                    render so the user sees retry countdowns and surfacing session events. */}
+                {hasLiveSessionStatus && liveSessionStatus?.statusType !== "busy" ? (
                   <div className="mb-2 px-2.5">
                     <div
                       className="w-full rounded-[10px] border px-3 py-2.5 text-left transition-colors"
@@ -9858,6 +9890,14 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
                                             <span className="oc-activity-step-title font-medium text-oc-text capitalize">
                                               {event.label}
                                             </span>
+                                            {isGlobSearch && typeof event.activityDetail?.input?.pattern === "string" && event.activityDetail.input.pattern.trim() ? (
+                                              <span
+                                                className="max-w-[min(44ch,60vw)] truncate rounded bg-oc-bg-soft px-1.5 py-0.5 font-mono text-xs text-oc-text-soft"
+                                                title={event.activityDetail.input.pattern}
+                                              >
+                                                {event.activityDetail.input.pattern}
+                                              </span>
+                                            ) : null}
                                             {compressTopic ? (
                                               <span className="oc-activity-step-meta truncate max-w-[min(42ch,60vw)] text-oc-text-soft">
                                                 {compressTopic}
@@ -9909,9 +9949,21 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
                                           <div className="flex flex-col gap-1 w-full">
                                               {/* For read, todowrite, and edit events, skip the generic summary block here — they have their own custom UI below.
                                                   For all other events, render the file link or summary as usual. */}
-                                              {labelLower !== "read" && labelLower !== "todowrite" && !isEditLike && visibleSummary && (
+                                              {isGlobSearch ? (
+                                                <div className="oc-refined-event-summary">
+                                                  <TerminalBlockWithOutput
+                                                    event={event}
+                                                    messageContent={content}
+                                                  />
+                                                </div>
+                                              ) : labelLower !== "read" && labelLower !== "todowrite" && !isEditLike && visibleSummary && (
                                                 event.filePath && !isUrl(event.filePath) && event.label !== "bash" && !isCallStyleActivityLabel(event.label) ? (
-                                                SEARCH_LABELS.has(event.label) ? (
+                                                isGlobSearch ? (
+                                                  <TerminalBlockWithOutput
+                                                    event={event}
+                                                    messageContent={content}
+                                                  />
+                                                ) : SEARCH_LABELS.has(event.label) ? (
                                                   <DetailedSearchActivityPreview
                                                     event={event}
                                                     isGlobSearch={isGlobSearch}
@@ -9941,7 +9993,7 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
                                                   )
                                                 ) : (
                                                   <div className="oc-refined-event-summary">
-                                                    {event.label === "bash" ? (
+                                                    {event.label === "bash" || isGlobSearch ? (
                                                       <TerminalBlockWithOutput
                                                         event={event}
                                                         messageContent={content}
@@ -10163,6 +10215,7 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
                     <ResponseMessageBody
                       key={`${messageId || "assistant"}-response-${index}`}
                       content={[chunk]}
+                      isStreaming={isLiveStream}
                       className="oc-response-body-block"
                       variant="bare"
                     />

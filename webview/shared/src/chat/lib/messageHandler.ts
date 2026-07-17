@@ -193,6 +193,74 @@ export function extractEventMessageId(event: unknown): string | null {
     : null;
 }
 
+/**
+ * Returns every message identity carried by a stream envelope.  Background
+ * agents can wrap their terminal event in several `payload`/`data` layers;
+ * their child message id is not the turn that owns the chat loading state, but
+ * their `parentMessageId` is.  Keep this structural rather than text-based.
+ */
+function terminalEventMessageIds(event: unknown): Set<string> {
+  const messageIds = new Set<string>();
+  const visited = new Set<object>();
+  const identityKeys = new Set([
+    "messageid",
+    "message_id",
+    "parentmessageid",
+    "parent_message_id",
+    "parentid",
+    "parent_id",
+  ]);
+
+  const visit = (value: unknown, allowId = false): void => {
+    if (!value || typeof value !== "object") {
+      return;
+    }
+    if (visited.has(value)) {
+      return;
+    }
+    visited.add(value);
+
+    if (Array.isArray(value)) {
+      value.forEach((item) => visit(item));
+      return;
+    }
+
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      const normalizedKey = key.replace(/[-_]/g, "").toLowerCase();
+      if (
+        (identityKeys.has(normalizedKey) || (allowId && normalizedKey === "id")) &&
+        typeof child === "string" &&
+        child.trim()
+      ) {
+        messageIds.add(child.trim());
+      }
+      // `id` is a message id only within a semantic message/info object.
+      visit(child, normalizedKey === "info" || normalizedKey === "message");
+    }
+  };
+
+  visit(event);
+  return messageIds;
+}
+
+export function terminalEventMatchesAssistantTurn(
+  event: unknown,
+  activeMessageIds: Array<string | null | undefined>,
+): boolean {
+  const activeIds = new Set(
+    activeMessageIds.filter(
+      (messageId): messageId is string =>
+        typeof messageId === "string" && messageId.trim().length > 0,
+    ),
+  );
+  if (activeIds.size === 0) {
+    return false;
+  }
+
+  const eventIds = terminalEventMessageIds(event);
+  return [...activeIds].some((messageId) => eventIds.has(messageId));
+}
+
 function summarizeStreamEventForLog(payload: UnknownRecord): Record<string, unknown> {
   const properties = asRecord(payload.properties);
   const partRecord = asRecord(payload.part) ?? asRecord(properties?.part);
@@ -1505,8 +1573,15 @@ export function resolveStreamingContentUpdate(
     return { content: incomingChunk, append: false };
   }
 
-  const currentNormalized = currentContent.replace(/\r\n/g, '\n');
-  const incomingNormalized = incomingChunk.replace(/\r\n/g, '\n');
+  // Perf: short-circuit the \r\n -> \n regex when no \r is present (the common
+  // case after the first normalization). On 150KB streaming content × 160
+  // calls/sec this avoids ~24M regex char-scans/sec.
+  const currentNormalized = currentContent.includes('\r')
+    ? currentContent.replace(/\r\n/g, '\n')
+    : currentContent;
+  const incomingNormalized = incomingChunk.includes('\r')
+    ? incomingChunk.replace(/\r\n/g, '\n')
+    : incomingChunk;
 
   if (incomingNormalized === currentNormalized) {
     return null;
@@ -8425,6 +8500,43 @@ function finalizeStreamingSnapshotSteps(
   };
 }
 
+function completeStreamingTurnFromTerminalEvent(
+  dispatch: Dispatch<AppAction>,
+  getState: () => AppState,
+  payload: UnknownRecord,
+  terminalStatus: "done" | "error" = "done",
+): boolean {
+  const state = getState();
+  const streaming = state.streaming;
+  if (
+    !streaming?.isActive ||
+    !terminalEventMatchesAssistantTurn(payload, [
+      streaming.messageId,
+      state.assistantTurnMessageId,
+    ])
+  ) {
+    return false;
+  }
+
+  const finalized = finalizeStreamingSnapshotSteps(streaming, terminalStatus);
+  if (finalized) {
+    dispatch({
+      type: "SET_STREAMING",
+      payload: {
+        ...finalized,
+        hasTerminalStepSignal: true,
+      },
+    });
+  }
+  dispatch({
+    type: "SET_ASSISTANT_TURN_PENDING",
+    payload: { pending: false, messageId: null },
+  });
+  dispatch({ type: "SET_PROCESSING", payload: false });
+  dispatch({ type: "FINISH_STREAMING" });
+  return true;
+}
+
 function handleStreamEvent(
   dispatch: Dispatch<AppAction>,
   getState: () => AppState,
@@ -9008,7 +9120,13 @@ function handleStreamEvent(
         if (sanitized) {
           dispatch({
             type: "UPDATE_STREAMING_REASONING",
-            payload: { reasoning: sanitized, append: true, delta: isDeltaReasoningChunk },
+            payload: {
+              reasoning: sanitized,
+              append: true,
+              delta: isDeltaReasoningChunk,
+              partID: reasoningPartID,
+              messageID: messageId || undefined,
+            },
           });
         }
       }
@@ -9025,7 +9143,13 @@ function handleStreamEvent(
         if (sanitized) {
           dispatch({
             type: "UPDATE_STREAMING_REASONING",
-            payload: { reasoning: sanitized, append: true, delta: isDeltaReasoningChunk },
+            payload: {
+              reasoning: sanitized,
+              append: true,
+              delta: isDeltaReasoningChunk,
+              partID: reasoningPartID,
+              messageID: messageId || undefined,
+            },
           });
         }
       }
@@ -9046,7 +9170,13 @@ function handleStreamEvent(
         if (sanitized) {
           dispatch({
             type: 'UPDATE_STREAMING_REASONING',
-            payload: { reasoning: sanitized, append: true, delta: isDeltaReasoningChunk },
+            payload: {
+              reasoning: sanitized,
+              append: true,
+              delta: isDeltaReasoningChunk,
+              partID: reasoningPartID,
+              messageID: messageId || undefined,
+            },
           });
         }
 
@@ -9076,7 +9206,13 @@ function handleStreamEvent(
             if (reasoningLeak) {
               dispatch({
                 type: "UPDATE_STREAMING_REASONING",
-                payload: { reasoning: reasoningLeak, append: true, delta: isDeltaReasoningChunk },
+                payload: {
+                  reasoning: reasoningLeak,
+                  append: true,
+                  delta: isDeltaReasoningChunk,
+                  partID: reasoningPartID,
+                  messageID: messageId || undefined,
+                },
               });
             }
             dispatchProcessingTrue();
@@ -9088,7 +9224,13 @@ function handleStreamEvent(
             if (reasoningLeak) {
               dispatch({
                 type: "UPDATE_STREAMING_REASONING",
-                payload: { reasoning: reasoningLeak, append: true, delta: isDeltaReasoningChunk },
+                payload: {
+                  reasoning: reasoningLeak,
+                  append: true,
+                  delta: isDeltaReasoningChunk,
+                  partID: reasoningPartID,
+                  messageID: messageId || undefined,
+                },
               });
             }
             candidateChunk = mixedChunk.content;
@@ -9099,7 +9241,13 @@ function handleStreamEvent(
             if (reasoningLeak) {
               dispatch({
                 type: "UPDATE_STREAMING_REASONING",
-                payload: { reasoning: reasoningLeak, append: true, delta: isDeltaReasoningChunk },
+                payload: {
+                  reasoning: reasoningLeak,
+                  append: true,
+                  delta: isDeltaReasoningChunk,
+                  partID: reasoningPartID,
+                  messageID: messageId || undefined,
+                },
               });
             }
             dispatchProcessingTrue();
@@ -9144,7 +9292,12 @@ function handleStreamEvent(
             if (hasDuplicateTokenPattern(candidateTokens)) {
               dispatch({
                 type: "UPDATE_STREAMING_REASONING",
-                payload: { reasoning: contentPatch.content, append: contentPatch.append },
+                payload: {
+                  reasoning: contentPatch.content,
+                  append: contentPatch.append,
+                  partID: reasoningPartID,
+                  messageID: messageId || undefined,
+                },
               });
               dispatchProcessingTrue();
               break;
@@ -9184,6 +9337,10 @@ function handleStreamEvent(
       }
 
       if (partType === 'step-finish' && structuredKind !== 'thinking') {
+        const activeAssistantMessageIds = [
+          getState().streaming?.messageId,
+          getState().assistantTurnMessageId,
+        ];
         const diffStatsRec = asRecord(part.diffStats);
         const diffStats = diffStatsRec
           ? {
@@ -9204,7 +9361,13 @@ function handleStreamEvent(
           duration: asOptionalNumber(asRecord(part.timing)?.duration),
           diffStats,
         });
-        terminalTurnClosed = true;
+        // A step-finish is terminal only for the active parent assistant turn.
+        // Background-agent events may be deeply wrapped; their parentMessageId
+        // is intentionally accepted by the identity matcher above.
+        if (completeStreamingTurnFromTerminalEvent(dispatch, getState, payload)) {
+          markAssistantTurnClosed?.(...activeAssistantMessageIds);
+          terminalTurnClosed = true;
+        }
       }
 
       if (partType === 'tool') {
@@ -9593,6 +9756,10 @@ function handleStreamEvent(
           bootstrapContext,
         );
       }
+      const finishBelongsToActiveAssistantTurn = terminalEventMatchesAssistantTurn(
+        payload,
+        [getState().streaming?.messageId, getState().assistantTurnMessageId],
+      );
       const shouldStartFreshAssistantTurn =
         eventRole === "assistant" &&
         !!messageId &&
@@ -9844,6 +10011,16 @@ function handleStreamEvent(
 
 
       if (finish) {
+        if (!finishBelongsToActiveAssistantTurn) {
+          logger.debug("Ignoring terminal event for a different assistant turn", {
+            messageId,
+            activeMessageIds: [
+              currentStreamingMessageId,
+              getState().assistantTurnMessageId,
+            ].filter(Boolean),
+          });
+          break;
+        }
         if (markAssistantTurnClosed) {
           markAssistantTurnClosed(
             asString(asRecord(payload.info)?.id),
@@ -12713,7 +12890,13 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             const properties = asRecord(payload.properties);
             const finish = resolveMessageUpdatedFinishSignal(payload, properties);
 
-            if (finish) {
+            if (
+              finish &&
+              terminalEventMatchesAssistantTurn(payload, [
+                stateNow.streaming?.messageId,
+                stateNow.assistantTurnMessageId,
+              ])
+            ) {
               // Turn off loading state but don't end the AI turn
               dispatch({ type: "SET_PROCESSING", payload: false });
 
@@ -12846,7 +13029,13 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                   evtPayload,
                   asRecord(evtPayload.properties),
                 );
-                if (finish) {
+                if (
+                  finish &&
+                  terminalEventMatchesAssistantTurn(evtPayload, [
+                    getState().streaming?.messageId,
+                    getState().assistantTurnMessageId,
+                  ])
+                ) {
                   dispatch({ type: "SET_PROCESSING", payload: false });
                 }
               }
