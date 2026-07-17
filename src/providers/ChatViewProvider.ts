@@ -1233,7 +1233,7 @@ export class ChatViewProvider
     }
 
     const isMainTurnProcessing = this.isSessionMainTurnProcessing(sessionId);
-    let effectiveMode = mode;
+    const effectiveMode = mode;
 
     // Normal composer messages go straight to OpenCode even during an active
     // turn. Its native transcript/order handling is the only queue presented
