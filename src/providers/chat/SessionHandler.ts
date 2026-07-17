@@ -7,7 +7,9 @@
  */
 
 import type { SessionService } from "../../services/SessionService";
-import type { HistoryProcessor } from "./HistoryProcessor";
+import { adaptSdkMessages } from "../../services/SdkMessageAdapter";
+import type { SdkRenderedMessage } from "../../services/SdkMessageAdapter";
+import type { SessionSnapshotLoader } from "../../services/SessionSnapshotLoader";
 import type { CompactionManager } from "./CompactionManager";
 import type { ModelAndAgentManager } from "./ModelAndAgentManager";
 
@@ -18,10 +20,10 @@ export class SessionHandler {
 
   constructor(
     private sessionService: SessionService,
-    private historyProcessor: HistoryProcessor,
     private compactionManager: CompactionManager,
     private modelAndAgentManager: ModelAndAgentManager,
     private logger: ReturnType<typeof import("../../utils/Logger").createLogger>,
+    private sessionSnapshotLoader: SessionSnapshotLoader,
   ) {
     this.postMessage = () => {};
     this.getCurrentSessionId = () => undefined;
@@ -155,17 +157,12 @@ export class SessionHandler {
       // This updates the service's internal state and persists it
       await this.sessionService.switchSession(sessionId);
 
-      const centralizedSessionData = await this.sessionService.loadCentralizedSessionData(
-        sessionId,
-      );
-      const rawEventStream = centralizedSessionData.rawEventStream;
-      const subagents = centralizedSessionData.subagents;
-      const rawMessages = await this.sessionService.getMessages(sessionId);
-      const fallbackMessages = Array.isArray(rawMessages) ? rawMessages : [];
-      const messages = await this.historyProcessor.processHistoryMessages(
-        fallbackMessages,
-        sessionId,
-      );
+      // SDK inspection mode: session.messages() is the only transcript source.
+      // It returns the raw `{ info, parts }[]` OpenCode response. The adapter is
+      // solely a display projection; no centralized event tape or local message
+      // cache is read as a fallback.
+      const sdkMessages = await this.sessionSnapshotLoader.loadMessagesOnly(sessionId);
+      const messages = adaptSdkMessages(sdkMessages);
 
       await this.modelAndAgentManager.applySessionSettings(sessionId);
 
@@ -173,8 +170,7 @@ export class SessionHandler {
         type: "chatHistory",
         sessionId,
         messages,
-        rawEventStream,
-        subagents,
+        sdkMessages,
       });
       await this.compactionManager.sendCompactionViewStateForMessages(
         sessionId,
@@ -183,12 +179,178 @@ export class SessionHandler {
 
       this.setCurrentSessionId(sessionId);
       this.logger.info("Session loaded", { sessionId, messageCount: messages.length });
+
     } catch (error) {
       this.logger.error("Failed to load session", { sessionId, error });
     } finally {
       this.processingSessionIds.delete(sessionId);
       this.sendProcessingSessionsUpdate();
     }
+  }
+
+  private async enrichSubagentsFromSdkChildren(sessionId: string, messages: any[]): Promise<any[]> {
+    try {
+      const snapshot = await this.sessionSnapshotLoader.loadSnapshot(sessionId);
+      const childrenById = new Map<string, any>();
+      for (const child of snapshot.children ?? []) {
+        const childSession = child?.session;
+        if (typeof childSession?.id === "string" && childSession.id.length > 0) {
+          childrenById.set(childSession.id, childSession);
+        }
+      }
+
+      if (childrenById.size === 0) {
+        return messages;
+      }
+
+      const enrichedMessages = messages.map((loadedMessage) => ({
+        ...loadedMessage,
+        subagents: Array.isArray(loadedMessage?.subagents)
+          ? [...loadedMessage.subagents]
+          : [],
+      }));
+      const messagesById = new Map<string, any>();
+      for (const loadedMessage of enrichedMessages) {
+        const messageId = this.getMessageId(loadedMessage);
+        if (messageId) {
+          messagesById.set(messageId, loadedMessage);
+        }
+      }
+
+      for (const sdkMessage of snapshot.messages ?? []) {
+        const parts = Array.isArray(sdkMessage?.parts) ? sdkMessage.parts : [];
+        for (const part of parts) {
+          if (part?.type !== "subtask") {
+            continue;
+          }
+
+          const childSessionId = typeof part.sessionID === "string" ? part.sessionID : undefined;
+          if (!childSessionId) {
+            continue;
+          }
+
+          const childSession = childrenById.get(childSessionId);
+          if (!childSession) {
+            continue;
+          }
+
+          const parentMessageId =
+            (typeof part.messageID === "string" && part.messageID.length > 0 ? part.messageID : undefined) ??
+            (typeof sdkMessage?.info?.id === "string" ? sdkMessage.info.id : undefined);
+          const parentMessage = parentMessageId ? messagesById.get(parentMessageId) : undefined;
+          if (!parentMessage || !parentMessageId) {
+            continue;
+          }
+
+          const detail = this.buildSdkChildSubagentDetail({
+            parentSessionId: sessionId,
+            parentMessageId,
+            part,
+            childSession,
+          });
+          this.upsertSubagentDetail(parentMessage, detail);
+        }
+      }
+
+      return enrichedMessages;
+    } catch (error) {
+      this.logger.warn("SDK subagent enrichment failed", { sessionId, error: String(error) });
+      return messages;
+    }
+  }
+
+  async loadChildSessionTranscript(childSessionId: string): Promise<SdkRenderedMessage[]> {
+    const sdkMessages = await this.sessionSnapshotLoader.loadMessagesOnly(childSessionId);
+    return adaptSdkMessages(sdkMessages);
+  }
+
+  private extractSubagentDetails(messages: any[]): any[] {
+    const details: any[] = [];
+    for (const message of messages) {
+      if (Array.isArray(message?.subagents)) {
+        details.push(...message.subagents);
+      }
+    }
+    return details;
+  }
+
+  private buildSdkChildSubagentDetail(args: {
+    parentSessionId: string;
+    parentMessageId: string;
+    part: any;
+    childSession: any;
+  }): any {
+    const { parentSessionId, parentMessageId, part, childSession } = args;
+    const childTime = childSession?.time ?? {};
+    const partModel = part?.model ?? {};
+    const childModel = childSession?.model ?? {};
+    const title = this.optionalString(childSession?.title)
+      ?? this.optionalString(part?.description)
+      ?? this.optionalString(part?.prompt)
+      ?? childSession.id;
+
+    return {
+      id: childSession.id,
+      name: title,
+      title,
+      parentSessionId,
+      parentMessageId,
+      childSessionId: childSession.id,
+      agentId: this.optionalString(part?.agent),
+      agent: this.optionalString(part?.agent),
+      providerID: this.optionalString(childModel?.providerID) ?? this.optionalString(partModel?.providerID),
+      modelID: this.optionalString(childModel?.modelID) ?? this.optionalString(partModel?.modelID),
+      model: childSession?.model ?? part?.model,
+      status: this.deriveChildSessionStatus(childSession),
+      latestActivity: this.optionalString(childSession?.summary) ?? title,
+      tokens: childSession?.tokens,
+      cost: childSession?.cost,
+      summary: childSession?.summary,
+      createdAt: this.optionalNumber(childTime?.created),
+      updatedAt: this.optionalNumber(childTime?.updated),
+      completedAt: this.optionalNumber(childTime?.completed),
+      references: [{ messageID: parentMessageId, partID: part?.id }],
+      thinkingEvents: [],
+      progressEvents: [],
+      timelineEvents: [],
+    };
+  }
+
+  private upsertSubagentDetail(message: any, detail: any): void {
+    const subagents = Array.isArray(message.subagents) ? message.subagents : [];
+    const existingIndex = subagents.findIndex((existing: any) => {
+      const existingChildSessionId = existing?.childSessionId ?? existing?.sessionID ?? existing?.id;
+      return existingChildSessionId === detail.childSessionId;
+    });
+    if (existingIndex >= 0) {
+      subagents[existingIndex] = { ...subagents[existingIndex], ...detail };
+    } else {
+      subagents.push(detail);
+    }
+    message.subagents = subagents;
+  }
+
+  private getMessageId(message: any): string | undefined {
+    return this.optionalString(message?.id) ?? this.optionalString(message?.info?.id);
+  }
+
+  private deriveChildSessionStatus(childSession: any): string {
+    const time = childSession?.time ?? {};
+    if (typeof time.completed === "number") {
+      return "completed";
+    }
+    if (typeof time.updated === "number" && time.updated > 0) {
+      return "running";
+    }
+    return "pending";
+  }
+
+  private optionalString(value: unknown): string | undefined {
+    return typeof value === "string" && value.length > 0 ? value : undefined;
+  }
+
+  private optionalNumber(value: unknown): number | undefined {
+    return typeof value === "number" && Number.isFinite(value) ? value : undefined;
   }
 
   /**

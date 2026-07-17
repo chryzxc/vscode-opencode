@@ -170,6 +170,31 @@ export function pendingUserMessageToMessage(pending: PendingUserMessage): Messag
         filename: attachment.filename,
         url: attachment.dataUrl,
       })),
+      ...(pending.contexts ?? [])
+        .filter((context) => typeof context.file === "string" && context.file.trim().length > 0)
+        .map((context) => ({
+          type: "file" as const,
+          mime: context.languageId || "text/plain",
+          filename: context.file.split(/[\\/]/).pop(),
+          source: {
+            type: context.file.startsWith("resource:") ? "resource" : "file",
+            path: context.file.startsWith("resource:") ? undefined : context.file,
+            uri: context.file.startsWith("resource:")
+              ? context.file.replace("resource:", "")
+              : undefined,
+            lineInfo: context.lineInfo || undefined,
+            languageId: context.languageId || undefined,
+            ...(context.content
+              ? {
+                text: {
+                  value: context.content,
+                  start: 0,
+                  end: context.content.length,
+                },
+              }
+              : {}),
+          },
+        })),
     ],
     images: pending.images,
     attachments: pending.attachments,

@@ -27,45 +27,7 @@ const storeSource = readSource(
   "store.ts",
 );
 
-test("ChatShell renders revert banner when revertState and currentSessionId are present", () => {
-  assert.match(
-    chatShellSource,
-    /\{state\.revertState && state\.currentSessionId \?/,
-    "banner must render conditionally on both revertState AND currentSessionId",
-  );
-  assert.match(
-    chatShellSource,
-    /Changes from this message were reverted\./,
-    "banner must show the 'Changes from this message were reverted' message",
-  );
-});
-
-test("ChatShell revert banner has Restore button with RotateCcw icon", () => {
-  assert.match(
-    chatShellSource,
-    /title="Restore reverted changes"/,
-    "Restore button must have accessible title",
-  );
-  assert.match(
-    chatShellSource,
-    /<RotateCcw/,
-    "Restore button must use RotateCcw icon",
-  );
-  assert.match(
-    chatShellSource,
-    /Restore/,
-    "Restore button must have visible 'Restore' label",
-  );
-});
-
-test("ChatShell Restore button posts unrevertSession message", () => {
-  // The onClick must post {type:"unrevertSession", sessionId:...}
-  assert.match(
-    chatShellSource,
-    /type: "unrevertSession"/,
-    "Restore button must post unrevertSession message type",
-  );
-});
+// Deleted: the pinned ChatShell revert banner was intentionally replaced by inline per-message Restore UI.
 
 test("ChatShell subscribes to revertState from app state", () => {
   assert.match(
@@ -106,12 +68,12 @@ test("store UPDATE_LIVE_SESSION_STATUS creates streaming when none exists", () =
   // When no streaming exists AND payload is present, create a new streaming snapshot
   assert.match(
     body,
-    /if \(!state\.streaming\)/,
+    /if \(!activeStreaming\)/,
     "must handle the no-streaming branch",
   );
   assert.match(
     body,
-    /if \(!action\.payload\)/,
+    /if \(!status\)/,
     "must return state unchanged when payload is null and no streaming",
   );
   assert.match(
@@ -121,7 +83,7 @@ test("store UPDATE_LIVE_SESSION_STATUS creates streaming when none exists", () =
   );
   assert.match(
     body,
-    /liveSessionStatus:\s*action\.payload/,
+    /liveSessionStatus:\s*status/,
     "new streaming must carry the liveSessionStatus payload",
   );
   assert.match(
@@ -137,7 +99,7 @@ test("store UPDATE_LIVE_SESSION_STATUS updates existing streaming with new statu
   // When streaming exists, spread it and replace liveSessionStatus
   assert.match(
     body,
-    /const streaming = \{[\s\S]*?\.\.\.state\.streaming,[\s\S]*?liveSessionStatus:\s*action\.payload/s,
+    /const streaming = \{[\s\S]*?\.\.\.activeStreaming,[\s\S]*?liveSessionStatus:\s*status/s,
     "must spread existing streaming and update liveSessionStatus",
   );
 });

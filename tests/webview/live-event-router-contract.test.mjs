@@ -106,8 +106,8 @@ test("streamEvent handler uses routeLiveEvent for both toast and session status"
 
   assert.match(
     streamEventSection,
-    /const liveRoute = routeLiveEvent\(payload\)/,
-    "streamEvent must call routeLiveEvent",
+    /const liveRoute = routeLiveEventToUi\([\s\S]*?payload,[\s\S]*?"streamEvent"/,
+    "streamEvent must route through the shared live-event UI entry point",
   );
 
   assert.match(
@@ -123,15 +123,15 @@ test("streamEvent handler uses routeLiveEvent for both toast and session status"
   );
 
   assert.match(
-    streamEventSection,
+    handlerSource,
     /APPEND_LIVE_TOAST_NOTIFICATION/,
-    "streamEvent must dispatch toast notifications",
+    "streamEvent route must be able to dispatch toast notifications",
   );
 
   assert.match(
-    streamEventSection,
+    handlerSource,
     /UPDATE_LIVE_SESSION_STATUS/,
-    "streamEvent must dispatch session status updates",
+    "streamEvent route must be able to dispatch session status updates",
   );
 });
 
@@ -142,32 +142,32 @@ test("streamEventBatch handler uses routeLiveEvent for both toast and session st
 
   assert.match(
     batchSection,
-    /const batchLiveRoute = routeLiveEvent\(evtPayload, eventIndex\)/,
-    "streamEventBatch must call routeLiveEvent with event index",
+    /routeLiveEventToUi\([\s\S]*?evtPayload,[\s\S]*?"streamEventBatch",[\s\S]*?eventIndex,[\s\S]*?\)/,
+    "streamEventBatch must route live events with event index",
   );
 
   assert.match(
-    batchSection,
-    /batchLiveRoute\.toast/,
-    "streamEventBatch must check toast from route result",
+    handlerSource,
+    /if \(liveRoute\.toast\)[\s\S]*?APPEND_LIVE_TOAST_NOTIFICATION/,
+    "shared live-event route must dispatch toast notifications",
   );
 
   assert.match(
-    batchSection,
-    /batchLiveRoute\.sessionStatus/,
-    "streamEventBatch must check sessionStatus from route result",
+    handlerSource,
+    /if \(liveRoute\.sessionStatus\)[\s\S]*?UPDATE_LIVE_SESSION_STATUS/,
+    "shared live-event route must dispatch sessionStatus updates",
   );
 
   assert.match(
-    batchSection,
+    handlerSource,
     /APPEND_LIVE_TOAST_NOTIFICATION/,
-    "streamEventBatch must dispatch toast notifications",
+    "streamEventBatch route must be able to dispatch toast notifications",
   );
 
   assert.match(
-    batchSection,
+    handlerSource,
     /UPDATE_LIVE_SESSION_STATUS/,
-    "streamEventBatch must dispatch session status updates — this was the gap fix",
+    "streamEventBatch route must be able to dispatch session status updates — this was the gap fix",
   );
 });
 
@@ -189,19 +189,18 @@ test("live session status dispatches before the break gate in streamEvent", () =
     handlerSource.indexOf('case "streamEventBatch"'),
   );
 
-  const dispatchIndex = streamEventSection.indexOf("UPDATE_LIVE_SESSION_STATUS");
-  const breakGateIndex = streamEventSection.indexOf("break;");
+  const dispatchIndex = streamEventSection.indexOf("routeLiveEventToUi");
+  const breakGateIndex = streamEventSection.indexOf("breaking early");
 
   // The dispatch should appear before any break gate that could skip it
   // when no streaming state is active
   assert.ok(
     dispatchIndex > -1,
-    "UPDATE_LIVE_SESSION_STATUS dispatch must exist in streamEvent",
+    "streamEvent live-event routing must exist before processing break gates",
   );
 
   // Find the first meaningful break gate (not inside a case)
-  const firstBreak = streamEventSection.indexOf("\n            break;");
-  if (firstBreak > -1 && firstBreak < dispatchIndex) {
+  if (breakGateIndex > -1 && breakGateIndex < dispatchIndex) {
     assert.fail(
       "UPDATE_LIVE_SESSION_STATUS dispatch must appear BEFORE the break gate " +
       "so session.status events are not dropped when streaming hasn't started yet",

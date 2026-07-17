@@ -428,7 +428,11 @@ function cloneReference(ref: SubagentReference): SubagentReference {
 function cloneSummary(summary: SubagentSummary): SubagentSummary {
   return {
     ...summary,
-    references: summary.references.map(cloneReference),
+    // Session persistence can contain older malformed summary payloads. Keep
+    // cloning total so one bad references value cannot take down the chat.
+    references: Array.isArray(summary.references)
+      ? summary.references.map(cloneReference)
+      : [],
   };
 }
 

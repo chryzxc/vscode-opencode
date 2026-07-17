@@ -70,6 +70,7 @@ import { useSubagentsForParentMessage } from "./hooks/useSubagents";
 import { DiffStats } from "./DiffStats";
 import {
   asString,
+  completedQuestionToolPresentation,
   getCentralizedAssistantContentChunksFromRawSdkEventPayloads,
   getCentralizedEventType,
   getCentralizedEventPart,
@@ -93,8 +94,6 @@ import { FILE_MENTION_REGEX } from "./PanelComponents";
 import type {
   ActivityDetail,
   AppState,
-  CentralizedDebugData,
-  CentralizedDebugSourceData,
   InteractiveEvent,
   Message,
   MessagePart,
@@ -329,7 +328,10 @@ function isRenderableUserTextPart(part: MessagePart): boolean {
         : typeof part.content === "string"
           ? part.content
           : "";
-  return !!text && !isSyntheticUserToolTextPart(splitInjectedSystemPromptFromUserText(text));
+  return (
+    !!text &&
+    !isSyntheticUserToolTextPart(splitInjectedSystemPromptFromUserText(text).userText)
+  );
 }
 
 function normalizeErrorLikeValue(value: unknown): string {
@@ -770,7 +772,7 @@ function buildSearchPattern(...values: Array<string | undefined>): string {
   return lines.join("\n");
 }
 
-// Component to extract bash output from message content
+// Component to render command-like tool input and output in the shared terminal preview.
 function TerminalBlockWithOutput({
   event,
   messageContent,
@@ -778,10 +780,14 @@ function TerminalBlockWithOutput({
   event: DisplayEvent;
   messageContent: string;
 }) {
-  // Use input.command as the authoritative command field
-  const command = (
-    (event.activityDetail?.input as Record<string, unknown> | undefined)?.["command"] as string
-  ) || event.activityDetail?.command || event.summary;
+  const input = event.activityDetail?.input as Record<string, unknown> | undefined;
+  const globPattern = typeof input?.pattern === "string" ? input.pattern.trim() : "";
+  const isGlob = event.label.trim().toLowerCase() === "glob";
+  // Glob has the same input/output contract as Bash. Render the actual glob
+  // pattern as the terminal command so the activity is inspectable at a glance.
+  const command = isGlob && globPattern
+    ? `glob ${globPattern}`
+    : (input?.["command"] as string) || event.activityDetail?.command || event.summary;
 
   // Try to extract bash output from message content
   // Look for text after the command that looks like terminal output
@@ -833,7 +839,7 @@ function TerminalBlockWithOutput({
 
   return (
     <CollapsedTerminalBlockPreview
-      title="Bash output"
+      title={isGlob ? "Glob output" : "Bash output"}
       command={command}
       output={output}
     />
@@ -1446,11 +1452,7 @@ function extractSemanticEventMessageId(event: unknown): string | null {
     asRecord(asRecord(payloadRecord?.properties)?.info) ||
     asRecord(payloadRecord?.info);
 
-  const part =
-    asRecord(asRecord(eventRecord.properties)?.part) ||
-    asRecord(eventRecord.part) ||
-    asRecord(asRecord(payloadRecord?.properties)?.part) ||
-    asRecord(payloadRecord?.part);
+  const part = getCentralizedEventPart(eventRecord);
 
   const syncData =
     asRecord(asRecord(eventRecord.syncEvent)?.data) ||
@@ -2542,11 +2544,13 @@ function ResponseMessageBody({
   parts,
   className,
   variant = "default",
+  isStreaming = false,
 }: {
   content?: string[];
   parts?: MessagePart[];
   className?: string;
   variant?: "default" | "bare";
+  isStreaming?: boolean;
 }) {
   const chunkSource = Array.isArray(parts) && parts.length > 0
     ? parts.map((part) => {
@@ -2581,6 +2585,7 @@ function ResponseMessageBody({
           <MarkdownRenderer
             key={`${index}-${chunk.slice(0, 24)}`}
             content={chunk}
+            isStreaming={isStreaming}
             className="markdown-body w-full max-w-none"
           />
         ))}
@@ -2789,6 +2794,10 @@ function thoughtItemsFromStreamingReasoningEvents(
 
     const createdAt =
       typeof event?.createdAt === "number" ? event.createdAt : index;
+    const startedAt =
+      typeof event?.startedAt === "number" ? event.startedAt : undefined;
+    const endedAt =
+      typeof event?.endedAt === "number" ? event.endedAt : undefined;
     const partID = asString(event?.partID).trim();
     const messageID = asString(event?.messageID).trim();
     const groupKey = partID || `${createdAt}:${index}`;
@@ -2804,6 +2813,8 @@ function thoughtItemsFromStreamingReasoningEvents(
       status: isLiveChunk ? "pending" : "done",
       messageID: existing?.messageID ?? (messageID || undefined),
       partID: existing?.partID ?? (partID || undefined),
+      startedAt: existing?.startedAt ?? startedAt,
+      endedAt: existing?.endedAt ?? endedAt,
     });
   });
 
@@ -2815,6 +2826,8 @@ function thoughtItemsFromStreamingReasoningEvents(
     status: item.status,
     messageID: item.messageID,
     partID: item.partID,
+    startedAt: item.startedAt,
+    endedAt: item.endedAt,
   }));
 }
 
@@ -2847,8 +2860,9 @@ function mergeThoughtItemsForTimeline(
     const normalizedText = normalizeComparableText(item.text);
     if (item.partID) {
       indexByKey.set(`part:${item.partID}`, index);
-    }
-    if (item.messageID) {
+    } else if (item.messageID) {
+      // A message can contain many reasoning parts. Only fall back to its
+      // message ID when the SDK did not supply the part identity.
       indexByKey.set(`msg:${item.messageID}`, index);
     }
     if (normalizedText) {
@@ -2862,7 +2876,7 @@ function mergeThoughtItemsForTimeline(
     const normalizedText = normalizeComparableText(item.text);
     const keys = [
       item.partID ? `part:${item.partID}` : "",
-      item.messageID ? `msg:${item.messageID}` : "",
+      !item.partID && item.messageID ? `msg:${item.messageID}` : "",
       normalizedText ? `text:${normalizedText}` : "",
     ].filter(Boolean);
 
@@ -2915,11 +2929,11 @@ function mergeProgressItemsForTimeline(
   const addKey = (item: ProgressItem, index: number) => {
     if (item.callID) {
       indexByKey.set(`call:${item.callID}`, index);
-    }
-    if (item.id) {
+    } else if (item.id) {
       indexByKey.set(`id:${item.id}`, index);
-    }
-    if (item.messageID) {
+    } else if (item.messageID) {
+      // Tool calls are siblings under one assistant message. A message ID is
+      // not a tool identity, so use it only when no call/part ID exists.
       indexByKey.set(`msg:${item.messageID}`, index);
     }
     indexByKey.set(`title:${normalizeComparableText(item.title)}`, index);
@@ -2930,8 +2944,8 @@ function mergeProgressItemsForTimeline(
   for (const item of streamingItems) {
     const keys = [
       item.callID ? `call:${item.callID}` : "",
-      item.id ? `id:${item.id}` : "",
-      item.messageID ? `msg:${item.messageID}` : "",
+      !item.callID && item.id ? `id:${item.id}` : "",
+      !item.callID && !item.id && item.messageID ? `msg:${item.messageID}` : "",
       `title:${normalizeComparableText(item.title)}`,
     ].filter(Boolean);
 
@@ -3278,9 +3292,10 @@ function progressItemsFromRawEventPayloads(
     }
 
     const isQuestionTool = isQuestionToolName(tool);
+    const questionPresentation = completedQuestionToolPresentation(tool, status, output);
     const title =
-      (isQuestionTool && status === "done"
-        ? "Captured user response"
+      (questionPresentation.isCompleted
+        ? questionPresentation.title
         : undefined) ||
       firstNonEmptyString(
         asString(part.title),
@@ -3510,8 +3525,20 @@ function progressItemsFromSteps(
   steps
     .filter((step) => isActionProgressStep(step))
     .forEach((step, index) => {
-      const title = step.title;
+      const rawActivityDetail =
+        "activityDetail" in step
+          ? (step.activityDetail as ActivityDetail | undefined)
+          : undefined;
       const status = normalizeProgressStatus(step.status);
+      const questionPresentation = completedQuestionToolPresentation(
+        rawActivityDetail?.tool,
+        step.status,
+        rawActivityDetail?.output,
+      );
+      const title = questionPresentation.title ?? step.title;
+      const activityDetail = questionPresentation.isCompleted
+        ? { ...rawActivityDetail, summary: questionPresentation.summary ?? rawActivityDetail?.summary }
+        : rawActivityDetail;
       const meta = step.meta;
       const stepId =
         "id" in step && typeof step.id === "string" ? step.id : undefined;
@@ -3552,21 +3579,19 @@ function progressItemsFromSteps(
         "partType" in step ? (step.partType as string | undefined) : undefined;
       const stepInternal =
         "internal" in step ? Boolean(step.internal) : false;
+      const baseMergeKey =
+        progressItemIdentityKey({
+          id: stepId,
+          callID: stepCallId,
+          messageID: stepMessageId,
+          title,
+          filePath: stepFilePath,
+          partType: stepPartType,
+          activityDetail,
+        }) || mergeKey;
       const candidate: ProgressItem = {
         key: `${prefix}-${index}-${title}`,
-        mergeKey:
-          progressItemIdentityKey({
-            id: stepId,
-            callID: stepCallId,
-            messageID: stepMessageId,
-            title,
-            filePath: stepFilePath,
-            partType: stepPartType,
-            activityDetail:
-              "activityDetail" in step
-                ? (step.activityDetail as ActivityDetail | undefined)
-                : undefined,
-          }) || mergeKey,
+        mergeKey: baseMergeKey,
         id: stepId,
         callID: stepCallId,
         messageID: stepMessageId,
@@ -3586,7 +3611,7 @@ function progressItemsFromSteps(
             : undefined,
         activityDetail:
           "activityDetail" in step
-            ? (step.activityDetail as ActivityDetail | undefined)
+                ? activityDetail
             : undefined,
         streamSeq:
           "streamSeq" in step
@@ -3597,16 +3622,16 @@ function progressItemsFromSteps(
       const existing = stepMap.get(candidate.mergeKey);
       if (!existing) {
         stepMap.set(candidate.mergeKey, candidate);
-        return;
+      } else {
+        stepMap.set(candidate.mergeKey, mergeProgressItemRecord(existing, candidate));
       }
-      stepMap.set(candidate.mergeKey, mergeProgressItemRecord(existing, candidate));
     });
 
   return Array.from(stepMap.values());
 }
 
 function progressItemsFromRawResponseParts(
-  rawResponse?: Message["rawResponse"],
+  rawResponse?: unknown,
 ): ProgressItem[] {
   if (!rawResponse) {
     return [];
@@ -3686,7 +3711,11 @@ function progressItemsFromRawResponseParts(
       asString(partRec.output),
     );
     const preview = firstNonEmptyString(asString(metadataRec?.preview));
-    const rawTitle = toolName || "step";
+    const rawTitle = firstNonEmptyString(
+      asString(stateRec?.title),
+      asString(partRec.title),
+      toolName,
+    ) || "step";
 
     const compactMetadata: Record<string, string | number | boolean> = {};
     for (const [key, value] of Object.entries(metadataRec ?? {})) {
@@ -4606,45 +4635,91 @@ function isDeltaCentralizedEventPayload(payload: unknown): boolean {
   );
 }
 
-// Function to parse text and extract file mentions
-function parseFileMentions(text: string) {
-  if (!text) return [];
-  const parts: Array<{ type: 'text' | 'file'; content: string; filename?: string }> = [];
-  let lastIndex = 0;
-  let match;
-  FILE_MENTION_REGEX.lastIndex = 0; // Reset regex state
+type FileMentionTarget = {
+  filename: string;
+  path: string;
+};
 
-  while ((match = FILE_MENTION_REGEX.exec(text)) !== null) {
-    // Add text before the match
-    if (match.index > lastIndex) {
-      parts.push({
-        type: 'text',
-        content: text.slice(lastIndex, match.index)
-      });
+function hasInlineFileMention(text: string, filename: string): boolean {
+  if (!text || !filename) {
+    return false;
+  }
+  const token = `@${filename}`;
+  let index = text.indexOf(token);
+  while (index >= 0) {
+    const nextCharacter = text[index + token.length] || "";
+    if (!/[a-zA-Z0-9_./\\-]/.test(nextCharacter)) {
+      return true;
     }
-    // Add the file mention
-    parts.push({
-      type: 'file',
-      content: match[0],
-      filename: match[1]
-    });
-    lastIndex = match.index + match[0].length;
+    index = text.indexOf(token, index + token.length);
+  }
+  return false;
+}
+
+// Function to parse text and extract file mentions
+function parseFileMentions(text: string, targets: FileMentionTarget[] = []) {
+  if (!text) return [];
+  const parts: Array<{
+    type: 'text' | 'file';
+    content: string;
+    filename?: string;
+    path?: string;
+  }> = [];
+  const sortedTargets = [...targets]
+    .filter((target) => target.filename && target.path)
+    .sort((left, right) => right.filename.length - left.filename.length);
+  let lastIndex = 0;
+
+  // SDK file parts are authoritative: only they can make a blue @ mention
+  // navigable. This avoids consuming adjacent synthetic transport text (for
+  // example, `@.env.exampleCalled the Read tool`) as part of a filename.
+  if (sortedTargets.length > 0) {
+    for (let index = 0; index < text.length; index += 1) {
+      const target = sortedTargets.find((candidate) => {
+        const token = `@${candidate.filename}`;
+        const nextCharacter = text[index + token.length] || "";
+        return (
+          text.startsWith(token, index) &&
+          !/[a-zA-Z0-9_./\\-]/.test(nextCharacter)
+        );
+      });
+      if (!target) {
+        continue;
+      }
+      if (index > lastIndex) {
+        parts.push({ type: 'text', content: text.slice(lastIndex, index) });
+      }
+      parts.push({
+        type: 'file',
+        content: `@${target.filename}`,
+        filename: target.filename,
+        path: target.path,
+      });
+      lastIndex = index + target.filename.length + 1;
+      index = lastIndex - 1;
+    }
+  } else {
+    let match: RegExpExecArray | null;
+    FILE_MENTION_REGEX.lastIndex = 0;
+    while ((match = FILE_MENTION_REGEX.exec(text)) !== null) {
+      if (match.index > lastIndex) {
+        parts.push({ type: 'text', content: text.slice(lastIndex, match.index) });
+      }
+      parts.push({ type: 'file', content: match[0], filename: match[1] });
+      lastIndex = match.index + match[0].length;
+    }
   }
 
-  // Add remaining text
   if (lastIndex < text.length) {
-    parts.push({
-      type: 'text',
-      content: text.slice(lastIndex)
-    });
+    parts.push({ type: 'text', content: text.slice(lastIndex) });
   }
 
   return parts.length > 0 ? parts : [{ type: 'text', content: text }];
 }
 
 // Component to render text with highlighted file mentions
-function renderHighlightedText(text: string) {
-  const parts = parseFileMentions(text);
+function renderHighlightedText(text: string, targets?: FileMentionTarget[]) {
+  const parts = parseFileMentions(text, targets);
 
   return parts.map((part, index) => {
     const key = `${part.type}-${index}`;
@@ -4657,10 +4732,10 @@ function renderHighlightedText(text: string) {
             // Open file when clicked
             vscode.postMessage({
               type: "openFile",
-              file: (part as any).filename,
+              file: part.path || (part as any).filename,
             });
           }}
-          title={`Open ${(part as any).filename}`}
+          title={`Open ${part.path || (part as any).filename}`}
         >
           {part.content}
         </span>
@@ -4813,7 +4888,17 @@ export function SharedActivityStep({
   const isEditLike = ["edit", "modify", "patch", "write", "apply_patch"].includes(labelLower);
   const filePath = event.filePath || (event.activityDetail?.input as Record<string, unknown> | undefined)?.filePath as string | undefined;
   const description = (event.activityDetail?.metadata?.description as string | undefined) || (event.activityDetail?.input?.description as string | undefined);
-  const visibleSummary = getVisibleDefaultActivitySummary(event.label, event.summary, event.filePath);
+  const globPattern = isGlobSearch && typeof event.activityDetail?.input?.pattern === "string"
+    ? event.activityDetail.input.pattern.trim()
+    : "";
+  // Rehydrated raw SDK tool events can carry their only result in
+  // activityDetail.output. Use it as the last summary fallback so those events
+  // share the same collapsible preview as streamed activity rows.
+  const visibleSummary = getVisibleDefaultActivitySummary(
+    event.label,
+    event.summary,
+    event.filePath || event.activityDetail?.output,
+  );
 
   return (
     <div className="flex items-start justify-between gap-2 w-full">
@@ -4821,6 +4906,7 @@ export function SharedActivityStep({
         <div className={cn("oc-activity-step-surface flex flex-col items-start w-full min-w-0", isReadActivity ? "gap-0" : "gap-2")}>
           <div className="flex items-center gap-2 flex-wrap w-full min-h-[20px]">
             <span className="oc-activity-step-title font-medium text-oc-text capitalize">{event.label}</span>
+            {globPattern ? <span className="max-w-[min(44ch,60vw)] truncate rounded bg-oc-bg-soft px-1.5 py-0.5 font-mono text-xs text-oc-text-soft" title={globPattern}>{globPattern}</span> : null}
             {description ? <span className="oc-activity-step-meta flex items-center gap-2 text-oc-text-soft"><span>&middot;</span><span>{description}</span></span> : null}
             {(labelLower === "read" || isGlobSearch || isEditLike) && filePath && !isUrl(filePath) ? (
               <button type="button" className="oc-refined-file-link oc-refined-file-link-with-tooltip oc-refined-file-link-inline oc-refined-file-link-plain" onClick={() => vscode.postMessage({ type: "openFile", file: filePath })}>
@@ -4832,7 +4918,7 @@ export function SharedActivityStep({
           </div>
           {!isReadActivity ? (
             <div className="flex flex-col gap-1 w-full">
-              {labelLower === "bash" ? (
+              {labelLower === "bash" || isGlobSearch ? (
                 <div className="oc-refined-event-summary"><TerminalBlockWithOutput event={event} messageContent={messageContent} /></div>
               ) : SEARCH_LABELS.has(event.label) ? (
                 <DetailedSearchActivityPreview event={event} isGlobSearch={isGlobSearch} />
@@ -6513,8 +6599,14 @@ export const UserMessage = memo(function UserMessage({ message, isQueued = false
   const [previewSelection, setPreviewSelection] = useState<CodeSelectionChipData | null>(null);
   const [copied, setCopied] = useState(false);
   const userMessageRef = useRef<HTMLDivElement>(null);
+  // Hydrated user messages can contain SDK synthetic Read-tool echoes beside
+  // the original text part. Prefer renderable user parts so server transport
+  // text and attached file contents never leak into the user bubble.
   const rawUserText =
-    message?.content ?? message?.text ?? messageBodyFromParts(message?.parts, message?.role ?? message?.info?.role);
+    messageBodyFromParts(message?.parts, message?.role ?? message?.info?.role) ||
+    message?.content ||
+    message?.text ||
+    "";
   const codeSelections = useMemo(
     () => collectCodeSelectionsFromParts(message?.parts),
     [message?.parts],
@@ -6535,10 +6627,23 @@ export const UserMessage = memo(function UserMessage({ message, isQueued = false
   }, [message, rawUserText, codeSelections]);
   const content = splitContent.userText;
   const injectedSystemText = splitContent.systemText;
-  const explicitFileChips = (message?.parts ?? [])
+  const attachedFileChips = (message?.parts ?? [])
     .filter((part) => isExplicitFileAttachmentPart(part) && !isImageAttachmentPart(part))
     .map((part) => buildExplicitFileChip(part))
     .filter((value): value is { label: string; path?: string } => !!value);
+  const fileMentionTargets = Array.from(
+    new Map(
+      attachedFileChips
+        .filter((chip): chip is { label: string; path: string } => !!chip.path)
+        .map((chip) => [chip.label, { filename: chip.label, path: chip.path }]),
+    ).values(),
+  );
+  // @ references are represented by their inline blue mention. Do not render a
+  // second attachment chip for the same SDK file part. Explicit uploads remain
+  // visible as chips when they are not referenced inline.
+  const explicitFileChips = attachedFileChips.filter(
+    (chip) => !hasInlineFileMention(content, chip.label),
+  );
   const inferredFileChips = inferAttachmentPathsFromHydratedUserText(
     typeof rawUserText === "string" ? rawUserText : "",
   ).map((filePath) => ({
@@ -6627,11 +6732,11 @@ export const UserMessage = memo(function UserMessage({ message, isQueued = false
                     return (
                       <>
                         <span className="oc-readable-accent font-medium">{match[1]}</span>
-                        {renderHighlightedText(match[2])}
+                        {renderHighlightedText(match[2], fileMentionTargets)}
                       </>
                     );
                   }
-                  return renderHighlightedText(content);
+                  return renderHighlightedText(content, fileMentionTargets);
                 })()}
               </div>
               {hasImages && (
@@ -6660,7 +6765,7 @@ export const UserMessage = memo(function UserMessage({ message, isQueued = false
                     <div
                       key={`file-chip-${index}:${label.label}`}
                       className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-oc-border bg-oc-panel-soft px-2.5 py-1 text-[10px] font-medium text-oc-text-soft"
-                      title={label.label}
+                      title={label.path || label.label}
                     >
                       <FileIcon filePath={label.path || label.label} className="h-3.5 w-3.5 shrink-0" />
                       <span className="truncate">{label.label}</span>
@@ -7199,9 +7304,13 @@ function formatThinkingVariantLabel(variant: string): string {
   return trimmed.charAt(0).toUpperCase() + trimmed.slice(1).toLowerCase();
 }
 
-function getStableAgentAccentColor(agentName?: string): string | undefined {
+function getStableAgentAccentColor(agentName?: string): string {
   if (!agentName || agentName === "assistant") {
-    return undefined;
+    // Default accent color so the agent name is always visually distinct in
+    // the header, even when the SDK hasn't surfaced a non-default agent
+    // name on the message envelope. Matches the empty-id hue from
+    // getSubagentHue for visual consistency with the subagent palette.
+    return `hsl(${getSubagentHue("")}, 72%, 68%)`;
   }
   return `hsl(${getSubagentHue(agentName)}, 72%, 68%)`;
 }
@@ -7298,6 +7407,19 @@ function getAssistantTurnMetadataFromCentralizedEvents(
         if (asString(info.role) === "assistant") {
           const agent = asString(info.agent);
           if (agent) metadata.agent = agent;
+          // Mirror session.updated: check the nested info.model object first
+          // (SDK delivers model info as a nested object for parity with
+          // session.updated). Without this, metadata.providerID stays empty
+          // for message.updated-only turns and the header shows model-only.
+          const nestedModel = asRecord(info.model);
+          if (nestedModel) {
+            const nestedModelID = asString(nestedModel.modelID) || asString(nestedModel.id);
+            const nestedProviderID = asString(nestedModel.providerID);
+            const nestedVariant = asString(nestedModel.variant);
+            if (nestedModelID) metadata.modelID = nestedModelID;
+            if (nestedProviderID) metadata.providerID = nestedProviderID;
+            if (nestedVariant) metadata.variant = nestedVariant;
+          }
           const modelID = asString(info.modelID);
           const providerID = asString(info.providerID);
           const variant = asString(info.variant);
@@ -7436,14 +7558,12 @@ function ResponseMessageInner({
     assistantTurnPending,
     assistantTurnMessageId,
     streamingBySessionId,
-    rawSdkEventPayloadsBySessionId,
     selectedSubagentId,
   } = useAppState(
     (state) => ({
       assistantTurnPending: state.assistantTurnPending,
       assistantTurnMessageId: state.assistantTurnMessageId,
       streamingBySessionId: state.streamingBySessionId,
-      rawSdkEventPayloadsBySessionId: state.rawSdkEventPayloadsBySessionId,
       selectedSubagentId: state.selectedSubagentId,
     }),
     shallowEqual,
@@ -7503,18 +7623,13 @@ const centralizedRawResponse = message?.rawResponse;
     asString(centralizedMessageRec?.sessionID) ||
     asString(centralizedMessageRec?.sessionId) ||
     null;
-  const sessionScopedRawSdkEventPayloads = useMemo(() => {
-    if (!centralizedSessionId) {
-      return [];
-    }
-
-    return Array.isArray(rawSdkEventPayloadsBySessionId?.[centralizedSessionId])
-      ? rawSdkEventPayloadsBySessionId[centralizedSessionId]
-      : [];
-  }, [centralizedSessionId, rawSdkEventPayloadsBySessionId]);
+  // Live raw events are scoped to the active streaming turn. Completed cards
+  // use the SDK snapshot fields on `message` and never consult a session tape.
+  const sessionScopedRawSdkEventPayloads =
+    activityTimelineStreaming?.rawSdkEventPayloads ?? [];
   const hasCentralizedPendingAssistantReply = useMemo(
-    () => hasActiveAssistantReplyInCentralizedTape(sessionScopedRawSdkEventPayloads),
-    [sessionScopedRawSdkEventPayloads],
+    () => hasActiveAssistantReplyInCentralizedTape(activityTimelineStreaming?.rawSdkEventPayloads ?? []),
+    [activityTimelineStreaming?.rawSdkEventPayloads],
   );
   const isLiveAssistantTurn = !!(
     activityTimelineStreaming?.isActive ||
@@ -7807,6 +7922,14 @@ const centralizedRawResponse = message?.rawResponse;
     [normalizedCentralizedRawSdkEventPayloads],
   );
   const rawContent = rawContentChunks.join("");
+  const snapshotContent = firstNonEmptyString(
+    cardMessage?.content,
+    cardMessage?.text,
+    cardMessage?.parts
+      ?.filter((part) => part?.type === "text")
+      .map((part) => firstNonEmptyString(part.text, part.content, part.message) ?? "")
+      .join(""),
+  ) ?? "";
   const stickyStreamingContentRef = useRef<{
     messageId: string | null;
     content: string;
@@ -7825,7 +7948,7 @@ const centralizedRawResponse = message?.rawResponse;
   const content =
     scopedActivityTimelineStreaming?.isActive && rawContent.trim().length === 0
       ? stickyStreamingContentRef.current.content
-      : rawContent;
+      : rawContent || snapshotContent;
   const hasAssistantFinishSignal =
     scopedActivityTimelineStreaming?.hasAssistantFinishSignal === true;
   const hasActiveReasoningPart = scopedActivityTimelineStreaming?.inReasoningPart === true;
@@ -7858,6 +7981,12 @@ const centralizedRawResponse = message?.rawResponse;
     () => thoughtItemsFromRawEventPayloads(normalizedCentralizedRawSdkEventPayloads),
     [normalizedCentralizedRawSdkEventPayloads],
   );
+  // Rehydrated messages come from `session.messages()` and retain reasoning as
+  // typed message parts. Use that snapshot when there is no live/raw overlay.
+  const snapshotThoughtItems = useMemo(
+    () => thoughtItemsFromStreamingReasoningEvents(cardMessage?.reasoningEvents, false),
+    [cardMessage?.reasoningEvents],
+  );
   const liveThoughtItems = useMemo(
     () =>
       thoughtItemsFromStreamingReasoningEvents(
@@ -7867,14 +7996,36 @@ const centralizedRawResponse = message?.rawResponse;
     [scopedActivityTimelineStreaming?.reasoningEvents, scopedActivityTimelineStreaming?.isActive],
   );
   const thoughtItems = useMemo(
-    () => mergeThoughtItemsForTimeline(finalizedThoughtItems, liveThoughtItems, isStreamingActive),
-    [finalizedThoughtItems, liveThoughtItems, isStreamingActive],
+    () => mergeThoughtItemsForTimeline(
+      mergeThoughtItemsForTimeline(finalizedThoughtItems, snapshotThoughtItems),
+      liveThoughtItems,
+      isStreamingActive,
+    ),
+    [finalizedThoughtItems, snapshotThoughtItems, liveThoughtItems, isStreamingActive],
   );
   const progressItems = useMemo(
     () => {
-      return progressItemsFromCentralizedData(normalizedCentralizedRawSdkEventPayloads);
+      const fromRaw = progressItemsFromCentralizedData(normalizedCentralizedRawSdkEventPayloads);
+      if (fromRaw.length > 0) {
+        return fromRaw;
+      }
+      const fromSnapshotParts = progressItemsFromRawResponseParts({
+        parts: cardMessage?.parts,
+      });
+      if (fromSnapshotParts.length > 0) {
+        return fromSnapshotParts;
+      }
+      return progressItemsFromSteps(
+        [...(cardMessage?.progressEvents ?? []), ...(cardMessage?.steps ?? [])],
+        "sdk-snapshot",
+      );
     },
-    [normalizedCentralizedRawSdkEventPayloads],
+    [
+      cardMessage?.parts,
+      cardMessage?.progressEvents,
+      cardMessage?.steps,
+      normalizedCentralizedRawSdkEventPayloads,
+    ],
   );
   const liveProgressItems = useMemo(
     () =>
@@ -7903,8 +8054,9 @@ const centralizedRawResponse = message?.rawResponse;
   );
 
   const structured = useMemo(
-    () => structuredOutputFromRawSdkEventPayloads(normalizedCentralizedRawSdkEventPayloads),
-    [normalizedCentralizedRawSdkEventPayloads]
+    () => structuredOutputFromRawSdkEventPayloads(normalizedCentralizedRawSdkEventPayloads)
+      ?? cardMessage?.structuredOutput,
+    [cardMessage?.structuredOutput, normalizedCentralizedRawSdkEventPayloads],
   );
   const responseType = (structured?.type ?? structured?.responseType)?.toLowerCase();
   const plan = structured?.plan;
@@ -7949,27 +8101,6 @@ const centralizedRawResponse = message?.rawResponse;
   // Centralized debug is the long-term source of truth for this assistant turn.
   // Keep it raw and complete so future UI rendering can consume the same data
   // without depending on derived display-only transforms.
-  const centralizedDebugData = useMemo<CentralizedDebugData>(() => {
-    if (!config.debug.showCentralizedDebug) {
-      return {};
-    }
-
-    const rawEventStream: CentralizedDebugSourceData = {
-      sessionId: centralizedSessionId ?? currentSessionId ?? undefined,
-      rawSdkEventPayloads: centralizedRawSdkEventPayloads,
-    };
-
-    // Keep the debug panel mounted even before the assistant responds so the
-    // raw session tape can grow in-place as soon as the first event lands.
-    return {
-      rawEventStream,
-    };
-  }, [
-    centralizedRawSdkEventPayloads,
-    centralizedSessionId,
-    currentSessionId,
-    config.debug.showCentralizedDebug,
-  ]);
   const hasPendingReasoningDisplayEvent = useMemo(
     () =>
       displayEvents.some(
@@ -8927,14 +9058,18 @@ const centralizedRawResponse = message?.rawResponse;
     () => getLegacyMetricsDiagnostics(message, streaming),
     [message, streaming],
   );
+  // Completed cards are SDK snapshots. The live raw overlay can enrich these
+  // values during an active turn, but it must never be required for them.
+  const snapshotTokens = message?.tokens ?? message?.info?.tokens;
+  const snapshotDuration = message?.duration ?? message?.info?.duration;
   const baseTokens = getTokenInfo(
     normalizedCentralizedRawSdkEventPayloads,
     assistantScopeMessageIds,
-  );
+  ) ?? snapshotTokens;
   const baseDuration = getDuration(
     normalizedCentralizedRawSdkEventPayloads,
     assistantScopeMessageIds,
-  );
+  ) ?? snapshotDuration;
 
   const tokens = isAssistantTurnCollapsed && blockTokens ? blockTokens : baseTokens;
   const duration = isAssistantTurnCollapsed && blockDuration !== undefined ? blockDuration : baseDuration;
@@ -9104,15 +9239,20 @@ const responseBodyChunks = useMemo(() => {
     if (orderedChunks.length > 0) {
       return orderedChunks;
     }
-    return getCentralizedAssistantContentChunksFromRawSdkEventPayloads(
+    const rawChunks = getCentralizedAssistantContentChunksFromRawSdkEventPayloads(
       responseBodyRawSdkEventPayloads,
     );
+    if (rawChunks.length > 0) {
+      return rawChunks;
+    }
+    return snapshotContent.trim().length > 0 ? [snapshotContent] : [];
   }, [
     assistantScopeMessageIds,
     cardMessage,
     responseBodyRawSdkEventPayloads,
     streaming?.content,
     streaming?.hasRenderableContent,
+    snapshotContent,
   ]);
   const visibleResponseBodyChunks = useMemo(() => {
     const renderedQuestionOutputs = new Set(
@@ -9531,7 +9671,11 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
               showThinkingPlaceholder ||
               nonQuestionTimelineDisplayEventGroups.length > 0) && (
               <section data-assistant-section="activity" className="space-y-2">
-                {hasLiveSessionStatus ? (
+                {/* Hide the session.status banner when statusType is "busy" — the AI response
+                    loading indicator (ThinkingBubble / activity timeline) already conveys busy
+                    state. Other status types (retry, error, idle, ready, etc.) must still
+                    render so the user sees retry countdowns and surfacing session events. */}
+                {hasLiveSessionStatus && liveSessionStatus?.statusType !== "busy" ? (
                   <div className="mb-2 px-2.5">
                     <div
                       className="w-full rounded-[10px] border px-3 py-2.5 text-left transition-colors"
@@ -9837,6 +9981,14 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
                                             <span className="oc-activity-step-title font-medium text-oc-text capitalize">
                                               {event.label}
                                             </span>
+                                            {isGlobSearch && typeof event.activityDetail?.input?.pattern === "string" && event.activityDetail.input.pattern.trim() ? (
+                                              <span
+                                                className="max-w-[min(44ch,60vw)] truncate rounded bg-oc-bg-soft px-1.5 py-0.5 font-mono text-xs text-oc-text-soft"
+                                                title={event.activityDetail.input.pattern}
+                                              >
+                                                {event.activityDetail.input.pattern}
+                                              </span>
+                                            ) : null}
                                             {compressTopic ? (
                                               <span className="oc-activity-step-meta truncate max-w-[min(42ch,60vw)] text-oc-text-soft">
                                                 {compressTopic}
@@ -9888,9 +10040,21 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
                                           <div className="flex flex-col gap-1 w-full">
                                               {/* For read, todowrite, and edit events, skip the generic summary block here — they have their own custom UI below.
                                                   For all other events, render the file link or summary as usual. */}
-                                              {labelLower !== "read" && labelLower !== "todowrite" && !isEditLike && visibleSummary && (
+                                              {isGlobSearch ? (
+                                                <div className="oc-refined-event-summary">
+                                                  <TerminalBlockWithOutput
+                                                    event={event}
+                                                    messageContent={content}
+                                                  />
+                                                </div>
+                                              ) : labelLower !== "read" && labelLower !== "todowrite" && !isEditLike && visibleSummary && (
                                                 event.filePath && !isUrl(event.filePath) && event.label !== "bash" && !isCallStyleActivityLabel(event.label) ? (
-                                                SEARCH_LABELS.has(event.label) ? (
+                                                isGlobSearch ? (
+                                                  <TerminalBlockWithOutput
+                                                    event={event}
+                                                    messageContent={content}
+                                                  />
+                                                ) : SEARCH_LABELS.has(event.label) ? (
                                                   <DetailedSearchActivityPreview
                                                     event={event}
                                                     isGlobSearch={isGlobSearch}
@@ -9920,7 +10084,7 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
                                                   )
                                                 ) : (
                                                   <div className="oc-refined-event-summary">
-                                                    {event.label === "bash" ? (
+                                                    {event.label === "bash" || isGlobSearch ? (
                                                       <TerminalBlockWithOutput
                                                         event={event}
                                                         messageContent={content}
@@ -10142,6 +10306,7 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
                     <ResponseMessageBody
                       key={`${messageId || "assistant"}-response-${index}`}
                       content={[chunk]}
+                      isStreaming={isLiveStream}
                       className="oc-response-body-block"
                       variant="bare"
                     />
@@ -10510,6 +10675,8 @@ export const FileChangesSection = memo(function FileChangesSection({
 }) {
   type DiffExcerpt = { header?: string; lines?: string[]; added?: number; deleted?: number };
   type FileChange = { file: string; added: number; deleted: number; diffExcerpt?: DiffExcerpt };
+  // The SDK envelope that owns the summary/diff is the revert target. In
+  // particular, rehydrated `info.summary.diffs` belong to the user message.
   const summaryMessageId = firstNonEmptyString(centralizedDiffEvent?.messageId, changeSummary?.messageId, messageId) || null;
 
   const compactDisplayDir = (dir: string): string => {
@@ -11101,23 +11268,16 @@ export const EmptyState = memo(function EmptyState({
   serverError,
   receivedInitState,
   currentSessionId,
-  rawSdkEventPayloadsBySessionId,
 }: {
   serverStatus: AppState["serverStatus"];
   serverError?: string;
   receivedInitState: AppState["receivedInitState"];
   currentSessionId: AppState["currentSessionId"];
-  rawSdkEventPayloadsBySessionId: AppState["rawSdkEventPayloadsBySessionId"];
 }) {
   const iconUri =
     typeof document !== "undefined"
       ? document.getElementById("root")?.dataset.opencodeIconUri
       : undefined;
-
-  const hasCachedCurrentSessionMessages = Boolean(
-    currentSessionId &&
-    (rawSdkEventPayloadsBySessionId?.[currentSessionId]?.length ?? 0) > 0,
-  );
 
   const isConnecting = false;
 
@@ -11214,67 +11374,50 @@ export function MessageStatus({
   );
 }
 
-export const CentralizedDebugPanel = memo(function CentralizedDebugPanel() {
-  if (!config.debug.showCentralizedDebug) {
+export const SdkEventDebugPanel = memo(function SdkEventDebugPanel() {
+  if (!config.debug.showSdkEventDebug) {
     return null;
   }
-  return <CentralizedDebugPanelContents />;
+  return <SdkEventDebugPanelContents />;
 });
 
-const CentralizedDebugPanelContents = memo(function CentralizedDebugPanelContents() {
-  const [copiedDebugPanel, setCopiedDebugPanel] = useState<"centralized" | null>(null);
+const SdkEventDebugPanelContents = memo(function SdkEventDebugPanelContents() {
+  const [copiedDebugPanel, setCopiedDebugPanel] = useState(false);
   const {
     currentSessionId,
-    errorMessages,
-    rawSdkEventPayloadsBySessionId,
+    sdkMessagesBySessionId,
     liveEventStreamBySessionId,
-    subagentsByParentMessageId,
-    subagentDetailsById,
-    receivedInitState,
-    serverStatus,
   } = useAppState(
     (state) => ({
       currentSessionId: state.currentSessionId,
-      errorMessages: state.errorMessages,
-      rawSdkEventPayloadsBySessionId: state.rawSdkEventPayloadsBySessionId,
+      sdkMessagesBySessionId: state.sdkMessagesBySessionId,
       liveEventStreamBySessionId: state.liveEventStreamBySessionId,
-      subagentsByParentMessageId: state.subagentsByParentMessageId,
-      subagentDetailsById: state.subagentDetailsById,
-      receivedInitState: state.receivedInitState,
-      serverStatus: state.serverStatus,
     }),
     shallowEqual,
   );
 
-  const centralizedSessionId = currentSessionId;
-  const rawSdkEventPayloads = centralizedSessionId && Array.isArray(rawSdkEventPayloadsBySessionId?.[centralizedSessionId])
-    ? rawSdkEventPayloadsBySessionId[centralizedSessionId]
+  const sessionId = currentSessionId;
+  const rehydratedSdkMessages = sessionId && Array.isArray(sdkMessagesBySessionId?.[sessionId])
+    ? sdkMessagesBySessionId[sessionId]
     : [];
-  const liveEventStream = centralizedSessionId && Array.isArray(liveEventStreamBySessionId?.[centralizedSessionId])
-    ? liveEventStreamBySessionId[centralizedSessionId]
+  const liveEvents = sessionId && Array.isArray(liveEventStreamBySessionId?.[sessionId])
+    ? liveEventStreamBySessionId[sessionId]
     : [];
-  const centralizedData = {
-    schemaVersion: 1,
-    sessionId: centralizedSessionId,
-    rawEventStream: { events: rawSdkEventPayloads },
-    // Debug-only: populated only while this webview is alive and intentionally
-    // absent after chatHistory rehydrates a session.
-    liveEventStream: { persistence: "client-only", events: liveEventStream },
-    subagents: {
-      summariesByParentMessageId: subagentsByParentMessageId,
-      detailsById: subagentDetailsById,
-    },
+  const debugData = {
+    sessionId,
+    rehydratedSdkMessages,
+    liveEvents,
   };
 
   return (
     <div className="mx-4 my-2 rounded-md border border-oc-border bg-oc-panel overflow-hidden text-[10px] font-mono">
       <div className="flex items-center justify-between bg-oc-panel-hover px-2 py-1 border-b border-oc-border">
-        <span className="font-semibold text-oc-text">Centralized Data (Debug)</span>
+        <span className="font-semibold text-oc-text">SDK Events (Debug)</span>
         <button 
           onClick={() => {
-            navigator.clipboard.writeText(JSON.stringify(centralizedData, null, 2));
-            setCopiedDebugPanel("centralized");
-            setTimeout(() => setCopiedDebugPanel(null), 2000);
+            navigator.clipboard.writeText(JSON.stringify(debugData, null, 2));
+            setCopiedDebugPanel(true);
+            setTimeout(() => setCopiedDebugPanel(false), 2000);
           }}
           className="text-oc-text-muted hover:text-oc-text"
         >
@@ -11282,7 +11425,7 @@ const CentralizedDebugPanelContents = memo(function CentralizedDebugPanelContent
         </button>
       </div>
       <div className="p-2 max-h-48 overflow-y-auto text-oc-text-muted">
-        <pre>{JSON.stringify(centralizedData, null, 2)}</pre>
+        <pre>{JSON.stringify(debugData, null, 2)}</pre>
       </div>
     </div>
   );

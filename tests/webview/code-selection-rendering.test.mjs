@@ -99,14 +99,14 @@ test("collectCodeSelectionsFromParts builds chip data from selection parts", () 
 test("parseLineRange extracts start and end line numbers from lineInfo", () => {
   const body = extractFunctionBody(
     messageComponentsSource,
-    "function parseLineRange(",
+    "function parseLineRange(lineInfo?: string): { startLine?: number; endLine?: number }",
   );
   assert.ok(body.length > 0, "parseLineRange must exist");
 
   // Matches "5" → {startLine:5} and "5-10" → {startLine:5, endLine:10}
   assert.match(
     body,
-    /\(\\d\+\)\(?:\\s\*-\\s\*\(\\d\+\)\)\?/,
+    /\/\(\\d\+\)\(\?:\\s\*\-\\s\*\(\\d\+\)\)\?\//,
     "must match both single-line and line-range patterns",
   );
 });
@@ -114,19 +114,19 @@ test("parseLineRange extracts start and end line numbers from lineInfo", () => {
 test("rangeToLines converts source range to 1-based line numbers", () => {
   const body = extractFunctionBody(
     messageComponentsSource,
-    "function rangeToLines(",
+    "function rangeToLines(range?: { start?: { line?: number }; end?: { line?: number } }): { startLine?: number; endLine?: number }",
   );
   assert.ok(body.length > 0, "rangeToLines must exist");
 
   // +1 because editor lines are 0-based in the source range
   assert.match(
     body,
-    /range\.start\?\.line \+ 1/,
+    /range\.start\?\.line === "number" \? range\.start\.line \+ 1/,
     "must convert 0-based start.line to 1-based",
   );
   assert.match(
     body,
-    /range\.end\?\.line \+ 1/,
+    /range\.end\?\.line === "number" \? range\.end\.line \+ 1/,
     "must convert 0-based end.line to 1-based",
   );
 });

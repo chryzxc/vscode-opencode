@@ -180,6 +180,38 @@ function CircularProgress({
 // Regex to match @filename references (shared between components)
 export const FILE_MENTION_REGEX = /@([a-zA-Z0-9_\-./\\]+[a-zA-Z0-9])/g;
 
+/**
+ * Resolves file mentions selected from the @ autocomplete into the same
+ * context payload used by explicit file attachments. The message retains its
+ * @path text for the model, while the extension host turns these contexts
+ * into SDK `file` parts containing the referenced file's content.
+ */
+export function resolveMentionedFileContexts(
+  text: string,
+  selectedContexts: ContextItem[],
+  fileMentionPaths: Record<string, string>,
+): ContextItem[] | undefined {
+  const contexts = [...selectedContexts];
+  const attachedPaths = new Set(contexts.map((context) => context.file));
+
+  for (const match of text.matchAll(FILE_MENTION_REGEX)) {
+    const mention = match[1];
+    const filePath = fileMentionPaths[mention];
+    if (!filePath || attachedPaths.has(filePath)) {
+      continue;
+    }
+
+    contexts.push({
+      file: filePath,
+      lineInfo: "",
+      content: "",
+    });
+    attachedPaths.add(filePath);
+  }
+
+  return contexts.length > 0 ? contexts : undefined;
+}
+
 type SlashTrigger = {
   query: string;
   replaceFrom: number;
@@ -2452,7 +2484,11 @@ export const InputWrapper = memo(function InputWrapper() {
 
     // Capture values before clearing state
     const currentFiles = selectedFiles.length > 0 ? [...selectedFiles] : undefined;
-    const currentContexts = selectedContexts.length > 0 ? [...selectedContexts] : undefined;
+    const currentContexts = resolveMentionedFileContexts(
+      text,
+      selectedContexts,
+      fileMentionPaths,
+    );
     const currentAttachments = attachments || [];
     const currentAgent = selectedAgent || null;
     const sessionId = currentSessionId;
@@ -2478,29 +2514,26 @@ export const InputWrapper = memo(function InputWrapper() {
           e.type === "confirm" ||
           e.type === "quick_input",
       );
-    // Only paint an optimistic user bubble when the composer is NOT in a live
-    // assistant turn. When sending during an active response the server queues
-    // the message natively and echoes it back via the SSE stream; the real
-    // message then shows a "QUEUED" badge derived from the message tape
-    // (mirrors the opencode TUI — no client-side queue state required).
+    // Every normal send belongs in the inline transcript immediately. OpenCode
+    // owns ordering while a turn is active; the webview never shows a separate
+    // extension-side pending queue for these messages.
     const pendingSessionId = sessionId ?? PENDING_CURRENT_SESSION_KEY;
-    if (!hasLiveAssistantTurn) {
-      dispatch({
-        type: "ADD_PENDING_USER_MESSAGE",
-        payload: {
-          id: clientRequestId,
-          clientRequestId,
-          sessionId: pendingSessionId,
-          createdAt: Date.now(),
-          text,
-          images: currentAttachments
-            .filter((attachment) => isImageAttachment(attachment.mimeType, attachment.dataUrl))
-            .map((attachment) => attachment.dataUrl),
-          attachments: currentAttachments,
-          interactiveSubmit: hasPendingQuestion,
-        },
-      });
-    }
+    dispatch({
+      type: "ADD_PENDING_USER_MESSAGE",
+      payload: {
+        id: clientRequestId,
+        clientRequestId,
+        sessionId: pendingSessionId,
+        createdAt: Date.now(),
+        text,
+        images: currentAttachments
+          .filter((attachment) => isImageAttachment(attachment.mimeType, attachment.dataUrl))
+          .map((attachment) => attachment.dataUrl),
+        attachments: currentAttachments,
+        contexts: currentContexts,
+        interactiveSubmit: hasPendingQuestion,
+      },
+    });
 
     vscode.postMessage({
       type: "sendMessage",
@@ -2535,7 +2568,11 @@ export const InputWrapper = memo(function InputWrapper() {
       ...(currentSessionId ? { sessionId: currentSessionId } : {}),
       text,
       files: selectedFiles,
-      contexts: selectedContexts,
+      contexts: resolveMentionedFileContexts(
+        text,
+        selectedContexts,
+        fileMentionPaths,
+      ),
       agent: selectedAgent || null,
       images: attachments || [],
     });
@@ -2840,7 +2877,6 @@ export const InputWrapper = memo(function InputWrapper() {
       <div
         className="oc-input-area"
       >
-        {!showInteractivePopover && <QueueContainer />}
          {event && (
            <div className="mb-2 rounded-lg border border-oc-border-soft bg-[var(--oc-panel-soft)] px-3 py-2">
              <div className="mb-2 border-b border-oc-border-soft pb-1.5">

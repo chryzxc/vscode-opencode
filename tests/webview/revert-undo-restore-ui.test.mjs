@@ -241,25 +241,25 @@ test("handleLoadSession calls syncRevertStateFromServer", () => {
   );
 });
 
-test("deferred SDK prompt uses data URI for code selections instead of raw file path", () => {
-  const deferredBody = chatViewProviderSource.slice(
-    chatViewProviderSource.indexOf("private buildDeferredSdkPrompt("),
-    chatViewProviderSource.indexOf("private buildDeferredSdkPrompt(") + 5000,
+test("SDK prompt uses data URI for code selections instead of raw file path", () => {
+  const promptBody = chatViewProviderSource.slice(
+    chatViewProviderSource.indexOf("const parts: NonNullable<SessionPromptData"),
+    chatViewProviderSource.indexOf("const promptBody: NonNullable<SessionPromptData"),
   );
 
   assert.ok(
-    deferredBody.includes("data:text/plain;base64"),
-    "deferred path must construct data URI for selections",
+    promptBody.includes("data:text/plain;base64"),
+    "prompt path must construct data URI for selections",
   );
 
   assert.ok(
-    deferredBody.includes("Buffer.from(") && deferredBody.includes('"base64"'),
-    "deferred path must base64-encode selection content",
+    promptBody.includes("Buffer.from(") && promptBody.includes('"base64"'),
+    "prompt path must base64-encode selection content",
   );
 
   assert.ok(
-    deferredBody.includes("nameWithLine"),
-    "deferred path must include line info in name",
+    promptBody.includes("selectionPathWithLineInfo"),
+    "prompt path must include line info in filename",
   );
 });
 

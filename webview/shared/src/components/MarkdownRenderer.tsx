@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, forwardRef, memo } from 'react';
+import React, { useEffect, useMemo, useRef, useState, forwardRef, memo } from 'react';
 import { marked } from 'marked';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/github-dark.css'; // Default base, we'll custom style it further
@@ -18,6 +18,53 @@ interface MarkdownRendererProps {
   className?: string;
   isPreParsed?: boolean;
   isInline?: boolean;
+  /**
+   * When true, the component is rendering live streaming text that updates
+   * many times per second. The markdown parse + syntax highlight pipeline
+   * is debounced to avoid re-parsing the entire accumulated response on
+   * every stream batch (which causes main-thread freezes during streaming).
+   *
+   * When false (default), behavior is unchanged: content is parsed
+   * immediately on every change. This preserves the existing UX for
+   * historical messages, modals, and finalized responses.
+   */
+  isStreaming?: boolean;
+}
+
+/**
+ * Streaming-aware content debounce.
+ *
+ * During active streaming (`isStreaming === true`), the returned value lags
+ * behind `content` by ~200ms. This collapses the ~20 host-batched updates
+ * per second down to ~5 markdown re-parses per second — enough for smooth
+ * reading while preventing `marked.parse()` + `hljs.highlightElement` from
+ * saturating the main thread.
+ *
+ * When `isStreaming === false`, the hook returns `content` directly with
+ * zero overhead (no timers, no state churn). This preserves the immediate
+ * render behavior for non-streaming callers (historical messages, modals,
+ * finalized responses).
+ *
+ * When streaming ends (`isStreaming` flips false), the latest `content` is
+ * returned immediately on the next render so the final response paints
+ * without the trailing 200ms delay.
+ */
+function useStreamingDebouncedContent(content: string, isStreaming: boolean): string {
+  const [debounced, setDebounced] = useState(content);
+
+  useEffect(() => {
+    if (!isStreaming) {
+      setDebounced((prev) => (prev === content ? prev : content));
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setDebounced(content);
+    }, 200);
+    return () => window.clearTimeout(timer);
+  }, [content, isStreaming]);
+
+  return isStreaming ? debounced : content;
 }
 
 const EXT_COLORS: Record<string, string> = {
@@ -393,6 +440,7 @@ const MarkdownRendererInner = forwardRef<HTMLDivElement, MarkdownRendererProps>(
   className = '',
   isPreParsed = false,
   isInline = false,
+  isStreaming = false,
 }, ref) => {
   const innerRef = useRef<HTMLDivElement>(null);
 
@@ -406,26 +454,28 @@ const MarkdownRendererInner = forwardRef<HTMLDivElement, MarkdownRendererProps>(
     }
   };
 
+  const streamingContent = useStreamingDebouncedContent(content, isStreaming);
+
   // Pre-process markdown to fix numbered lists with blank lines
   // Also brutally truncate massive strings to prevent the UI thread from freezing/crashing
   // during `marked.parse` when a tool command outputs megabytes of text.
   const processedContent = useMemo(() => {
-    let raw = content || '';
+    let raw = streamingContent || '';
     if (raw.length > 150000) {
       raw = raw.slice(0, 150000) + `\n\n...[content abruptly truncated from ${raw.length} to 150000 characters for performance]`;
     }
     return isPreParsed ? raw : preprocessMarkdown(raw);
-  }, [content, isPreParsed]);
+  }, [streamingContent, isPreParsed]);
 
   const html = useMemo(
     () => (
       isPreParsed
-        ? content
+        ? streamingContent
         : isInline
           ? marked.parseInline(processedContent)
           : marked.parse(processedContent)
     ),
-    [content, isInline, isPreParsed, processedContent],
+    [streamingContent, isInline, isPreParsed, processedContent],
   );
 
   useEffect(() => {

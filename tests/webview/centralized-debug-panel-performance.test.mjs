@@ -12,13 +12,13 @@ const messageSource = readSource(
   "MessageComponents.tsx",
 );
 
-test("centralized debug tape rendering is disabled by default", () => {
-  assert.match(configSource, /showCentralizedDebug:\s*false/);
+test("raw SDK event debug rendering is disabled by default", () => {
+  assert.match(configSource, /showSdkEventDebug:\s*false/);
 });
 
-test("disabled debug tape avoids subscribing to streaming state", () => {
+test("disabled SDK event debug avoids subscribing to debug state", () => {
   assert.match(
     messageSource,
-    /export const CentralizedDebugPanel = memo\(function CentralizedDebugPanel\(\) \{\s*if \(!config\.debug\.showCentralizedDebug\) \{\s*return null;\s*\}\s*return <CentralizedDebugPanelContents \/>;/s,
+    /export const SdkEventDebugPanel = memo\(function SdkEventDebugPanel\(\) \{\s*if \(!config\.debug\.showSdkEventDebug\) \{\s*return null;\s*\}\s*return <SdkEventDebugPanelContents \/>;/s,
   );
 });

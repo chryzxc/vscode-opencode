@@ -46,7 +46,7 @@ test("activity timeline suppresses summary blocks when summary matches the title
   );
   assert.match(
     messageComponentsSource,
-    /\{labelLower !== "read" && labelLower !== "todowrite" && !isEditLike && visibleSummary && \(/,
+    /labelLower !== "read" && labelLower !== "todowrite" && !isEditLike && visibleSummary && \(/,
     "generic activity summary rendering should skip rows whose visible summary was suppressed",
   );
 });

@@ -19,8 +19,14 @@ const panelSource = readSource(
   'PanelComponents.tsx',
 );
 
+const quotaMonitorSignature = 'export const QuotaMonitor = memo(function QuotaMonitor() {';
+
+function getQuotaMonitorBody() {
+  return extractFunctionBody(panelSource, quotaMonitorSignature);
+}
+
 test('QuotaMonitor has refresh handler', () => {
-  const quotaPanelBody = extractFunctionBody(panelSource, 'export function QuotaMonitor()');
+  const quotaPanelBody = getQuotaMonitorBody();
 
   assert.match(
     quotaPanelBody,
@@ -30,7 +36,7 @@ test('QuotaMonitor has refresh handler', () => {
 });
 
 test('QuotaMonitor refresh sets refreshing state', () => {
-  const quotaPanelBody = extractFunctionBody(panelSource, 'export function QuotaMonitor()');
+  const quotaPanelBody = getQuotaMonitorBody();
 
   assert.match(
     quotaPanelBody,
@@ -40,7 +46,7 @@ test('QuotaMonitor refresh sets refreshing state', () => {
 });
 
 test('QuotaMonitor refresh requests backend refresh', () => {
-  const quotaPanelBody = extractFunctionBody(panelSource, 'export function QuotaMonitor()');
+  const quotaPanelBody = getQuotaMonitorBody();
 
   assert.match(
     quotaPanelBody,
@@ -50,7 +56,7 @@ test('QuotaMonitor refresh requests backend refresh', () => {
 });
 
 test('QuotaMonitor has refresh button', () => {
-  const quotaPanelBody = extractFunctionBody(panelSource, 'export function QuotaMonitor()');
+  const quotaPanelBody = getQuotaMonitorBody();
 
   assert.match(
     quotaPanelBody,
@@ -65,7 +71,7 @@ test('QuotaMonitor has refresh button', () => {
 });
 
 test('QuotaMonitor manages collapsible state', () => {
-  const quotaPanelBody = extractFunctionBody(panelSource, 'export function QuotaMonitor()');
+  const quotaPanelBody = getQuotaMonitorBody();
 
   assert.match(
     quotaPanelBody,
@@ -75,7 +81,7 @@ test('QuotaMonitor manages collapsible state', () => {
 });
 
 test('QuotaMonitor has accessible collapse toggle', () => {
-  const quotaPanelBody = extractFunctionBody(panelSource, 'export function QuotaMonitor()');
+  const quotaPanelBody = getQuotaMonitorBody();
 
   assert.match(
     quotaPanelBody,
@@ -90,7 +96,7 @@ test('QuotaMonitor has accessible collapse toggle', () => {
 });
 
 test('QuotaMonitor shows chevron indicator', () => {
-  const quotaPanelBody = extractFunctionBody(panelSource, 'export function QuotaMonitor()');
+  const quotaPanelBody = getQuotaMonitorBody();
 
   assert.match(
     quotaPanelBody,
@@ -100,7 +106,7 @@ test('QuotaMonitor shows chevron indicator', () => {
 });
 
 test('QuotaMonitor conditionally renders content', () => {
-  const quotaPanelBody = extractFunctionBody(panelSource, 'export function QuotaMonitor()');
+  const quotaPanelBody = getQuotaMonitorBody();
 
   assert.match(
     quotaPanelBody,
@@ -110,7 +116,7 @@ test('QuotaMonitor conditionally renders content', () => {
 });
 
 test('QuotaMonitor copies platforms before sorting', () => {
-  const quotaPanelBody = extractFunctionBody(panelSource, 'export function QuotaMonitor()');
+  const quotaPanelBody = getQuotaMonitorBody();
 
   assert.match(
     quotaPanelBody,
@@ -120,7 +126,7 @@ test('QuotaMonitor copies platforms before sorting', () => {
 });
 
 test('QuotaMonitor sorts platforms alphabetically', () => {
-  const quotaPanelBody = extractFunctionBody(panelSource, 'export function QuotaMonitor()');
+  const quotaPanelBody = getQuotaMonitorBody();
 
   assert.match(
     quotaPanelBody,
@@ -135,7 +141,7 @@ test('QuotaMonitor sorts platforms alphabetically', () => {
 });
 
 test('QuotaMonitor renders provider cards', () => {
-  const quotaPanelBody = extractFunctionBody(panelSource, 'export function QuotaMonitor()');
+  const quotaPanelBody = getQuotaMonitorBody();
 
   assert.match(
     quotaPanelBody,
@@ -150,7 +156,7 @@ test('QuotaMonitor renders provider cards', () => {
 });
 
 test('QuotaMonitor renders error badge for error status', () => {
-  const quotaPanelBody = extractFunctionBody(panelSource, 'export function QuotaMonitor()');
+  const quotaPanelBody = getQuotaMonitorBody();
 
   assert.match(
     quotaPanelBody,
@@ -165,7 +171,7 @@ test('QuotaMonitor renders error badge for error status', () => {
 });
 
 test('QuotaMonitor renders warning badge for warning status', () => {
-  const quotaPanelBody = extractFunctionBody(panelSource, 'export function QuotaMonitor()');
+  const quotaPanelBody = getQuotaMonitorBody();
 
   assert.match(
     quotaPanelBody,
@@ -180,7 +186,7 @@ test('QuotaMonitor renders warning badge for warning status', () => {
 });
 
 test('QuotaMonitor omits badge for OK status', () => {
-  const quotaPanelBody = extractFunctionBody(panelSource, 'export function QuotaMonitor()');
+  const quotaPanelBody = getQuotaMonitorBody();
 
   assert.match(
     quotaPanelBody,
@@ -190,7 +196,7 @@ test('QuotaMonitor omits badge for OK status', () => {
 });
 
 test('QuotaMonitor shows empty state', () => {
-  const quotaPanelBody = extractFunctionBody(panelSource, 'export function QuotaMonitor()');
+  const quotaPanelBody = getQuotaMonitorBody();
 
   assert.match(
     quotaPanelBody,

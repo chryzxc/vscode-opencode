@@ -1,7 +1,8 @@
-import { Fragment, memo, startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Archive, X } from "lucide-react";
 
 import { AppProvider, shallowEqual, useAppDispatch, useAppState } from "./lib/store";
+import { perfProbe } from "./lib/streamingPerfProbe";
 import {
   asString,
   createMessageHandler,
@@ -40,6 +41,7 @@ import {
   getCollapsedConversationEntries,
 } from "./lib/conversationProjection";
 import { buildAssistantBlockPresentation } from "./lib/assistantBlockPresentation";
+import { buildRenderBlocks } from "./lib/renderContract";
 import vscode from "./lib/vscode";
 import logger from "./lib/logger";
 import { config } from "../config";
@@ -56,7 +58,7 @@ import {
   AIStatusTicker,
   BackgroundTaskReminderMessage,
   ResponseMessage,
-  CentralizedDebugPanel,
+  SdkEventDebugPanel,
   EmptyState,
   FileChangesSection,
   PermissionCard,
@@ -1319,6 +1321,13 @@ type ConversationRenderEntry =
       order: number;
     }
   | {
+      kind: "fileChanges";
+      key: string;
+      message: Message;
+      ownerMessageId: string;
+      order: number;
+    }
+  | {
       kind: "assistant.abort";
       key: string;
       messageId?: string;
@@ -1902,8 +1911,6 @@ type VirtualizedConversationWindow = {
 };
 
 const AUTO_FOLLOW_THRESHOLD_PX = 96;
-const WEBVIEW_BOOTSTRAP_CACHE_KEY = "opencode.chat.bootstrap.v1";
-const WEBVIEW_BOOTSTRAP_MAX_EVENT_PAYLOADS = 400;
 const VIRTUALIZED_TRANSCRIPT_MIN_ENTRIES = 250;
 const VIRTUALIZED_TRANSCRIPT_OVERSCAN_PX = 1400;
 const VIRTUALIZED_TRANSCRIPT_FALLBACK_VIEWPORT_PX = 800;
@@ -1918,35 +1925,6 @@ const COMPACTION_DIVIDER_ESTIMATED_HEIGHT = 72;
 // and leaving the viewport above the true bottom. Keep pinning across frames
 // until the height stabilizes (capped to avoid runaway loops).
 const SESSION_LOAD_SCROLL_STABILIZE_FRAMES = 12;
-
-function buildWebviewBootstrapSnapshot(params: {
-  currentSessionId: string | null;
-  rawSdkEventPayloadsBySessionId: Record<string, unknown[]>;
-}): {
-  currentSessionId: string | null;
-  rawSdkEventPayloadsBySessionId: Record<string, unknown[]>;
-} {
-  const { currentSessionId, rawSdkEventPayloadsBySessionId } = params;
-  if (!currentSessionId) {
-    return {
-      currentSessionId: null,
-      rawSdkEventPayloadsBySessionId: {},
-    };
-  }
-
-  const currentSessionPayloads = Array.isArray(rawSdkEventPayloadsBySessionId[currentSessionId])
-    ? rawSdkEventPayloadsBySessionId[currentSessionId]
-    : [];
-
-  return {
-    currentSessionId,
-    rawSdkEventPayloadsBySessionId: currentSessionPayloads.length > 0
-      ? {
-          [currentSessionId]: currentSessionPayloads.slice(-WEBVIEW_BOOTSTRAP_MAX_EVENT_PAYLOADS),
-        }
-      : {},
-  };
-}
 
 function formatCompactionTime(at?: number): string | undefined {
   if (typeof at !== "number") {
@@ -2041,6 +2019,7 @@ type ConversationTranscriptProps = {
   compactionDividerIndex?: number;
   currentSessionId: string | null;
   diffByBlockKey: Map<string, CentralizedSessionDiffEvent>;
+  hydratedFileChangesByBlockKey: Set<string>;
   hasLiveAssistantTurn: boolean;
   assistantTurnMessageId: string | null;
   interactiveEvents: AppState["interactiveEvents"];
@@ -2066,6 +2045,9 @@ function getTranscriptEntryContainIntrinsicSize(
 ): string {
   if (entry.kind === "session.error") {
     return "132px";
+  }
+  if (entry.kind === "fileChanges") {
+    return "104px";
   }
   if (entry.kind !== "message") {
     return "56px";
@@ -2098,6 +2080,9 @@ function estimateConversationEntryHeight(entry: ConversationRenderEntry): number
   }
   if (entry.kind === "session.diff") {
     return 0;
+  }
+  if (entry.kind === "fileChanges") {
+    return 104;
   }
   const role = firstNonEmptyString(entry.message.role, entry.message.info?.role)?.toLowerCase();
   const renderKind = entry.renderKind;
@@ -2195,6 +2180,7 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
   compactionDividerIndex,
   currentSessionId,
   diffByBlockKey,
+  hydratedFileChangesByBlockKey,
   hasLiveAssistantTurn,
   assistantTurnMessageId,
   interactiveEvents,
@@ -2330,6 +2316,10 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
         return {
           role: message.role ?? message.info?.role,
           userBlockKey: firstNonEmptyString(message.info?.id, message.id) ?? `user:${index}`,
+          // Child assistant messages retain their parentID-driven grouping.
+          // Non-subagent assistant envelopes continue in the current response
+          // block; their exact message ownership is enforced during hydration.
+          assistantBlockKey: firstNonEmptyString(message.info?.parentID) ?? undefined,
           hasResponseText: Boolean(
             message.content || message.text || message.info?.content || message.info?.text,
           ),
@@ -2456,9 +2446,16 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
           const previousIndex = index - 1;
           const previousMessage =
             previousIndex >= 0 ? renderMessages[previousIndex] : undefined;
+          const previousEntryBlockKey =
+            entryIndex > 0 ? entryBlockKeys[entryIndex - 1] : undefined;
           const isContiguous =
             role === "assistant" &&
             previousMessage?.role === "assistant" &&
+            // Adjacent SDK assistant envelopes can be separate phases of the
+            // same user turn. Only suppress repeated card chrome when they
+            // intentionally share a render block; distinct `info.id` values
+            // must retain their own position and activity timeline.
+            entryBlockKeys[entryIndex] === previousEntryBlockKey &&
             (previousMessage.info?.agent === message.info?.agent ||
               (!previousMessage.info?.agent && !message.info?.agent));
 
@@ -2519,7 +2516,10 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
                 interactiveEvents={interactiveEvents}
                 messages={renderMessages}
                 currentSessionId={currentSessionId}
-                hideFileChangesSection={diffByBlockKey.size > 0}
+                hideFileChangesSection={
+                  diffByBlockKey.has(blockGroupKey) ||
+                  hydratedFileChangesByBlockKey.has(blockGroupKey)
+                }
                 centralizedDiffEvent={
                   isLastInBlock &&
                   blockGroupKey &&
@@ -2589,6 +2589,31 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
               </div>
             </div>
           );
+        }
+
+        if (entry.kind === "fileChanges") {
+          // SDK rehydration stores `info.summary.diffs` on the user envelope.
+          // This dedicated transcript entry is the only rendering path for
+          // those summaries; centralized `session.diff` events are rendered on
+          // the assistant response card below. Do not remove this row or a
+          // rehydrated diff becomes invisible after a session reload.
+          const changeSummary = entry.message.changeSummary;
+          return changeSummary?.files?.length ? (
+            <div
+              key={entry.key}
+              ref={(node) => attachMeasuredEntryNode(entry.key, node)}
+            >
+              {dividerHere ? <CompactionDivider at={lastCompactedAt} /> : null}
+              <div className="oc-message-enter mb-4">
+                <FileChangesSection
+                  structuredFileChanges={[]}
+                  changeSummary={changeSummary}
+                  messageId={changeSummary.messageId || entry.message.id || null}
+                  sessionId={currentSessionId}
+                />
+              </div>
+            </div>
+          ) : null;
         }
 
         if (entry.kind === "session.diff") {
@@ -2687,6 +2712,10 @@ function CompactErrorItem({ entry, dividerHere, lastCompactedAt }: { entry: any;
 }
 
 function ChatContent() {
+  // Perf probe: capture render start timestamp at top of body (cheap read,
+  // only when probe is enabled). Recorded in a no-deps useEffect that runs
+  // after commit, giving us full render+commit time.
+  const renderStart = perfProbe.isEnabled() ? performance.now() : 0;
   const state = useAppState(
     (appState) => ({
       assistantTurnMessageId: appState.assistantTurnMessageId,
@@ -2709,7 +2738,7 @@ function ChatContent() {
       liveToastNotificationsBySessionId: appState.liveToastNotificationsBySessionId,
       pendingUserMessagesBySessionId: appState.pendingUserMessagesBySessionId,
       processingSessionIds: appState.processingSessionIds,
-      rawSdkEventPayloadsBySessionId: appState.rawSdkEventPayloadsBySessionId,
+      messages: appState.messages,
       receivedInitState: appState.receivedInitState,
       revertState: appState.revertState,
       selectedAgent: appState.selectedAgent,
@@ -2722,6 +2751,14 @@ function ChatContent() {
     shallowEqual,
   );
   const dispatch = useAppDispatch();
+
+  // Perf probe: record render+commit duration for ChatContent. No deps so it
+  // fires after every commit. Zero work when probe disabled.
+  useEffect(() => {
+    if (renderStart > 0) {
+      perfProbe.recordRender(performance.now() - renderStart);
+    }
+  });
   const stateRef = useRef(state);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesScrollRef = useRef<HTMLDivElement>(null);
@@ -2757,7 +2794,6 @@ function ChatContent() {
   const previousIsLoadingSessionRef = useRef(state.isLoadingSession);
   const previousReceivedInitStateRef = useRef(state.receivedInitState);
   const previousStreamingActiveRef = useRef(Boolean(state.streaming?.isActive));
-  const didHydrateBootstrapRef = useRef(false);
   // Baseline renderMessages.length captured when isFollowing flips to false.
   // "Jump to latest (N)" renders N = currentLength - baseline. null = recapture
   // on next entry to the not-following branch. Replaces a throttled +1 timer
@@ -2785,133 +2821,15 @@ function ChatContent() {
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
-  // Hydrate last known session/centralized tape immediately on webview re-open so UI
-  // does not flash a blank/loading screen while extension bootstrap completes.
-  useEffect(() => {
-    if (didHydrateBootstrapRef.current) {
-      return;
-    }
-    didHydrateBootstrapRef.current = true;
-
-    try {
-      const raw = window.sessionStorage.getItem(WEBVIEW_BOOTSTRAP_CACHE_KEY);
-      if (!raw) {
-        return;
-      }
-      const parsed = JSON.parse(raw) as {
-        currentSessionId?: string;
-        rawSdkEventPayloadsBySessionId?: Record<string, unknown[]>;
-      };
-
-      const sessionId =
-        typeof parsed?.currentSessionId === "string" &&
-        parsed.currentSessionId.trim().length > 0
-          ? parsed.currentSessionId
-          : null;
-      const rawSdkEventPayloadsBySessionId =
-        parsed?.rawSdkEventPayloadsBySessionId &&
-        typeof parsed.rawSdkEventPayloadsBySessionId === "object"
-          ? parsed.rawSdkEventPayloadsBySessionId
-          : {};
-
-      if (!sessionId) {
-        return;
-      }
-
-      const cachedRawSdkEventPayloads = Array.isArray(
-        rawSdkEventPayloadsBySessionId[sessionId],
-      )
-        ? rawSdkEventPayloadsBySessionId[sessionId]
-        : [];
-
-      dispatch({ type: "SET_SESSION_ID", payload: sessionId });
-      if (cachedRawSdkEventPayloads.length > 0) {
-        dispatch({
-          type: "SET_RAW_SDK_EVENT_PAYLOADS",
-          payload: { sessionId, events: cachedRawSdkEventPayloads },
-        });
-      }
-    } catch {
-      // best-effort hydration only
-    }
-  }, [dispatch]);
-
-  // Persist a lightweight session/centralized-tape snapshot for fast restore across
-  // sidebar/extension switches that recreate the webview.
-  useEffect(() => {
-    if (state.streaming?.isActive) {
-      return;
-    }
-    try {
-      const nextSnapshot = buildWebviewBootstrapSnapshot({
-        currentSessionId: state.currentSessionId,
-        rawSdkEventPayloadsBySessionId: state.rawSdkEventPayloadsBySessionId,
-      });
-      window.sessionStorage.setItem(
-        WEBVIEW_BOOTSTRAP_CACHE_KEY,
-        JSON.stringify(nextSnapshot),
-      );
-    } catch {
-      // storage can fail in restricted webview scenarios; ignore gracefully
-    }
-  }, [state.currentSessionId, state.rawSdkEventPayloadsBySessionId, state.streaming?.isActive]);
-
   useEffect(() => {
     streamViewportRef.current = streamViewport;
   }, [streamViewport]);
 
-  const centralizedSessionRawSdkEventPayloads =
-    state.currentSessionId &&
-    Array.isArray(state.rawSdkEventPayloadsBySessionId?.[state.currentSessionId])
-      ? state.rawSdkEventPayloadsBySessionId[state.currentSessionId]
-      : [];
-
-  const [throttledPayloads, setThrottledPayloads] = useState(centralizedSessionRawSdkEventPayloads);
-  const projectionThrottleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    if (centralizedSessionRawSdkEventPayloads === throttledPayloads) return;
-    // Rebuilding the centralized projection can include markdown, activity,
-    // block grouping, and height measurement. Keep the currently visible
-    // transcript stable while the user is reading older content. The final
-    // stream frame is still applied even while unfollowed so completed state
-    // is never left stale.
-    if (!streamViewport.isFollowing && state.streaming?.isActive) {
-      if (projectionThrottleRef.current !== null) {
-        clearTimeout(projectionThrottleRef.current);
-        projectionThrottleRef.current = null;
-      }
-      return;
-    }
-    if (projectionThrottleRef.current !== null) return;
-    projectionThrottleRef.current = setTimeout(() => {
-      projectionThrottleRef.current = null;
-      startTransition(() => {
-        setThrottledPayloads(centralizedSessionRawSdkEventPayloads);
-      });
-    }, 100);
-  }, [
-    centralizedSessionRawSdkEventPayloads,
-    throttledPayloads,
-    streamViewport.isFollowing,
-    state.streaming?.isActive,
-  ]);
-
-  useEffect(() => {
-    return () => {
-      if (projectionThrottleRef.current !== null) {
-        clearTimeout(projectionThrottleRef.current);
-      }
-    };
-  }, []);
-
-  const transcriptProjection = useMemo(
-    () => buildCentralizedTranscriptProjection(throttledPayloads),
-    [throttledPayloads],
-  );
-  const deferredTranscriptProjection = useDeferredValue(transcriptProjection);
-  const renderMessages = transcriptProjection.renderMessages;
-  const deferredRenderMessages = deferredTranscriptProjection.renderMessages;
+  // Completed history is the SDK `session.messages()` snapshot adapted by the
+  // extension host. Raw SDK events are retained only by the active streaming
+  // overlay and are never replayed or persisted as a second transcript.
+  const renderMessages = state.messages;
+  const deferredRenderMessages = useDeferredValue(renderMessages);
   // Priority 2 — Defer streaming-dependent props passed to MemoizedConversationTranscript.
   // During event streaming, these values change on every stream batch. Without deferral,
   // they defeat React.memo on the transcript and force full re-renders on the hot path,
@@ -3031,9 +2949,20 @@ function ChatContent() {
     renderMessages.length,
   ]);
 
-  // Register message listener
+  // Register message listener. Wraps createMessageHandler with perf-probe
+  // timing so per-message-type handler cost can be attributed during streaming.
   useEffect(() => {
-    const handler = createMessageHandler(dispatch, () => stateRef.current);
+    const innerHandler = createMessageHandler(dispatch, () => stateRef.current);
+    const handler = (event: MessageEvent) => {
+      if (!perfProbe.isEnabled()) {
+        innerHandler(event);
+        return;
+      }
+      const msgType = (event.data as { type?: unknown })?.type;
+      const start = performance.now();
+      innerHandler(event);
+      perfProbe.recordMessage(msgType, performance.now() - start);
+    };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
   }, [dispatch]);
@@ -3215,8 +3144,23 @@ function ChatContent() {
         // Keep follow-mode pinned, but at a controlled cadence. This replaced a
         // MutationObserver-per-change strategy that was too eager during streaming.
         if (now - lastFollowAutoScrollAtRef.current >= 33) {
-          root.scrollTop = root.scrollHeight;
           lastFollowAutoScrollAtRef.current = now;
+          // Defer the scrollHeight read + scrollTop write to the next animation
+          // frame. Inside rAF the browser has already flushed pending DOM
+          // mutations and run layout, so reading scrollHeight does NOT force a
+          // synchronous layout reflow. The prior synchronous
+          // `root.scrollTop = root.scrollHeight` on every stream batch (this
+          // effect fires per state.streaming identity change, ~20-30+×/sec)
+          // forced the browser to flush pending DOM mutations on each batch and
+          // saturated the main thread, which was the dominant cause of the
+          // streaming lag/freezes users reported. Smooth scrolling resumes once
+          // streaming ends because this effect stops firing.
+          requestAnimationFrame(() => {
+            if (!streamViewportRef.current.isFollowing) return;
+            const el = messagesScrollRef.current;
+            if (!el) return;
+            el.scrollTop = el.scrollHeight;
+          });
         }
       }
       if (streamViewportRef.current.unseenUpdateCount > 0) {
@@ -3270,7 +3214,7 @@ function ChatContent() {
     state.processingSessionIds,
   );
   const hasAnyRenderableConversation =
-    centralizedSessionRawSdkEventPayloads.length > 0 ||
+    renderMessages.length > 0 ||
     Boolean(state.streaming?.isActive);
   const hasLiveAssistantTurn = shouldDeferComposerSendInCurrentSession(
     state.currentSessionId,
@@ -3339,8 +3283,24 @@ function ChatContent() {
   // Show AI response loading indicator (thinking bubble) when:
   // 1. NOT switching sessions (session loading takes precedence), AND
   // 2. AI is still responding and the assistant turn has not finalized yet.
-  // FIXED: Use hasRenderableContent from SDK instead of checking content length
-  const hasRenderableStreamingContent = Boolean(state.streaming?.hasRenderableContent);
+  // FIXED: Use hasRenderableContent from SDK instead of checking content length.
+  //
+  // Loading must dismiss as soon as ANY visible streaming activity arrives —
+  // not just text content. Tool calls, reasoning, progress events, and
+  // interactive prompts all represent the assistant doing work that belongs
+  // in the streaming card, not behind a ThinkingBubble placeholder. Keeping
+  // the bubble up when these are already in state was causing users to see
+  // "stuck loading" even though tool calls had arrived.
+  const streamingForActivity = state.streaming;
+  const hasRenderableStreamingContent = Boolean(
+    streamingForActivity?.hasRenderableContent ||
+      (streamingForActivity?.isActive &&
+        ((streamingForActivity.reasoning?.length ?? 0) > 0 ||
+          (streamingForActivity.reasoningEvents?.length ?? 0) > 0 ||
+          (streamingForActivity.steps?.length ?? 0) > 0 ||
+          (streamingForActivity.progressEvents?.length ?? 0) > 0 ||
+          (streamingForActivity.interactiveEvents?.length ?? 0) > 0)),
+  );
 
   let hasTerminalAssistantBlock = false;
   let terminalAssistantMessageId: string | null = null;
@@ -3457,23 +3417,81 @@ function ChatContent() {
   const isCompressed = hasCompactedSegment && state.compactedMessagesCollapsed;
   const hiddenMessageCount = isCompressed ? compactionDividerIndex : 0;
   const visibleStartIndex = isCompressed ? compactionDividerIndex : 0;
-  const hasCentralizedSessionDiffEntries = useMemo(
-    () =>
-      throttledPayloads.some((payload) => {
-        const event = asRecord(payload);
-        if (!event) return false;
-        const type = getCentralizedEventType(event);
-        if (type === "session.diff") return true;
-        if (type === "message.updated") {
-          const info = getCentralizedEventInfo(event);
-          const summary = asRecord(info?.summary);
-          return Array.isArray(summary?.diffs) && summary.diffs.length > 0;
-        }
-        return false;
-      }),
-    [throttledPayloads],
+  const rehydratedRenderBlocks = useMemo(
+    () => buildRenderBlocks({ kind: "rehydrated", messages: renderMessages }),
+    [renderMessages],
   );
-  const conversationEntries = transcriptProjection.conversationEntries;
+  const liveRenderBlocks = useMemo(
+    () => buildRenderBlocks({
+      kind: "live",
+      messages: renderMessages,
+      streaming: presentedStreaming,
+    }),
+    [renderMessages, presentedStreaming],
+  );
+  const renderedLiveStreaming = liveRenderBlocks.find(
+    (block): block is Extract<typeof block, { kind: "streaming" }> => block.kind === "streaming",
+  )?.streaming;
+  const conversationEntries = useMemo<ConversationRenderEntry[]>(() => {
+    const messageBlocks = rehydratedRenderBlocks.filter(
+      (block): block is Extract<typeof block, { kind: "message" }> => block.kind === "message",
+    );
+    const fileChangeBlocks = rehydratedRenderBlocks.filter(
+      (block): block is Extract<typeof block, { kind: "fileChanges" }> => block.kind === "fileChanges",
+    );
+    const fileChangeBlockByOwnerId = new Map(
+      fileChangeBlocks.map((block) => [block.ownerMessageId, block]),
+    );
+    const emittedFileChangeOwnerIds = new Set<string>();
+    const entries: ConversationRenderEntry[] = [];
+
+    for (let messageIndex = 0; messageIndex < messageBlocks.length; messageIndex += 1) {
+      const { message } = messageBlocks[messageIndex];
+      const messageId = firstNonEmptyString(message.id, message.info?.id) ?? `message:${messageIndex}`;
+      const role = firstNonEmptyString(message.role, message.info?.role)?.toLowerCase();
+      entries.push({
+        kind: "message",
+        key: messageId,
+        message,
+        messageIndex,
+        order: entries.length,
+        // `session.messages()` can include server-authored system envelopes.
+        // Preserve that role here so the existing SystemMessage component is
+        // selected instead of treating every non-user message as an assistant
+        // response card.
+        renderKind:
+          role === "user" ? "user" : role === "system" ? "system" : "assistant",
+      });
+
+      // A session summary is carried by the SDK user envelope, but its visual
+      // placement belongs after that turn's final assistant envelope. Keep the
+      // data untouched and use the typed SDK parentID only to place its block.
+      const ownerUserMessageId =
+        role === "assistant" ? firstNonEmptyString(message.info?.parentID) : undefined;
+      if (!ownerUserMessageId || emittedFileChangeOwnerIds.has(ownerUserMessageId)) {
+        continue;
+      }
+      const nextMessage = messageBlocks[messageIndex + 1]?.message;
+      const nextRole = firstNonEmptyString(nextMessage?.role, nextMessage?.info?.role)?.toLowerCase();
+      const nextParentId = firstNonEmptyString(nextMessage?.info?.parentID);
+      const isLastAssistantForUserTurn =
+        nextRole !== "assistant" || nextParentId !== ownerUserMessageId;
+      const fileChangeBlock = fileChangeBlockByOwnerId.get(ownerUserMessageId);
+      if (!isLastAssistantForUserTurn || !fileChangeBlock) {
+        continue;
+      }
+      emittedFileChangeOwnerIds.add(ownerUserMessageId);
+      entries.push({
+        kind: "fileChanges",
+        key: `file-changes:${ownerUserMessageId}`,
+        message: fileChangeBlock.message,
+        ownerMessageId: ownerUserMessageId,
+        order: entries.length,
+      });
+    }
+
+    return entries;
+  }, [rehydratedRenderBlocks]);
   const baseVisibleConversationEntries = useMemo(() => {
     if (!isCompressed) {
       return conversationEntries;
@@ -3583,6 +3601,27 @@ function ChatContent() {
       }
     }
     return map;
+  }, [visibleConversationEntries]);
+  // A rehydrated SDK summary belongs to its user envelope and is rendered as a
+  // dedicated transcript row. Suppress only the matching assistant block's
+  // generic file-change fallback, which may independently discover the same
+  // edit from a patch/tool part.
+  const hydratedFileChangesByBlockKey = useMemo(() => {
+    const blockKeys = new Set<string>();
+    let currentBlockKey = "initial";
+    for (let index = 0; index < visibleConversationEntries.length; index += 1) {
+      const entry = visibleConversationEntries[index];
+      if (entry.kind === "message") {
+        const role = firstNonEmptyString(entry.message.role, entry.message.info?.role);
+        if (role === "user") {
+          currentBlockKey = firstNonEmptyString(entry.message.info?.id, entry.message.id) ?? `user:${index}`;
+        }
+      }
+      if (entry.kind === "fileChanges") {
+        blockKeys.add(currentBlockKey);
+      }
+    }
+    return blockKeys;
   }, [visibleConversationEntries]);
   const hasTranscriptAssistantForCurrentTurn = useMemo(() => {
     let lastUserEntryIndex = -1;
@@ -3731,11 +3770,7 @@ function ChatContent() {
         {/* In-flow notification row: it reserves space instead of obscuring the transcript. */}
         <LiveEventBanner
           sessionId={state.currentSessionId}
-          rawSdkEventPayloads={
-            state.currentSessionId
-              ? state.rawSdkEventPayloadsBySessionId?.[state.currentSessionId]
-              : undefined
-          }
+          rawSdkEventPayloads={state.streaming?.rawSdkEventPayloads}
           liveNotifications={
             state.currentSessionId
               ? state.liveToastNotificationsBySessionId?.[state.currentSessionId]
@@ -3821,7 +3856,6 @@ function ChatContent() {
                   serverStatus={state.serverStatus}
                   receivedInitState={state.receivedInitState}
                   currentSessionId={state.currentSessionId}
-                  rawSdkEventPayloadsBySessionId={state.rawSdkEventPayloadsBySessionId}
                 />
               ) : null}
 
@@ -3854,13 +3888,14 @@ function ChatContent() {
                 />
               ) : null}
 
-          <CentralizedDebugPanel />
+          <SdkEventDebugPanel />
 
           <MemoizedConversationTranscript
             blockExpandedState={blockExpandedState}
             compactionDividerIndex={compactionDividerIndex}
             currentSessionId={state.currentSessionId}
             diffByBlockKey={diffByBlockKey}
+            hydratedFileChangesByBlockKey={hydratedFileChangesByBlockKey}
             hasLiveAssistantTurn={hasLiveAssistantTurn}
             assistantTurnMessageId={state.assistantTurnMessageId}
             interactiveEvents={deferredInteractiveEvents}
@@ -3889,7 +3924,7 @@ function ChatContent() {
                   from the transcript so activity and response content stay unified. */}
           {!(hasTranscriptAssistantForCurrentTurn && !presentedStreaming?.isActive) ? (
             <StreamingCard
-              streaming={presentedStreaming}
+              streaming={renderedLiveStreaming}
               isContiguous={
                 visibleMessages.length > 0 &&
                 visibleMessages[visibleMessages.length - 1].role === "assistant"

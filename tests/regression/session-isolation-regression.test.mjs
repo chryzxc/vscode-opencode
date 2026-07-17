@@ -162,13 +162,13 @@ test('ChatViewProvider stamps active sessionId onto every streamEvent forwarded 
     // raw server event does not carry a session ID field.
     assert.match(
         chatViewProviderSource,
-        /const\s+eventForWebview\s*=\s*\{\s*\.\.\.enrichedEvent\s*,\s*sessionId:\s*resolvedSessionId\s*\}/,
-        'stream events must spread enrichedEvent and add sessionId: resolvedSessionId before forwarding',
+        /const\s+eventForWebview\s*=\s*this\.buildWebviewStreamEvent\(enrichedEvent \|\| event\)/,
+        'stream events must be copied into a detached webview payload before forwarding',
     );
     assert.match(
         chatViewProviderSource,
         /this\.enqueueStreamWebviewEvent\(\s*eventForWebview,\s*resolvedSessionId,/,
-        'queued stream delivery must carry the resolved session ID',
+        'queued stream delivery must carry the resolved session ID in the protocol envelope',
     );
 });
 

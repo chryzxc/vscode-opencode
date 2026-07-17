@@ -12,6 +12,7 @@ import {
   getCentralizedAssistantTurnCompletionIndex,
   isAiResponseEvent,
   structuredOutputFromRawSdkEventPayloads,
+  terminalEventMatchesAssistantTurn,
 } from './messageHandler';
 import {
   getFinalAssistantResponseText,
@@ -51,6 +52,106 @@ describe('normalizeMessage - responseType handling', () => {
     assert.ok(result, 'normalizeMessage should return a message');
     const resultRecord = result as Record<string, unknown>;
     assert.ok(resultRecord.responseType || resultRecord.structuredOutput, 'Should handle responseType fields');
+  });
+});
+
+describe('terminalEventMatchesAssistantTurn', () => {
+  it('matches a terminal step event by its direct messageID', () => {
+    assert.equal(
+      terminalEventMatchesAssistantTurn(
+        {
+          type: 'message.part.updated',
+          properties: {
+            part: { type: 'step-finish', messageID: 'msg-parent' },
+          },
+        },
+        ['msg-parent'],
+      ),
+      true,
+    );
+  });
+
+  it('matches a deeply nested background-agent terminal event by parentMessageId', () => {
+    assert.equal(
+      terminalEventMatchesAssistantTurn(
+        {
+          payload: {
+            syncEvent: {
+              data: {
+                part: {
+                  type: 'step-finish',
+                  messageID: 'msg-background-agent',
+                  parentMessageId: 'msg-parent',
+                },
+              },
+            },
+          },
+        },
+        ['msg-parent'],
+      ),
+      true,
+    );
+  });
+
+  it('does not let another assistant turn clear the active loading state', () => {
+    assert.equal(
+      terminalEventMatchesAssistantTurn(
+        {
+          properties: {
+            part: { type: 'step-finish', messageID: 'msg-other' },
+          },
+        },
+        ['msg-parent'],
+      ),
+      false,
+    );
+  });
+});
+
+describe('createMessageHandler - terminal turn identity', () => {
+  it('ends loading when a matching step-finish arrives for the active assistant turn', () => {
+    let state = {
+      ...initialState,
+      currentSessionId: 'ses-terminal',
+      isProcessing: true,
+      assistantTurnPending: true,
+      assistantTurnMessageId: 'msg-parent',
+      streaming: {
+        messageId: 'msg-parent',
+        content: 'Completed response',
+        reasoning: '',
+        reasoningEvents: [],
+        steps: [],
+        progressEvents: [],
+        edits: [],
+        isActive: true,
+      },
+    } as AppState;
+    const dispatch = (action: Parameters<typeof appReducer>[1]) => {
+      state = appReducer(state, action);
+    };
+    const handler = createMessageHandler(dispatch, () => state);
+
+    handler({
+      data: {
+        type: 'streamEvent',
+        sessionId: 'ses-terminal',
+        event: {
+          type: 'message.part.updated',
+          properties: {
+            part: {
+              type: 'step-finish',
+              messageID: 'msg-parent',
+              reason: 'stop',
+            },
+          },
+        },
+      },
+    } as MessageEvent);
+
+    assert.equal(state.isProcessing, false);
+    assert.equal(state.assistantTurnPending, false);
+    assert.equal(state.streaming?.isActive, false);
   });
 });
 

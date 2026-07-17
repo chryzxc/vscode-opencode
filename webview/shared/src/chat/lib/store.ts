@@ -1,5 +1,6 @@
 import React, {
   createContext,
+  useCallback,
   useContext,
   useLayoutEffect,
   useMemo,
@@ -8,6 +9,7 @@ import React, {
   useSyncExternalStore,
 } from 'react';
 import logger from './logger';
+import { perfProbe } from './streamingPerfProbe';
 import { PENDING_CURRENT_SESSION_KEY } from "./pendingUserMessages";
 import {
   getCentralizedAssistantContentFromRawSdkEventPayloads,
@@ -78,7 +80,7 @@ export const initialState: AppState = {
   currentSessionId: null,
   messages: [],
   messagesBySessionId: {},
-  rawSdkEventPayloadsBySessionId: {},
+  sdkMessagesBySessionId: {},
   liveEventStreamBySessionId: {},
   liveToastNotificationsBySessionId: {},
   promptQueue: [],
@@ -197,16 +199,9 @@ export type AppAction =
   | { type: "SET_SELECTED_AGENT"; payload: string }
   | { type: "SET_AGENTS_LIST"; payload: Agent[] }
   | { type: "SET_MESSAGES"; payload: Message[] }
-  | {
-    type: "SET_RAW_SDK_EVENT_PAYLOADS";
-    payload: { sessionId: string; events: unknown[] };
-  }
-  | { type: "APPEND_RAW_SDK_EVENT_PAYLOAD"; payload: { sessionId?: string | null; event: unknown } }
-  | {
-    type: "APPEND_RAW_SDK_EVENT_PAYLOAD_BATCH";
-    payload: { sessionId?: string | null; events: unknown[] };
-  }
+  | { type: "SET_SDK_MESSAGES_DEBUG"; payload: { sessionId: string; messages: unknown[] } }
   | { type: "APPEND_LIVE_EVENT_STREAM_DEBUG"; payload: { sessionId?: string | null; event: unknown } }
+  | { type: "APPEND_LIVE_EVENT_STREAM_DEBUG_BATCH"; payload: { sessionId?: string | null; events: unknown[] } }
   | { type: "CLEAR_LIVE_EVENT_STREAM_DEBUG" }
   | {
     type: "APPEND_LIVE_TOAST_NOTIFICATION";
@@ -844,6 +839,40 @@ function mergeStreamingSnapshotLocal(
     !!normalizedIncoming.messageId &&
     existing.messageId !== normalizedIncoming.messageId;
   if (!existing || shouldResetTimeline) {
+    // Multi-phase turn detection (OpenCode emits multiple SDK assistant
+    // message envelopes — reasoning, tool-call, final answer — within a
+    // single user-visible turn, each with a different messageId). Each phase
+    // gets its own message.completed with a finish signal BEFORE the next
+    // phase begins, so checking hasAssistantFinishSignal here is wrong —
+    // it would skip preservation in exactly the case where it's needed.
+    //
+    // This branch only fires when shouldResetTimeline is true, which means
+    // existing snapshot exists AND messageId changed. Truly new turns are
+    // handled by the user-message handler which clears state.streaming
+    // BEFORE the next assistant message.updated arrives, so by the time
+    // shouldStartFreshAssistantTurn fires (messageHandler.ts:9722-9727)
+    // we are inherently in a mid-turn phase transition. Preserve the
+    // accumulated timeline arrays so the activity timeline does not
+    // visually reset to empty. Project rule: "we don't clear the rendered UI".
+    if (shouldResetTimeline) {
+      return {
+        ...normalizedIncoming,
+        // Preserve turn-level activity (accumulates across messages in a multi-phase turn)
+        steps: existing?.steps ?? normalizedIncoming.steps,
+        progressEvents: existing?.progressEvents ?? normalizedIncoming.progressEvents,
+        reasoningEvents: existing?.reasoningEvents ?? normalizedIncoming.reasoningEvents,
+        edits: existing?.edits ?? normalizedIncoming.edits,
+        interactiveEvents: existing?.interactiveEvents ?? normalizedIncoming.interactiveEvents,
+        // Preserve renderable flag so ThinkingBubble does not re-appear mid-turn
+        hasRenderableContent:
+          existing?.hasRenderableContent ||
+          normalizedIncoming.hasRenderableContent ||
+          false,
+        hasAssistantFinishSignal: false,
+        hasTerminalStepSignal: false,
+        liveSessionStatus: normalizedIncoming.liveSessionStatus ?? null,
+      };
+    }
     return {
       ...normalizedIncoming,
       hasRenderableContent: normalizedIncoming.hasRenderableContent ?? false,
@@ -2217,31 +2246,12 @@ export function canonicalizeMessagesForRender(
   const deduped = dedupeMirrorMessagesForCanonical(chronologicallyOrdered);
   const dedupedTurns = dedupeAdjacentCanonicalTurns(deduped);
 
-  const canonical: Message[] = [];
-  let index = 0;
-
-  while (index < dedupedTurns.length) {
-    const current = dedupedTurns[index];
-    const isAssistant = isAssistantMessageForCanonical(current);
-
-    if (!isAssistant) {
-      canonical.push(current);
-      index += 1;
-      continue;
-    }
-    const burst: Message[] = [current];
-    let cursor = index + 1;
-    while (cursor < dedupedTurns.length && isAssistantMessageForCanonical(dedupedTurns[cursor])) {
-      burst.push(dedupedTurns[cursor]);
-      cursor += 1;
-    }
-    canonical.push(
-      burst.length === 1 ? current : coalesceAssistantRunForCanonical(burst),
-    );
-    index = cursor;
-  }
-
-  return canonical;
+  // `session.messages()` already returns complete, ordered SDK message
+  // envelopes. Consecutive assistant envelopes are meaningful phases (for
+  // example read → edit → final response), not duplicate fragments. Identity
+  // deduplication above removes true duplicates; never coalesce the remaining
+  // assistant messages here or their activity is moved into the final card.
+  return dedupedTurns;
 }
 
 const MAX_STREAMING_REASONING_EVENTS = 300;
@@ -2454,11 +2464,18 @@ export function mergeStreamingReasoning(
   // normalizing and searching the entire accumulated reasoning buffer for
   // every token; that made long reasoning streams progressively quadratic
   // and could monopolize the webview thread during scroll gestures.
+  //
+  // Delta semantics: a delta is a continuation of the SAME reasoning stream,
+  // not a new step. The reducer must APPEND each delta chunk to the most
+  // recent reasoning event rather than creating a new entry. Returning
+  // replaceLastEvent:false here would let findStreamingReasoningEventIndex
+  // miss the match (per-chunk-unique partID OR multiple events under same
+  // messageID) and split the stream into cascading duplicate steps.
   if (delta) {
     return {
       reasoning: appendStreamingReasoning(current, incoming),
       eventChunk: incomingChunk,
-      replaceLastEvent: false,
+      replaceLastEvent: true,
     };
   }
 
@@ -2834,19 +2851,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       if (areCanonicalMessagesEquivalent(state.messages, canonicalMessages)) {
         return state;
       }
-      const attachedRawSdkEventPayloads = canonicalMessages.reduce<unknown[]>(
-        (collected, message) => {
-          const payloads = Array.isArray(
-            (message as unknown as Record<string, unknown>).rawSdkEventPayloads,
-          )
-            ? ((message as unknown as Record<string, unknown>).rawSdkEventPayloads as unknown[])
-            : [];
-          return payloads.length > 0
-            ? mergeRawSdkEventPayloads(collected, payloads)
-            : collected;
-        },
-        [],
-      );
       const resolvedDividerIndex = resolveCompactionDividerIndex(canonicalMessages, {
         compactionDividerIndex: state.compactionDividerIndex,
         compactionDividerBeforeMessageId: state.compactionDividerBeforeMessageId,
@@ -2885,28 +2889,10 @@ export function appReducer(state: AppState, action: AppAction): AppState {
             state.dismissedInteractiveEventKeys,
           )
           : derivedInteractiveEvents;
-      const nextRawSdkEventPayloadsBySessionId =
-        state.currentSessionId && attachedRawSdkEventPayloads.length > 0
-          ? pruneSessionCache({
-            ...(state.rawSdkEventPayloadsBySessionId ?? {}),
-            [state.currentSessionId]: dedupeCentralizedDebugPayloads(
-              shouldIncludeCentralizedDebugPayload
-                ? mergeRawSdkEventPayloads(
-                  state.rawSdkEventPayloadsBySessionId?.[state.currentSessionId] ?? [],
-                  attachedRawSdkEventPayloads,
-                ).filter(shouldIncludeCentralizedDebugPayload)
-                : mergeRawSdkEventPayloads(
-                  state.rawSdkEventPayloadsBySessionId?.[state.currentSessionId] ?? [],
-                  attachedRawSdkEventPayloads,
-                ),
-            ),
-          }, state.currentSessionId)
-          : state.rawSdkEventPayloadsBySessionId;
       return {
         ...state,
         messages: canonicalMessages,
         interactiveEvents: nextInteractiveEvents,
-        rawSdkEventPayloadsBySessionId: nextRawSdkEventPayloadsBySessionId,
         compactionDividerIndex: resolvedDividerIndex,
         compactionDividerBeforeMessageId:
           resolvedAnchors.compactionDividerBeforeMessageId,
@@ -2914,106 +2900,13 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           resolvedAnchors.compactionDividerAfterMessageId,
       };
     }
-    case "SET_RAW_SDK_EVENT_PAYLOADS": {
-      const rawEvents = Array.isArray(action.payload.events) ? action.payload.events : [];
-      const events = rawEvents
-          .filter(shouldIncludeCentralizedDebugPayload)
-          .map((event) => sanitizeCentralizedDebugPayload(event));
-      const existingEvents = state.rawSdkEventPayloadsBySessionId?.[action.payload.sessionId];
-      if (areCentralizedEventListsEquivalent(existingEvents, events)) {
-        return state;
-      }
-      logger.info("[CENTRALIZED-TAPE][WEBVIEW_STORE] set_raw_sdk_event_payloads", {
-        sessionId: action.payload.sessionId,
-        incomingCount: rawEvents.length,
-        storedCount: events.length,
-        currentSessionId: state.currentSessionId,
-      });
+    case "SET_SDK_MESSAGES_DEBUG": {
       return {
         ...state,
-        rawSdkEventPayloadsBySessionId: pruneSessionCache({
-          ...(state.rawSdkEventPayloadsBySessionId ?? {}),
-          [action.payload.sessionId]: events,
-        }, action.payload.sessionId),
-      };
-    }
-    case "APPEND_RAW_SDK_EVENT_PAYLOAD": {
-      const sessionId = action.payload.sessionId ?? state.currentSessionId ?? "";
-      if (!sessionId) {
-        logger.warn("[CENTRALIZED-TAPE][WEBVIEW_STORE] append_raw_sdk_event_payload_skipped", {
-          reason: "missing-session",
-          currentSessionId: state.currentSessionId,
-        });
-        return state;
-      }
-      if (!shouldIncludeCentralizedDebugPayload(action.payload.event)) {
-        const event = asRecordLocal(action.payload.event);
-        logger.warn("[CENTRALIZED-TAPE][WEBVIEW_STORE] append_raw_sdk_event_payload_skipped", {
-          reason: "filtered",
-          sessionId,
-          eventType: asStringLocal(event?.type),
-          currentSessionId: state.currentSessionId,
-        });
-        return state;
-      }
-      const existing = state.rawSdkEventPayloadsBySessionId?.[sessionId] ?? [];
-      const sanitizedEvent = sanitizeCentralizedDebugPayload(action.payload.event);
-      const next = appendAndDedupeCentralizedDebugPayload(existing, sanitizedEvent) as unknown[];
-      const event = asRecordLocal(sanitizedEvent);
-      const properties = asRecordLocal(event?.properties);
-      const info = asRecordLocal(properties?.info);
-      const part = asRecordLocal(properties?.part);
-      logger.info("[CENTRALIZED-TAPE][WEBVIEW_STORE] append_raw_sdk_event_payload", {
-        sessionId,
-        eventType: asStringLocal(event?.type),
-        source: asStringLocal(event?.source),
-        messageId: asStringLocal(info?.id, part?.messageId, part?.messageID),
-        partType: asStringLocal(part?.type),
-        previousCount: existing.length,
-        nextCount: next.length,
-        deduped: next.length === existing.length,
-        currentSessionId: state.currentSessionId,
-      });
-      return {
-        ...state,
-        rawSdkEventPayloadsBySessionId: pruneSessionCache({
-          ...(state.rawSdkEventPayloadsBySessionId ?? {}),
-          [sessionId]: next,
-        }, sessionId),
-      };
-    }
-    case "APPEND_RAW_SDK_EVENT_PAYLOAD_BATCH": {
-      const sessionId = action.payload.sessionId ?? state.currentSessionId ?? "";
-      const incoming = Array.isArray(action.payload.events)
-        ? action.payload.events.filter(shouldIncludeCentralizedDebugPayload)
-        : [];
-      if (!sessionId || incoming.length === 0) {
-        return state;
-      }
-      const existing = state.rawSdkEventPayloadsBySessionId?.[sessionId] ?? [];
-      let next = existing;
-      for (const rawEvent of incoming) {
-        next = appendAndDedupeCentralizedDebugPayload(
-          next,
-          sanitizeCentralizedDebugPayload(rawEvent),
-        ) as unknown[];
-      }
-      if (next === existing) {
-        return state;
-      }
-      logger.info("[CENTRALIZED-TAPE][WEBVIEW_STORE] append_raw_sdk_event_payload_batch", {
-        sessionId,
-        incomingCount: incoming.length,
-        previousCount: existing.length,
-        nextCount: next.length,
-        currentSessionId: state.currentSessionId,
-      });
-      return {
-        ...state,
-        rawSdkEventPayloadsBySessionId: pruneSessionCache({
-          ...(state.rawSdkEventPayloadsBySessionId ?? {}),
-          [sessionId]: next,
-        }, sessionId),
+        sdkMessagesBySessionId: {
+          ...(state.sdkMessagesBySessionId ?? {}),
+          [action.payload.sessionId]: action.payload.messages,
+        },
       };
     }
     case "APPEND_LIVE_EVENT_STREAM_DEBUG": {
@@ -3029,6 +2922,24 @@ export function appReducer(state: AppState, action: AppAction): AppState {
             ...(state.liveEventStreamBySessionId?.[sessionId] ?? []),
             action.payload.event,
           ],
+        },
+      };
+    }
+    case "APPEND_LIVE_EVENT_STREAM_DEBUG_BATCH": {
+      const sessionId = action.payload.sessionId ?? state.currentSessionId ?? "";
+      const events = Array.isArray(action.payload.events) ? action.payload.events : [];
+      if (!sessionId || events.length === 0) {
+        return state;
+      }
+      // Debug data is browser-lifetime only. Keep a generous bound so it is
+      // useful to copy, without allowing a long stream to grow unbounded.
+      const current = state.liveEventStreamBySessionId?.[sessionId] ?? [];
+      const next = [...current, ...events].slice(-2_000);
+      return {
+        ...state,
+        liveEventStreamBySessionId: {
+          ...(state.liveEventStreamBySessionId ?? {}),
+          [sessionId]: next,
         },
       };
     }
@@ -3407,22 +3318,10 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       }
       const existing = state.streaming.rawSdkEventPayloads ?? [];
       const next = appendAndDedupeCentralizedDebugPayload(existing, action.payload) as unknown[];
-      const nextRawSdkEventPayloadsBySessionId =
-        state.currentSessionId
-          ? pruneSessionCache({
-            ...(state.rawSdkEventPayloadsBySessionId ?? {}),
-            [state.currentSessionId]: appendAndDedupeCentralizedDebugPayload(state.rawSdkEventPayloadsBySessionId?.[state.currentSessionId] ?? [], action.payload),
-          }, state.currentSessionId)
-          : state.rawSdkEventPayloadsBySessionId;
-      // NOTE: Cap the per-turn streaming snapshot at 200 entries to bound memory,
-      // but always continue updating the session-scoped cache. The session cache
-      // is the long-term centralized tape; dropping events from it causes the
-      // activity timeline and subagent rehydration to go blank after the cap.
+      // Preserve raw SDK events only for the current live overlay. This bounded
+      // snapshot is discarded when the authoritative SDK history refresh arrives.
       if (next.length >= 200) {
-        return {
-          ...state,
-          rawSdkEventPayloadsBySessionId: nextRawSdkEventPayloadsBySessionId,
-        };
+        return state;
       }
       return {
         ...state,
@@ -3430,7 +3329,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           ...state.streaming,
           rawSdkEventPayloads: next,
         },
-        rawSdkEventPayloadsBySessionId: nextRawSdkEventPayloadsBySessionId,
       };
     }
     case "UPDATE_STREAMING_CONTENT": {
@@ -3440,20 +3338,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       const content = action.payload.append
         ? `${state.streaming.content}${action.payload.content}`
         : action.payload.content;
-      if (action.payload.content && action.payload.content.length > 0) {
-        logger.info('[STORE:UPDATE_STREAMING_CONTENT]', {
-          append: action.payload.append,
-          incoming: String(action.payload.content).slice(0, 200),
-          incomingLen: String(action.payload.content).length,
-          priorContent: String(state.streaming.content).slice(0, 200),
-          priorContentLen: String(state.streaming.content).length,
-          newContent: content.slice(0, 200),
-          newContentLen: content.length,
-          renderable: !!action.payload.renderable,
-          reasoning: String(state.streaming.reasoning).slice(0, 200),
-          inReasoningPart: state.streaming.inReasoningPart,
-        });
-      }
       // Record the first moment non-empty content arrives so the timeline can order it correctly
       const contentStartSeq =
         state.streaming.contentStartSeq !== undefined
@@ -3481,6 +3365,21 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         hasRenderableContent === state.streaming.hasRenderableContent
       ) {
         return state;
+      }
+      // Perf: log only on actual state change — per-batch logging here caused main-thread saturation during streaming.
+      if (action.payload.content && action.payload.content.length > 0) {
+        logger.info('[STORE:UPDATE_STREAMING_CONTENT]', {
+          append: action.payload.append,
+          incoming: String(action.payload.content).slice(0, 200),
+          incomingLen: String(action.payload.content).length,
+          priorContent: String(state.streaming.content).slice(0, 200),
+          priorContentLen: String(state.streaming.content).length,
+          newContent: content.slice(0, 200),
+          newContentLen: content.length,
+          renderable: !!action.payload.renderable,
+          reasoning: String(state.streaming.reasoning).slice(0, 200),
+          inReasoningPart: state.streaming.inReasoningPart,
+        });
       }
       const streaming = {
         ...state.streaming,
@@ -4470,6 +4369,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const rafIdRef = useRef<number | null>(null);
   stateRef.current = state;
 
+  // Perf probe: wrap dispatch so we can attribute per-action-type cost during
+  // streaming. Zero overhead when probe is disabled.
+  const timedDispatch = useCallback<React.Dispatch<AppAction>>((action) => {
+    if (!perfProbe.isEnabled()) {
+      dispatch(action);
+      return;
+    }
+    const start = performance.now();
+    dispatch(action);
+    perfProbe.recordDispatch((action as { type?: unknown })?.type, performance.now() - start);
+  }, []);
+
   useLayoutEffect(() => {
     const isStreaming = stateRef.current.streaming?.isActive;
 
@@ -4506,7 +4417,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   return React.createElement(
     AppStoreContext.Provider,
     { value: store },
-    React.createElement(AppDispatchContext.Provider, { value: dispatch }, children),
+    React.createElement(AppDispatchContext.Provider, { value: timedDispatch }, children),
   );
 }
 

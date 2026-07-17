@@ -147,38 +147,4 @@ test("disposition returns live-only for session.status and tui events", () => {
   );
 });
 
-test("messageHandler only appends to centralized tape when disposition is persist", () => {
-  const handlerSource = readSource(
-    [joinFromRoot("webview", "shared", "src", "chat", "lib", "messageHandler.ts")],
-    "messageHandler.ts",
-  );
-
-  // streamEvent path
-  const streamEventSection = handlerSource.slice(
-    handlerSource.indexOf('case "streamEvent"'),
-    handlerSource.indexOf('case "streamEventBatch"'),
-  );
-
-  assert.match(
-    streamEventSection,
-    /centralizedDisposition === "persist"/,
-    "streamEvent must only append to centralized tape when disposition is persist",
-  );
-
-  assert.doesNotMatch(
-    streamEventSection,
-    /centralizedDisposition !== "excluded-noise"/,
-    "streamEvent must NOT use the old excluded-noise check (that was the leak)",
-  );
-
-  // streamEventBatch path
-  const batchSection = handlerSource.slice(
-    handlerSource.indexOf('case "streamEventBatch"'),
-  );
-
-  assert.match(
-    batchSection,
-    /disposition === "persist"/,
-    "streamEventBatch must only append to centralized tape when disposition is persist",
-  );
-});
+// Obsolete after raw SDK event-driven chat: stream events no longer append to a centralized webview tape.

@@ -13,7 +13,7 @@ test('schedulePromptDispatch exists with prompt mode parameter', () => {
 test('schedulePromptDispatch trims input text and computes effective mode', () => {
   const body = extractFunctionBody(source, '  private async schedulePromptDispatch(');
   assert.match(body, /const text = typeof payload\.text === "string" \? payload\.text\.trim\(\) : "";/, 'schedulePromptDispatch should trim incoming text');
-  assert.match(body, /const effectiveMode = mode;/, 'schedulePromptDispatch should keep dispatch mode explicit');
+  assert.match(body, /let effectiveMode = mode;/, 'schedulePromptDispatch should keep dispatch mode explicit before SDK status refinement');
   assert.doesNotMatch(body, /mode === "send-now"[\s\S]*\? "steer"[\s\S]*: mode;/, 'schedulePromptDispatch should not auto-convert normal sends into steer from processing flags');
 });
 
@@ -57,6 +57,17 @@ test('promptWithStructuredOutput exists and uses client.session.prompt', () => {
   // Implementation detail test simplified - function signatures are implementation details
   assert.match(source, /promptWithStructuredOutput|structured.*output|prompt/, 'should handle structured output prompts');
   assert.match(source, /client\.session\.prompt|session\.prompt|prompt\(/, 'should use session prompt API');
+});
+
+test('structured-output format is verified through the SDK before a user prompt persists it', () => {
+  const body = extractFunctionBody(source, '  private async promptWithStructuredOutput(');
+  assert.match(source, /private ensureStructuredOutputFormatCompatibility\(client: any\): Promise<boolean>/, 'provider should define a server compatibility probe');
+  assert.match(source, /noReply:\s*true/, 'the probe must not invoke a model');
+  assert.match(source, /client\.session\.messages\(/, 'the probe must verify the persisted format through SDK rehydration');
+  assert.match(source, /client\.session\.delete\(/, 'the disposable probe session must be cleaned up');
+  assert.match(body, /await this\.ensureStructuredOutputFormatCompatibility\(client\)/, 'a user prompt must wait for the compatibility probe');
+  assert.match(body, /format:\s*schema/, 'structured output must use the SDK v2 format field');
+  assert.doesNotMatch(body, /\["outputFormat"\]|outputFormat\s*:/, 'the legacy untyped outputFormat field must never be sent');
 });
 
 test('send failures surface friendly user-facing timeout text instead of raw internal labels', () => {
@@ -121,6 +132,21 @@ test('handleStopRequest aborts the SDK session and cleans up processing state', 
   assert.match(source, /processingSessionIds|clear|cleanup|delete/, 'should clean up processing state');
 });
 
+test('handleStopRequest uses the SDK session abort route contract', () => {
+  const body = extractFunctionBody(source, '  private async handleStopRequest(');
+  assert.match(
+    body,
+    /client\.session\.abort\(\{\s*sessionID: resolvedSessionId,/s,
+    'the SDK v2 client requires the session ID parameter',
+  );
+  assert.match(
+    body,
+    /directory: workspaceDirectory/,
+    'the SDK v2 client accepts the workspace directory parameter',
+  );
+  assert.match(body, /result\.error/, 'non-throwing SDK errors must be logged');
+});
+
 test('handleStopRequest finalizes the UI before the best-effort SDK abort completes', () => {
   const body = extractFunctionBody(source, '  private async handleStopRequest(');
   const localFinalization = body.indexOf('this.processingSessionIds.delete(resolvedSessionId);');
@@ -177,17 +203,19 @@ test('pasted text attachments retain their content without requiring a workspace
   assert.doesNotMatch(body, /path:\s*attachment\.filename/, 'pasted data URLs must not claim their display filename is a workspace path');
 });
 
-test('provider uses a centralized-first history loader for chat hydration paths', () => {
-  assert.match(source, /private async loadCentralizedRenderableHistory\(sessionId: string\): Promise</, 'provider should define a centralized-first history loader');
-  assert.match(source, /const rawSessionPayloads = await this\.sessionService\.loadCentralizedSessionData\(\s*sessionId,\s*\)/, 'centralized-first loader should read centralized session data directly');
-  assert.match(source, /const sessionHistory = await this\.loadCentralizedRenderableHistory\(\s*sessionId,\s*\)/, 'session loading should use the centralized-first history loader');
-  assert.match(source, /const sessionHistory = await this\.loadCentralizedRenderableHistory\(\s*currentSession\.id,\s*\)/, 'webview ready hydration should use the centralized-first history loader');
-  assert.match(source, /const sessionHistory = await this\.loadCentralizedRenderableHistory\(\s*retrySessionId,\s*\)/, 'retry hydration should use the centralized-first history loader');
+test('provider hydrates history exclusively from SDK session messages', () => {
+  assert.match(source, /private async loadSdkRenderableHistory\(sessionId: string\): Promise</, 'provider should define an SDK history loader');
+  assert.match(source, /this\.sessionSnapshotLoader\.loadMessagesOnly\(sessionId\)/, 'history loader should request SDK session messages directly');
+  assert.doesNotMatch(source, /loadCentralizedSessionData\(/, 'provider hydration must not read the centralized event tape');
+  assert.match(source, /const sessionHistory = await this\.loadSdkRenderableHistory\(\s*sessionId,\s*\)/, 'session loading should use the SDK history loader');
+  assert.match(source, /const sessionHistory = await this\.loadSdkRenderableHistory\(\s*currentSession\.id,\s*\)/, 'webview ready hydration should use the SDK history loader');
+  assert.match(source, /const sessionHistory = await this\.loadSdkRenderableHistory\(\s*retrySessionId,\s*\)/, 'retry hydration should use the SDK history loader');
 });
 
-test('stream callback persists normalized centralized events instead of raw SDK wrappers', () => {
+test('stream callback forwards a detached SDK event payload without persisting it', () => {
   const body = extractFunctionBody(source, '    this.unsubscribe = this.streamService.subscribe(async (event, rawEvent) => {');
-  assert.match(body, /const centralizedEventPayload = \{\s*\.\.\.enrichedEvent,\s*sessionId: resolvedSessionId,\s*\};/s, 'stream persistence should use the normalized event payload with the resolved session id');
-  assert.match(body, /appendRawSdkEventPayload\(\s*resolvedSessionId,\s*centralizedEventPayload,\s*\)/s, 'stream persistence should store the normalized centralized event payload');
-  assert.doesNotMatch(body, /appendRawSdkEventPayload\(\s*resolvedSessionId,\s*rawEvent/s, 'stream persistence should not store raw SDK wrapper frames as the centralized tape item');
+  assert.match(body, /const eventForWebview = this\.buildWebviewStreamEvent\(enrichedEvent \|\| event\);/, 'stream transport should build a detached webview payload from the SDK event');
+  assert.match(body, /this\.enqueueStreamWebviewEvent\(\s*eventForWebview,\s*resolvedSessionId,/s, 'stream transport should carry session ownership in the webview envelope');
+  assert.doesNotMatch(body, /appendRawSdkEventPayload/, 'live SDK events must not be persisted into a centralized tape');
+  assert.doesNotMatch(body, /sessionId:\s*resolvedSessionId,\s*\n\s*part:/, 'stream transport must not mutate the SDK event with local fields');
 });

@@ -16,12 +16,10 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
     sessionsList,
     currentSessionId,
     processingSessionIds,
-    rawSdkEventPayloadsBySessionId,
   } = useAppState((s) => ({
     sessionsList: s.sessionsList,
     currentSessionId: s.currentSessionId,
     processingSessionIds: s.processingSessionIds,
-    rawSdkEventPayloadsBySessionId: s.rawSdkEventPayloadsBySessionId,
   }), shallowEqual);
   const dispatch = useAppDispatch();
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
@@ -194,23 +192,15 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
     // Find the session to get its title
     const session = sessionsList.find(s => s.id === sessionId);
     const sessionTitle = session?.title || sessionId;
-    const hasCachedCentralizedData =
-      (rawSdkEventPayloadsBySessionId?.[sessionId]?.length ?? 0) > 0;
     // Switch local session context immediately so session-scoped UI (like
     // pending queue items above composer) does not bleed across sessions
     // while we wait for backend hydration.
     dispatch({ type: "SET_SESSION_ID", payload: sessionId });
 
-    // Skip full loading state when we already have a local render cache.
-    if (!hasCachedCentralizedData) {
-      dispatch({
-        type: "START_SESSION_LOADING",
-        payload: {
-          sessionId,
-          title: sessionTitle
-        }
-      });
-    }
+    dispatch({
+      type: "START_SESSION_LOADING",
+      payload: { sessionId, title: sessionTitle },
+    });
 
     vscode.postMessage({ type: "switchSession", sessionId });
     onClose();

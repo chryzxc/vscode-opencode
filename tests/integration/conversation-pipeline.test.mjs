@@ -401,7 +401,7 @@ describe("conversation pipeline", () => {
 
     it("StreamEventHandler handles subagentsDelta", () => {
       assert.match(streamHandlerSource, /subagentsDelta/, "must handle subagentsDelta");
-      assert.match(streamHandlerSource, /subagentPersistence/, "must use subagentPersistence");
+      assert.match(streamHandlerSource, /logSubagentUpdate/, "must handle live subagent updates");
     });
 
     it("StreamEventHandler enriches events via SOP", () => {

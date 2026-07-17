@@ -143,35 +143,11 @@ test("ResponseMessage receives centralizedDiffEvent only for isLastInBlock cards
 
 // ── hasCentralizedSessionDiffEntries ───────────────────────────────
 
-test("hasCentralizedSessionDiffEntries detects diffs in both session.diff and message.updated events", () => {
+test("hasVisibleCentralizedSessionDiffEntries detects visible session.diff entries", () => {
   assert.match(
     chatShellSource,
-    /const hasCentralizedSessionDiffEntries\s*=\s*useMemo/,
-    "must define hasCentralizedSessionDiffEntries memo",
-  );
-
-  assert.match(
-    chatShellSource,
-    /getCentralizedEventType\(event\)/,
-    "must use getCentralizedEventType for sync support",
-  );
-
-  assert.match(
-    chatShellSource,
-    /getCentralizedEventInfo\(event\)/,
-    "must use getCentralizedEventInfo for sync support",
-  );
-
-  assert.match(
-    chatShellSource,
-    /type\s*===\s*"session\.diff"/,
-    "must check session.diff type",
-  );
-
-  assert.match(
-    chatShellSource,
-    /type\s*===\s*"message\.updated"/,
-    "must check message.updated type",
+    /const hasVisibleCentralizedSessionDiffEntries\s*=\s*useMemo\(\s*\(\) => visibleConversationEntries\.some\(\(entry\) => entry\.kind === "session\.diff"\)/,
+    "visible transcript diff detection should use normalized session.diff entries from the raw SDK tape",
   );
 });
 

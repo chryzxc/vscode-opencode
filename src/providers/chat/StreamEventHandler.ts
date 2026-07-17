@@ -11,7 +11,6 @@ import type { StructuredOutputProcessor } from "./StructuredOutputProcessor";
 import type { CompactionManager } from "./CompactionManager";
 import type { DiagnosticsLogger } from "./DiagnosticsLogger";
 import type { GeminiTokenUsageTracker } from "../../services/GeminiTokenUsageTracker";
-import type { SessionService } from "../../services/SessionService";
 
 type PendingStreamEvent = {
   enrichedEvent: any;
@@ -37,7 +36,6 @@ export class StreamEventHandler {
     private compactionManager: CompactionManager,
     private diagnosticsLogger: DiagnosticsLogger,
     private geminiTokenTracker: GeminiTokenUsageTracker,
-    private sessionService: SessionService,
     private logger: ReturnType<typeof import("../../utils/Logger").createLogger>,
   ) {
     this.postMessage = () => {};
@@ -80,17 +78,11 @@ export class StreamEventHandler {
       this.compactionManager.forwardCompactionStatusFromStreamEvent(properties.compaction);
     }
 
-    // Handle subagent updates
+    // Handle subagent updates in the live UI only. Completed child-session
+    // state is reloaded from the SDK during hydration.
     const subagentUpdate = this.getSubagentUpdate(properties, enrichedEvent);
     if (subagentUpdate) {
       this.logSubagentUpdate(subagentUpdate);
-      const targetSessionId = sessionId ?? this.getCurrentSessionId();
-      if (targetSessionId) {
-        await this.sessionService.persistCentralizedSubagentProjection(
-          targetSessionId,
-          subagentUpdate,
-        );
-      }
     }
 
     // Track token usage
@@ -126,7 +118,6 @@ export class StreamEventHandler {
       );
     }
 
-    this.persistRawSdkEventPayload(sessionId, event, rawEvent);
   }
 
   private getEventType(event: any): string {
@@ -244,22 +235,6 @@ export class StreamEventHandler {
     );
   }
 
-  private persistRawSdkEventPayload(
-    sessionId: string | undefined,
-    event: any,
-    rawEvent?: unknown,
-  ): void {
-    if (!sessionId) {
-      return;
-    }
-
-    const payload =
-      rawEvent && typeof rawEvent === "object"
-        ? { ...(rawEvent as Record<string, unknown>), sessionId }
-        : { ...event, sessionId };
-    void this.sessionService.appendRawSdkEventPayload(sessionId, payload);
-  }
-
   private flushPendingEvents(): void {
     const startedAt = performance.now();
     if (this.flushRafId !== null) {
@@ -366,8 +341,6 @@ export class StreamEventHandler {
       eventCount: this.eventCount,
       success,
     });
-
-    void this.sessionService.flushRawSdkEventPayloads(sessionId);
 
     // Reset state
     this.streamStartTime = undefined;

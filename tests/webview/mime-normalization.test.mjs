@@ -24,81 +24,73 @@ const providerSource = readSource(
 );
 
 function extractBuildPromptPayload(source) {
-  // The prompt payload builder is a private method that returns { text, files?, agents? }
-  // Find the section that builds promptFiles
-  const start = source.indexOf("const promptFiles: any[] = [];");
+  // Raw SDK refactor: prompt attachments are now SessionPromptData body parts.
+  // Find the section that builds the SDK `parts` array through promptBody.
+  const start = source.indexOf("const parts: NonNullable<SessionPromptData");
   if (start === -1) return "";
-  // Find the return statement
-  const returnIdx = source.indexOf("return {", start);
-  if (returnIdx === -1) return "";
-  const endBrace = source.indexOf("};", returnIdx);
-  return endBrace === -1 ? "" : source.slice(start, endBrace + 2);
+  const end = source.indexOf("const promptBody: NonNullable<SessionPromptData", start);
+  return end === -1 ? "" : source.slice(start, end);
 }
 
 test("promptFiles entries for files use mime text/plain", () => {
   const body = extractBuildPromptPayload(providerSource);
   assert.ok(body.length > 0, "promptFiles builder section must exist");
 
-  // The files loop must push mime:"text/plain"
+  // The files loop must push a text/plain SDK file part.
   assert.match(
     body,
-    /promptFiles\.push\(\{[\s\S]*?mime:\s*"text\/plain"/,
+    /if \(files && files\.length > 0\)[\s\S]*?parts\.push\(\{[\s\S]*?mime:\s*"text\/plain"/,
     "file entries must use mime 'text/plain' not ctx.languageId",
   );
 });
 
-test("promptFiles entries for files use full filePath as name", () => {
+test("promptFiles entries for files preserve full filePath in source path", () => {
   const body = extractBuildPromptPayload(providerSource);
 
-  // name must be filePath (full path), not path.basename(filePath)
+  // Raw SDK parts use display filename separately; the full path must be preserved in source.path.
   assert.match(
     body,
-    /name:\s*filePath/,
-    "file entries must use full filePath as name, not path.basename",
+    /source:\s*\{[\s\S]*?path:\s*filePath/,
+    "file entries must preserve full filePath in source.path, not only display basename",
   );
 
-  // Must NOT use path.basename for name
   assert.doesNotMatch(
     body,
-    /name:\s*path\.basename/,
-    "file entries must NOT use path.basename for name — this was the bug",
+    /source:\s*\{[\s\S]*?path:\s*path\.basename/,
+    "file source.path must NOT use path.basename — this was the bug",
   );
 });
 
 test("promptFiles entries for contexts use mime text/plain", () => {
   const body = extractBuildPromptPayload(providerSource);
 
-  // The contexts loop must also push mime:"text/plain"
-  // Match the second promptFiles.push (contexts loop)
-  const firstPushEnd = body.indexOf("});", body.indexOf("promptFiles.push(")) ;
-  const contextsSection = body.slice(firstPushEnd);
+  const contextsSection = body.slice(body.indexOf("if (contexts && contexts.length > 0)"));
 
   assert.match(
     contextsSection,
-    /promptFiles\.push\(\{[\s\S]*?mime:\s*"text\/plain"/,
+    /parts\.push\(\{[\s\S]*?mime:\s*"text\/plain"/,
     "context entries must use mime 'text/plain' not ctx.languageId",
   );
 });
 
-test("promptFiles entries for contexts use full filePath as name", () => {
+test("promptFiles entries for contexts preserve full filePath in source path", () => {
   const body = extractBuildPromptPayload(providerSource);
-  const firstPushEnd = body.indexOf("});", body.indexOf("promptFiles.push("));
-  const contextsSection = body.slice(firstPushEnd);
+  const contextsSection = body.slice(body.indexOf("if (contexts && contexts.length > 0)"));
 
   assert.match(
     contextsSection,
-    /name:\s*filePath/,
-    "context entries must use full filePath as name",
+    /path:\s*(selectionPath|ctx\.file)/,
+    "context entries must preserve full filePath in source.path",
   );
 });
 
 test("promptFiles entries for contexts include source object with text content", () => {
   const body = extractBuildPromptPayload(providerSource);
 
-  // When content is present, a source object with start/end/text must be attached
+  // When content is present, a source object with text value/start/end must be attached.
   assert.match(
     body,
-    /source:\s*\{[\s\S]*?start:\s*0,[\s\S]*?end:\s*content\.length,[\s\S]*?text:\s*content/s,
+    /source:\s*\{[\s\S]*?text:\s*\{[\s\S]*?value:\s*selectionContent,[\s\S]*?start:\s*0,[\s\S]*?end:\s*selectionContent\.length/s,
     "context entries with content must include source with start/end/text",
   );
 });
@@ -108,23 +100,16 @@ test("promptFiles entries for images preserve data URL mime detection", () => {
 
   // Images must still extract mime from data URL — NOT forced to text/plain
   assert.match(
-    body,
-    /dataUrl\.match\(/,
+    providerSource,
+    /dataUrl\.match\(|img\.match\(/,
     "image entries must extract mime from data URL via regex match",
   );
   assert.match(
-    body,
-    /image\/png/,
-    "image mime fallback must default to image/png",
+    providerSource,
+    /image\/(?:png|jpeg)/,
+    "image mime fallback must default to a valid image MIME type",
   );
 });
 
-test("promptFiles are only attached when non-empty", () => {
-  const body = extractBuildPromptPayload(providerSource);
-
-  assert.match(
-    body,
-    /promptFiles\.length > 0 \? \{ files: promptFiles \}/,
-    "files array must only be attached to payload when promptFiles is non-empty",
-  );
-});
+// Deleted: the raw SDK event-driven chat refactor removed the legacy optional `files` payload wrapper;
+// SDK prompts now always carry a `parts` array with file parts appended only when inputs exist.

@@ -167,10 +167,10 @@ test('questionnaire-like content with plan keywords is not enriched as a plan', 
 
 test('assistant message UI renders plan buttons and core plan card affordances', () => {
   // Verify the two plan entry points in message UI are present.
-  assert.match(messageSource, /title="Core Feature: View Implementation Plan"/, 'header-level plan button must keep core-feature tooltip');
+  assert.match(messageSource, /title=\{`View \$\{plan\.title \|\| "Implementation Plan"\}`\}/, 'plan button should expose a descriptive view-plan tooltip');
   assert.match(messageSource, /onClick=\{\(\)\s*=>\s*vscode\.postMessage\(\{\s*type:\s*["']viewPlan["'],\s*plan\s*\}\)\}/, 'plan button should dispatch viewPlan event');
   assert.match(messageSource, /className="plan-card[^"]*"/, 'assistant message should render plan card container');
-  assert.match(messageSource, /View Implementation Plan/, 'plan card must expose View Implementation Plan call-to-action');
+  assert.match(messageSource, /View Plan/, 'plan card must expose a view-plan call-to-action');
 });
 
 test('chat provider extractMessageBodyText uses space separator between text parts', () => {
