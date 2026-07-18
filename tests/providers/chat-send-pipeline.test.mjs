@@ -13,7 +13,7 @@ test('schedulePromptDispatch exists with prompt mode parameter', () => {
 test('schedulePromptDispatch trims input text and computes effective mode', () => {
   const body = extractFunctionBody(source, '  private async schedulePromptDispatch(');
   assert.match(body, /const text = typeof payload\.text === "string" \? payload\.text\.trim\(\) : "";/, 'schedulePromptDispatch should trim incoming text');
-  assert.match(body, /let effectiveMode = mode;/, 'schedulePromptDispatch should keep dispatch mode explicit before SDK status refinement');
+  assert.match(body, /const effectiveMode = mode;/, 'schedulePromptDispatch should keep dispatch mode explicit before SDK status refinement');
   assert.doesNotMatch(body, /mode === "send-now"[\s\S]*\? "steer"[\s\S]*: mode;/, 'schedulePromptDispatch should not auto-convert normal sends into steer from processing flags');
 });
 
