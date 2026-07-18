@@ -30,7 +30,8 @@
         "src/providers/ChatViewProvider.ts",
         "src/services/MessageStreamService.ts",
         "src/services/SubagentTracker.ts",
-        "webview/shared/src/chat/lib/messageHandler.ts"
+        "webview/shared/src/chat/lib/messageHandler.ts",
+        "webview/shared/src/chat/lib/truncateLargeStrings.ts"
       ],
       "tests": [
         "tests/unit/providers/ChatViewProvider.unit.test.mjs",
@@ -40,6 +41,7 @@
         "tests/unit/subagent-ui-contract.test.mjs",
         "tests/webview/message-handler-processing.test.mjs",
         "tests/webview/interactive-events-contract.test.mjs",
+        "tests/webview/truncate-large-strings-behavior.test.mjs",
         "tests/unit/system-prompt-history-filter.test.mjs"
       ]
     },
@@ -79,7 +81,10 @@
       "tests": [
         "tests/regression/chat-css-regression.test.mjs",
         "tests/webview/message-handler-processing.test.mjs",
-        "tests/webview/interactive-events-contract.test.mjs"
+        "tests/webview/interactive-events-contract.test.mjs",
+        "tests/webview/truncate-large-strings-behavior.test.mjs",
+        "tests/webview/toast-events-behavior.test.mjs",
+        "tests/webview/subagent-duration-behavior.test.mjs"
       ]
     },
     {

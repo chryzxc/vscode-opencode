@@ -13,10 +13,13 @@ const handlerSource = readSource(
 );
 
 test('handleLoadSession clears in-memory todos and posts rehydrated todo snapshot', () => {
-  // Ensure switching sessions clears in-memory todo cache before rehydration
+  // Ensure switching sessions clears in-memory todo cache before rehydration.
+  // Signature relaxation: `handleLoadSession` now takes an optional options
+  // object (e.g. `{ suppressSessionLoading }`) on a multi-line parameter list,
+  // but the clear-then-rehydrate contract is unchanged.
   assert.match(
     providerSource,
-    /private async handleLoadSession\(sessionId: string\): Promise<void>[\s\S]*this\.clearSessionTodos\(sessionId\);[\s\S]*todoItems:\s*\[\s*\]/,
+    /private async handleLoadSession\(\s*sessionId: string[\s\S]*?\):\s*Promise<void>[\s\S]*this\.clearSessionTodos\(sessionId\);[\s\S]*todoItems:\s*\[\s*\]/,
     'handleLoadSession should clear in-memory todos and then post initState with empty todoItems',
   );
 });

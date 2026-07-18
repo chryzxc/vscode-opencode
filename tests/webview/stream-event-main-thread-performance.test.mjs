@@ -78,6 +78,29 @@ test("extension-host stream delivery is capped below token event frequency", () 
   );
 });
 
+test("the first event of a new assistant turn mounts the live response before batching", () => {
+  assert.match(
+    providerSource,
+    /firstStreamWebviewEventPendingBySession = new Set<string>\(\)/,
+  );
+  assert.match(
+    providerSource,
+    /this\.firstStreamWebviewEventPendingBySession\.add\(sessionId\)/,
+  );
+  assert.match(
+    providerSource,
+    /this\.firstStreamWebviewEventPendingBySession\.delete\(resolvedSessionId\)/,
+  );
+  assert.match(
+    providerSource,
+    /immediate: item\.immediate === true/,
+  );
+  assert.match(
+    handlerSource,
+    /data\.immediate === true \|\| isImmediateActivityStreamPayload\(payload\)/,
+  );
+});
+
 test("webview appends a streamed live-event debug batch with one reducer update", () => {
   assert.match(
     handlerSource,

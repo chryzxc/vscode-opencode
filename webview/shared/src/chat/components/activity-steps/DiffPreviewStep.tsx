@@ -4,6 +4,10 @@ import { createPortal } from "react-dom";
 import { ChevronDown, Copy, Diff, FileCode2, X } from "lucide-react";
 
 import { cn } from "../../../utils";
+import {
+  FadedCollapseOverlay,
+  useFadedContentOverflow,
+} from "@/components/ui/FadedCollapseOverlay";
 
 import { ActivityDiffExcerpt } from "../ActivityDiffExcerpt";
 import { usePersistentModalOpen } from "../../lib/usePersistentModalOpen";
@@ -286,6 +290,7 @@ export function DiffPreviewStep({
   const [isModalOpen, setIsModalOpen] = usePersistentModalOpen(
     `diff-preview:${filePath || title || activityDetail?.id || "unknown"}`,
   );
+  const { ref: excerptPreviewRef, hasOverflow } = useFadedContentOverflow<HTMLDivElement>();
   const derivedExcerpt = useMemo(() => {
     if (excerpt && Array.isArray(excerpt.lines) && excerpt.lines.length > 0) {
       return excerpt;
@@ -310,8 +315,6 @@ export function DiffPreviewStep({
   const deleted = Math.max(0, diffStats?.deleted ?? derivedExcerpt?.deleted ?? counts.deleted);
   const summaryTitle = title || "Diff Preview";
   const previewPath = compactPath(filePath);
-  const shouldCollapseExcerpt = (derivedExcerpt?.lines?.length ?? 0) > 8;
-
   return (
     <>
       <button
@@ -323,19 +326,15 @@ export function DiffPreviewStep({
         <div className="overflow-hidden rounded-md transition-colors hover:bg-white/[0.02]">
           {derivedExcerpt ? (
             <div
+              ref={excerptPreviewRef}
               className={cn(
                 "relative overflow-hidden",
-                shouldCollapseExcerpt ? "max-h-[180px]" : "max-h-none",
+                "max-h-[180px]",
               )}
             >
               <ActivityDiffExcerpt excerpt={derivedExcerpt} />
-              {shouldCollapseExcerpt ? (
-                <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-oc-bg via-oc-bg/90 to-transparent flex items-end justify-center pb-2">
-                   <div className="rounded-full bg-oc-bg-soft px-2 py-0.5 text-[10px] text-oc-text-soft shadow-sm border border-oc-border-soft flex items-center gap-1">
-                     <ChevronDown className="h-3 w-3" />
-                     <span>View full diff</span>
-                   </div>
-                </div>
+              {hasOverflow ? (
+                <FadedCollapseOverlay backgroundClassName="from-oc-bg via-oc-bg/90 to-transparent" />
               ) : null}
             </div>
           ) : null}
