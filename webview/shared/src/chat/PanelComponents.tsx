@@ -532,10 +532,6 @@ function MiniSection({
         className="oc-inspector-section-toggle flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs rounded-none"
       >
         <span
-          className={`inline-block h-1.5 w-1.5 rounded-full transition-colors ${open ? "bg-oc-accent" : "bg-oc-border-soft"
-            }`}
-        />
-        <span
           className={`font-medium text-xs uppercase tracking-widest font-semibold ${open
               ? "text-[var(--oc-text-soft)]"
               : "text-[var(--oc-text-soft)] opacity-70"
@@ -873,20 +869,9 @@ export const ActiveTaskPanel = memo(function ActiveTaskPanel() {
 
   return (
     <div className="oc-active-task-panel flex flex-col w-full bg-oc-bg-soft">
-      {/* Panel title */}
-      <div className="oc-active-task-heading border-b border-oc-border px-3 py-2.5">
-        <div className="flex items-center gap-2">
-          <div
-            className={`h-1.5 w-1.5 rounded-full ${isActive ? "bg-oc-accent animate-pulse" : "bg-oc-border-soft"
-              }`}
-          />
-          <div className="oc-panel-title">Active Task</div>
-        </div>
-      </div>
-
-      <div className="oc-active-task-content p-2">
+      <div className="oc-active-task-content">
         {sortedTodoItems.length > 0 ? (
-          <MiniSection title="Todo Checklist">
+          <MiniSection title="Active Task">
             <div className="mb-2 flex items-center justify-between text-[11px] oc-text-secondary">
               <span className="font-medium">
                 {completedTodoCount} / {sortedTodoItems.length} done

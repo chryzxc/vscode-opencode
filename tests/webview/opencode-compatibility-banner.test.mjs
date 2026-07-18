@@ -60,26 +60,11 @@ test("message handler ingests compatibility warnings from init state and live up
   );
 });
 
-test("chat shell renders a visible compatibility banner", () => {
-  assert.match(
-    shellSource,
-    /state\.compatibilityWarnings\.length > 0/,
-    "ChatShell should check for compatibility warnings",
-  );
-  assert.match(
+test("chat shell does not render compatibility warnings", () => {
+  assert.doesNotMatch(
     shellSource,
     /OpenCode compatibility warning/i,
-    "ChatShell should render a titled compatibility warning banner",
-  );
-  assert.match(
-    shellSource,
-    /Dismiss compatibility warning/i,
-    "ChatShell should render a dismiss button for the warning banner",
-  );
-  assert.match(
-    shellSource,
-    /dismissedCompatibilityWarningSignature/,
-    "ChatShell should track dismiss state for the warning banner",
+    "compatibility diagnostics must not interrupt the chat UI",
   );
 });
 
@@ -93,5 +78,10 @@ test("provider sends compatibility warnings to the webview", () => {
     providerSource,
     /type:\s*"compatibilityStatus",[\s\S]*compatibilityWarnings:/,
     "ChatViewProvider should emit compatibility status updates",
+  );
+  assert.doesNotMatch(
+    providerSource,
+    /showWarningMessage\(summary\)/,
+    "compatibility diagnostics must not create VS Code warning notifications",
   );
 });

@@ -38,6 +38,50 @@ test('chat css pipeline keeps Tailwind enabled for utility-heavy React chat comp
   assert.match(panelComponentsSource, /className="[^"]*\bpx-3\b[^"]*"/, 'panel components should continue using spacing utility classes');
 });
 
+test('details overview uses the same content gutter as the other tabs', () => {
+  assert.match(
+    chatCssSource,
+    /\.oc-details-sheet\s+\.oc-details-tab-content--overview\s*\{[^}]*padding:\s*8px\s+10px\s+10px;/s,
+    'the Active Task overview should align with Quota, Integrations, and Tools content',
+  );
+  assert.match(
+    chatCssSource,
+    /\.oc-details-sheet\s+\.oc-details-tab-content--overview\s*>\s*\.oc-active-task-panel\s*\{[^}]*margin-top:\s*0;/s,
+    'the overview panel should not add a second top inset inside the shared tab gutter',
+  );
+});
+
+test('Active Task is a peer overview section instead of a parent heading', () => {
+  assert.match(
+    panelComponentsSource,
+    /className="oc-active-task-content"[\s\S]*?<MiniSection title="Active Task">/,
+    'Active Task should use the same MiniSection row as Context, Runtime, and Session',
+  );
+  assert.doesNotMatch(
+    panelComponentsSource,
+    /oc-panel-title">Active Task</,
+    'Active Task should not render a separate parent heading above the overview sections',
+  );
+  assert.doesNotMatch(
+    panelComponentsSource,
+    /<MiniSection title="Todo Checklist">/,
+    'the checklist content should not introduce a second nested section title',
+  );
+});
+
+test('overview section headers use labels and chevrons without decorative dots', () => {
+  assert.doesNotMatch(
+    panelComponentsSource,
+    /inline-block h-1\.5 w-1\.5 rounded-full transition-colors/,
+    'MiniSection headers should not render a low-contrast decorative status dot',
+  );
+  assert.doesNotMatch(
+    chatCssSource,
+    /\.oc-details-sheet\s+\.oc-inspector-section-toggle\s*>\s*span:first-child\s*\{[^}]*width:\s*5px/s,
+    'the first section-header span is its label, not a dot that needs dot sizing styles',
+  );
+});
+
 // ── Markdown list styling regression tests ───────────────────────────────────────
 
 test('markdown-body ordered lists must display with decimal numbers (not bullets)', () => {

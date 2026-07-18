@@ -153,6 +153,132 @@ describe('createMessageHandler - terminal turn identity', () => {
     assert.equal(state.assistantTurnPending, false);
     assert.equal(state.streaming?.isActive, false);
   });
+
+  it('keeps loading locked off for the same message after finish stop and heartbeat events', () => {
+    let state = {
+      ...initialState,
+      currentSessionId: 'ses-terminal-lock',
+      isProcessing: true,
+      assistantTurnPending: true,
+      assistantTurnMessageId: 'msg-terminal-lock',
+      streaming: {
+        messageId: 'msg-terminal-lock',
+        content: 'Completed response',
+        reasoning: '',
+        reasoningEvents: [],
+        steps: [],
+        progressEvents: [],
+        edits: [],
+        isActive: true,
+      },
+    } as AppState;
+    const dispatch = (action: Parameters<typeof appReducer>[1]) => {
+      state = appReducer(state, action);
+    };
+    const handler = createMessageHandler(dispatch, () => state);
+
+    handler({
+      data: {
+        type: 'streamEvent',
+        processing: true,
+        sessionId: 'ses-terminal-lock',
+        event: {
+          type: 'message.part.updated',
+          properties: {
+            part: {
+              type: 'step-finish',
+              messageID: 'msg-terminal-lock',
+              reason: 'stop',
+            },
+          },
+        },
+      },
+    } as MessageEvent);
+
+    handler({
+      data: {
+        type: 'streamEvent',
+        processing: true,
+        sessionId: 'ses-terminal-lock',
+        event: { type: 'server.heartbeat' },
+      },
+    } as MessageEvent);
+
+    handler({
+      data: {
+        type: 'streamEvent',
+        processing: true,
+        sessionId: 'ses-terminal-lock',
+        event: {
+          type: 'message.updated',
+          properties: {
+            info: {
+              id: 'msg-terminal-lock',
+              role: 'assistant',
+            },
+          },
+        },
+      },
+    } as MessageEvent);
+
+    assert.equal(state.isProcessing, false);
+    assert.equal(state.assistantTurnPending, false);
+    assert.equal(state.streaming?.isActive, false);
+  });
+
+  it('preserves a visible assistant phase when the stream changes message id', () => {
+    let state = {
+      ...initialState,
+      currentSessionId: 'ses-multi-phase',
+      isProcessing: true,
+      assistantTurnPending: true,
+      assistantTurnMessageId: 'msg-phase-1',
+      messages: [
+        { id: 'msg-user', role: 'user', content: 'Inspect the project' },
+      ],
+      streaming: {
+        messageId: 'msg-phase-1',
+        content: 'The first visible response block must remain.',
+        hasRenderableContent: true,
+        reasoning: '',
+        reasoningEvents: [],
+        steps: [],
+        progressEvents: [],
+        edits: [],
+        isActive: true,
+      },
+    } as AppState;
+    const dispatch = (action: Parameters<typeof appReducer>[1]) => {
+      state = appReducer(state, action);
+    };
+    const handler = createMessageHandler(dispatch, () => state);
+
+    handler({
+      data: {
+        type: 'streamEvent',
+        sessionId: 'ses-multi-phase',
+        event: {
+          type: 'message.updated',
+          properties: {
+            info: {
+              id: 'msg-phase-2',
+              role: 'assistant',
+            },
+          },
+        },
+      },
+    } as MessageEvent);
+
+    assert.equal(state.streaming?.messageId, 'msg-phase-2');
+    assert.ok(
+      state.messages.some(
+        (message) =>
+          (message.id === 'msg-phase-1' || message.info?.id === 'msg-phase-1') &&
+          message.content === 'The first visible response block must remain.',
+      ),
+      'the populated response phase must be materialized before the live stream is re-keyed',
+    );
+  });
 });
 
 describe('createMessageHandler - chatHistory hydration guards', () => {

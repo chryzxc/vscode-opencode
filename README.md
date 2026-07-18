@@ -1,30 +1,18 @@
-# OpenCode UI for VS Code
+# OpenCode Workbench — VS Code UI
 
-[![VS Code Marketplace](https://img.shields.io/badge/VS%20Code%20Marketplace-Open-007ACC?logo=visualstudiocode&logoColor=white)](https://marketplace.visualstudio.com/items?itemName=chryzxc.opencode-vscode-chryzxc)
-[![Open VSX](https://img.shields.io/badge/Open%20VSX-Open-C160EF)](https://open-vsx.org/user/chryzxc)
-[![Installs](https://img.shields.io/badge/Installs-View%20on%20Marketplace-6E7781)](https://marketplace.visualstudio.com/items?itemName=chryzxc.opencode-vscode-chryzxc)
-[![GitHub Repo stars](https://img.shields.io/github/stars/chryzxc/vscode-opencode?style=social)](https://github.com/chryzxc/vscode-opencode/stargazers)
-[![GitHub issues](https://img.shields.io/github/issues/chryzxc/vscode-opencode)](https://github.com/chryzxc/vscode-opencode/issues)
+[![VS Code Marketplace installs](https://img.shields.io/visual-studio-marketplace/i/chryzxc.opencode-vscode-chryzxc?label=VS%20Code%20installs)](https://marketplace.visualstudio.com/items?itemName=chryzxc.opencode-vscode-chryzxc)
+[![VS Code Marketplace rating](https://img.shields.io/visual-studio-marketplace/r/chryzxc.opencode-vscode-chryzxc)](https://marketplace.visualstudio.com/items?itemName=chryzxc.opencode-vscode-chryzxc&ssr=false#review-details)
+[![GitHub stars](https://img.shields.io/github/stars/chryzxc/vscode-opencode?style=social)](https://github.com/chryzxc/vscode-opencode/stargazers)
 
-A OpenCode GUI for VS Code.
+An independent VS Code client for the OpenCode coding agent, powered by [`@opencode-ai/sdk`](https://www.npmjs.com/package/@opencode-ai/sdk). Chat with your codebase, build implementation plans, track subagents, review changes, and monitor model quotas without leaving the editor.
 
-OpenCode GUI brings the OpenCode coding agent directly into Visual Studio Code with streaming chat, code context, file and image attachments, implementation plans, subagent tracking, session history, and live quota monitoring.
+![OpenCode Workbench conversation view](./assets/conversation-1.png)
 
-It is built for developers who use OpenCode but want a smoother IDE workflow instead of switching between the terminal and editor.
+- Review implementation plans with annotations before execution
+- Follow live subagent activity, tool calls, todos, and session progress
+- Attach code and images, review diffs, manage sessions, and monitor provider quotas
 
-If this extension helps your workflow, consider giving the repo a star.
-
----
-
-## Demo
-
-### Main Conversation Flow
-
-![Main conversation flow demo](./assets/demo.gif)
-
-### Interactive Plan Viewer
-
-![Interactive plan viewer demo](./assets/demo-1.gif)
+[Install from the VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=chryzxc.opencode-vscode-chryzxc)
 
 ---
 
@@ -69,6 +57,7 @@ If you already use OpenCode in the terminal, this extension gives you a more int
 - View subagent activity, tool calls, and execution progress
 - Monitor live quota usage for GitHub Copilot, Z.ai, OpenAI, and other supported providers
 - Keep persistent session history across VS Code restarts
+- Fork a completed AI response into a new conversation branch
 - Use slash-command skills, MCP status, LSP status, and agent panels from one UI
 
 ---
@@ -87,6 +76,7 @@ This gives you the power of OpenCode while keeping your planning, prompting, rev
 - Markdown rendering with syntax highlighting
 - Collapsible reasoning/thinking sections
 - Copy message content to clipboard
+- Fork a conversation from any completed assistant response
 - Inline image previews
 - Unified error cards for API failures and timeout issues
 - Token usage tracking for prompt, response, reasoning, and cache activity
@@ -133,7 +123,8 @@ This gives you the power of OpenCode while keeping your planning, prompting, rev
 ### Session History
 
 - Persistent chat sessions across VS Code restarts
-- Rename, delete, and fork sessions
+- Rename and delete sessions
+- Fork from a completed assistant response to branch the conversation at that point
 - Keep long-running work organized
 - Automatically compact sessions when context usage gets too high
 - Continue working without losing important context
@@ -173,26 +164,20 @@ Plugin-provided agents, skills, and capabilities can be surfaced directly inside
 
 ## Screenshots
 
+Prefer motion? Watch the [conversation flow demo](./assets/demo.gif) or the [interactive plan viewer demo](./assets/demo-1.gif).
+
 ### Conversation View
 
 Full chat flow with streaming responses, structured outputs, and session continuity.
 
-![Conversation view 1](./assets/conversation-1.png)
-![Conversation view 2](./assets/conversation-2.png)
 ![Conversation view 3](./assets/conversation-3.png)
-![Conversation view](./assets/conversation.png)
 
 ### Plan Builder and Annotations
 
 Plan workflow from generation to review, including comments and annotations before execution.
 
 ![Interactive planner](./assets/interactive-planner.png)
-![Plan builder](./assets/plan-builder.png)
-![Plan builder 1](./assets/plan-builder-1.png)
-![Interactive plan viewer](./assets/interactive-plan-viewer.png)
 ![Interactive plan viewer with annotations](./assets/interactive-plan-viewer-with-annotations.png)
-![Plan annotations](./assets/plan-annotations.png)
-![Adding comments in plan as annotations](./assets/add-comments-in-plan.png)
 
 ### Attachments and Code Context
 
@@ -204,9 +189,7 @@ Attach file references and highlighted code lines directly in the chat box.
 
 Agent-generated tasks, subagent activity, and side-panel visibility for active execution state.
 
-![Extended panel](./assets/extended-panel.png)
 ![Subagents](./assets/subagents.png)
-![Todo panel](./assets/todo.png)
 
 ### Quota and Interactive Questions
 
@@ -214,8 +197,6 @@ Interactive question flow with selectable answers, custom responses, and live qu
 
 ![Quota view](./assets/quota.png)
 ![Interactive question](./assets/interactive-question.png)
-![Interactive question 2](./assets/interactive-question-2.png)
-![Custom answer](./assets/custom-answer.png)
 
 ---
 
@@ -279,7 +260,8 @@ You can:
 
 - Click the history icon in the chat header to open the session list.
 - Sessions are listed with title, date, and token count.
-- Use the session menu to rename, delete, or fork a session.
+- Use the session menu to rename or delete a session.
+- To branch a conversation, click the **Fork conversation from this response** icon beside **Copy** below a completed assistant response. The new child session includes history through that response and opens ready for your next prompt.
 
 ### Stopping a Response
 
@@ -330,6 +312,17 @@ or add them to `settings.json`.
   "opencode.logging.enableFile": true
 }
 ```
+
+---
+
+## Privacy and Data Handling
+
+- Prompts, attachments, and code context are sent to the locally managed OpenCode server. OpenCode then communicates with the model providers configured by the user.
+- Quota monitoring reads supported OpenCode authentication files on the local machine and contacts the corresponding provider usage endpoints. Token refreshes may update those local authentication files.
+- Model capability metadata may be fetched from [models.dev](https://models.dev/).
+- Session metadata, token usage, budgets, and optional logs are stored locally. This extension does not include a product analytics or telemetry service.
+
+See [SUPPORT.md](./SUPPORT.md) for diagnostics, troubleshooting, and responsible vulnerability reporting.
 
 ---
 

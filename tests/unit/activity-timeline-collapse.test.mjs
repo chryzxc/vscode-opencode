@@ -16,6 +16,10 @@ const assistantBlockPresentationSource = readSource(
   [joinFromRoot("webview", "shared", "src", "chat", "lib", "assistantBlockPresentation.ts")],
   "assistantBlockPresentation.ts",
 );
+const fadedCollapseOverlaySource = readSource(
+  [joinFromRoot("webview", "shared", "src", "components", "ui", "FadedCollapseOverlay.tsx")],
+  "FadedCollapseOverlay.tsx",
+);
 
 
 test("activity timeline tracks an explicit expanded-vs-collapsed assistant turn state", () => {
@@ -98,6 +102,14 @@ test("render-loop lifecycle marker detection keys off partType to keep hiding co
   );
 });
 
+test("the final visible activity row ends its connector before hidden lifecycle markers", () => {
+  assert.match(
+    messageComponentsSource,
+    /const isLastVisibleEventInGroup = !group\.events[\s\S]*?\.some\(\(candidate\) => !isHiddenLifecycleTimelineEvent\(candidate\)\);[\s\S]*?const isLast =[\s\S]*?isLastVisibleEventInGroup;/,
+    "hidden lifecycle markers should not leave a trailing timeline connector and empty gap before the subagent panel",
+  );
+});
+
 test("collapsed activity timeline renders the worked-for summary affordance", () => {
   assert.match(
     messageComponentsSource,
@@ -116,16 +128,16 @@ test("collapsed activity timeline renders the worked-for summary affordance", ()
   );
 });
 
-test("collapsed mode keeps only the last response chunk visible while earlier assistant chunks stay collapsed", () => {
+test("activity collapse leaves the full assistant response under its own local control", () => {
   assert.match(
     messageComponentsSource,
     /showResponseSection && hasVisibleResponseSectionContent/,
-    "response section should stay mounted even when the activity timeline is collapsed",
+    "response section should remain independent from the activity timeline state",
   );
   assert.match(
     messageComponentsSource,
-    /const responseChunksVisibleInCurrentView =[\s\S]*isAssistantTurnCollapsed[\s\S]*responseChunksToRender\.slice\(-1\)[\s\S]*:\s*responseChunksToRender;/,
-    "collapsed mode should keep only the final assistant response chunk visible",
+    /const responseChunksVisibleInCurrentView = responseChunksToRender;/,
+    "activity collapse must not truncate assistant response chunks",
   );
   assert.match(
     messageComponentsSource,
@@ -137,6 +149,63 @@ test("collapsed mode keeps only the last response chunk visible while earlier as
     /Collapse activity timeline/,
     "expanded completed turns should offer a way to collapse the non-final assistant context back to the summary row",
   );
+});
+
+test("completed assistant responses use rendered overflow for their card preview", () => {
+  assert.match(
+    messageComponentsSource,
+    /const \[hasResponseOverflow, setHasResponseOverflow\] = useState\(false\);/,
+    "response cards should track whether their rendered body overflows",
+  );
+  assert.match(
+    messageComponentsSource,
+    /const \[isResponseExpanded, setIsResponseExpanded\] = useState\(false\);/,
+    "long responses should start in preview mode",
+  );
+  assert.match(
+    messageComponentsSource,
+    /const shouldConstrainResponsePreview =[\s\S]*!isStreamingActive[\s\S]*showResponseBody[\s\S]*!isResponseExpanded;/,
+    "every completed response body should receive the shared preview boundary",
+  );
+  assert.match(
+    messageComponentsSource,
+    /preview\.scrollHeight > preview\.clientHeight \+ 1/,
+    "the fade should be based on real rendered overflow rather than character count",
+  );
+  assert.match(
+    messageComponentsSource,
+    /data-assistant-section="response"[\s\S]*max-h-\[28rem\][\s\S]*<FadedCollapseOverlay/s,
+    "the bounded preview should use the shared fade control inside the response card",
+  );
+  assert.match(
+    messageComponentsSource,
+    /<FadedCollapseOverlay[\s\S]*setIsResponseExpanded\(true\)[\s\S]*setIsResponseExpanded\(false\)/s,
+    "the response card should toggle between preview and full content",
+  );
+});
+
+test("shortened-content surfaces share one centered fade affordance", () => {
+  assert.match(
+    fadedCollapseOverlaySource,
+    /label = "Show full"/,
+    "the shared control should provide the standard action text",
+  );
+  assert.match(
+    fadedCollapseOverlaySource,
+    /items-end justify-center/,
+    "the shared control should use the standard centered bottom alignment",
+  );
+  for (const relativePath of [
+    "webview/shared/src/chat/MessageComponents.tsx",
+    "webview/shared/src/chat/components/activity-steps/DiffPreviewStep.tsx",
+    "webview/shared/src/chat/components/activity-steps/SearchActivityPreview.tsx",
+  ]) {
+    assert.match(
+      readSource([joinFromRoot(...relativePath.split("/"))], relativePath),
+      /FadedCollapseOverlay/,
+      `${relativePath} should reuse the standard fade affordance`,
+    );
+  }
 });
 
 test("multi-card block collapse maintains visibility of the final text-containing card", () => {

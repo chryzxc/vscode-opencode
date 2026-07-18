@@ -551,12 +551,6 @@ body {
 }
 
 .oc-details-sheet .oc-inspector-section-toggle > span:first-child {
-  width: 5px;
-  height: 5px;
-  background: color-mix(in srgb, var(--oc-accent) 56%, transparent);
-}
-
-.oc-details-sheet .oc-inspector-section-toggle > span:nth-child(2) {
   color: var(--oc-text-secondary);
   font-size: 10px;
   font-weight: 600;
@@ -833,7 +827,7 @@ body {
 }
 
 .oc-details-sheet .oc-details-tab-content--overview {
-  padding: 0;
+  padding: 8px 10px 10px;
 }
 
 .oc-details-sheet .oc-details-tab-stack {
@@ -855,7 +849,7 @@ body {
 }
 
 .oc-details-sheet .oc-details-tab-content--overview > .oc-active-task-panel {
-  margin-top: 8px;
+  margin-top: 0;
 }
 
 .oc-details-sheet .oc-active-task-heading,
@@ -1329,7 +1323,7 @@ body {
 /* Overview typography: one compact hierarchy shared by Active Task, Context,
  * Runtime, and Session. */
 .oc-details-sheet .oc-active-task-heading .oc-panel-title,
-.oc-details-sheet .oc-inspector-section-toggle > span:nth-child(2) {
+.oc-details-sheet .oc-inspector-section-toggle > span:first-child {
   font-size: 10px !important;
   font-weight: 600;
   line-height: 1.2;
@@ -6192,29 +6186,43 @@ body {
   border-color: var(--oc-border-soft);
 }
 
-/* Error card - red semantic */
+/* Error notice — neutral surface with a local semantic failure signal. */
 .oc-error {
-  @apply rounded-lg border p-2.5 transition-all duration-200;
-  border-color: rgba(239, 68, 68, 0.5);
-  background-color: rgba(127, 29, 29, 0.15);
-  color: rgba(254, 226, 226, 1);
+  @apply rounded-lg border px-3 py-2.5 transition-colors duration-150;
+  border-color: var(--oc-surface-border);
+  background: var(--oc-surface-fill);
+  box-shadow: inset 2px 0 0 var(--oc-red);
 }
 
 .oc-error-icon {
-  @apply inline-flex h-5 w-5 items-center justify-center rounded-md;
-  border-color: rgba(239, 68, 68, 0.5);
-  background-color: rgba(239, 68, 68, 0.15);
+  @apply inline-flex h-5 w-5 shrink-0 items-center justify-center;
+  color: var(--oc-red);
+}
+
+.oc-error-footer {
+  @apply mt-2 flex flex-wrap items-center gap-2;
 }
 
 .oc-error-action {
-  @apply inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium transition-all active:scale-95;
-  border-color: rgba(239, 68, 68, 0.5);
-  background-color: rgba(239, 68, 68, 0.15);
-  color: rgba(254, 226, 226, 1);
+  @apply inline-flex min-h-7 items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium transition-colors duration-150;
+  border-color: var(--oc-surface-border);
+  background: transparent;
+  color: var(--oc-text);
 }
 
 .oc-error-action:hover {
-  background-color: rgba(239, 68, 68, 0.25);
+  background: color-mix(in srgb, var(--oc-panel-soft) 72%, transparent);
+  border-color: var(--oc-border);
+}
+
+.oc-error-action:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, var(--oc-accent));
+  outline-offset: 2px;
+}
+
+.oc-error-hint {
+  @apply text-[11px] leading-snug;
+  color: var(--oc-text-secondary);
 }
 
 /* Warning card - amber semantic */
@@ -6405,23 +6413,6 @@ body {
 
 .oc-quota-warning-border {
   border-color: rgba(210, 153, 34, 0.3);
-}
-
-/* Error detail box - red semantic with subdued styling */
-.oc-error-detail {
-  @apply rounded-md border p-1.5;
-  border-color: rgba(239, 68, 68, 0.25);
-  background-color: rgba(69, 10, 10, 0.35);
-}
-
-.oc-error-detail-title {
-  @apply mb-1 text-[9px] font-semibold uppercase tracking-[0.08em];
-  color: #fca5a5;
-}
-
-.oc-error-detail-content {
-  @apply overflow-hidden text-[11px] leading-snug whitespace-pre-wrap break-words;
-  color: #fee2e2;
 }
 
 /* Warning icon and text colors */

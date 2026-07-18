@@ -13,6 +13,7 @@ import {
   ChevronRight,
   ChevronUp,
   Copy,
+  GitFork,
   FileText,
   FileText as FileTextIcon,
   Loader2,
@@ -44,6 +45,10 @@ import { Stepper, StepperItem } from "@/components/ui/stepper";
 import { TerminalBlock } from "@/components/ui/TerminalBlock";
 import { SearchBlock } from "@/components/ui/SearchBlock";
 import { ExpandableStep } from "@/components/ui/ExpandableStep";
+import {
+  FadedCollapseOverlay,
+  useFadedContentOverflow,
+} from "@/components/ui/FadedCollapseOverlay";
 import { StepIndicator } from "@/components/ui/StepIndicator";
 import { cn, formatDuration, toWorkspaceRelativePath } from "@/utils";
 
@@ -2095,6 +2100,7 @@ function CollapsedMarkdownPreview({
   variant = "card",
 }: CollapsedMarkdownPreviewProps) {
   const [isOpen, setIsOpen] = useState(false);
+  const { ref: previewRef, hasOverflow } = useFadedContentOverflow<HTMLDivElement>();
   const hasContent = content.trim().length > 0;
 
   if (!hasContent) {
@@ -2118,29 +2124,20 @@ function CollapsedMarkdownPreview({
         <div className={cn(
           "relative max-h-[140px] min-w-0 max-w-full overflow-hidden",
           variant === "card" ? "p-2" : "p-0",
-        )}>
+        )} ref={previewRef}>
           <div className={cn(
-            "max-h-[140px] min-w-0 max-w-full overflow-hidden",
+            "min-w-0 max-w-full",
             variant === "card" ? "pr-1" : "pr-0",
           )}>
             <MarkdownRenderer content={content} className="markdown-body" />
           </div>
-          <div
-            className={cn(
-              "pointer-events-none absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t",
+          {hasOverflow && <FadedCollapseOverlay
+            backgroundClassName={
               variant === "card"
                 ? "from-oc-bg-soft via-oc-bg-soft/90 to-transparent"
-                : "from-oc-panel-soft/80 via-oc-panel-soft/30 to-transparent",
-            )}
-          />
-        </div>
-        <div
-          className={cn(
-            "oc-timeline-caret pointer-events-none absolute bottom-2 right-2 inline-flex h-6 w-6 items-center justify-center rounded-full",
-            variant === "bare" && "bottom-1 right-1",
-          )}
-        >
-          <ChevronDown className="h-3 w-3 oc-text-secondary" />
+                : "from-oc-panel-soft/80 via-oc-panel-soft/30 to-transparent"
+            }
+          />}
         </div>
       </button>
       <MarkdownPreviewModal
@@ -2241,6 +2238,7 @@ function CollapsedTerminalBlockPreview({
   className,
 }: CollapsedTerminalBlockPreviewProps) {
   const [isOpen, setIsOpen] = useState(false);
+  const { ref: previewRef, hasOverflow } = useFadedContentOverflow<HTMLDivElement>();
   const hasCommand = command.trim().length > 0;
   if (!hasCommand) {
     return null;
@@ -2257,12 +2255,9 @@ function CollapsedTerminalBlockPreview({
         )}
         aria-label={`Open ${title} preview`}
       >
-        <div className="relative max-h-[140px] overflow-hidden p-2">
+        <div ref={previewRef} className="relative max-h-[140px] overflow-hidden p-2">
           <TerminalBlock command={command} output={output} className="pointer-events-none" />
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-oc-bg-soft via-oc-bg-soft/90 to-transparent" />
-        </div>
-        <div className="oc-timeline-caret pointer-events-none absolute bottom-2 right-2 inline-flex h-6 w-6 items-center justify-center rounded-full">
-          <ChevronDown className="h-3 w-3 oc-text-secondary" />
+          {hasOverflow && <FadedCollapseOverlay />}
         </div>
       </button>
       <TerminalBlockPreviewModal
@@ -2386,6 +2381,7 @@ function CollapsedSearchBlockPreview({
   headLimit,
 }: CollapsedSearchBlockPreviewProps) {
   const [isOpen, setIsOpen] = useState(false);
+  const { ref: previewRef, hasOverflow } = useFadedContentOverflow<HTMLDivElement>();
   const hasContent =
     !!pattern ||
     !!scope ||
@@ -2407,8 +2403,8 @@ function CollapsedSearchBlockPreview({
         className="oc-timeline-surface oc-timeline-soft-frame group relative w-full overflow-hidden rounded-lg text-left transition-colors hover:bg-oc-panel-soft/50"
         aria-label={`Open ${title} details`}
       >
-        <div className="relative max-h-[128px] overflow-hidden p-1.5">
-          <div className="max-h-[128px] overflow-hidden">
+        <div ref={previewRef} className="relative max-h-[128px] overflow-hidden p-1.5">
+          <div>
             <SearchBlock
               className="oc-search-block--timeline-compact"
               pattern={pattern}
@@ -2421,10 +2417,7 @@ function CollapsedSearchBlockPreview({
               headLimit={headLimit}
             />
           </div>
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-oc-bg-soft via-oc-bg-soft/88 to-transparent" />
-        </div>
-        <div className="oc-timeline-caret pointer-events-none absolute bottom-2 right-2 inline-flex h-6 w-6 items-center justify-center rounded-full">
-          <ChevronDown className="h-3 w-3 oc-text-secondary" />
+          {hasOverflow && <FadedCollapseOverlay />}
         </div>
       </button>
       <SearchBlockPreviewModal
@@ -3669,6 +3662,18 @@ function progressItemsFromRawResponseParts(
       continue;
     }
 
+    const partType = asString(partRec.type).trim().toLowerCase();
+    if (
+      partType === "reasoning" ||
+      partType === "thinking" ||
+      partType === "thought" ||
+      partType === "text" ||
+      partType === "message" ||
+      partType === "output_text"
+    ) {
+      continue;
+    }
+
     const toolName = firstNonEmptyString(
       asString(partRec.tool),
       asString(partRec.name),
@@ -3737,7 +3742,7 @@ function progressItemsFromRawResponseParts(
           messageID: partMessageID || undefined,
           title: rawTitle,
           filePath,
-          partType: asString(partRec.type) || "tool",
+          partType: partType || "tool",
           activityDetail: {
             kind: toolName === "read" ? "read" : toolName || "tool_call",
             summary: filePath || preview || rawTitle,
@@ -3756,7 +3761,7 @@ function progressItemsFromRawResponseParts(
       title: rawTitle,
       status,
       source: "raw_debug",
-      partType: asString(partRec.type) || "tool",
+      partType: partType || "tool",
       internal: Boolean(partRec.internal),
       meta: preview || undefined,
       filePath,
@@ -7557,12 +7562,20 @@ function ResponseMessageInner({
   const {
     assistantTurnPending,
     assistantTurnMessageId,
+    isLoadingSession,
+    isProcessing,
+    processingSessionIds,
+    streaming: currentStreaming,
     streamingBySessionId,
     selectedSubagentId,
   } = useAppState(
     (state) => ({
       assistantTurnPending: state.assistantTurnPending,
       assistantTurnMessageId: state.assistantTurnMessageId,
+      isLoadingSession: state.isLoadingSession,
+      isProcessing: state.isProcessing,
+      processingSessionIds: state.processingSessionIds,
+      streaming: state.streaming,
       streamingBySessionId: state.streamingBySessionId,
       selectedSubagentId: state.selectedSubagentId,
     }),
@@ -7600,6 +7613,7 @@ function ResponseMessageInner({
   const [showAllSubagents, setShowAllSubagents] = useState(false);
   const [showTodoChecklist, setShowTodoChecklist] = useState(true);
   const [copied, setCopied] = useState(false);
+  const [isForking, setIsForking] = useState(false);
   const [previewImageSrc, setPreviewImageSrc] = useState<string | null>(null);
   const messageBodyRef = useRef<HTMLDivElement>(null);
   const progressTimelineRef = useRef<HTMLDivElement>(null);
@@ -8304,6 +8318,12 @@ const centralizedRawResponse = message?.rawResponse;
     showExpandedActivityTimeline: false,
     expandedReasoningSteps: new Set<string>(),
   });
+  // Long response bodies start as a bounded preview. This state is entirely
+  // local to the response card; activity and assistant-block collapse do not
+  // affect it.
+  const [isResponseExpanded, setIsResponseExpanded] = useState(false);
+  const [hasResponseOverflow, setHasResponseOverflow] = useState(false);
+  const responsePreviewRef = useRef<HTMLDivElement>(null);
   // The centralized event tape is the source of truth for ordering. Do not
   // pin streaming-only reasoning blocks or other migration artifacts to the
   // end of the timeline, because that can duplicate or reorder the final turn.
@@ -9390,10 +9410,38 @@ const responseBodyChunks = useMemo(() => {
 const hasVisibleResponseSectionContent =
     showResponseBody ||
     (shouldShowPlanCard && !!plan);
-  const responseChunksVisibleInCurrentView =
-    isAssistantTurnCollapsed && responseChunksToRender.length > 0
-      ? responseChunksToRender.slice(-1)
-      : responseChunksToRender;
+  // Response visibility belongs to the response card itself. Activity/block
+  // collapse may summarize work around the card, but must never truncate the
+  // assistant's response text.
+  const responseChunksVisibleInCurrentView = responseChunksToRender;
+  // Every completed response body is constrained to the preview height first.
+  // Whether it receives a fade is determined from its rendered height rather
+  // than an arbitrary character count, so code-heavy and markdown-heavy cards
+  // behave consistently too.
+  const shouldConstrainResponsePreview =
+    !isStreamingActive && showResponseBody && !isResponseExpanded;
+  const canPreviewResponse = shouldConstrainResponsePreview && hasResponseOverflow;
+  const isResponsePreviewCollapsed = canPreviewResponse;
+
+  useEffect(() => {
+    const preview = responsePreviewRef.current;
+    if (!preview || !shouldConstrainResponsePreview) {
+      setHasResponseOverflow(false);
+      return;
+    }
+
+    const updateOverflow = () => {
+      const nextHasOverflow = preview.scrollHeight > preview.clientHeight + 1;
+      setHasResponseOverflow((current) =>
+        current === nextHasOverflow ? current : nextHasOverflow,
+      );
+    };
+
+    updateOverflow();
+    const observer = new ResizeObserver(updateOverflow);
+    observer.observe(preview);
+    return () => observer.disconnect();
+  }, [responseChunksToRender, shouldConstrainResponsePreview]);
 
   const responseSectionClass = hasResponseContent
     ? "rounded-md border border-oc-border-soft bg-background p-2.5 shadow-sm"
@@ -9416,6 +9464,88 @@ const hasVisibleResponseSectionContent =
       setTimeout(() => setCopied(false), 1200);
     }
   };
+  const handleForkSession = () => {
+    if (!centralizedSessionId || !assistantMessageId || isForking) {
+      logger.warn("[FORK_TRACE][WEBVIEW] fork click ignored", {
+        centralizedSessionId,
+        assistantMessageId,
+        isForking,
+        currentSessionId,
+        isProcessing,
+        isLoadingSession,
+        processingSessionIds,
+        streamingActive: currentStreaming?.isActive ?? false,
+      });
+      return;
+    }
+
+    logger.warn("[FORK_TRACE][WEBVIEW] fork requested", {
+      sourceSessionId: centralizedSessionId,
+      sourceMessageId: assistantMessageId,
+      currentSessionId,
+      isProcessing,
+      isLoadingSession,
+      processingSessionIds,
+      assistantTurnPending,
+      assistantTurnMessageId,
+      streamingActive: currentStreaming?.isActive ?? false,
+      streamingMessageId: currentStreaming?.messageId ?? null,
+    });
+    setIsForking(true);
+    vscode.postMessage({
+      type: "forkSession",
+      sessionId: centralizedSessionId,
+      messageId: assistantMessageId,
+    });
+  };
+
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      const data = event?.data as
+        | {
+            type?: string;
+            sessionId?: string;
+            messageId?: string;
+            success?: boolean;
+            forkedSessionId?: string;
+            error?: string;
+          }
+        | undefined;
+      if (
+        data?.type === "forkSessionResult" &&
+        data.sessionId === centralizedSessionId &&
+        data.messageId === assistantMessageId
+      ) {
+        logger.warn("[FORK_TRACE][WEBVIEW] fork result received", {
+          sourceSessionId: data.sessionId,
+          sourceMessageId: data.messageId,
+          success: data.success === true,
+          forkedSessionId: data.forkedSessionId ?? null,
+          error: data.error ?? null,
+          currentSessionId,
+          isProcessing,
+          isLoadingSession,
+          processingSessionIds,
+          streamingActive: currentStreaming?.isActive ?? false,
+        });
+        setIsForking(false);
+      }
+    };
+
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [
+    assistantMessageId,
+    centralizedSessionId,
+    currentSessionId,
+    isLoadingSession,
+    isProcessing,
+    processingSessionIds,
+    assistantTurnMessageId,
+    assistantTurnPending,
+    currentStreaming?.isActive,
+    currentStreaming?.messageId,
+  ]);
 const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
     dispatch({ type: "SET_PROCESSING", payload: true });
     const targetMessageIndex = (messages || []).findIndex((candidate) => {
@@ -9766,7 +9896,16 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
                       autoScrollToBottom={isStreamingActive && groupIdx === nonQuestionTimelineDisplayEventGroups.length - 1}
                     >
                        {group.events.map((event, index) => {
-                        const isLast = groupIdx === nonQuestionTimelineDisplayEventGroups.length - 1 && index === group.events.length - 1;
+                        // Lifecycle markers remain in the tape for ordering and
+                        // reconciliation, but they have no visible row. Treat the
+                        // last visible item as final so its timeline connector does
+                        // not stretch through the empty space before subagents.
+                        const isLastVisibleEventInGroup = !group.events
+                          .slice(index + 1)
+                          .some((candidate) => !isHiddenLifecycleTimelineEvent(candidate));
+                        const isLast =
+                          groupIdx === nonQuestionTimelineDisplayEventGroups.length - 1 &&
+                          isLastVisibleEventInGroup;
                         const indicatorNode = (
                           <StepIndicator
                             status={event.status}
@@ -10296,12 +10435,18 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
           )}
 
               {showResponseSection && hasVisibleResponseSectionContent && (
-            <section
-              data-assistant-section="response"
-              className={responseSectionClass}
+                <section
+                  data-assistant-section="response"
+                  className={responseSectionClass}
             >
               {showResponseBody && (
-                <div className="mt-1.5 space-y-1.5">
+                <div
+                  ref={responsePreviewRef}
+                  className={cn(
+                    "relative mt-1.5 space-y-1.5",
+                    shouldConstrainResponsePreview && "max-h-[28rem] overflow-hidden",
+                  )}
+                >
                   {responseChunksVisibleInCurrentView.map((chunk, index) => (
                     <ResponseMessageBody
                       key={`${messageId || "assistant"}-response-${index}`}
@@ -10311,6 +10456,28 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
                       variant="bare"
                     />
                   ))}
+                  {isResponsePreviewCollapsed && (
+                    <FadedCollapseOverlay
+                      onClick={() => setIsResponseExpanded(true)}
+                      backgroundClassName="from-background via-background/90 to-transparent"
+                    />
+                  )}
+                </div>
+              )}
+
+              {canPreviewResponse && isResponseExpanded && (
+                <div className="mt-2 flex justify-start">
+                  <button
+                    type="button"
+                    className="oc-assistant-turn-collapse-link inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] font-medium oc-text-secondary transition-colors hover:text-oc-text"
+                    onClick={() => setIsResponseExpanded(false)}
+                    aria-expanded="true"
+                    aria-label="Show less response"
+                    title="Show less response"
+                  >
+                    <ChevronUp className="h-3 w-3" />
+                    <span>Show less</span>
+                  </button>
                 </div>
               )}
 
@@ -10422,6 +10589,24 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
                 <Check className="h-3.5 w-3.5 text-oc-green" />
               ) : (
                 <Copy className="h-3.5 w-3.5" />
+              )}
+            </button>
+            <button
+              type="button"
+              className="oc-bubble-copy-btn h-7 w-7"
+              onClick={handleForkSession}
+              disabled={!centralizedSessionId || !assistantMessageId || isForking}
+              aria-label="Fork conversation from this response"
+              title={
+                centralizedSessionId && assistantMessageId
+                  ? "Fork conversation from this response"
+                  : "Fork unavailable: missing session or message identifier"
+              }
+            >
+              {isForking ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <GitFork className="h-3.5 w-3.5" />
               )}
             </button>
             {(() => {
@@ -11148,27 +11333,24 @@ export function ErrorBanner({
 
   return (
     <div className="mb-2">
-      <div className="oc-error flex flex-col gap-1.5">
-        <div className="flex items-center gap-1.5">
+      <div className="oc-error">
+        <div className="flex min-w-0 items-start gap-2">
           <span className="oc-error-icon">
-            <AlertCircle className="h-3 w-3 shrink-0 text-[#fca5a5]" />
+            <AlertCircle className="h-3.5 w-3.5 shrink-0" />
           </span>
-          <span className="text-[10px] font-semibold uppercase tracking-[0.07em] text-[#fca5a5]">
-            Request failed
-          </span>
-        </div>
-
-        <div className="oc-error-detail">
-          <div className="oc-error-detail-title">
-            Error message
-          </div>
-          <div className="oc-error-detail-content">
-            {errorDetails}
+          <div className="min-w-0 flex-1">
+            <div className="text-[12px] font-semibold leading-5 text-oc-text">
+              Request failed
+            </div>
+            <p className="mt-0.5 whitespace-pre-wrap break-words text-[12px] leading-5 text-oc-text-secondary">
+              {errorDetails}
+            </p>
           </div>
         </div>
 
-        {onRetry && (
-          <div className="flex justify-start">
+        {(onRetry || retryHint) && (
+          <div className="oc-error-footer">
+            {onRetry && (
             <button
               type="button"
               onClick={onRetry}
@@ -11177,11 +11359,12 @@ export function ErrorBanner({
               <RotateCw className="h-3 w-3" />
               <span>{retryLabel || "Retry"}</span>
             </button>
+            )}
+            {retryHint ? (
+              <div className="oc-error-hint">{retryHint}</div>
+            ) : null}
           </div>
         )}
-        {retryHint ? (
-          <div className="text-[10px] leading-snug text-[#fca5a5]">{retryHint}</div>
-        ) : null}
       </div>
     </div>
   );

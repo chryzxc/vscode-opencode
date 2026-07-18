@@ -1,12 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 
-import { ArrowRight, Bot, Clock3, Copy, Sparkles, X, Terminal, ChevronDown } from "lucide-react";
+import { ArrowRight, Bot, Clock3, Copy, Sparkles, X, Terminal } from "lucide-react";
 
 import { cn, formatDuration } from "@/utils";
 import { Stepper, StepperItem } from "@/components/ui/stepper";
 import { usePersistentModalOpen } from "../../lib/usePersistentModalOpen";
 import { StepIndicator } from "@/components/ui/StepIndicator";
+import {
+  FadedCollapseOverlay,
+  useFadedContentOverflow,
+} from "@/components/ui/FadedCollapseOverlay";
 
 import { MarkdownRenderer } from "../../../components/MarkdownRenderer";
 import { ActivityStepStatusChip } from "./ActivityStepStatusChip";
@@ -410,6 +414,7 @@ export function BackgroundOutputStep({
   const [isModalOpen, setIsModalOpen] = usePersistentModalOpen(
     `background-output:${taskId || sessionLabel || description}`,
   );
+  const { ref: previewRef, hasOverflow } = useFadedContentOverflow<HTMLDivElement>();
 
   const isDone = status === "done";
   const isError = status === "error";
@@ -443,7 +448,7 @@ export function BackgroundOutputStep({
             className="group relative w-full overflow-hidden rounded-lg border border-oc-border-soft bg-oc-bg-soft/60 text-left transition-colors hover:border-oc-border hover:bg-oc-panel-soft/60"
             aria-label="View background output details"
           >
-            <div className="relative overflow-hidden p-2">
+            <div ref={previewRef} className="relative max-h-[140px] overflow-hidden p-2">
               <div className="oc-activity-step-summary flex items-start gap-1.5 whitespace-pre-wrap break-words font-mono text-oc-text-soft">
                 <span className="flex-1">{previewOutput || "Background output received"}</span>
               </div>
@@ -453,9 +458,7 @@ export function BackgroundOutputStep({
                 </div>
               )}
             </div>
-            <div className="oc-timeline-caret pointer-events-none absolute bottom-1.5 right-1.5 inline-flex h-5 w-5 items-center justify-center rounded-full transition-colors group-hover:bg-oc-panel-soft">
-              <ChevronDown className="h-3 w-3 oc-text-secondary transition-transform group-hover:translate-y-0.5" />
-            </div>
+            {hasOverflow && <FadedCollapseOverlay />}
           </button>
         </div>
       </div>

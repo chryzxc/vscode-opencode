@@ -79,8 +79,7 @@ import {
   normalizeHydratedSubagentDetail as compatNormalizeHydratedSubagentDetail,
   hydrateSubagentSummary as compatHydrateSubagentSummary,
   areSubagentListsEquivalent as compatAreSubagentListsEquivalent,
-  shouldFreezeSubagentForPresentation as compatShouldFreezeSubagentForPresentation,
-  applyStructuredSubagentPayload
+  shouldFreezeSubagentForPresentation as compatShouldFreezeSubagentForPresentation
 } from './subagents/compatUtils';
 import {
   latestSubagentEventTimestamp,
@@ -137,6 +136,19 @@ export function extractEventMessageId(event: unknown): string | null {
 
   // Sometimes the raw stream wraps the actual payload in a `payload` property.
   const payloadRecord = asRecord(eventRecord.payload);
+  // Webview transport messages wrap the semantic SDK event in `event`. Resolve
+  // that layer before falling back to wrapper metadata so terminal turn locks
+  // remain keyed to the assistant message rather than the transport envelope.
+  const semanticEventRecord =
+    asRecord(eventRecord.event) ??
+    asRecord(payloadRecord?.event);
+
+  if (semanticEventRecord && semanticEventRecord !== eventRecord) {
+    const semanticMessageId = extractEventMessageId(semanticEventRecord);
+    if (semanticMessageId) {
+      return semanticMessageId;
+    }
+  }
 
   const info =
     asRecord(asRecord(eventRecord.properties)?.info) ||
@@ -2582,6 +2594,99 @@ type StructuredOutput = {
   };
 };
 
+/**
+ * Project structured-output subagent data into the canonical subagent store.
+ *
+ * SDK stream events remain the preferred source, but structured output is also
+ * a supported transport.  Without this projection, valid `subagents` payloads
+ * never reach `subagentsByParentMessageId`, leaving the inline card empty.
+ */
+export function applyStructuredSubagentPayload(
+  dispatch: Dispatch<AppAction>,
+  getState: () => AppState,
+  structuredOutput: StructuredOutput,
+  messageId: string,
+): void {
+  const state = getState();
+  const fallbackParentMessageId =
+    structuredOutput.subagentsDelta?.parentMessageId || messageId;
+  const fallbackParentSessionId = state.currentSessionId;
+  if (!fallbackParentMessageId || !fallbackParentSessionId) {
+    return;
+  }
+
+  const incoming = [
+    ...(Array.isArray(structuredOutput.subagents)
+      ? structuredOutput.subagents
+      : []),
+    ...(Array.isArray(structuredOutput.subagentsDelta?.items)
+      ? structuredOutput.subagentsDelta.items
+      : []),
+  ];
+  if (incoming.length === 0) {
+    return;
+  }
+
+  const summariesByParentMessageId: Record<string, SubagentSummary[]> = {};
+  const detailsById: Record<string, SubagentDetail> = {};
+
+  for (const item of incoming) {
+    if (!item?.id) {
+      continue;
+    }
+    const parentMessageId = item.parentMessageId || fallbackParentMessageId;
+    const parentSessionId = item.parentSessionId || fallbackParentSessionId;
+    if (!parentMessageId || !parentSessionId) {
+      continue;
+    }
+    const status =
+      item.status === "running" ||
+      item.status === "done" ||
+      item.status === "error" ||
+      item.status === "orphaned" ||
+      item.status === "cancelled"
+        ? item.status
+        : "pending";
+    const latestActivity =
+      sanitizeSubagentLabel(
+        item.latestActivity || item.description || item.name || item.agentId || "",
+      ) || "Subagent update";
+    const detail: SubagentDetail = {
+      id: item.id,
+      backgroundTaskId: item.backgroundTaskId,
+      parentSessionId,
+      parentMessageId,
+      childSessionId: item.childSessionId,
+      agentId: item.agentId || item.agent || item.name,
+      agentRole: item.agentRole || item.agentType,
+      status,
+      latestActivity,
+      references: [],
+      thinkingEvents: item.thinkingEvents || [],
+      conversationEvents: [],
+      progressEvents: item.progressEvents || [],
+      timelineEvents: item.timelineEvents || [],
+    };
+    detailsById[detail.id] = detail;
+    (summariesByParentMessageId[parentMessageId] ??= []).push(detail);
+  }
+
+  if (!hasSubagentSummaryEntries(summariesByParentMessageId)) {
+    return;
+  }
+  dispatch({
+    type: "UPSERT_SUBAGENT_SUMMARIES",
+    payload: mergeSubagentSummaryPayload(
+      state.subagentsByParentMessageId,
+      summariesByParentMessageId,
+    ),
+  });
+  dispatch({
+    type: "UPSERT_SUBAGENT_DETAIL",
+    payload: mergeSubagentDetailPayload(state.subagentDetailsById, detailsById),
+  });
+}
+
 function buildStructuredOutputLogPreview(value: unknown): {
   type: string;
   preview: string;
@@ -4366,6 +4471,20 @@ function shouldBootstrapStreamingFromPart(part: UnknownRecord | null): boolean {
     return true;
   }
 
+  // Raw message.part.delta events can arrive without a typed `part`; their
+  // properties object is passed here as the fallback part. Let a textual delta
+  // establish the live snapshot so its first token can render immediately.
+  const deltaField = asString(part.field).trim().toLowerCase();
+  if (
+    typeof part.delta === "string" &&
+    (deltaField === "text" ||
+      deltaField === "content" ||
+      deltaField === "message" ||
+      deltaField === "output_text")
+  ) {
+    return true;
+  }
+
   const reasoningLike =
     asString(part.reasoning) ||
     asString(part.thought) ||
@@ -5236,6 +5355,60 @@ function cloneRawSnapshot<T>(value: T): T {
   return value;
 }
 
+function mergeReasoningEventSnapshots(
+  finalizedEvents: ReasoningEvent[],
+  streamingEvents: ReasoningEvent[],
+): ReasoningEvent[] {
+  const merged: ReasoningEvent[] = [];
+
+  for (const event of [...finalizedEvents, ...streamingEvents]) {
+    const textKey = normalizeComparableText(asString(event?.text));
+    if (!textKey) {
+      continue;
+    }
+
+    const matchingIndex = merged.findIndex((existing) => {
+      const samePart =
+        !!event.partID &&
+        !!existing.partID &&
+        event.partID === existing.partID;
+      if (samePart) {
+        return true;
+      }
+
+      const sameText =
+        normalizeComparableText(asString(existing.text)) === textKey;
+      const compatibleMessage =
+        !event.messageID ||
+        !existing.messageID ||
+        event.messageID === existing.messageID;
+      return sameText && compatibleMessage;
+    });
+
+    if (matchingIndex < 0) {
+      merged.push({ ...event });
+      continue;
+    }
+
+    const existing = merged[matchingIndex];
+    merged[matchingIndex] = {
+      ...event,
+      ...existing,
+      text:
+        normalizeComparableText(asString(event.text)).length >
+        normalizeComparableText(asString(existing.text)).length
+          ? event.text
+          : existing.text,
+      partID: existing.partID ?? event.partID,
+      messageID: existing.messageID ?? event.messageID,
+      startedAt: existing.startedAt ?? event.startedAt,
+      endedAt: existing.endedAt ?? event.endedAt,
+    };
+  }
+
+  return merged;
+}
+
 export function normalizeMessage(message: Message, streaming: StreamingState | null): Message | undefined {
   const rec = asRecord(message);
   if (!rec) {
@@ -5678,10 +5851,10 @@ export function normalizeMessage(message: Message, streaming: StreamingState | n
   const existingReasoningEvents = Array.isArray(message.reasoningEvents)
     ? message.reasoningEvents
     : [];
-  const mergedReasoningEvents = [
-    ...existingReasoningEvents,
-    ...(streaming?.reasoningEvents ?? [])
-  ];
+  const mergedReasoningEvents = mergeReasoningEventSnapshots(
+    existingReasoningEvents,
+    streaming?.reasoningEvents ?? [],
+  );
   const reasoningSources = new Set<ActivitySource>();
   if (Array.isArray(streaming?.reasoningEvents) && streaming.reasoningEvents.length > 0) {
     reasoningSources.add("stream");
@@ -8815,7 +8988,7 @@ function handleStreamEvent(
     return;
   }
 
-  if (!isHeartbeatEvent && ensureStreamingBootstrapFromCentralizedPayload(
+  if (!shouldSuppressProcessingBootstrap && !isHeartbeatEvent && ensureStreamingBootstrapFromCentralizedPayload(
     dispatch,
     getState,
     bootstrapContext,
@@ -8883,7 +9056,7 @@ function handleStreamEvent(
         },
       });
     }
-    if (!getState().assistantTurnPending) {
+    if (!shouldSuppressProcessingBootstrap && !getState().assistantTurnPending) {
       dispatch({
         type: "SET_ASSISTANT_TURN_PENDING",
         payload: { pending: true, messageId },
@@ -9027,6 +9200,16 @@ function handleStreamEvent(
       const isRawDeltaReasoningField =
         eventType === "message.part.delta" &&
         (deltaField === "reasoning" || deltaField === "thinking");
+      // Token streams may be emitted as a bare message.part.delta envelope:
+      // `properties.field` identifies the content field while `part.type` is
+      // absent. Treat text/content deltas as normal assistant output so they
+      // update the live card instead of waiting for final history hydration.
+      const isRawDeltaTextField =
+        eventType === "message.part.delta" &&
+        (deltaField === "text" ||
+          deltaField === "content" ||
+          deltaField === "message" ||
+          deltaField === "output_text");
       // Some providers emit an intermediate thought as a `message.part.updated`
       // text snapshot instead of a typed reasoning part. Its full `part.text`
       // exactly equals the delta. Normal response token streaming uses the
@@ -9164,24 +9347,6 @@ function handleStreamEvent(
 
       const streamingState = getState().streaming;
 
-      // SKIP CONTENT PROCESSING for reasoning parts, but allow all other event processing to continue
-      // This prevents reasoning from being rendered in the UI while still processing steps, tools, and interactive events
-      if (hasExplicitReasoningOnlyChunk) {
-        const sanitized = sanitizeReasoningChunk(reasoningChunk);
-        if (sanitized) {
-          dispatch({
-            type: "UPDATE_STREAMING_REASONING",
-            payload: {
-              reasoning: sanitized,
-              append: true,
-              delta: isDeltaReasoningChunk,
-              partID: reasoningPartID,
-              messageID: messageId || undefined,
-            },
-          });
-        }
-      }
-
       // Guard: parts with embedded reasoning fields (type is "text" but carries
       // reasoning/thinking/thought data). Route the reasoning content to the
       // reasoning pipeline so it stays out of the visible assistant body.
@@ -9189,22 +9354,6 @@ function handleStreamEvent(
         !isReasoning &&
         !hasExplicitReasoningOnlyChunk &&
         reasoningChunk.trim().length > 0;
-      if (hasEmbeddedReasoning) {
-        const sanitized = sanitizeReasoningChunk(reasoningChunk);
-        if (sanitized) {
-          dispatch({
-            type: "UPDATE_STREAMING_REASONING",
-            payload: {
-              reasoning: sanitized,
-              append: true,
-              delta: isDeltaReasoningChunk,
-              partID: reasoningPartID,
-              messageID: messageId || undefined,
-            },
-          });
-        }
-      }
-
       const isReasoningPart =
         partType === 'reasoning' ||
         structuredKind === 'thinking' ||
@@ -9245,7 +9394,9 @@ function handleStreamEvent(
           structuredKind !== "thinking" &&
           (structuredKind === "message" ||
             ((!structuredKind || structuredKind === "message") &&
-              (partType === "text" || partType === "message")));
+              (partType === "text" ||
+                partType === "message" ||
+                isRawDeltaTextField)));
 
         if (canAppendMainContent) {
           let candidateChunk = textChunk;
@@ -9366,7 +9517,9 @@ function handleStreamEvent(
               payload: {
                 content: contentPatch.content,
                 append: contentPatch.append,
-                renderable: isRenderableStreamingPartType(partType),
+                renderable:
+                  isRenderableStreamingPartType(partType) ||
+                  isRawDeltaTextField,
               },
             });
           }
@@ -9853,6 +10006,12 @@ function handleStreamEvent(
         // streaming snapshot is still hanging around in state. Re-key the live
         // snapshot immediately so the old assistant card does not keep loading
         // and the new turn gets its own timeline / response card.
+        // OpenCode can emit multiple assistant message envelopes for one user
+        // turn (for example, text -> tool -> final text). Persist the populated
+        // phase before re-keying; otherwise SET_STREAMING replaces its content
+        // with an empty snapshot and the already-rendered response disappears
+        // until a later history hydration happens to restore it.
+        flushVisibleStreamingSnapshotToMessages(dispatch, getState);
         const eventAgent = asString(infoRecord?.agent) || asString(payload.agent);
         const eventModel = asRecord(infoRecord?.model) || asRecord(payload.model);
         const eventModelID = asString(infoRecord?.modelID) || asString(payload.modelID);
@@ -11130,9 +11289,13 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
       // (session.diff, replayed parent-user messages) don't carry the assistant id,
       // so we fall back to the live assistantTurnMessageId latch.
       const currentAssistantTurnMessageId = getState().assistantTurnMessageId || null;
+      const currentStreamingMessageId = getState().streaming?.messageId || null;
       const currentAssistantTurnIsClosed =
         !!currentAssistantTurnMessageId &&
         closedAssistantTurnMessageIds.has(currentAssistantTurnMessageId);
+      const currentStreamingTurnIsClosed =
+        !!currentStreamingMessageId &&
+        closedAssistantTurnMessageIds.has(currentStreamingMessageId);
       const shouldSuppressProcessingBootstrap = !!(
         awaitingInteractiveTurnStart &&
         asBoolean(data.processing, false) &&
@@ -11143,7 +11306,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
       ) || (
         !!eventMessageId &&
         closedAssistantTurnMessageIds.has(eventMessageId)
-      ) || currentAssistantTurnIsClosed;
+      ) || currentAssistantTurnIsClosed || currentStreamingTurnIsClosed;
       if (
         asBoolean(data.processing, false) &&
         type !== "compactionStatus" &&
@@ -12014,7 +12177,27 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               chatHistorySessionId &&
               currentState.currentSessionId !== chatHistorySessionId
             );
-            if (isSwitchingSession) {
+            const suppressSessionLoading = asBoolean(
+              (data as UnknownRecord).suppressSessionLoading,
+              false,
+            );
+            if (suppressSessionLoading) {
+              logger.warn("[FORK_TRACE][WEBVIEW] fork chatHistory received", {
+                chatHistorySessionId,
+                previousSessionId: currentState.currentSessionId,
+                isSwitchingSession,
+                isSessionProcessing,
+                payloadProcessingSessionIds,
+                effectiveProcessingSessionIds,
+                priorIsProcessing: currentState.isProcessing,
+                priorIsLoadingSession: currentState.isLoadingSession,
+                priorStreamingActive: currentStreamingSnapshot?.isActive ?? false,
+                priorStreamingMessageId: currentStreamingSnapshot?.messageId ?? null,
+                shouldPreserveActiveStreaming,
+                messageCount: dedupedSystemMessages.length,
+              });
+            }
+            if (isSwitchingSession && !suppressSessionLoading) {
               // Look up the session title from the sessions list
               const session = (currentState.sessionsList ?? []).find(s => s.id === chatHistorySessionId);
               const sessionTitle = session?.title || chatHistorySessionId;
@@ -12035,7 +12218,10 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               latestStreamingSnapshot = null;
             }
 
-            if (!shouldPreserveActiveStreaming && !isSwitchingSession) {
+            if (
+              !shouldPreserveActiveStreaming &&
+              (!isSwitchingSession || suppressSessionLoading)
+            ) {
               dispatch({ type: "SET_STREAMING", payload: null });
               dispatch({ type: "SET_PROCESSING", payload: isSessionProcessing });
             }
@@ -12045,6 +12231,20 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             }
 
             dispatch({ type: "SET_MESSAGES", payload: canonicalMessages });
+            if (suppressSessionLoading) {
+              const stateAfterForkHistory = getState();
+              logger.warn("[FORK_TRACE][WEBVIEW] fork chatHistory applied", {
+                currentSessionId: stateAfterForkHistory.currentSessionId,
+                isProcessing: stateAfterForkHistory.isProcessing,
+                isLoadingSession: stateAfterForkHistory.isLoadingSession,
+                processingSessionIds: stateAfterForkHistory.processingSessionIds,
+                streamingActive: stateAfterForkHistory.streaming?.isActive ?? false,
+                streamingMessageId: stateAfterForkHistory.streaming?.messageId ?? null,
+                assistantTurnPending: stateAfterForkHistory.assistantTurnPending,
+                assistantTurnMessageId: stateAfterForkHistory.assistantTurnMessageId,
+                messageCount: stateAfterForkHistory.messages.length,
+              });
+            }
           } catch (error) {
             dispatch({ type: "END_SESSION_LOADING" });
             throw error;
@@ -12951,7 +13151,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                 },
               });
             };
-            if (isImmediateActivityStreamPayload(payload)) {
+            if (data.immediate === true || isImmediateActivityStreamPayload(payload)) {
               processScopedStreamEvent();
             } else {
               startTransition(processScopedStreamEvent);
@@ -12961,7 +13161,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           const processStreamEvent = () => {
             handleStreamEvent(dispatch, getState, payload, terminalErrorReached, shouldSuppressProcessingBootstrap, markAssistantTurnClosed);
           };
-          if (isImmediateActivityStreamPayload(payload)) {
+          if (data.immediate === true || isImmediateActivityStreamPayload(payload)) {
             processStreamEvent();
           } else {
             startTransition(processStreamEvent);
@@ -13138,12 +13338,19 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                       break;
                   }
                 };
+                const scopedEventMessageId = extractEventMessageId(evtPayload);
+                const scopedTurnIsClosed = !!(
+                  (scopedEventMessageId &&
+                    closedAssistantTurnMessageIds.has(scopedEventMessageId)) ||
+                  (scopedState.streaming?.messageId &&
+                    closedAssistantTurnMessageIds.has(scopedState.streaming.messageId))
+                );
                 handleStreamEvent(
                   scopedDispatch,
                   scopedGetState,
                   evtPayload,
                   terminalErrorReached,
-                  false,
+                  scopedTurnIsClosed,
                   markAssistantTurnClosed,
                 );
                 dispatch({
@@ -13154,7 +13361,22 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                   },
                 });
               } else {
-                handleStreamEvent(trackedDispatch, getState, evtPayload, terminalErrorReached, false, markAssistantTurnClosed);
+                const batchEventMessageId = extractEventMessageId(evtPayload);
+                const activeStreamingMessageId = getState().streaming?.messageId;
+                const batchTurnIsClosed = !!(
+                  (batchEventMessageId &&
+                    closedAssistantTurnMessageIds.has(batchEventMessageId)) ||
+                  (activeStreamingMessageId &&
+                    closedAssistantTurnMessageIds.has(activeStreamingMessageId))
+                );
+                handleStreamEvent(
+                  trackedDispatch,
+                  getState,
+                  evtPayload,
+                  terminalErrorReached,
+                  batchTurnIsClosed,
+                  markAssistantTurnClosed,
+                );
               }
 
               if (
@@ -13187,6 +13409,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             });
           };
           const hasImmediateActivity = events.some((item) =>
+            item.immediate === true ||
             isImmediateActivityStreamPayload(asRecord(item.event) ?? item),
           );
           if (hasImmediateActivity) {

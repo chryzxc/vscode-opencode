@@ -1,7 +1,7 @@
 {
   "name": "opencode-vscode-chryzxc",
-  "displayName": "OpenCode UI for VS Code",
-  "description": "OpenCode CLI UI for VS Code with streaming chat, code context, implementation plans, subagents, session history, and quota monitoring.",
+  "displayName": "OpenCode Workbench — VS Code UI",
+  "description": "A VS Code client for the OpenCode coding agent, powered by the OpenCode SDK, with streaming chat, plans, subagents, sessions, diff review, and quota monitoring.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -43,28 +43,33 @@
   },
   "keywords": [
     "opencode",
+    "open code",
+    "opencode ai",
     "opencode cli",
-    "opencode ui",
+    "opencode gui",
     "opencode vscode",
-    "copilot style",
-    "ai assistant",
+    "opencode extension",
     "ai coding agent",
+    "ai code assistant",
     "coding assistant",
     "agentic coding",
-    "code assistant",
-    "subagents",
-    "implementation plan",
+    "ai chat",
     "code context",
+    "code review",
+    "diff review",
+    "implementation plan",
+    "plan mode",
+    "subagents",
     "session history",
     "mcp",
-    "quota monitor",
-    "github copilot quota",
-    "openai quota",
-    "z.ai quota"
+    "quota monitoring",
+    "openai",
+    "github copilot",
+    "gemini"
   ],
   "categories": [
     "AI",
-    "Other"
+    "Chat"
   ],
   "activationEvents": [
     "onStartupFinished"

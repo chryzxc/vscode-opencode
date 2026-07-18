@@ -2726,7 +2726,6 @@ function ChatContent() {
       compactionDividerAfterMessageId: appState.compactionDividerAfterMessageId,
       compactionDividerBeforeMessageId: appState.compactionDividerBeforeMessageId,
       compactionDividerIndex: appState.compactionDividerIndex,
-      compatibilityWarnings: appState.compatibilityWarnings,
       currentSessionId: appState.currentSessionId,
       errorMessages: appState.errorMessages,
       interactiveEvents: appState.interactiveEvents,
@@ -2735,6 +2734,7 @@ function ChatContent() {
       isProcessing: appState.isProcessing,
       isSessionModalOpen: appState.isSessionModalOpen,
       lastCompactedAt: appState.lastCompactedAt,
+      loadingSessionId: appState.loadingSessionId,
       liveToastNotificationsBySessionId: appState.liveToastNotificationsBySessionId,
       pendingUserMessagesBySessionId: appState.pendingUserMessagesBySessionId,
       processingSessionIds: appState.processingSessionIds,
@@ -2771,8 +2771,6 @@ function ChatContent() {
     viewportHeight: 0,
   });
   const [showSkillInstaller, setShowSkillInstaller] = useState(false);
-  const [dismissedCompatibilityWarningSignature, setDismissedCompatibilityWarningSignature] =
-    useState<string | null>(null);
   // Shared collapse/expand state for contiguous assistant message blocks.
   // Keyed by blockGroupKey (the parentID shared by all assistant messages in
   // the same block). A missing key means "collapsed" (the default).
@@ -3229,19 +3227,6 @@ function ChatContent() {
   const isSwitchingSession = false;
   const isConnecting = false;
 
-  const compatibilityWarningSignature = state.compatibilityWarnings
-    .map((warning) => `${warning.component}:${warning.version ?? "unknown"}:${warning.status}:${warning.supportedRange}`)
-    .join("|");
-  useEffect(() => {
-    if (!compatibilityWarningSignature) {
-      setDismissedCompatibilityWarningSignature(null);
-      return;
-    }
-    setDismissedCompatibilityWarningSignature((current) =>
-      current === compatibilityWarningSignature ? current : null,
-    );
-  }, [compatibilityWarningSignature]);
-
   if (isConnecting) {
     return (
       <div className="oc-shell relative flex h-screen items-center justify-center overflow-hidden bg-oc-bg text-oc-text">
@@ -3404,6 +3389,47 @@ function ChatContent() {
       loadingElapsedTime < LOADING_MIN_DISPLAY_MS &&
       !hasRenderableStreamingContent &&
       hasLiveAssistantTurn); // Extended for minimum duration
+
+  useEffect(() => {
+    if (!state.isLoadingSession && !showAiResponseLoading && !showExtendedLoading) {
+      return;
+    }
+    logger.warn("[FORK_TRACE][SHELL] loading UI derived", {
+      currentSessionId: state.currentSessionId,
+      isLoadingSession: state.isLoadingSession,
+      loadingSessionId: state.loadingSessionId,
+      isProcessing: state.isProcessing,
+      processingSessionIds: state.processingSessionIds,
+      assistantTurnPending: state.assistantTurnPending,
+      assistantTurnMessageId: state.assistantTurnMessageId,
+      streamingActive: state.streaming?.isActive ?? false,
+      streamingMessageId: state.streaming?.messageId ?? null,
+      hasLiveAssistantTurn,
+      isAiResponding,
+      hasRenderableStreamingContent,
+      isAiResponseBlockFinished,
+      showAiResponseLoading,
+      showExtendedLoading: Boolean(showExtendedLoading),
+      renderedMessageCount: renderMessages.length,
+    });
+  }, [
+    hasLiveAssistantTurn,
+    hasRenderableStreamingContent,
+    isAiResponding,
+    isAiResponseBlockFinished,
+    renderMessages.length,
+    showAiResponseLoading,
+    showExtendedLoading,
+    state.assistantTurnMessageId,
+    state.assistantTurnPending,
+    state.currentSessionId,
+    state.isLoadingSession,
+    state.isProcessing,
+    state.loadingSessionId,
+    state.processingSessionIds,
+    state.streaming?.isActive,
+    state.streaming?.messageId,
+  ]);
 
   const compactionDividerIndex =
     typeof state.compactionDividerIndex === "number"
@@ -3661,7 +3687,6 @@ function ChatContent() {
         .filter((messageId): messageId is string => typeof messageId === "string" && messageId.length > 0),
     [renderMessages],
   );
-  const hasCompatibilityWarnings = state.compatibilityWarnings.length > 0;
   const errorToasts = state.errorMessages;
 
   useEffect(() => {
@@ -3793,62 +3818,6 @@ function ChatContent() {
             </div>
           ) : (
             <>
-              {hasCompatibilityWarnings &&
-              dismissedCompatibilityWarningSignature !== compatibilityWarningSignature ? (
-                <div className="mb-2.5 px-2.5">
-                  <div className="rounded-xl border oc-warning-border oc-warning-bg p-3">
-                    <div className="mb-2 flex items-start justify-between gap-3">
-                      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-oc-yellow">
-                        OpenCode compatibility warning
-                      </div>
-                      <button
-                        type="button"
-                        className="flex h-6 w-6 items-center justify-center rounded-md border border-oc-border-soft text-oc-text-soft transition-colors hover:bg-white/5 hover:text-oc-text"
-                        aria-label="Dismiss compatibility warning"
-                        title="Dismiss compatibility warning"
-                        onClick={() =>
-                          setDismissedCompatibilityWarningSignature(
-                            compatibilityWarningSignature,
-                          )
-                        }
-                      >
-                        <X className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                    <div className="space-y-2 text-sm leading-relaxed text-oc-text-soft opacity-90">
-                      {state.compatibilityWarnings.map((warning) => (
-                        <div
-                          key={`${warning.component}:${warning.version ?? "unknown"}:${warning.status}`}
-                          className="rounded-lg border border-oc-border-soft bg-black/10 px-3 py-2"
-                        >
-                          <div className="mb-1 flex items-center justify-between gap-2">
-                            <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-oc-yellow">
-                              {warning.component === "sdk"
-                                ? "OpenCode SDK"
-                                : "OpenCode TUI"}
-                            </div>
-                            <div className="rounded-full border border-oc-border-soft px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.08em] text-oc-text-soft">
-                              {warning.status}
-                            </div>
-                          </div>
-                          <div className="space-y-0.5 text-[13px] leading-relaxed">
-                            <div>
-                              Detected: {warning.version ?? "unknown"}
-                            </div>
-                            <div>
-                              Supported: {warning.supportedRange}
-                            </div>
-                            <div className="text-oc-text-soft opacity-80">
-                              {warning.message}
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              ) : null}
-
               {!hasAnyRenderableConversation &&
               !state.streaming &&
               !isAiResponding ? (

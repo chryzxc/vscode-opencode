@@ -329,7 +329,17 @@ export class ChatViewProvider
    *  response is still streaming from the server. */
   private activeStreamSessionId: string | undefined;
   private turnEpochBySession = new Map<string, number>();
-  private pendingStreamWebviewEvents: Array<{ event: unknown; sessionId?: string }> = [];
+  private pendingStreamWebviewEvents: Array<{
+    event: unknown;
+    sessionId?: string;
+    immediate?: boolean;
+  }> = [];
+  /**
+   * The first event of a newly-started turn is presentation-critical: it is
+   * what replaces the generic thinking bubble with the live assistant card.
+   * Later events remain batched to protect the webview during token streams.
+   */
+  private firstStreamWebviewEventPendingBySession = new Set<string>();
   private streamWebviewFlushTimer: ReturnType<typeof setTimeout> | undefined;
   private lastStreamPerformanceLogAt = 0;
   /**
@@ -340,6 +350,57 @@ export class ChatViewProvider
   private liveEventDebugFlushTimer: ReturnType<typeof setTimeout> | undefined;
   private currentTodoItems: unknown[] = [];
   private compatibilityWarningsOverride: CompatibilityResult[] | null = null;
+  private subagentProjectionWrites = new Map<string, Promise<void>>();
+
+  private getSubagentProjectionStorageKey(sessionId: string): string {
+    return `opencode.session.subagentProjection.${sessionId}`;
+  }
+
+  /** Persist the extension-owned subagent projection; SDK history does not expose it. */
+  private persistSubagentProjection(
+    sessionId: string,
+    projection: SubagentUpdatePayload,
+  ): Promise<void> {
+    const previous = this.subagentProjectionWrites.get(sessionId) ?? Promise.resolve();
+    const write = previous
+      .catch(() => undefined)
+      .then(() =>
+        this.context.workspaceState.update(this.getSubagentProjectionStorageKey(sessionId), {
+          sessionId,
+          savedAt: Date.now(),
+          ...projection,
+        }),
+      );
+    this.subagentProjectionWrites.set(sessionId, write);
+    void write.finally(() => {
+      if (this.subagentProjectionWrites.get(sessionId) === write) {
+        this.subagentProjectionWrites.delete(sessionId);
+      }
+    });
+    return write;
+  }
+
+  private async restorePersistedSubagentProjection(sessionId: string): Promise<void> {
+    const projection = this.context.workspaceState.get<
+      SubagentUpdatePayload & { sessionId?: string }
+    >(this.getSubagentProjectionStorageKey(sessionId));
+    if (projection?.sessionId && projection.sessionId !== sessionId) {
+      return;
+    }
+    if (
+      !projection ||
+      (!Object.keys(projection.summariesByParentMessageId ?? {}).length &&
+        !Object.keys(projection.detailsById ?? {}).length)
+    ) {
+      return;
+    }
+    this.view?.webview.postMessage({
+      type: "subagentUpdate",
+      sessionId,
+      summariesByParentMessageId: projection.summariesByParentMessageId,
+      detailsById: projection.detailsById,
+    });
+  }
 
   private getTodoStorageKey(sessionId: string): string {
     return `opencode.session.todos.${sessionId}`;
@@ -389,8 +450,9 @@ export class ChatViewProvider
     event: unknown,
     sessionId: string | undefined,
     flushImmediately = false,
+    immediate = false,
   ): void {
-    this.pendingStreamWebviewEvents.push({ event, sessionId });
+    this.pendingStreamWebviewEvents.push({ event, sessionId, immediate });
 
     if (flushImmediately) {
       // Lifecycle events should start delivery immediately, but must not
@@ -508,6 +570,7 @@ export class ChatViewProvider
         type: "streamEvent",
         event: item.event,
         sessionId: item.sessionId,
+        immediate: item.immediate === true,
       });
       this.logStreamPerformance("provider-webview-flush", startedAt, 1);
       this.scheduleStreamWebviewBacklogFlush(hasBacklog);
@@ -519,6 +582,7 @@ export class ChatViewProvider
       events: pending.map((item) => ({
         event: item.event,
         sessionId: item.sessionId,
+        immediate: item.immediate === true,
       })),
     });
     this.logStreamPerformance("provider-webview-flush", startedAt, pending.length);
@@ -884,7 +948,6 @@ export class ChatViewProvider
   private readonly sessionDiffFromStream = new Map<string, Array<{ file: string; added: number; deleted: number; patch?: string }>>();
   private readonly recentUiErrorToastTimestamps = new Map<string, number>();
   private readonly UI_ERROR_TOAST_DEDUPE_WINDOW_MS = 15_000;
-  private lastCompatibilityWarningSignature: string | undefined;
   private readonly installedSdkVersion = detectInstalledOpencodeSdkVersion();
 
   /** ===== NEW: Module instances ===== */
@@ -1702,6 +1765,7 @@ export class ChatViewProvider
   private markTurnStreamStarted(sessionId: string): void {
     const currentEpoch = (this.turnEpochBySession.get(sessionId) ?? 0) + 1;
     this.turnEpochBySession.set(sessionId, currentEpoch);
+    this.firstStreamWebviewEventPendingBySession.add(sessionId);
   }
 
   private async schedulePostTurnSdkRefresh(sessionId: string, _messageId?: string): Promise<void> {
@@ -1731,6 +1795,7 @@ export class ChatViewProvider
         contextInputTokens: history.contextInputTokens,
         processingSessionIds: this.getEffectiveProcessingSessionIds(),
       });
+      await this.restorePersistedSubagentProjection(sessionId);
       await this.refreshPendingInteractionsFromSdk(sessionId);
     } catch (err) {
       this.logger.warn("Post-turn SDK refresh failed", {
@@ -1806,10 +1871,19 @@ export class ChatViewProvider
             continue;
           }
           const childSessionId = this.firstNonEmptyString(subtaskPart.sessionID, subtaskPart.sessionId);
-          const childSession = childSessionId ? childrenById.get(childSessionId) : undefined;
-          if (!childSessionId || !childSession) {
+          if (!childSessionId) {
             continue;
           }
+          // A parent transcript can expose its `subtask` part before the
+          // child session is included in `session.children`. The subtask is
+          // already an authoritative SDK record of the invocation, so retain
+          // it as a pending projection and enrich it once child metadata is
+          // available instead of dropping the entire card on rehydration.
+          const childSession = childrenById.get(childSessionId) ?? {
+            id: childSessionId,
+            model: subtaskPart.model,
+            time: {},
+          };
 
           const baseDetail = sdkAdaptSubtaskPart(subtaskPart, info);
           const detail = this.enrichSdkSubtaskDetail(baseDetail as any, subtaskPart, childSession, parentSessionId);
@@ -1944,8 +2018,19 @@ export class ChatViewProvider
     );
   }
 
-  private async handleLoadSession(sessionId: string): Promise<void> {
+  private async handleLoadSession(
+    sessionId: string,
+    options?: { suppressSessionLoading?: boolean },
+  ): Promise<void> {
     const flow = log.startFeatureFlow('LoadSession', { sessionId });
+    this.logger.warn("[FORK_TRACE][HOST] handleLoadSession entered", {
+      sessionId,
+      suppressSessionLoading: options?.suppressSessionLoading === true,
+      currentSessionId: this.currentSessionId,
+      activeStreamSessionId: this.activeStreamSessionId,
+      processingSessionIds: Array.from(this.processingSessionIds),
+      effectiveProcessingSessionIds: this.getEffectiveProcessingSessionIds(),
+    });
 
     if (!sessionId) {
       log.endFeatureFlow(flow, { status: 'failed', reason: 'No sessionId provided' });
@@ -2019,8 +2104,19 @@ export class ChatViewProvider
         messages: messages,
         sdkMessages: sessionHistory.sdkMessages,
         contextInputTokens: sessionHistory.contextInputTokens,
-        
+        // A fork is already a completed snapshot. It needs history hydration,
+        // but must not present as a newly-running assistant turn.
+        suppressSessionLoading: options?.suppressSessionLoading === true,
         processingSessionIds: this.getEffectiveProcessingSessionIds(),
+      });
+      await this.restorePersistedSubagentProjection(sessionId);
+      this.logger.warn("[FORK_TRACE][HOST] chatHistory posted", {
+        sessionId,
+        suppressSessionLoading: options?.suppressSessionLoading === true,
+        messageCount: messages.length,
+        sdkMessageCount: sessionHistory.sdkMessages.length,
+        processingSessionIds: this.getEffectiveProcessingSessionIds(),
+        activeStreamSessionId: this.activeStreamSessionId,
       });
       await this.compactionManager.sendCompactionViewStateForMessages(
         sessionId,
@@ -2029,7 +2125,6 @@ export class ChatViewProvider
 
       // Step 4: NOW send initState with the updated session ID
       // This comes AFTER chatHistory so the session switch is already detected
-      this.maybeShowCompatibilityWarningNotice(this.getCompatibilityWarnings());
       this.view?.webview.postMessage({
         type: "initState",
         serverStatus: this.serverManager.getStatus(),
@@ -2044,6 +2139,12 @@ export class ChatViewProvider
         compatibilityWarnings: this.getCompatibilityWarnings(),
         showLogger: vscode.workspace.getConfiguration("opencode.logging").get<boolean>("showLogger", true),
         todoItems: [],
+      });
+      this.logger.warn("[FORK_TRACE][HOST] initState posted", {
+        sessionId: this.currentSessionId,
+        suppressSessionLoading: options?.suppressSessionLoading === true,
+        processingSessionIds: this.getEffectiveProcessingSessionIds(),
+        activeStreamSessionId: this.activeStreamSessionId,
       });
       void this.refreshSdkTodosForSession(this.currentSessionId);
       void this.refreshPendingInteractionsFromSdk(sessionId);
@@ -3242,7 +3343,6 @@ export class ChatViewProvider
             }
 
             // Send refreshed init state reflecting the session-specific selections
-            this.maybeShowCompatibilityWarningNotice(this.getCompatibilityWarnings());
             this.view?.webview.postMessage({
               type: "initState",
               serverStatus: this.serverManager.getStatus(),
@@ -3338,6 +3438,7 @@ export class ChatViewProvider
               });
               await this.sendPersistedCompactionViewState(currentSession.id);
               this.subagentTracker.resetForSession(currentSession.id);
+              await this.restorePersistedSubagentProjection(currentSession.id);
               this.sendQueueUpdate(currentSession.id);
             } else {
               this.subagentTracker.resetForSession(null);
@@ -3724,6 +3825,13 @@ export class ChatViewProvider
             break;
           }
           await vscode.env.clipboard.writeText(text);
+          break;
+        }
+        case "forkSession": {
+          await this.handleForkSession(
+            this.firstNonEmptyString(message.sessionId),
+            this.firstNonEmptyString(message.messageId),
+          );
           break;
         }
         case "openFile": {
@@ -4463,6 +4571,12 @@ export class ChatViewProvider
           type: "subagentUpdate",
           ...subagentUpdate,
         });
+        if (subagentParentSessionId) {
+          void this.persistSubagentProjection(
+            subagentParentSessionId,
+            this.subagentTracker.getSnapshotPayload(),
+          );
+        }
         this.sendProcessingSessionsUpdate();
       }
 
@@ -4752,7 +4866,23 @@ export class ChatViewProvider
       // mutated — only the webview-bound copy is slimmed. Session ownership
       // still travels in the surrounding webview protocol envelope.
       const eventForWebview = this.buildWebviewStreamEvent(enrichedEvent || event);
+      // Status/heartbeat transport events can precede the assistant payload;
+      // do not let one consume the turn's one immediate presentation slot.
+      const canMountAssistantResponse =
+        eventType.startsWith("message.") ||
+        eventType === "question.asked" ||
+        eventType === "permission.asked" ||
+        eventType === "permission.request";
+      const isInitialTurnEvent = Boolean(
+        resolvedSessionId &&
+        canMountAssistantResponse &&
+        this.firstStreamWebviewEventPendingBySession.delete(resolvedSessionId),
+      );
       const shouldFlushWebviewImmediately =
+        // Do not leave the first real assistant event behind the presentation
+        // batch. The webview uses it to mount the response card in place of
+        // the generic loading bubble; subsequent events are still batched.
+        isInitialTurnEvent ||
         eventType === "question.asked" ||
         eventType === "permission.asked" ||
         eventType === "permission.request" ||
@@ -4769,6 +4899,7 @@ export class ChatViewProvider
         eventForWebview,
         resolvedSessionId,
         shouldFlushWebviewImmediately,
+        isInitialTurnEvent,
       );
       if (
         eventType === "question.asked" ||
@@ -9110,7 +9241,6 @@ export class ChatViewProvider
    * Refreshes the view with current state
    */
   private refreshView(): void {
-    this.maybeShowCompatibilityWarningNotice(this.getCompatibilityWarnings());
     this.view?.webview.postMessage({
       type: "initState",
       serverStatus: this.serverManager.getStatus(),
@@ -9158,7 +9288,6 @@ export class ChatViewProvider
   ): void {
     this.compatibilityWarningsOverride = warnings;
     const nextWarnings = this.getCompatibilityWarnings();
-    this.maybeShowCompatibilityWarningNotice(nextWarnings);
     this.view?.webview.postMessage({
       type: "compatibilityStatus",
       compatibilityWarnings: nextWarnings,
@@ -9166,39 +9295,8 @@ export class ChatViewProvider
     this.refreshView();
   }
 
-  private maybeShowCompatibilityWarningNotice(
-    compatibilityWarnings: ReturnType<ChatViewProvider["getCompatibilityWarnings"]>,
-  ): void {
-    if (compatibilityWarnings.length === 0) {
-      this.lastCompatibilityWarningSignature = undefined;
-      return;
-    }
-
-    const signature = compatibilityWarnings
-      .map((warning) =>
-        [
-          warning.component,
-          warning.status,
-          warning.version ?? "unknown",
-          warning.supportedRange,
-        ].join(":"),
-      )
-      .join("|");
-
-    if (this.lastCompatibilityWarningSignature === signature) {
-      return;
-    }
-
-    this.lastCompatibilityWarningSignature = signature;
-    const summary = compatibilityWarnings
-      .map((warning) => warning.message)
-      .join("\n");
-    vscode.window.showWarningMessage(summary);
-  }
-
   private broadcastCompatibilityWarnings(): void {
     const compatibilityWarnings = this.getCompatibilityWarnings();
-    this.maybeShowCompatibilityWarningNotice(compatibilityWarnings);
     this.view?.webview.postMessage({
       type: "compatibilityStatus",
       compatibilityWarnings: compatibilityWarnings,
@@ -9936,6 +10034,130 @@ export class ChatViewProvider
     return arraysToScan.some(
       (items) => Array.isArray(items) && items.some(hasFileActivity),
     );
+  }
+
+  private async handleForkSession(
+    requestedSessionId?: string,
+    requestedMessageId?: string,
+  ): Promise<void> {
+    const sourceSessionId = this.firstNonEmptyString(
+      requestedSessionId,
+      this.currentSessionId,
+    );
+    const sourceMessageId = this.firstNonEmptyString(requestedMessageId);
+    const sendResult = (
+      success: boolean,
+      error?: string,
+      forkedSessionId?: string,
+    ) => {
+      this.view?.webview.postMessage({
+        type: "forkSessionResult",
+        success,
+        sessionId: sourceSessionId,
+        messageId: sourceMessageId,
+        forkedSessionId,
+        error,
+      });
+    };
+
+    if (!sourceSessionId || !sourceMessageId) {
+      const error = "Unable to fork conversation: missing session or message identifier.";
+      this.logger.warn("Session fork skipped", {
+        sourceSessionId,
+        sourceMessageId,
+        error,
+      });
+      vscode.window.showWarningMessage(error);
+      sendResult(false, error);
+      return;
+    }
+
+    try {
+      const client = await this.serverManager.ensureRunning();
+      const workspaceDir = this.getWorkspaceDirectory();
+      this.logger.warn("[FORK_TRACE][HOST] calling session.fork", {
+        sourceSessionId,
+        sourceMessageId,
+        currentSessionId: this.currentSessionId,
+        workspaceDir: workspaceDir ?? null,
+        activeStreamSessionId: this.activeStreamSessionId,
+        processingSessionIds: Array.from(this.processingSessionIds),
+        effectiveProcessingSessionIds: this.getEffectiveProcessingSessionIds(),
+      });
+      const forkResult = await client.session.fork({
+        sessionID: sourceSessionId,
+        messageID: sourceMessageId,
+        ...(workspaceDir ? { directory: workspaceDir } : {}),
+      });
+      const forkError = getSdkResponseError(forkResult);
+      const forkData = getSdkResponseData(forkResult) as { id?: unknown } | undefined;
+      const forkedSessionId = this.firstNonEmptyString(forkData?.id);
+
+      if (forkError || !forkedSessionId) {
+        const error = forkError
+          ? forkError instanceof Error
+            ? forkError.message
+            : typeof forkError === "object" && forkError !== null
+              ? String(
+                  (forkError as Record<string, unknown>).message ??
+                    (forkError as Record<string, unknown>).data ??
+                    JSON.stringify(forkError),
+                )
+              : String(forkError)
+          : "OpenCode did not return the new forked session.";
+        this.logger.error("Failed to fork session", {
+          sourceSessionId,
+          sourceMessageId,
+          error,
+        });
+        vscode.window.showErrorMessage(`Failed to fork conversation: ${error}`);
+        sendResult(false, error);
+        return;
+      }
+
+      this.logger.info("Session fork created", {
+        sourceSessionId,
+        sourceMessageId,
+        forkedSessionId,
+      });
+      let forkedSessionStatus: unknown = null;
+      try {
+        const statusResult = await client.session.status(
+          workspaceDir ? { directory: workspaceDir } : {},
+        );
+        const statuses = getSdkResponseData(statusResult) as
+          | Record<string, unknown>
+          | undefined;
+        forkedSessionStatus = statuses?.[forkedSessionId] ?? null;
+      } catch (statusError) {
+        forkedSessionStatus = {
+          statusLookupError:
+            statusError instanceof Error ? statusError.message : String(statusError),
+        };
+      }
+      this.logger.warn("[FORK_TRACE][HOST] fork response and server status", {
+        sourceSessionId,
+        sourceMessageId,
+        forkedSessionId,
+        forkedSessionStatus,
+        activeStreamSessionId: this.activeStreamSessionId,
+        processingSessionIds: Array.from(this.processingSessionIds),
+        effectiveProcessingSessionIds: this.getEffectiveProcessingSessionIds(),
+      });
+      sendResult(true, undefined, forkedSessionId);
+      await this.handleLoadSession(forkedSessionId, {
+        suppressSessionLoading: true,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.logger.error("Failed to fork session", {
+        sourceSessionId,
+        sourceMessageId,
+        error: errorMessage,
+      });
+      vscode.window.showErrorMessage(`Failed to fork conversation: ${errorMessage}`);
+      sendResult(false, errorMessage);
+    }
   }
 
   private async handleUndoMessageChanges(

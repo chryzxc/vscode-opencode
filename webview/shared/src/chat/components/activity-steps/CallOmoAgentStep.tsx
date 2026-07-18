@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 
-import { Bot, Clock3, Copy, Sparkles, ArrowRight, X, ChevronDown } from "lucide-react";
+import { Bot, Clock3, Copy, Sparkles, ArrowRight, X } from "lucide-react";
 
 import { cn, formatDuration } from "@/utils";
 
@@ -12,6 +12,10 @@ import { Stepper, StepperItem } from "@/components/ui/stepper";
 import { shallowEqual, useAppState } from "../../lib/store";
 import { buildBackgroundTaskPresentation } from "../../lib/backgroundTaskPresentation";
 import { usePersistentModalOpen } from "../../lib/usePersistentModalOpen";
+import {
+  FadedCollapseOverlay,
+  useFadedContentOverflow,
+} from "@/components/ui/FadedCollapseOverlay";
 
 import type { ActivityDetail } from "../../lib/types";
 
@@ -309,6 +313,7 @@ export function CallOmoAgentStep({
   const [isModalOpen, setIsModalOpen] = usePersistentModalOpen(
     `call-omo-agent:${resolvedBackgroundTaskId || sessionValue || description}`,
   );
+  const { ref: previewRef, hasOverflow } = useFadedContentOverflow<HTMLDivElement>();
   const modalTitle = "call_omo_agent";
   const summaryLine =
     description ||
@@ -337,7 +342,7 @@ export function CallOmoAgentStep({
             className="group relative w-full overflow-hidden rounded-lg border border-oc-border-soft bg-oc-bg-soft/60 text-left transition-colors hover:border-oc-border hover:bg-oc-panel-soft/60"
             aria-label="View subagent details"
           >
-            <div className="relative overflow-hidden p-2">
+            <div ref={previewRef} className="relative max-h-[140px] overflow-hidden p-2">
               <div className="oc-activity-step-summary flex items-start gap-1.5 whitespace-pre-wrap break-words font-mono text-oc-text-soft">
                 <span className="flex-1">{summaryLine}</span>
               </div>
@@ -347,9 +352,7 @@ export function CallOmoAgentStep({
                 </div>
               )}
             </div>
-            <div className="oc-timeline-caret pointer-events-none absolute bottom-1.5 right-1.5 inline-flex h-5 w-5 items-center justify-center rounded-full transition-colors group-hover:bg-oc-panel-soft">
-              <ChevronDown className="h-3 w-3 oc-text-secondary transition-transform group-hover:translate-y-0.5" />
-            </div>
+            {hasOverflow && <FadedCollapseOverlay />}
           </button>
         </div>
       </div>
