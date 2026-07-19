@@ -168,6 +168,8 @@ export function shouldShowStreamingCard({
   // Delta chunks deliberately do not enter the centralized transcript. Keep
   // the live card mounted for the active turn so its renderable text reaches
   // the user immediately; the centralized card takes over after completion.
+  // A matching transcript message is the exception: rendering both sources
+  // during the handoff duplicates the same thoughts and response body.
   if (hasTranscriptAssistantForCurrentTurn && !streaming.isActive) return false;
 
   const candidateIds = new Set(
@@ -181,7 +183,7 @@ export function shouldShowStreamingCard({
     Array.isArray(transcriptAssistantMessageIds) &&
     transcriptAssistantMessageIds.some((messageId) => candidateIds.has(messageId));
 
-  if (hasMatchingAssistantTurnInTranscript && !streaming.isActive) return false;
+  if (hasMatchingAssistantTurnInTranscript) return false;
 
   const hasRenderableText =
     streaming.hasRenderableContent === true &&

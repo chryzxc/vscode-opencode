@@ -101,9 +101,11 @@ test('GeminiTokenUsageTracker implements fire-and-forget pattern', () => {
   assert.doesNotMatch(recordBody, /await\s+this\.saveToStorage\(\)/,
     'recordUsage should NOT await saveToStorage');
 
-  // Verify immediate emission of usageUpdated event
-  assert.match(recordBody, /this\.emit\(["']usageUpdated["'],\s*this\.getAllUsage\(\)\)/,
-    'recordUsage should emit usageUpdated immediately (not after save)');
+  // Emissions are debounced through scheduleUsageEmit so rapid token events
+  // coalesce into a single usageUpdated emit. Synchronous emit on every token
+  // caused per-event sort + listener fan-out.
+  assert.match(recordBody, /this\.scheduleUsageEmit\(\)/,
+    'recordUsage should delegate emission to scheduleUsageEmit (debounced)');
 
   // Verify saveToStorage is async but not awaited
   assert.match(trackerSource, /private\s+async\s+saveToStorage\(\):\s*Promise<void>/,

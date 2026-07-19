@@ -52,6 +52,8 @@ export interface SdkMessageInfo {
 export interface SdkMessagePart {
   type?: string;
   text?: string;
+  /** SDK transport-only text must not be rendered as user-authored content. */
+  synthetic?: boolean;
   content?: string;
   message?: string;
   reasoning?: string;
@@ -504,6 +506,46 @@ function adaptFilePart(part: FilePart): SdkMessagePart {
   };
 }
 
+function textFromDataUrl(url: string | undefined, mime: string | undefined): string | undefined {
+  if (!url || !mime?.toLowerCase().startsWith("text/") || !url.startsWith("data:")) {
+    return undefined;
+  }
+  const commaIndex = url.indexOf(",");
+  if (commaIndex < 0) {
+    return undefined;
+  }
+  const metadata = url.slice(0, commaIndex).toLowerCase();
+  const payload = url.slice(commaIndex + 1);
+  try {
+    if (metadata.includes(";base64")) {
+      return Buffer.from(payload, "base64").toString("utf-8");
+    }
+    return decodeURIComponent(payload);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * OpenCode rehydration can include a text/plain attachment twice: once as a
+ * `file` part and again as a plain text part. Keep the file part so its chip
+ * renders, but do not turn its identical payload into bubble content.
+ */
+function visibleUserTextFromParts(parts: SdkMessagePart[]): string {
+  const attachmentContents = new Set(
+    parts
+      .filter((part) => part.type === "file")
+      .map((part) => textFromDataUrl(part.url, part.mime))
+      .filter((text): text is string => typeof text === "string"),
+  );
+
+  return parts
+    .filter((part) => part.type === "text" && part.synthetic !== true)
+    .map((part) => part.text ?? part.content ?? part.message ?? "")
+    .filter((text) => text.trim().length > 0 && !attachmentContents.has(text))
+    .join("");
+}
+
 function applyRetryMarker(message: SdkRenderedMessage, part: RetryPart): void {
   message.retryState = "retrying_without_structured_output";
   message.retryStartedAt = part.time.created;
@@ -562,7 +604,8 @@ export function adaptSdkMessage(sdkMessage: SdkMessageEnvelope): SdkRenderedMess
     if (part.type === "text") {
       const textPart = part as TextPart;
       textParts.push(textPart.text);
-      message.parts?.push({ type: "text", text: textPart.text });
+      const synthetic = (textPart as unknown as { synthetic?: unknown }).synthetic === true;
+      message.parts?.push({ type: "text", text: textPart.text, synthetic });
     } else if (part.type === "reasoning") {
       const reasoningPart = part as ReasoningPart;
       message.reasoningEvents?.push({
@@ -606,7 +649,9 @@ export function adaptSdkMessage(sdkMessage: SdkMessageEnvelope): SdkRenderedMess
     }
   }
 
-  const content = textParts.join("");
+  const content = isUserMessage(info)
+    ? visibleUserTextFromParts(message.parts ?? [])
+    : textParts.join("");
   if (content) {
     message.content = content;
     message.text = content;

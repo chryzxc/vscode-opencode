@@ -501,6 +501,20 @@ class Logger {
   }
 
   /**
+   * Returns true when an entry at `level` would be emitted under the
+   * current configuration. Hot-path callers should call this BEFORE
+   * building a context object so filtered calls short-circuit without
+   * paying the `sanitizeConsoleValue` cost.
+   */
+  public wouldEmit(level: string): boolean {
+    if (!this.config.showLogger && level !== "error") {
+      return false;
+    }
+    const parsed = this.parseLogLevel(level);
+    return parsed <= this.config.minLevel;
+  }
+
+  /**
    * Logs a message at the specified level.
    */
   private log(
@@ -510,6 +524,11 @@ class Logger {
     context?: Record<string, unknown>,
     error?: Error,
   ): void {
+    // Level check must run BEFORE sanitizeConsoleValue (which deep-clones).
+    if (!this.wouldEmit(level)) {
+      return;
+    }
+
     const sanitizedContext = context
       ? this.sanitizeConsoleValue(context)
       : undefined;

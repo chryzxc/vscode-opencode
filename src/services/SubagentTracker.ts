@@ -417,6 +417,15 @@ function clampEvents<T>(events: T[], max: number): T[] {
   return events.slice(events.length - max);
 }
 
+/** In-place bounded append. Caller must own the only reference to `events`. */
+function appendClamped<T>(events: T[], item: T, max: number): T[] {
+  events.push(item);
+  if (events.length > max) {
+    events.splice(0, events.length - max);
+  }
+  return events;
+}
+
 function cloneReference(ref: SubagentReference): SubagentReference {
   return {
     messageID: ref.messageID,
@@ -1045,20 +1054,14 @@ export class SubagentTracker {
       previous.callID = normalizedEvent.callID || previous.callID;
       return;
     }
-    detail.timelineEvents = clampEvents(
-      [...detail.timelineEvents, normalizedEvent],
-      MAX_TIMELINE_EVENTS,
-    );
+    appendClamped(detail.timelineEvents, normalizedEvent, MAX_TIMELINE_EVENTS);
   }
 
   private pushThinking(
     detail: SubagentDetail,
     event: SubagentThinkingEvent,
   ): void {
-    detail.thinkingEvents = clampEvents(
-      [...detail.thinkingEvents, event],
-      MAX_THINKING_EVENTS,
-    );
+    appendClamped(detail.thinkingEvents, event, MAX_THINKING_EVENTS);
   }
 
   private pushConversation(
@@ -1097,10 +1100,7 @@ export class SubagentTracker {
       return;
     }
 
-    detail.conversationEvents = clampEvents(
-      [...detail.conversationEvents, normalizedEvent],
-      MAX_CONVERSATION_EVENTS,
-    );
+    appendClamped(detail.conversationEvents, normalizedEvent, MAX_CONVERSATION_EVENTS);
   }
 
   private pushProgress(
@@ -1150,10 +1150,7 @@ export class SubagentTracker {
     ) {
       return;
     }
-    detail.progressEvents = clampEvents(
-      [...detail.progressEvents, normalizedEvent],
-      MAX_PROGRESS_EVENTS,
-    );
+    appendClamped(detail.progressEvents, normalizedEvent, MAX_PROGRESS_EVENTS);
   }
 
   private recomputeDuration(detail: SubagentDetail): void {
@@ -1174,10 +1171,7 @@ export class SubagentTracker {
   }
 
   private appendRawEvent(detail: SubagentDetail, event: unknown): void {
-    detail.rawEvents = clampEvents(
-      [...detail.rawEvents, event],
-      MAX_RAW_EVENTS,
-    );
+    appendClamped(detail.rawEvents, event, MAX_RAW_EVENTS);
   }
 
   private handleMessagePartUpdated(
@@ -1551,8 +1545,13 @@ export class SubagentTracker {
     const pending =
       this.pendingSubtasksByParentSessionId.get(parentSessionId) || [];
     let detailId: string | undefined;
-    while (pending.length > 0) {
-      const candidate = pending.shift();
+    // Index-based drain that consumes every examined entry (matches the
+    // original shift() semantics, but O(n) instead of O(n²)). Stale
+    // already-bound entries get dropped along with the matched entry.
+    let consumed = 0;
+    for (let i = 0; i < pending.length; i++) {
+      consumed = i + 1;
+      const candidate = pending[i];
       if (!candidate) {
         continue;
       }
@@ -1562,6 +1561,14 @@ export class SubagentTracker {
       }
       detailId = candidate;
       break;
+    }
+    if (consumed > 0) {
+      if (consumed >= pending.length) {
+        pending.length = 0;
+      } else {
+        pending.copyWithin(0, consumed);
+        pending.length = pending.length - consumed;
+      }
     }
     this.pendingSubtasksByParentSessionId.set(parentSessionId, pending);
 
@@ -1978,8 +1985,13 @@ export class SubagentTracker {
     }
     const pending =
       this.pendingSubtasksByParentSessionId.get(parentSessionId) || [];
-    while (pending.length > 0) {
-      const candidate = pending.shift();
+    // Index-based drain that consumes every examined entry (matches the
+    // original shift() semantics, but O(n) instead of O(n²)). Stale
+    // already-bound entries get dropped along with the matched entry.
+    let consumed = 0;
+    for (let i = 0; i < pending.length; i++) {
+      consumed = i + 1;
+      const candidate = pending[i];
       if (!candidate) {
         continue;
       }
@@ -1991,8 +2003,24 @@ export class SubagentTracker {
       detail.status = "running";
       this.childSessionToSubagentId.set(childSessionId, candidate);
       this.childSessionToParentSessionId.set(childSessionId, parentSessionId);
+      if (consumed > 0) {
+        if (consumed >= pending.length) {
+          pending.length = 0;
+        } else {
+          pending.copyWithin(0, consumed);
+          pending.length = pending.length - consumed;
+        }
+      }
       this.pendingSubtasksByParentSessionId.set(parentSessionId, pending);
       return candidate;
+    }
+    if (consumed > 0) {
+      if (consumed >= pending.length) {
+        pending.length = 0;
+      } else {
+        pending.copyWithin(0, consumed);
+        pending.length = pending.length - consumed;
+      }
     }
     this.pendingSubtasksByParentSessionId.set(parentSessionId, pending);
     return undefined;

@@ -153,6 +153,8 @@ export class GeminiTokenUsageTracker extends EventEmitter {
   private logger = createLogger(LoggingCategories.TOKEN_TRACKER);
   private saveTimer: NodeJS.Timeout | null = null;
   private pendingSave = false;
+  private usageEmitTimer: NodeJS.Timeout | null = null;
+  private static readonly USAGE_EMIT_DEBOUNCE_MS = 250;
 
   constructor() {
     super();
@@ -211,11 +213,23 @@ export class GeminiTokenUsageTracker extends EventEmitter {
 
     this.currentUsage[model] = usage;
 
-    // Emit immediately for UI updates
-    this.emit("usageUpdated", this.getAllUsage());
+    this.scheduleUsageEmit();
 
-    // Debounced save - don't await, let it happen in background
     this.scheduleSave();
+  }
+
+  /** Debounce usageUpdated emissions so rapid token events coalesce into one emit. */
+  private scheduleUsageEmit(): void {
+    if (this.usageEmitTimer) {
+      return;
+    }
+    this.usageEmitTimer = setTimeout(() => {
+      this.usageEmitTimer = null;
+      if (this.isDisposed) {
+        return;
+      }
+      this.emit("usageUpdated", this.getAllUsage());
+    }, GeminiTokenUsageTracker.USAGE_EMIT_DEBOUNCE_MS);
   }
 
   /**
@@ -324,6 +338,11 @@ export class GeminiTokenUsageTracker extends EventEmitter {
     if (this.saveTimer) {
       clearTimeout(this.saveTimer);
       this.saveTimer = null;
+    }
+
+    if (this.usageEmitTimer) {
+      clearTimeout(this.usageEmitTimer);
+      this.usageEmitTimer = null;
     }
 
     // Final save before disposal (fire-and-forget)
