@@ -2785,9 +2785,6 @@ function ChatContent() {
     });
   }, []);
 
-  // Track loading state timing to ensure minimum display duration
-  const loadingStartTimeRef = useRef<number | null>(null);
-  const LOADING_MIN_DISPLAY_MS = 500; // Show loading state for at least 500ms so users can perceive it
   const streamViewportRef = useRef(streamViewport);
   const previousIsLoadingSessionRef = useRef(state.isLoadingSession);
   const previousReceivedInitStateRef = useRef(state.receivedInitState);
@@ -3244,48 +3241,9 @@ function ChatContent() {
     );
   }
 
-  // Keep the loading bubble visible for the entire active assistant turn.
-  // Live stream payloads can arrive before the final assistant message is
-  // finalized, but the user still needs a clear "AI is responding" signal.
-  const streamingSteps = state.streaming?.steps ?? [];
-  const streamingProgressEvents = state.streaming?.progressEvents ?? [];
-  const streamingEdits = state.streaming?.edits ?? [];
-  const streamingInteractiveEvents = state.streaming?.interactiveEvents ?? [];
-  const interactiveEvents = state.interactiveEvents ?? [];
-  const hasAssistantText =
-    !!state.streaming?.content &&
-    state.streaming.content.trim().length > 0;
-  const hasVisibleStreamingPayload = Boolean(
-    state.streaming &&
-      (state.streaming.content.trim().length > 0 ||
-        state.streaming.reasoning.trim().length > 0 ||
-        streamingSteps.length > 0 ||
-        streamingProgressEvents.length > 0 ||
-        streamingEdits.length > 0 ||
-        streamingInteractiveEvents.length > 0 ||
-        interactiveEvents.length > 0),
-  );
-  // Show AI response loading indicator (thinking bubble) when:
-  // 1. NOT switching sessions (session loading takes precedence), AND
-  // 2. AI is still responding and the assistant turn has not finalized yet.
-  // FIXED: Use hasRenderableContent from SDK instead of checking content length.
-  //
-  // Loading must dismiss as soon as ANY visible streaming activity arrives —
-  // not just text content. Tool calls, reasoning, progress events, and
-  // interactive prompts all represent the assistant doing work that belongs
-  // in the streaming card, not behind a ThinkingBubble placeholder. Keeping
-  // the bubble up when these are already in state was causing users to see
-  // "stuck loading" even though tool calls had arrived.
-  const streamingForActivity = state.streaming;
-  const hasRenderableStreamingContent = Boolean(
-    streamingForActivity?.hasRenderableContent ||
-      (streamingForActivity?.isActive &&
-        ((streamingForActivity.reasoning?.length ?? 0) > 0 ||
-          (streamingForActivity.reasoningEvents?.length ?? 0) > 0 ||
-          (streamingForActivity.steps?.length ?? 0) > 0 ||
-          (streamingForActivity.progressEvents?.length ?? 0) > 0 ||
-          (streamingForActivity.interactiveEvents?.length ?? 0) > 0)),
-  );
+  // Keep the loading ticker in sync with the Stop control throughout the live
+  // assistant turn. Stream content and activity are additive status, not a
+  // reason to hide the only explicit "AI is responding" signal.
 
   let hasTerminalAssistantBlock = false;
   let terminalAssistantMessageId: string | null = null;
@@ -3355,40 +3313,32 @@ function ChatContent() {
     Boolean(activeStreamingMessageId) &&
     Boolean(terminalAssistantMessageId) &&
     activeStreamingMessageId !== terminalAssistantMessageId;
+  // A newly submitted turn can be live before the SDK assigns its assistant
+  // messageId. Do not let the previous assistant turn's finish marker hide
+  // the loading ticker during that handoff.
+  const hasNewLiveTurnBeforeAssistantIdentity =
+    Boolean(state.streaming?.isActive) ||
+    state.assistantTurnPending ||
+    visiblePendingUserMessages.length > 0;
   const isAiResponseBlockFinished = Boolean(
-    (state.streaming && !state.streaming.isActive) ||
+    (state.streaming &&
+      !state.streaming.isActive &&
+      !hasNewLiveTurnBeforeAssistantIdentity) ||
     (hasTerminalAssistantBlock &&
       !hasNewerUserMessageAfterTerminalAssistant &&
-      !hasStartedNewAssistantTurn)
+      !hasStartedNewAssistantTurn &&
+      !hasNewLiveTurnBeforeAssistantIdentity)
   );
 
   const showAiResponseLoading =
     !state.isLoadingSession && // Direct state check to avoid timing issues
     hasLiveAssistantTurn &&
     !state.isCompacting &&
-    !hasRenderableStreamingContent &&
     !isAiResponseBlockFinished;
 
-  // Enforce minimum display duration for loading state
-  // This ensures users can perceive the loading indicator even when content arrives quickly
-  const now = Date.now();
-  const loadingElapsedTime = loadingStartTimeRef.current ? now - loadingStartTimeRef.current : 0;
-
-  if (showAiResponseLoading && !loadingStartTimeRef.current) {
-    // Loading state just started - record the timestamp
-    loadingStartTimeRef.current = now;
-  } else if (!showAiResponseLoading && loadingStartTimeRef.current) {
-    // Loading state ended - reset the timestamp
-    loadingStartTimeRef.current = null;
-  }
-
-  // Extend the loading state display time if content arrived too quickly
-  const showExtendedLoading =
-    showAiResponseLoading || // Normal loading state
-    (loadingStartTimeRef.current &&
-      loadingElapsedTime < LOADING_MIN_DISPLAY_MS &&
-      !hasRenderableStreamingContent &&
-      hasLiveAssistantTurn); // Extended for minimum duration
+  // Stop and the loading ticker must share the same visible live-turn state.
+  // Keep the shell-specific guard as a fallback, but Stop takes priority.
+  const showExtendedLoading = hasLiveAssistantTurn || showAiResponseLoading;
 
   useEffect(() => {
     if (!state.isLoadingSession && !showAiResponseLoading && !showExtendedLoading) {
@@ -3406,7 +3356,7 @@ function ChatContent() {
       streamingMessageId: state.streaming?.messageId ?? null,
       hasLiveAssistantTurn,
       isAiResponding,
-      hasRenderableStreamingContent,
+      hasNewLiveTurnBeforeAssistantIdentity,
       isAiResponseBlockFinished,
       showAiResponseLoading,
       showExtendedLoading: Boolean(showExtendedLoading),
@@ -3414,7 +3364,7 @@ function ChatContent() {
     });
   }, [
     hasLiveAssistantTurn,
-    hasRenderableStreamingContent,
+    hasNewLiveTurnBeforeAssistantIdentity,
     isAiResponding,
     isAiResponseBlockFinished,
     renderMessages.length,

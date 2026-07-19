@@ -510,11 +510,17 @@ export class HistoryProcessor {
       return "";
     })();
 
+    // Cache the seen-set per target — without this, burst coalesce is O(target × calls).
+    const seenByTarget = new WeakMap<any[], Set<string>>();
     const appendUnique = (target: any[], incoming: any[]): void => {
       if (!Array.isArray(incoming) || incoming.length === 0) {
         return;
       }
-      const seen = new Set(target.map((entry) => JSON.stringify(entry)));
+      let seen = seenByTarget.get(target);
+      if (!seen) {
+        seen = new Set(target.map((entry) => JSON.stringify(entry)));
+        seenByTarget.set(target, seen);
+      }
       for (const item of incoming) {
         const key = JSON.stringify(item);
         if (!seen.has(key)) {

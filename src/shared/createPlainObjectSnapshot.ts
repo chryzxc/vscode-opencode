@@ -132,3 +132,25 @@ export function createPlainObjectSnapshot<T>(value: T): T {
     return snapshotUnknown(candidate, 0, new WeakSet<object>()) as T;
   }
 }
+
+/**
+ * Hot-path clone variant for values that are already JSON-safe
+ * (e.g. SDK SSE event payloads). Skips the JSON round-trip performed by
+ * {@link createPlainObjectSnapshot}. Caller MUST guarantee the input
+ * contains no Date/Map/Set/TypedArray/class instances.
+ */
+export function createPlainObjectSnapshotFast<T>(value: T): T {
+  if (typeof structuredClone === "function") {
+    try {
+      return structuredClone(value);
+    } catch {
+      // Fall through to JSON/manual snapshotting.
+    }
+  }
+
+  try {
+    return JSON.parse(JSON.stringify(value)) as T;
+  } catch {
+    return snapshotUnknown(value, 0, new WeakSet<object>()) as T;
+  }
+}

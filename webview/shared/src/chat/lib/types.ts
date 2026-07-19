@@ -368,6 +368,8 @@ export interface MessagePartSource {
 export interface MessagePart {
   type?: string;
   text?: string;
+  /** True for SDK transport text that is not user-visible message content. */
+  synthetic?: boolean;
   content?: string;
   message?: string;
   reasoning?: string;

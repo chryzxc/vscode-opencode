@@ -70,20 +70,17 @@ test('structured-output format is verified through the SDK before a user prompt 
   assert.doesNotMatch(body, /\["outputFormat"\]|outputFormat\s*:/, 'the legacy untyped outputFormat field must never be sent');
 });
 
-test('send failures surface friendly user-facing timeout text instead of raw internal labels', () => {
+test('non-timeout send failures surface user-facing error text', () => {
   const body = extractFunctionBody(source, '  private async handleSendMessage(');
   assert.match(body, /const userFacingErrorMessage =[\s\S]*getUserFacingSendErrorMessage\(errorMessage\)/s, 'send error handling should map internal errors to user-facing text before showing the banner');
   assert.match(source, /private getUserFacingSendErrorMessage\(errorMessage: string\): string/, 'provider should define a dedicated user-facing send error formatter');
-  assert.match(source, /The model did not respond in time\. Please retry\./, 'timeout hangs should be rendered as a friendly retry prompt');
 });
 
-test('timeout-like failures clean up with the same stop flow used by the Stop button', () => {
-  assert.match(source, /private async cleanupTimedOutSession\(/, 'provider should define a shared timeout cleanup helper');
-  assert.match(source, /await this\.handleStopRequest\(sessionId,\s*\{[\s\S]*skipQueueDrain:\s*true/s, 'timeout cleanup should route through handleStopRequest');
-
+test('timeout-like transport failures wait for the stream and never invoke stop', () => {
+  assert.doesNotMatch(source, /cleanupTimedOutSession/, 'chat transport timeouts must not have a stop/abort cleanup path');
   const body = extractFunctionBody(source, '  private async handleSendMessage(');
-  assert.match(body, /isLikelyInteractiveTransportFailure\(errorMessage\)[\s\S]*await this\.cleanupTimedOutSession\(session\.id,\s*errorMessage\)/s, 'response.error timeout failures should invoke stop-style cleanup');
-  assert.match(body, /isLikelyInteractiveTransportFailure\(errorMessage\)[\s\S]*await this\.cleanupTimedOutSession\(drainSessionId,\s*errorMessage\)/s, 'thrown timeout failures should invoke stop-style cleanup');
+  assert.match(body, /isLikelyInteractiveTransportFailure\(errorMessage\)[\s\S]*preserveProcessingAfterTransportTimeout = true[\s\S]*waiting for SSE completion/s, 'response.error timeouts should leave the server-side turn running');
+  assert.match(body, /drainSessionId && !preserveProcessingAfterTransportTimeout[\s\S]*void this\.handleExecuteQueue\(drainSessionId\)/s, 'queue execution should wait until the stream terminal event clears the turn');
 });
 
 test('retryLastMessage uses stop flow instead of only clearing local processing flags', () => {
@@ -156,6 +153,30 @@ test('handleStopRequest finalizes the UI before the best-effort SDK abort comple
   assert.ok(abortRequest > localFinalization, 'local finalization must not wait for the abort request');
   assert.match(body, /type: "stopRequestHandled"/, 'stop should always notify the webview to end loading');
   assert.match(body, /Failed to abort active request/, 'abort failures should remain diagnostic after UI finalization');
+});
+
+test('prompt transport timeouts do not stop an active server-side agent', () => {
+  const body = extractFunctionBody(source, '  private async handleSendMessage(');
+  assert.match(
+    body,
+    /let preserveProcessingAfterTransportTimeout = false/,
+    'send handling must retain processing state when the prompt request times out',
+  );
+  assert.match(
+    body,
+    /Prompt transport timed out; leaving the server-side agent running and waiting for SSE completion/,
+    'transport timeouts must wait for stream completion instead of surfacing a failed request',
+  );
+  assert.match(
+    body,
+    /drainSessionId && !preserveProcessingAfterTransportTimeout/,
+    'the finally block must not clear an active turn after a transport timeout',
+  );
+  assert.doesNotMatch(
+    body,
+    /cleanupTimedOutSession\(/,
+    'transport timeouts must never route through the user stop/abort handler',
+  );
 });
 
 

@@ -136,8 +136,15 @@ test("webview transport bounds oversized tool output without truncating persiste
     providerSource,
     /const eventForWebview = this\.buildWebviewStreamEvent\(/,
   );
+  // buildWebviewStreamEvent returns the truncated clone directly — no
+  // redundant spread of the original event over the clone.
   assert.match(
     providerSource,
-    /const centralizedEventPayload = \{\s*\.\.\.enrichedEvent,/s,
+    /return this\.cloneAndTruncateStreamPayload\(enrichedEvent\)/,
+  );
+  assert.doesNotMatch(
+    providerSource,
+    /\.\.\.\s*enrichedEvent\b.*\.\.\.\s*truncatedDeepClone/s,
+    "buildWebviewStreamEvent must not spread the original event over the truncated clone (the clone already contains every key)",
   );
 });

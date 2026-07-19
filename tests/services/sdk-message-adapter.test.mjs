@@ -116,13 +116,31 @@ test('TextPart adapter produces text content and parts', () => {
   );
   assert.match(
     adapterSource,
-    /message\.parts\?\.push\(\{ type: "text", text: textPart\.text \}\)/,
-    'should push text as MessagePart with type=text',
+    /message\.parts\?\.push\(\{ type: "text", text: textPart\.text, synthetic \}\)/,
+    'should preserve synthetic state on projected text parts',
   );
   assert.match(
     adapterSource,
     /message\.content = content/,
     'should set message.content from joined text',
+  );
+});
+
+test('hydrated text snippets remain attachments instead of duplicated user-bubble text', () => {
+  assert.match(
+    adapterSource,
+    /function visibleUserTextFromParts\(parts: SdkMessagePart\[\]\): string/,
+    'the adapter should derive visible user text from typed SDK parts',
+  );
+  assert.match(
+    adapterSource,
+    /part\.type === "text" && part\.synthetic !== true/,
+    'synthetic SDK text must not become hydrated user content',
+  );
+  assert.match(
+    adapterSource,
+    /attachmentContents\.has\(text\)/,
+    'text identical to a text attachment payload must remain attachment-only',
   );
 });
 

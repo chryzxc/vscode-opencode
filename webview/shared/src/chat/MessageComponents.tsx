@@ -318,6 +318,26 @@ function isSyntheticUserToolTextPart(text: string): boolean {
   return text.includes("<path>") && text.includes("</path>") && text.includes("<content>");
 }
 
+function textFromAttachedDataUrl(part: MessagePart): string | undefined {
+  const mime = typeof part.mime === "string" ? part.mime.toLowerCase() : "";
+  const url = typeof part.url === "string" ? part.url : "";
+  if (part.type !== "file" || !mime.startsWith("text/") || !url.startsWith("data:")) {
+    return undefined;
+  }
+  const commaIndex = url.indexOf(",");
+  if (commaIndex < 0) return undefined;
+  const metadata = url.slice(0, commaIndex).toLowerCase();
+  const payload = url.slice(commaIndex + 1);
+  try {
+    if (metadata.includes(";base64")) {
+      return atob(payload);
+    }
+    return decodeURIComponent(payload);
+  } catch {
+    return undefined;
+  }
+}
+
 function isRenderableUserTextPart(part: MessagePart): boolean {
   if (!isRenderableAssistantTextPart(part)) {
     return false;
@@ -1194,6 +1214,13 @@ function messageBodyFromParts(
   if (!parts) {
     return "";
   }
+  const attachmentContents = new Set(
+    parts
+      .map((part) => asRecord(part) as MessagePart | undefined)
+      .filter((part): part is MessagePart => !!part)
+      .map((part) => textFromAttachedDataUrl(part))
+      .filter((text): text is string => typeof text === "string"),
+  );
   return parts
     .map((part) => {
       const partRec = asRecord(part);
@@ -1207,12 +1234,13 @@ function messageBodyFromParts(
       ) {
         return "";
       }
-      return (
+      const text = (
         (partRec.message as string | undefined) ??
         (partRec.text as string | undefined) ??
         (partRec.content as string | undefined) ??
         ""
       ).trim();
+      return role?.toLowerCase() === "user" && attachmentContents.has(text) ? "" : text;
     })
     .filter((partText) => partText.length > 0)
     .join("\n\n")
@@ -8831,16 +8859,24 @@ const centralizedRawResponse = message?.rawResponse;
     }
   }, [subagents.length, dispatch]);
 
+  // Mirror latest subagents / subagentDetailsById into refs so the
+  // effects below can keep deps minimal — otherwise the 1500ms poll
+  // interval tears down on every stream event.
+  const latestSubagentsRef = useRef(subagents);
+  latestSubagentsRef.current = subagents;
+  const latestSubagentDetailsByIdRef = useRef(subagentDetailsById);
+  latestSubagentDetailsByIdRef.current = subagentDetailsById;
+
   useEffect(() => {
     if (!selectedSubagentId) {
       return;
     }
-    const selected = subagents.find((entry) => entry.id === selectedSubagentId);
+    const selected = latestSubagentsRef.current.find((entry) => entry.id === selectedSubagentId);
     if (!selected) {
       return;
     }
     const detail =
-      (subagentDetailsById?.[selected.id] as SubagentDetail | undefined) ||
+      (latestSubagentDetailsByIdRef.current?.[selected.id] as SubagentDetail | undefined) ||
       (selected as unknown as SubagentDetail);
     const childSessionId = detail.childSessionId || selected.childSessionId;
     const parentSessionId = detail.parentSessionId || selected.parentSessionId;
@@ -8868,18 +8904,18 @@ const centralizedRawResponse = message?.rawResponse;
       status: selected.status,
       latestActivity: selected.latestActivity,
     });
-  }, [selectedSubagentId, subagents, subagentDetailsById]);
+  }, [selectedSubagentId]);
 
   useEffect(() => {
     if (!selectedSubagentId) {
       return;
     }
-    const selected = subagents.find((entry) => entry.id === selectedSubagentId);
+    const selected = latestSubagentsRef.current.find((entry) => entry.id === selectedSubagentId);
     if (!selected) {
       return;
     }
     const detail =
-      (subagentDetailsById?.[selected.id] as SubagentDetail | undefined) ||
+      (latestSubagentDetailsByIdRef.current?.[selected.id] as SubagentDetail | undefined) ||
       (selected as unknown as SubagentDetail);
     const childSessionId = detail.childSessionId || selected.childSessionId;
     const parentSessionId = detail.parentSessionId || selected.parentSessionId;
@@ -8897,21 +8933,27 @@ const centralizedRawResponse = message?.rawResponse;
 
     // Keep modal conversation/timeline fresh while an active subagent is running.
     const intervalId = window.setInterval(() => {
+      const currentSelected = latestSubagentsRef.current.find(
+        (entry) => entry.id === selectedSubagentId,
+      );
+      if (!currentSelected) {
+        return;
+      }
       vscode.postMessage({
         type: "getSubagentConversation",
-        subagentId: selected.id,
+        subagentId: currentSelected.id,
         childSessionId,
         parentSessionId,
         parentMessageId,
-        status: selected.status,
-        latestActivity: selected.latestActivity,
+        status: currentSelected.status,
+        latestActivity: currentSelected.latestActivity,
       });
     }, 1500);
 
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [selectedSubagentId, subagents, subagentDetailsById]);
+  }, [selectedSubagentId]);
 
   const hasStreamingActivity = !!(
     streaming &&
@@ -11199,28 +11241,52 @@ export const FileChangesSection = memo(function FileChangesSection({
   );
 });
 
+function isStreamingForThisCard(
+  streaming: StreamingState | undefined,
+  messageId: string | undefined,
+): boolean {
+  return Boolean(
+    streaming &&
+    streaming.isActive !== false &&
+    messageId &&
+    streaming.messageId === messageId,
+  );
+}
+
 function areResponseMessagePropsEqual(
   prevProps: Readonly<Parameters<typeof ResponseMessageInner>[0]>,
   nextProps: Readonly<Parameters<typeof ResponseMessageInner>[0]>,
 ): boolean {
-  return (
-    prevProps.message === nextProps.message &&
-    prevProps.streaming === nextProps.streaming &&
-    prevProps.hideLoadingText === nextProps.hideLoadingText &&
-    prevProps.isContiguous === nextProps.isContiguous &&
-    prevProps.interactiveEvents === nextProps.interactiveEvents &&
-    prevProps.messages?.length === nextProps.messages?.length &&
-    prevProps.currentSessionId === nextProps.currentSessionId &&
-    prevProps.hideFileChangesSection === nextProps.hideFileChangesSection &&
-    prevProps.todoItems === nextProps.todoItems &&
-    prevProps.blockGroupKey === nextProps.blockGroupKey &&
-    prevProps.isLastInBlock === nextProps.isLastInBlock &&
-    prevProps.isBlockExpanded === nextProps.isBlockExpanded &&
-    prevProps.isBlockStreaming === nextProps.isBlockStreaming &&
-    prevProps.isBlockHeaderAnchor === nextProps.isBlockHeaderAnchor &&
-    prevProps.blockSize === nextProps.blockSize &&
-    prevProps.isHiddenByBlock === nextProps.isHiddenByBlock
-  );
+  if (
+    prevProps.message !== nextProps.message ||
+    prevProps.hideLoadingText !== nextProps.hideLoadingText ||
+    prevProps.isContiguous !== nextProps.isContiguous ||
+    prevProps.interactiveEvents !== nextProps.interactiveEvents ||
+    prevProps.messages?.length !== nextProps.messages?.length ||
+    prevProps.currentSessionId !== nextProps.currentSessionId ||
+    prevProps.hideFileChangesSection !== nextProps.hideFileChangesSection ||
+    prevProps.todoItems !== nextProps.todoItems ||
+    prevProps.blockGroupKey !== nextProps.blockGroupKey ||
+    prevProps.isLastInBlock !== nextProps.isLastInBlock ||
+    prevProps.isBlockExpanded !== nextProps.isBlockExpanded ||
+    prevProps.isBlockStreaming !== nextProps.isBlockStreaming ||
+    prevProps.isBlockHeaderAnchor !== nextProps.isBlockHeaderAnchor ||
+    prevProps.blockSize !== nextProps.blockSize ||
+    prevProps.isHiddenByBlock !== nextProps.isHiddenByBlock
+  ) {
+    return false;
+  }
+
+  // Skip streaming identity changes for non-streaming cards. Without this,
+  // every stream batch forces EVERY mounted ResponseMessage to rerender.
+  const prevMessageId = prevProps.message?.id ?? prevProps.message?.info?.id;
+  const nextMessageId = nextProps.message?.id ?? nextProps.message?.info?.id;
+  const prevWasStreaming = isStreamingForThisCard(prevProps.streaming, prevMessageId);
+  const nextIsStreaming = isStreamingForThisCard(nextProps.streaming, nextMessageId);
+  if (prevWasStreaming || nextIsStreaming) {
+    return prevProps.streaming === nextProps.streaming;
+  }
+  return true;
 }
 
 export const ResponseMessage = memo(function ResponseMessage({

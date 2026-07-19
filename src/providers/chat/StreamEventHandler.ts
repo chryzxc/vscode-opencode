@@ -23,6 +23,8 @@ type PendingStreamEvent = {
 const STREAM_WEBVIEW_FLUSH_INTERVAL_MS = 50;
 const MAX_STREAM_WEBVIEW_EVENTS_PER_BATCH = 8;
 const STREAM_WEBVIEW_BACKLOG_YIELD_MS = 16;
+// Hard cap on pending events to engage only under backpressure.
+const MAX_PENDING_EVENTS = 500;
 
 export class StreamEventHandler {
   private streamStartTime?: number;
@@ -108,6 +110,15 @@ export class StreamEventHandler {
     // preventing the VS Code webview IPC boundary from
     // becoming a scroll-jank bottleneck.
     this.pendingEvents.push({ enrichedEvent, event, sessionId });
+
+    if (this.pendingEvents.length > MAX_PENDING_EVENTS) {
+      const overflow = this.pendingEvents.length - MAX_PENDING_EVENTS;
+      this.pendingEvents.splice(0, overflow);
+      this.logger.warn("[STREAM-PERF] pendingEvents cap engaged, shed oldest events", {
+        shed: overflow,
+        cap: MAX_PENDING_EVENTS,
+      });
+    }
 
     if (this.isTerminalEvent(eventType)) {
       this.flushPendingEvents();

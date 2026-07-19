@@ -33,8 +33,13 @@ test("renderable stream text paints immediately and centralized transcript takes
   );
   assert.match(
     shellSource,
-    /!hasRenderableStreamingContent[\s\S]*!isAiResponseBlockFinished/,
-    "the loading bubble should end when renderable streamed text is available",
+    /hasLiveAssistantTurn[\s\S]*?!isAiResponseBlockFinished/,
+    "the loading ticker must stay visible throughout the live assistant turn alongside Stop, regardless of streaming content arrival",
+  );
+  assert.doesNotMatch(
+    shellSource,
+    /hasRenderableStreamingContent/,
+    "stream content must not gate the loading ticker — hasRenderableStreamingContent was removed in favor of hasLiveAssistantTurn",
   );
 });
 

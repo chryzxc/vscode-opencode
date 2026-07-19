@@ -136,12 +136,12 @@ test('MessageStreamService unwraps SDK sync event wrappers into canonical stream
 test('MessageStreamService snapshots raw SDK events into plain data before notifying callbacks', () => {
   assert.match(
     messageStreamSource,
-    /import \{ createPlainObjectSnapshot \} from "\.\.\/shared\/createPlainObjectSnapshot";/,
-    'MessageStreamService should import the shared plain-object snapshot helper',
+    /import \{ createPlainObjectSnapshotFast \} from "\.\.\/shared\/createPlainObjectSnapshot";/,
+    'MessageStreamService should import the fast plain-object snapshot helper (avoids redundant JSON round-trip on the stream hot path)',
   );
   assert.match(
     messageStreamSource,
-    /private cloneRawEvent<T>\(value: T\): T \{\s*return createPlainObjectSnapshot\(value\);\s*\}/,
+    /private cloneRawEvent<T>\(value: T\): T \{\s*return createPlainObjectSnapshotFast\(value\);\s*\}/,
     'MessageStreamService should not leak the original SDK event object when cloning fails',
   );
 });

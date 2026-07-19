@@ -28,8 +28,13 @@
       "name": "chat-provider-orchestrator",
       "prefixes": [
         "src/providers/ChatViewProvider.ts",
+        "src/providers/chat/SessionHandler.ts",
+        "src/providers/chat/StreamEventHandler.ts",
+        "src/providers/chat/StructuredOutputProcessor.ts",
         "src/services/MessageStreamService.ts",
         "src/services/SubagentTracker.ts",
+        "src/services/GeminiTokenUsageTracker.ts",
+        "src/shared/createPlainObjectSnapshot.ts",
         "webview/shared/src/chat/lib/messageHandler.ts",
         "webview/shared/src/chat/lib/truncateLargeStrings.ts"
       ],
@@ -42,7 +47,10 @@
         "tests/webview/message-handler-processing.test.mjs",
         "tests/webview/interactive-events-contract.test.mjs",
         "tests/webview/truncate-large-strings-behavior.test.mjs",
-        "tests/unit/system-prompt-history-filter.test.mjs"
+        "tests/unit/system-prompt-history-filter.test.mjs",
+        "tests/regression/perf-stream-clone-redundancy-regression.test.mjs",
+        "tests/regression/perf-bounded-stream-state-regression.test.mjs",
+        "tests/regression/perf-token-emit-debounce-regression.test.mjs"
       ]
     },
     {
@@ -68,7 +76,8 @@
       "tests": [
         "tests/services/request-budgeter.test.mjs",
         "tests/services/quota-service.test.mjs",
-        "tests/integration/budget-quota-integration-regression.test.mjs"
+        "tests/integration/budget-quota-integration-regression.test.mjs",
+        "tests/regression/perf-quota-async-write-regression.test.mjs"
       ]
     },
     {
@@ -84,7 +93,8 @@
         "tests/webview/interactive-events-contract.test.mjs",
         "tests/webview/truncate-large-strings-behavior.test.mjs",
         "tests/webview/toast-events-behavior.test.mjs",
-        "tests/webview/subagent-duration-behavior.test.mjs"
+        "tests/webview/subagent-duration-behavior.test.mjs",
+        "tests/regression/perf-subagent-modal-poll-thrash-regression.test.mjs"
       ]
     },
     {

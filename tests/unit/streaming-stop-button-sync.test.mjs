@@ -29,7 +29,17 @@ test('InputWrapper derives stop/send toggle from the active assistant response s
   );
   assert.match(
     chatShellSource,
-    /const hasLiveAssistantTurn = shouldDeferComposerSendInCurrentSession\([\s\S]*const showAiResponseLoading =[\s\S]*hasLiveAssistantTurn[\s\S]*const showExtendedLoading =[\s\S]*hasLiveAssistantTurn/s,
-    'loading indicator should use the same live-turn condition as the stop button',
+    /const showExtendedLoading = hasLiveAssistantTurn \|\| showAiResponseLoading;/,
+    'the rendered loading ticker must directly use the same live-turn condition as Stop',
+  );
+  assert.doesNotMatch(
+    chatShellSource,
+    /const showAiResponseLoading =[\s\S]*hasRenderableStreamingContent/s,
+    'stream content or activity must not hide the loading ticker while Stop remains available',
+  );
+  assert.match(
+    chatShellSource,
+    /const hasNewLiveTurnBeforeAssistantIdentity =[\s\S]*Boolean\(state\.streaming\?\.isActive\)[\s\S]*state\.assistantTurnPending[\s\S]*visiblePendingUserMessages\.length > 0[\s\S]*!hasNewLiveTurnBeforeAssistantIdentity/s,
+    'a previous terminal assistant message must not hide the next turn\'s loading ticker before its message identity arrives',
   );
 });

@@ -160,9 +160,9 @@ function safeJsonParse(raw: string): any {
   }
 }
 
-function writeJsonFile<T>(filePath: string, data: T): boolean {
+async function writeJsonFile<T>(filePath: string, data: T): Promise<boolean> {
   try {
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf8");
+    await fs.promises.writeFile(filePath, JSON.stringify(data, null, 2), "utf8");
     return true;
   } catch {
     return false;
@@ -501,7 +501,7 @@ export class QuotaService extends EventEmitter {
             if (refreshed.expires_in) {
               authData.openai.expires = Date.now() + (refreshed.expires_in * 1000);
             }
-            writeJsonFile(authPath, authData);
+            await writeJsonFile(authPath, authData);
           }
         }
       } catch (refreshError) {

@@ -35,6 +35,11 @@ export class StructuredOutputProcessor {
     private planManager: PlanManager,
   ) { }
 
+  clearDiagnostics(): void {
+    this.structuredValidationFailureCounters.clear();
+    this.structuredOutputIncompatibleModelKeys.clear();
+  }
+
   private persistPlan(
     content: string,
     preferredPath?: string,

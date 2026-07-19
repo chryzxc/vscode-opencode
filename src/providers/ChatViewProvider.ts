@@ -351,6 +351,8 @@ export class ChatViewProvider
   private currentTodoItems: unknown[] = [];
   private compatibilityWarningsOverride: CompatibilityResult[] | null = null;
   private subagentProjectionWrites = new Map<string, Promise<void>>();
+  private readonly subagentProjectionDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private static readonly SUBAGENT_PROJECTION_DEBOUNCE_MS = 500;
 
   private getSubagentProjectionStorageKey(sessionId: string): string {
     return `opencode.session.subagentProjection.${sessionId}`;
@@ -378,6 +380,22 @@ export class ChatViewProvider
       }
     });
     return write;
+  }
+
+  /** Trailing-debounce projection persist; coalesces rapid subagent bursts into one write. */
+  private scheduleSubagentProjectionPersist(sessionId: string): void {
+    const existing = this.subagentProjectionDebounceTimers.get(sessionId);
+    if (existing) {
+      clearTimeout(existing);
+    }
+    const timer = setTimeout(() => {
+      this.subagentProjectionDebounceTimers.delete(sessionId);
+      void this.persistSubagentProjection(
+        sessionId,
+        this.subagentTracker.getSnapshotPayload(),
+      );
+    }, ChatViewProvider.SUBAGENT_PROJECTION_DEBOUNCE_MS);
+    this.subagentProjectionDebounceTimers.set(sessionId, timer);
   }
 
   private async restorePersistedSubagentProjection(sessionId: string): Promise<void> {
@@ -515,16 +533,40 @@ export class ChatViewProvider
     if (!enrichedEvent || typeof enrichedEvent !== "object") {
       return enrichedEvent;
     }
-    // Per the webview transport contract: centralizedEventPayload is built by
-    // spreading enrichedEvent first, then layering on the truncated deep
-    // clone. Last-write-wins means truncated values overwrite the originals
-    // for any oversized field.
-    const truncatedDeepClone = this.cloneAndTruncateStreamPayload(enrichedEvent);
-    const centralizedEventPayload = {
-      ...enrichedEvent,
-      ...(truncatedDeepClone as Record<string, unknown>),
-    };
-    return centralizedEventPayload;
+    // Fast path: skip the recursive DFS when no string leaf exceeds the IPC cap.
+    // Upstream cloneRawEvent already produced an independent copy.
+    if (!this.hasOversizedStringLeaf(enrichedEvent)) {
+      return enrichedEvent;
+    }
+    // Slow path: clone + truncate oversized string leaves.
+    return this.cloneAndTruncateStreamPayload(enrichedEvent);
+  }
+
+  /** Returns true if any string leaf exceeds MAX_STREAM_WEBVIEW_TOOL_OUTPUT_CHARS. */
+  private hasOversizedStringLeaf(node: unknown, depth = 0): boolean {
+    const limit = ChatViewProvider.MAX_STREAM_WEBVIEW_TOOL_OUTPUT_CHARS;
+    if (depth > ChatViewProvider.STREAM_PAYLOAD_MAX_CLONE_DEPTH) {
+      return typeof node === "string" && node.length > limit;
+    }
+    if (typeof node === "string") {
+      return node.length > limit;
+    }
+    if (Array.isArray(node)) {
+      for (const entry of node) {
+        if (this.hasOversizedStringLeaf(entry, depth + 1)) {
+          return true;
+        }
+      }
+      return false;
+    }
+    if (node && typeof node === "object") {
+      for (const key of Object.keys(node)) {
+        if (this.hasOversizedStringLeaf((node as Record<string, unknown>)[key], depth + 1)) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   private cloneAndTruncateStreamPayload(node: unknown, depth = 0): unknown {
@@ -2082,6 +2124,8 @@ export class ChatViewProvider
       });
 
       this.subagentTracker.resetForSession(sessionId);
+      this.streamedSubtaskPartsBySessionId.clear();
+      this.structuredOutputProcessor.clearDiagnostics();
 
       // Step 2: Log diagnostic information for debugging
       const planMessages = messages.filter((m: any) => m?.plan);
@@ -3438,10 +3482,14 @@ export class ChatViewProvider
               });
               await this.sendPersistedCompactionViewState(currentSession.id);
               this.subagentTracker.resetForSession(currentSession.id);
+              this.streamedSubtaskPartsBySessionId.clear();
+              this.structuredOutputProcessor.clearDiagnostics();
               await this.restorePersistedSubagentProjection(currentSession.id);
               this.sendQueueUpdate(currentSession.id);
             } else {
               this.subagentTracker.resetForSession(null);
+              this.streamedSubtaskPartsBySessionId.clear();
+              this.structuredOutputProcessor.clearDiagnostics();
             }
 
             await this.handleGetSessions();
@@ -3755,6 +3803,8 @@ export class ChatViewProvider
             // Clear in-memory todo cache for the newly created session.
             this.clearSessionTodos();
             this.subagentTracker.resetForSession(createdSession.id);
+            this.streamedSubtaskPartsBySessionId.clear();
+            this.structuredOutputProcessor.clearDiagnostics();
             this.sendQueueUpdate(createdSession.id);
 
             // Always use "build" as the default agent for new sessions.
@@ -4572,10 +4622,7 @@ export class ChatViewProvider
           ...subagentUpdate,
         });
         if (subagentParentSessionId) {
-          void this.persistSubagentProjection(
-            subagentParentSessionId,
-            this.subagentTracker.getSnapshotPayload(),
-          );
+          this.scheduleSubagentProjectionPersist(subagentParentSessionId);
         }
         this.sendProcessingSessionsUpdate();
       }
@@ -6256,11 +6303,6 @@ export class ChatViewProvider
     return isTimeout;
   }
 
-  private async cleanupTimedOutSession(sessionId: string, errorMessage?: string): Promise<void> {
-    this.logger.warn("Cleaning up timed out session", { sessionId, errorMessage });
-    await this.handleStopRequest(sessionId, { skipQueueDrain: true });
-  }
-
   private getUserFacingSendErrorMessage(errorMessage: string): string {
     const normalized = errorMessage.trim().toLowerCase();
     if (!normalized) {
@@ -7340,20 +7382,7 @@ export class ChatViewProvider
           hasPlan: !!next.plan,
           planFile: next.plan?.file,
           planKeys: next.plan ? Object.keys(next.plan) : [],
-          fullPlanObject: next.plan ? JSON.stringify(next.plan, null, 2) : 'undefined'
         });
-
-        // DEBUG: Try to serialize the entire next object to check for circular references
-        try {
-          const serialized = JSON.stringify(next);
-          log.debug('Message serialization successful', {
-            serializedLength: serialized.length,
-            hasPlanInSerialized: serialized.includes('"plan"'),
-            planSubstring: serialized.includes('"file"') ? serialized.substring(serialized.indexOf('"plan"'), serialized.indexOf('"plan"') + 200) : 'NOT FOUND'
-          });
-        } catch (e) {
-          log.debug('Message serialization FAILED', { error: e });
-        }
       } else {
         log.debug('Plan NOT set - condition failed', {
           hasLongPlanContent,
@@ -7439,6 +7468,9 @@ export class ChatViewProvider
     });
 
     let drainSessionId: string | undefined;
+    // A timeout from the prompt HTTP request does not prove that the server-side
+    // agent stopped. The SSE stream remains authoritative for the turn lifetime.
+    let preserveProcessingAfterTransportTimeout = false;
     const capturePromptDebug = this.shouldVerboseStreamDebug();
     let debugSessionId: string | undefined;
     let baselineAssistantMarker: AssistantHistoryMarker | undefined;
@@ -8033,6 +8065,8 @@ export class ChatViewProvider
             // Set as current session and retry
             await this.sessionService.switchSession(newSession.id);
             this.subagentTracker.resetForSession(newSession.id);
+            this.streamedSubtaskPartsBySessionId.clear();
+            this.structuredOutputProcessor.clearDiagnostics();
 
             // Notify UI of the ID change if possible, or just refresh sessions
             await this.handleGetSessions();
@@ -8127,6 +8161,15 @@ export class ChatViewProvider
           ].join("\n");
         }
 
+        if (this.isLikelyInteractiveTransportFailure(errorMessage)) {
+          preserveProcessingAfterTransportTimeout = true;
+          this.logger.warn(
+            "Prompt transport timed out; leaving the server-side agent running and waiting for SSE completion",
+            { sessionId: session.id, errorMessage },
+          );
+          return;
+        }
+
         const userFacingErrorMessage =
           this.getUserFacingSendErrorMessage(errorMessage);
         this.logger.info("ERROR_FLOW: Sending error event to webview", {
@@ -8142,10 +8185,6 @@ export class ChatViewProvider
           message: userFacingErrorMessage,
           sessionId: session.id,
         });
-
-        if (this.isLikelyInteractiveTransportFailure(errorMessage)) {
-          await this.cleanupTimedOutSession(session.id, errorMessage);
-        }
 
         return;
       }
@@ -8516,6 +8555,15 @@ export class ChatViewProvider
         error,
         "Failed to send message",
       );
+      if (this.isLikelyInteractiveTransportFailure(errorMessage) && drainSessionId) {
+        preserveProcessingAfterTransportTimeout = true;
+        this.logger.warn(
+          "Prompt transport timed out; leaving the server-side agent running and waiting for SSE completion",
+          { sessionId: drainSessionId, errorMessage },
+        );
+        return;
+      }
+
       const userFacingErrorMessage =
         this.getUserFacingSendErrorMessage(errorMessage);
       vscode.window.showErrorMessage(`Failed to send message: ${userFacingErrorMessage}`);
@@ -8531,9 +8579,6 @@ export class ChatViewProvider
         message: userFacingErrorMessage,
       });
 
-      if (this.isLikelyInteractiveTransportFailure(errorMessage) && drainSessionId) {
-        await this.cleanupTimedOutSession(drainSessionId, errorMessage);
-      }
     } finally {
       const totalDuration = Date.now() - overallStartTime;
       log.featureStep(flow, 'message_processing_completed', {
@@ -8549,7 +8594,7 @@ export class ChatViewProvider
       if (debugSessionId) {
         this.promptDebugBySession.delete(debugSessionId);
       }
-      if (drainSessionId) {
+      if (drainSessionId && !preserveProcessingAfterTransportTimeout) {
         const shouldPreserveInteractiveContinuation =
           sendMeta?.interactiveSubmit === true &&
           this.activeStreamSessionId === drainSessionId &&
@@ -8581,11 +8626,16 @@ export class ChatViewProvider
           this.sessionsNeedingTitle.delete(drainSessionId);
           void this.triggerSessionTitleGeneration(drainSessionId);
         }
+      } else if (drainSessionId) {
+        this.logger.info(
+          "Keeping processing state after prompt transport timeout; awaiting stream terminal event",
+          { sessionId: drainSessionId },
+        );
       }
       this.logger.info("Processing request finished", {
         sessionId: drainSessionId,
       });
-      if (drainSessionId) {
+      if (drainSessionId && !preserveProcessingAfterTransportTimeout) {
         void this.handleExecuteQueue(drainSessionId);
       }
 
@@ -10794,6 +10844,10 @@ export class ChatViewProvider
     this.seenClientRequestIds.clear();
     this.executingQueueSessionIds.clear();
     this.sessionsNeedingTitle?.clear();
+    for (const timer of this.subagentProjectionDebounceTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.subagentProjectionDebounceTimers.clear();
     this.view = undefined;
   }
 
