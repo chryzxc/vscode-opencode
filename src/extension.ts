@@ -32,6 +32,7 @@ import { ChatViewProvider } from "./providers/ChatViewProvider";
 import { ModelCapabilitiesService } from "./services/ModelCapabilitiesService";
 import { StatusBarProvider } from "./providers/StatusBarProvider";
 import { PlanViewProvider } from "./providers/PlanViewProvider";
+import { WalkthroughViewProvider } from "./providers/WalkthroughViewProvider";
 import { DiffReviewProvider } from "./providers/DiffReviewProvider";
 import { ConfigFilesProvider, type ConfigFile } from "./providers/ConfigFilesProvider";
 import { SkillManagementService } from "./services/SkillManagementService";
@@ -423,6 +424,15 @@ export async function activate(context: vscode.ExtensionContext) {
           vscode.window.showInformationMessage(
             "File reference picker coming soon!",
           );
+        },
+      ),
+    );
+
+    context.subscriptions.push(
+      vscode.commands.registerCommand(
+        "opencode.showWalkthrough",
+        async (payload: { content?: string; title?: string; sourceFile?: string }) => {
+          await WalkthroughViewProvider.show(context, payload);
         },
       ),
     );
