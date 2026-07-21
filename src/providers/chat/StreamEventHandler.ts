@@ -12,26 +12,9 @@ import type { CompactionManager } from "./CompactionManager";
 import type { DiagnosticsLogger } from "./DiagnosticsLogger";
 import type { GeminiTokenUsageTracker } from "../../services/GeminiTokenUsageTracker";
 
-type PendingStreamEvent = {
-  enrichedEvent: any;
-  event: any;
-  sessionId: string | undefined;
-};
-
-// 20 presentation batches/sec remains visually smooth while leaving main
-// thread time for scrolling and input during 30-60 event/sec token streams.
-const STREAM_WEBVIEW_FLUSH_INTERVAL_MS = 50;
-const MAX_STREAM_WEBVIEW_EVENTS_PER_BATCH = 8;
-const STREAM_WEBVIEW_BACKLOG_YIELD_MS = 16;
-// Hard cap on pending events to engage only under backpressure.
-const MAX_PENDING_EVENTS = 500;
-
 export class StreamEventHandler {
   private streamStartTime?: number;
   private eventCount = 0;
-  private pendingEvents: PendingStreamEvent[] = [];
-  private flushRafId: ReturnType<typeof setTimeout> | null = null;
-  private lastStreamPerformanceLogAt = 0;
 
   constructor(
     private structuredOutputProcessor: StructuredOutputProcessor,
@@ -105,29 +88,12 @@ export class StreamEventHandler {
       });
     }
 
-    // Buffer event for batched delivery. During active streaming this
-    // coalesces high-frequency text chunks (30-60/sec) into bounded batches,
-    // preventing the VS Code webview IPC boundary from
-    // becoming a scroll-jank bottleneck.
-    this.pendingEvents.push({ enrichedEvent, event, sessionId });
-
-    if (this.pendingEvents.length > MAX_PENDING_EVENTS) {
-      const overflow = this.pendingEvents.length - MAX_PENDING_EVENTS;
-      this.pendingEvents.splice(0, overflow);
-      this.logger.warn("[STREAM-PERF] pendingEvents cap engaged, shed oldest events", {
-        shed: overflow,
-        cap: MAX_PENDING_EVENTS,
-      });
-    }
-
-    if (this.isTerminalEvent(eventType)) {
-      this.flushPendingEvents();
-    } else if (this.flushRafId === null) {
-      this.flushRafId = setTimeout(
-        () => this.flushPendingEvents(),
-        STREAM_WEBVIEW_FLUSH_INTERVAL_MS,
-      );
-    }
+    // Preserve every event's live ordering at the webview boundary.
+    this.postMessage({
+      type: "streamEvent",
+      event: enrichedEvent || event,
+      sessionId,
+    });
 
   }
 
@@ -238,68 +204,12 @@ export class StreamEventHandler {
     }
   }
 
-  private isTerminalEvent(eventType: string): boolean {
-    return (
-      eventType === "message.completed" ||
-      eventType === "session.completed" ||
-      eventType === "message.error"
-    );
-  }
-
-  private flushPendingEvents(): void {
-    const startedAt = performance.now();
-    if (this.flushRafId !== null) {
-      clearTimeout(this.flushRafId);
-      this.flushRafId = null;
-    }
-
-    const batch = this.pendingEvents.splice(0, MAX_STREAM_WEBVIEW_EVENTS_PER_BATCH);
-    if (batch.length === 0) return;
-    const hasBacklog = this.pendingEvents.length > 0;
-
-    if (batch.length === 1) {
-      const { enrichedEvent, event, sessionId } = batch[0];
-      this.postMessage({
-        type: "streamEvent",
-        event: enrichedEvent || event,
-        sessionId,
-      });
-    } else {
-      this.postMessage({
-        type: "streamEventBatch",
-        events: batch.map(({ enrichedEvent, event, sessionId }) => ({
-          event: enrichedEvent || event,
-          sessionId,
-        })),
-      });
-    }
-    const now = Date.now();
-    if (now - this.lastStreamPerformanceLogAt >= 250) {
-      this.lastStreamPerformanceLogAt = now;
-      this.logger.info("[STREAM-PERF] host-stream-flush", {
-        batchSize: batch.length,
-        durationMs: Number((performance.now() - startedAt).toFixed(2)),
-      });
-    }
-    if (hasBacklog && this.flushRafId === null) {
-      this.flushRafId = setTimeout(
-        () => this.flushPendingEvents(),
-        STREAM_WEBVIEW_BACKLOG_YIELD_MS,
-      );
-    }
-  }
-
   /**
    * Start stream with logging
    */
   startStream(sessionId: string, messageId: string): void {
     this.streamStartTime = Date.now();
     this.eventCount = 0;
-    this.pendingEvents = [];
-    if (this.flushRafId !== null) {
-      clearTimeout(this.flushRafId);
-      this.flushRafId = null;
-    }
 
     const correlationId = this.logger.startFeatureFlow('ai-stream', {
       sessionId,
@@ -317,7 +227,6 @@ export class StreamEventHandler {
    * End stream with logging
    */
   endStream(sessionId: string, messageId: string, success: boolean): void {
-    this.flushPendingEvents();
     if (!this.streamStartTime) {
       this.logger.warn( 'Stream ended but never started', {
         sessionId,

@@ -78,10 +78,9 @@ export const initialState: AppState = {
   isProcessing: false,
   isSteering: false,
   currentSessionId: null,
+  sessionLoadError: null,
   messages: [],
   messagesBySessionId: {},
-  sdkMessagesBySessionId: {},
-  liveEventStreamBySessionId: {},
   liveToastNotificationsBySessionId: {},
   promptQueue: [],
   queueBySessionId: {},
@@ -167,6 +166,7 @@ type StreamingContentPayload = {
   content: string;
   append?: boolean;
   renderable?: boolean;
+  partID?: string;
 };
 type StreamingReasoningPayload = {
   reasoning: string;
@@ -184,9 +184,25 @@ type StreamingStepUpdatePayload = {
   patch: Partial<StreamingStep>;
 };
 
+const EMPTY_DISMISSED_INTERACTIVE_EVENT_KEYS = new Set<string>();
+
+/**
+ * The webview can retain reducer state across a hot reload, so state created by
+ * an older bundle may not include fields added in a newer bundle. Interactive
+ * events arrive independently of init state; normalize this optional field at
+ * every event boundary rather than letting a malformed/legacy snapshot break
+ * the message handler.
+ */
+function getDismissedInteractiveEventKeys(state: Pick<AppState, "dismissedInteractiveEventKeys">): Set<string> {
+  return state.dismissedInteractiveEventKeys instanceof Set
+    ? state.dismissedInteractiveEventKeys
+    : EMPTY_DISMISSED_INTERACTIVE_EVENT_KEYS;
+}
+
 export type AppAction =
   | { type: "SET_RECEIVED_INIT_STATE"; payload: boolean }
   | { type: "SET_SESSION_ID"; payload: string | null }
+  | { type: "SET_SESSION_LOAD_ERROR"; payload: AppState["sessionLoadError"] }
   | { type: "SET_SERVER_STATUS"; payload: string }
   | { type: "SET_SDK_VERSION"; payload: string | undefined }
   | { type: "SET_COMPATIBILITY_WARNINGS"; payload: CompatibilityWarning[] }
@@ -199,10 +215,6 @@ export type AppAction =
   | { type: "SET_SELECTED_AGENT"; payload: string }
   | { type: "SET_AGENTS_LIST"; payload: Agent[] }
   | { type: "SET_MESSAGES"; payload: Message[] }
-  | { type: "SET_SDK_MESSAGES_DEBUG"; payload: { sessionId: string; messages: unknown[] } }
-  | { type: "APPEND_LIVE_EVENT_STREAM_DEBUG"; payload: { sessionId?: string | null; event: unknown } }
-  | { type: "APPEND_LIVE_EVENT_STREAM_DEBUG_BATCH"; payload: { sessionId?: string | null; events: unknown[] } }
-  | { type: "CLEAR_LIVE_EVENT_STREAM_DEBUG" }
   | {
     type: "APPEND_LIVE_TOAST_NOTIFICATION";
     payload: { sessionId?: string | null; notification: CentralizedToastNotification };
@@ -239,6 +251,7 @@ export type AppAction =
     payload: { sessionId: string; streaming: StreamingState | null };
   }
   | { type: "UPDATE_STREAMING_CONTENT"; payload: StreamingContentPayload }
+  | { type: "SUPPRESS_STREAMING_TEXT_PART"; payload: { partID: string } }
   | { type: "UPDATE_STREAMING_REASONING"; payload: StreamingReasoningPayload }
   | { type: "SET_IN_REASONING_PART"; payload: boolean }  // Track if we're processing a reasoning part
   | { type: "APPEND_SDK_EVENT_PAYLOAD"; payload: unknown }
@@ -551,6 +564,9 @@ function interactiveEventContentKeyLocal(event: InteractiveEvent): string {
     ].join("::");
   }
   if (type === "quick_actions") {
+    if (event.permissionID) {
+      return ["permission", normalizeComparableTextLocal(event.permissionID)].join("::");
+    }
     return [
       "quick_actions",
       normalizeComparableTextLocal(asStringLocal(event.title)),
@@ -853,16 +869,29 @@ function mergeStreamingSnapshotLocal(
     // shouldStartFreshAssistantTurn fires (messageHandler.ts:9722-9727)
     // we are inherently in a mid-turn phase transition. Preserve the
     // accumulated timeline arrays so the activity timeline does not
-    // visually reset to empty. Project rule: "we don't clear the rendered UI".
+    // visually reset to empty. LOCKED PROJECT RULE: once an activity component
+    // has rendered during a live assistant turn, later stream snapshots may
+    // enrich it but must never remove it.
     if (shouldResetTimeline) {
       return {
         ...normalizedIncoming,
-        // Preserve turn-level activity (accumulates across messages in a multi-phase turn)
-        steps: existing?.steps ?? normalizedIncoming.steps,
-        progressEvents: existing?.progressEvents ?? normalizedIncoming.progressEvents,
-        reasoningEvents: existing?.reasoningEvents ?? normalizedIncoming.reasoningEvents,
-        edits: existing?.edits ?? normalizedIncoming.edits,
-        interactiveEvents: existing?.interactiveEvents ?? normalizedIncoming.interactiveEvents,
+        // Preserve and extend turn-level activity across multi-phase messages.
+        // Do not choose one array over the other: that drops either an already
+        // rendered row or the first row of the newly keyed stream phase.
+        steps: mergeActivityArraysLocal(existing?.steps, normalizedIncoming.steps) ?? [],
+        progressEvents: mergeActivityArraysLocal(
+          existing?.progressEvents,
+          normalizedIncoming.progressEvents,
+        ) ?? [],
+        reasoningEvents: mergeActivityArraysLocal(
+          existing?.reasoningEvents,
+          normalizedIncoming.reasoningEvents,
+        ) ?? [],
+        edits: mergeActivityArraysLocal(existing?.edits, normalizedIncoming.edits) ?? [],
+        interactiveEvents: mergeActivityArraysLocal(
+          existing?.interactiveEvents,
+          normalizedIncoming.interactiveEvents,
+        ) ?? [],
         // Preserve renderable flag so ThinkingBubble does not re-appear mid-turn
         hasRenderableContent:
           existing?.hasRenderableContent ||
@@ -2550,6 +2579,13 @@ function getInteractiveEventKeysLocal(event: InteractiveEvent): string[] {
     keys.add(`id:${id}`);
   }
 
+  // A permission is a server-side request, not a reusable prompt.  Its
+  // request ID is the only safe dismissal key: using the title (for example,
+  // "Allow read?") would hide every later permission with the same wording.
+  if (event.type === "quick_actions" && event.permissionID) {
+    return [...keys];
+  }
+
   const prompt =
     event.type === "question" || event.type === "confirm"
       ? event.question
@@ -2570,7 +2606,12 @@ function filterDismissedInteractiveEventsLocal(
   events: InteractiveEvent[],
   dismissedKeys: Set<string>,
 ): InteractiveEvent[] {
-  if (!Array.isArray(events) || events.length === 0 || dismissedKeys.size === 0) {
+  if (
+    !Array.isArray(events) ||
+    events.length === 0 ||
+    !(dismissedKeys instanceof Set) ||
+    dismissedKeys.size === 0
+  ) {
     return events;
   }
   return events.filter(
@@ -2796,6 +2837,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         contextUsagePct: undefined,
       };
     }
+    case "SET_SESSION_LOAD_ERROR":
+      return { ...state, sessionLoadError: action.payload };
     case "SET_SERVER_STATUS":
       return { ...state, serverStatus: action.payload };
     case "SET_SDK_VERSION":
@@ -2844,6 +2887,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case "SET_AGENTS_LIST":
       return { ...state, availableAgents: action.payload };
     case "SET_MESSAGES": {
+      const dismissedInteractiveEventKeys = getDismissedInteractiveEventKeys(state);
       const canonicalMessages = canonicalizeMessagesForRender(action.payload, {
         preserveEvtAssistantMessages:
           !!state.streaming?.isActive || state.assistantTurnPending,
@@ -2869,7 +2913,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         canonicalMessages.length > 0
           ? filterDismissedInteractiveEventsLocal(
             pendingInteractiveEventsFromMessagesLocal(canonicalMessages),
-            state.dismissedInteractiveEventKeys,
+            dismissedInteractiveEventKeys,
           )
           : [];
       const hasLiveInteractiveEvents =
@@ -2886,7 +2930,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         (isTurnStillActive || liveInteractiveRequiresUserResponse)
           ? filterDismissedInteractiveEventsLocal(
             state.interactiveEvents,
-            state.dismissedInteractiveEventKeys,
+            dismissedInteractiveEventKeys,
           )
           : derivedInteractiveEvents;
       return {
@@ -2900,53 +2944,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           resolvedAnchors.compactionDividerAfterMessageId,
       };
     }
-    case "SET_SDK_MESSAGES_DEBUG": {
-      return {
-        ...state,
-        sdkMessagesBySessionId: {
-          ...(state.sdkMessagesBySessionId ?? {}),
-          [action.payload.sessionId]: action.payload.messages,
-        },
-      };
-    }
-    case "APPEND_LIVE_EVENT_STREAM_DEBUG": {
-      const sessionId = action.payload.sessionId ?? state.currentSessionId ?? "";
-      if (!sessionId) {
-        return state;
-      }
-      return {
-        ...state,
-        liveEventStreamBySessionId: {
-          ...(state.liveEventStreamBySessionId ?? {}),
-          [sessionId]: [
-            ...(state.liveEventStreamBySessionId?.[sessionId] ?? []),
-            action.payload.event,
-          ],
-        },
-      };
-    }
-    case "APPEND_LIVE_EVENT_STREAM_DEBUG_BATCH": {
-      const sessionId = action.payload.sessionId ?? state.currentSessionId ?? "";
-      const events = Array.isArray(action.payload.events) ? action.payload.events : [];
-      if (!sessionId || events.length === 0) {
-        return state;
-      }
-      // Debug data is browser-lifetime only. Keep a generous bound so it is
-      // useful to copy, without allowing a long stream to grow unbounded.
-      const current = state.liveEventStreamBySessionId?.[sessionId] ?? [];
-      const next = [...current, ...events].slice(-2_000);
-      return {
-        ...state,
-        liveEventStreamBySessionId: {
-          ...(state.liveEventStreamBySessionId ?? {}),
-          [sessionId]: next,
-        },
-      };
-    }
-    case "CLEAR_LIVE_EVENT_STREAM_DEBUG":
-      // This field is deliberately a browser-lifetime diagnostic mirror. Do
-      // not restore it from chatHistory or include it in persistence payloads.
-      return { ...state, liveEventStreamBySessionId: {} };
     case "APPEND_LIVE_TOAST_NOTIFICATION": {
       const sessionId = action.payload.sessionId ?? state.currentSessionId ?? "";
       if (typeof console !== "undefined") {
@@ -3367,7 +3364,11 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         return state;
       }
       // Perf: log only on actual state change — per-batch logging here caused main-thread saturation during streaming.
-      if (action.payload.content && action.payload.content.length > 0) {
+      if (
+        action.payload.content &&
+        action.payload.content.length > 0 &&
+        logger.wouldLog('info')
+      ) {
         logger.info('[STORE:UPDATE_STREAMING_CONTENT]', {
           append: action.payload.append,
           incoming: String(action.payload.content).slice(0, 200),
@@ -3386,6 +3387,50 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         content,
         contentStartSeq,
         hasRenderableContent,
+        lastRenderableTextPartID:
+          action.payload.renderable && action.payload.partID
+            ? action.payload.partID
+            : state.streaming.lastRenderableTextPartID,
+      };
+      return {
+        ...state,
+        streaming,
+        streamingBySessionId: cacheStreamingForSession(
+          state.streamingBySessionId,
+          state.currentSessionId,
+          streaming,
+        ),
+      };
+    }
+    case "SUPPRESS_STREAMING_TEXT_PART": {
+      if (!state.streaming || !action.payload.partID) {
+        return state;
+      }
+      // STREAMING INVARIANT: suppression is durable for this active turn. SDKs
+      // often send the same text part again as a completed/full snapshot after
+      // the tool has started. Clearing only `content` would let that second
+      // snapshot recreate the leaked response card.
+      const suppressedTextPartIDs = Array.from(
+        new Set([
+          ...(state.streaming.suppressedTextPartIDs ?? []),
+          action.payload.partID,
+        ]),
+      ).slice(-32);
+      const clearsVisiblePrelude =
+        state.streaming.lastRenderableTextPartID === action.payload.partID;
+      const streaming = {
+        ...state.streaming,
+        suppressedTextPartIDs,
+        ...(clearsVisiblePrelude
+          ? {
+              content: "",
+              contentStartSeq: undefined,
+              // The loading/response-card decision consumes this flag. Reset
+              // it together with content so an empty, leaked response shell
+              // cannot survive after the text prelude is retracted.
+              hasRenderableContent: false,
+            }
+          : {}),
       };
       return {
         ...state,
@@ -3421,7 +3466,14 @@ export function appReducer(state: AppState, action: AppAction): AppState {
             : undefined;
         const matchedEvent =
           matchingIndex >= 0 ? reasoningEvents[matchingIndex] : undefined;
-        const targetEvent = matchedEvent ?? lastEvent;
+        // A delta carrying a part ID belongs only to that exact reasoning part.
+        // Falling back to the last event would make interleaved parts overwrite
+        // each other before their subsequent chunks can be matched.
+        const hasExplicitPartID =
+          typeof action.payload.partID === "string" &&
+          action.payload.partID.trim().length > 0;
+        const targetEvent =
+          matchedEvent ?? (hasExplicitPartID ? undefined : lastEvent);
         if (
           targetEvent &&
           (
@@ -3469,7 +3521,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           );
         }
       }
-      if (action.payload.reasoning) {
+      if (action.payload.reasoning && logger.wouldLog('info')) {
         logger.info('[STORE:UPDATE_STREAMING_REASONING]', {
           append: action.payload.append,
           incoming: String(action.payload.reasoning).slice(0, 200),
@@ -3488,6 +3540,10 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         action.payload.inThoughtBlock ?? state.streaming.inThoughtBlock;
       const inReasoningPart =
         action.payload.inReasoningPart ?? state.streaming.inReasoningPart;
+      const activeReasoningPartID =
+        action.payload.inReasoningPart === false
+          ? undefined
+          : action.payload.partID ?? state.streaming.activeReasoningPartID;
       // Reasoning updates are one of the hottest paths during streaming.
       // Returning the current state on true no-op updates reduces commit pressure
       // while preserving all behavior for real reasoning/flag changes.
@@ -3495,7 +3551,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         reasoning === state.streaming.reasoning &&
         reasoningEvents === state.streaming.reasoningEvents &&
         inThoughtBlock === state.streaming.inThoughtBlock &&
-        inReasoningPart === state.streaming.inReasoningPart
+        inReasoningPart === state.streaming.inReasoningPart &&
+        activeReasoningPartID === state.streaming.activeReasoningPartID
       ) {
         return state;
       }
@@ -3505,6 +3562,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         reasoningEvents,
         inThoughtBlock,
         inReasoningPart,
+        activeReasoningPartID,
       };
       return {
         ...state,
@@ -4148,9 +4206,10 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       };
     }
     case "SET_INTERACTIVE_EVENTS": {
+      const dismissedInteractiveEventKeys = getDismissedInteractiveEventKeys(state);
       const filteredEvents = filterDismissedInteractiveEventsLocal(
         action.payload,
-        state.dismissedInteractiveEventKeys,
+        dismissedInteractiveEventKeys,
       );
       const seenKeys = new Set<string>();
       const deduplicatedEvents = filteredEvents.filter((event) => {
@@ -4191,7 +4250,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         incomingCount: Array.isArray(action.payload) ? action.payload.length : 0,
         filteredCount: filteredEvents.length,
         deduplicatedCount: deduplicatedEvents.length,
-        dismissedCount: state.dismissedInteractiveEventKeys.size,
+        dismissedCount: dismissedInteractiveEventKeys.size,
         hasStreaming: !!state.streaming,
         streamingInteractiveCount: state.streaming?.interactiveEvents?.length ?? 0,
       });
@@ -4200,7 +4259,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         incomingCount: Array.isArray(action.payload) ? action.payload.length : 0,
         filteredCount: filteredEvents.length,
         deduplicatedCount: deduplicatedEvents.length,
-        dismissedCount: state.dismissedInteractiveEventKeys.size,
+        dismissedCount: dismissedInteractiveEventKeys.size,
         hasStreaming: !!state.streaming,
         streamingInteractiveCount: state.streaming?.interactiveEvents?.length ?? 0,
       });
@@ -4216,7 +4275,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       };
     }
     case "DISMISS_INTERACTIVE_EVENT": {
-      const dismissedInteractiveEventKeys = new Set(state.dismissedInteractiveEventKeys);
+      const dismissedInteractiveEventKeys = new Set(getDismissedInteractiveEventKeys(state));
       const dismissedEvent = (state.interactiveEvents ?? []).find((event) => event.id === action.payload);
       const dismissedKeys = dismissedEvent
         ? getInteractiveEventKeysLocal(dismissedEvent)
@@ -4245,7 +4304,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       };
     }
     case "CLEAR_DISMISSED_INTERACTIVE_EVENTS": {
-      if (state.dismissedInteractiveEventKeys.size === 0) {
+      if (getDismissedInteractiveEventKeys(state).size === 0) {
         return state;
       }
       return {
