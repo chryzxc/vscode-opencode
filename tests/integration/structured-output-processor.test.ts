@@ -169,17 +169,17 @@ describe("StructuredOutputProcessor", () => {
       assert.equal(result.responseType, "message");
     });
 
-    it("handles implementation_plan with plan.file", () => {
+    it("handles plan with plan.file", () => {
       const { processor } = createProcessor();
       const result = processor.normalizeStructuredOutput({
         responseType: "implementation_plan",
         message: "Here's the plan",
-        plan: { file: "./implementation_plan.md", title: "My Plan" },
+        plan: { file: "./plan.md", title: "My Plan" },
       });
       assert.ok(result);
       assert.equal(result.responseType, "implementation_plan");
       assert.ok(result.plan);
-      assert.equal(result.plan.file, "./implementation_plan.md");
+      assert.equal(result.plan.file, "./plan.md");
     });
 
     it("strips unknown top-level fields via sanitize", () => {
@@ -650,7 +650,7 @@ describe("StructuredOutputProcessor", () => {
   });
 
   describe("createFallbackMessage", () => {
-    it("creates fallback for implementation_plan", () => {
+    it("creates fallback for plan", () => {
       const { processor } = createProcessor();
       const msg = processor.createFallbackMessage({
         responseType: "implementation_plan",

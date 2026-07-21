@@ -45,6 +45,30 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+function normalizeArtifactNarrative(value: unknown): string {
+  return asString(value)
+    .toLowerCase()
+    .replace(/[`*_>#-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** True when walkthrough content is a retrospective rather than copied response/plan prose. */
+export function isWalkthroughNarrativeDistinct(value: unknown): boolean {
+  const record = asRecord(value);
+  const walkthrough = asRecord(record?.walkthrough);
+  if (!record || !walkthrough) return true;
+  const narrative = normalizeArtifactNarrative(walkthrough.content);
+  if (!narrative) return true;
+  const responseText = normalizeArtifactNarrative(record.text ?? record.message);
+  const planContent = normalizeArtifactNarrative(asRecord(record.plan)?.content);
+  if (responseText.length >= 40 && narrative === responseText) return false;
+  if (planContent.length >= 120 && (narrative === planContent || narrative.includes(planContent))) {
+    return false;
+  }
+  return true;
+}
+
 function isQualifiedMarkdownPath(value: string): boolean {
   const candidate = value.trim();
   if (!candidate || !/\.md$/i.test(candidate)) {
@@ -118,6 +142,13 @@ export function validateStructuredOutput(
     (!record.plan || typeof record.plan !== "object")
   ) {
     errors.push("plan must be an object");
+  }
+
+  if (
+    typeof record.walkthrough !== "undefined" &&
+    (!record.walkthrough || typeof record.walkthrough !== "object" || Array.isArray(record.walkthrough))
+  ) {
+    errors.push("walkthrough must be an object");
   }
 
   if (typeof record.error !== "undefined") {
@@ -230,7 +261,7 @@ export function validateStructuredOutput(
     const planFile =
       plan && typeof plan.file === "string" ? plan.file.trim() : "";
     if (!planFile) {
-      errors.push("implementation_plan requires plan.file string");
+      errors.push("implementation_plan responseType requires plan.file string");
     }
     if (plan && typeof plan.content !== "undefined" && typeof plan.content !== "string") {
       errors.push("plan.content must be a string when provided");
@@ -268,6 +299,89 @@ export function validateStructuredOutput(
     }
     if (typeof record.error !== "undefined") {
       errors.push("implementation_plan responseType must not include error payload");
+    }
+  }
+
+  const walkthrough = asRecord(record.walkthrough);
+  if (!walkthrough) {
+    errors.push("structured output requires walkthrough while walkthrough testing is enabled");
+  }
+  if (walkthrough) {
+    const walkthroughFile = asString(walkthrough.file).trim();
+    if (!isNonEmptyString(walkthrough.title)) {
+      errors.push("walkthrough.title must be a non-empty string");
+    }
+    if (!walkthroughFile) {
+      errors.push("walkthrough.file must be a non-empty string");
+    } else if (!isQualifiedMarkdownPath(walkthroughFile)) {
+      errors.push(
+        "walkthrough.file must be a full markdown filepath (absolute or workspace-relative), not just a filename",
+      );
+    }
+    for (const field of ["content", "summary"] as const) {
+      if (!isNonEmptyString(walkthrough[field])) {
+        errors.push(`walkthrough.${field} must be a non-empty string`);
+      }
+    }
+    if (!isWalkthroughNarrativeDistinct(record)) {
+      errors.push("walkthrough.content must be a distinct retrospective and must not copy text or plan.content");
+    }
+    if (!Array.isArray(walkthrough.steps) || walkthrough.steps.length === 0) {
+      errors.push("walkthrough.steps must contain at least one ordered response step");
+    } else {
+      walkthrough.steps.forEach((value, index) => {
+        const step = asRecord(value);
+        if (!step || !isNonEmptyString(step.title) || !isNonEmptyString(step.summary)) {
+          errors.push(`walkthrough.steps[${index}] requires title and summary strings`);
+          return;
+        }
+        if (!['inspect', 'decide', 'change', 'verify', 'note'].includes(asString(step.kind))) {
+          errors.push(`walkthrough.steps[${index}].kind must be inspect|decide|change|verify|note`);
+        }
+        if (typeof step.outcome !== "undefined" && typeof step.outcome !== "string") {
+          errors.push(`walkthrough.steps[${index}].outcome must be a string when provided`);
+        }
+        if (typeof step.command !== "undefined" && typeof step.command !== "string") {
+          errors.push(`walkthrough.steps[${index}].command must be a string when provided`);
+        }
+        if (typeof step.files !== "undefined" && (!Array.isArray(step.files) || step.files.some((file) => !isNonEmptyString(file)))) {
+          errors.push(`walkthrough.steps[${index}].files must be an array of non-empty strings when provided`);
+        }
+      });
+    }
+    if (!Array.isArray(walkthrough.limitations) || walkthrough.limitations.some((item) => typeof item !== "string")) {
+      errors.push("walkthrough.limitations must be an array of strings");
+    }
+    if (!Array.isArray(walkthrough.changes)) {
+      errors.push("walkthrough.changes must be an array");
+    } else {
+        walkthrough.changes.forEach((value, index) => {
+          const change = asRecord(value);
+          if (!change || !isNonEmptyString(change.file) || !isNonEmptyString(change.summary)) {
+            errors.push(`walkthrough.changes[${index}] requires file and summary strings`);
+            return;
+          }
+          if (typeof change.kind !== "undefined" && !["added", "modified", "deleted", "renamed"].includes(asString(change.kind))) {
+            errors.push(`walkthrough.changes[${index}].kind must be added|modified|deleted|renamed`);
+          }
+        });
+    }
+    if (!Array.isArray(walkthrough.verification) || walkthrough.verification.length === 0) {
+      errors.push("walkthrough.verification must contain at least one performed or not_run check");
+    } else {
+        walkthrough.verification.forEach((value, index) => {
+          const verification = asRecord(value);
+          if (!verification || !isNonEmptyString(verification.summary)) {
+            errors.push(`walkthrough.verification[${index}] requires a summary string`);
+            return;
+          }
+          if (!['passed', 'failed', 'not_run'].includes(asString(verification.status))) {
+            errors.push(`walkthrough.verification[${index}].status must be passed|failed|not_run`);
+          }
+          if (typeof verification.command !== "undefined" && typeof verification.command !== "string") {
+            errors.push(`walkthrough.verification[${index}].command must be a string when provided`);
+          }
+        });
     }
   }
 

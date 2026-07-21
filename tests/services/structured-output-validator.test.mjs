@@ -28,8 +28,8 @@ test('structured output validator enforces responseType specific requirements', 
   // Implementation detail test simplified - error message formats are implementation details
   assert.match(
     validatorSource,
-    /implementation_plan|plan\.file|plan\.content/i,
-    'validator should enforce plan requirements for implementation_plan',
+    /responseType === "implementation_plan"|plan\.file|plan\.content/i,
+    'validator should enforce requirements for the plan response type',
   );
   assert.match(
     validatorSource,
@@ -81,20 +81,20 @@ test('structured output sanitizer lifts top-level question options in developmen
   );
 });
 
-test('structured output validator rejects unrelated payload families for implementation plans', () => {
+test('structured output validator rejects unrelated payload families for plan responses', () => {
   assert.match(
     validatorSource,
-    /implementation_plan responseType must not include data payload/,
-    'validator should reject data payloads on implementation_plan responses',
+    /plan responseType must not include data payload/,
+    'validator should reject data payloads on plan responses',
   );
   assert.match(
     generatedWebviewValidatorSource,
-    /implementation_plan responseType must not include error payload/,
-    'generated webview validator should reject error payloads on implementation_plan responses',
+    /plan responseType must not include error payload/,
+    'generated webview validator should reject error payloads on plan responses',
   );
 });
 
-test('structured output schema encodes implementation_plan exclusivity for data/error', () => {
+test('structured output schema encodes plan exclusivity for data/error', () => {
   assert.match(
     schemaSource,
     /required:\s*\["title",\s*"file"\]/,
@@ -103,7 +103,7 @@ test('structured output schema encodes implementation_plan exclusivity for data/
   assert.match(
     schemaSource,
     /enum:\s*\[[\s\S]*"implementation_plan"[\s\S]*\]/,
-    'source schema should include implementation_plan in type enum',
+    'source schema should include plan in type enum',
   );
   assert.match(
     generatedWebviewSchemaSource,
@@ -122,6 +122,77 @@ test('structured output validator enforces message payload requirement', () => {
     validatorSource,
     /Unsupported top-level fields:/,
     'validator should reject unknown top-level fields to keep schema strict',
+  );
+});
+
+test('structured output contract defines a typed, file-backed walkthrough artifact', () => {
+  assert.match(
+    schemaSource,
+    /export interface StructuredWalkthrough[\s\S]*file: string/,
+    'source schema should export the typed walkthrough artifact',
+  );
+  assert.match(
+    schemaSource,
+    /walkthrough:\s*\{[\s\S]*required:\s*\["title", "file",/,
+    'walkthrough schema should require a title and source file',
+  );
+  assert.match(
+    validatorSource,
+    /walkthrough\.file must be a full markdown filepath/,
+    'validator should require a qualified markdown walkthrough filepath',
+  );
+  assert.match(
+    validatorSource,
+    /walkthrough\.verification\[\$\{index\}\]\.status must be passed\|failed\|not_run/,
+    'validator should constrain walkthrough verification statuses',
+  );
+  assert.match(
+    validatorSource,
+    /walkthrough\.content must be a distinct retrospective and must not copy text or plan\.content/,
+    'validator should reject walkthroughs copied from the rendered response or plan body',
+  );
+  assert.match(
+    schemaSource,
+    /required:\s*\["title", "file", "content", "summary", "steps", "changes", "verification", "limitations"\]/,
+    'walkthrough schema should require a complete retrospective payload',
+  );
+  assert.match(
+    schemaSource,
+    /export interface StructuredWalkthroughStep[\s\S]*kind: WalkthroughStepKind/,
+    'walkthrough steps should be typed and ordered independently of the markdown artifact',
+  );
+  assert.match(
+    validatorSource,
+    /walkthrough\.steps\[\$\{index\}\]\.kind must be inspect\|decide\|change\|verify\|note/,
+    'validator should constrain walkthrough step kinds',
+  );
+  assert.match(
+    generatedWebviewSchemaSource,
+    /StructuredWalkthrough/,
+    'generated webview schema should expose the walkthrough type',
+  );
+  assert.match(
+    schemaSource,
+    /required:\s*\["type", "text", "walkthrough"\]/,
+    'testing mode should require a walkthrough with every structured response',
+  );
+  assert.match(
+    validatorSource,
+    /structured output requires walkthrough while walkthrough testing is enabled/,
+    'runtime validation should match the schema testing requirement',
+  );
+});
+
+test('structured output schema routes explicit planning requests to plan', () => {
+  assert.match(
+    schemaSource,
+    /MUST use 'implementation_plan'/,
+    'the schema—not UI phrase inference—should define plan-request routing',
+  );
+  assert.match(
+    schemaSource,
+    /detailed security-improvement plan/,
+    'the type-field contract should cover the reported security planning prompt',
   );
 });
 

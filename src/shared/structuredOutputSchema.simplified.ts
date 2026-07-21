@@ -11,7 +11,7 @@
 
 export type StructuredResponseType =
   | "message"
-  | "implementation_plan";
+  | "plan";
 
 export type StructuredOutputSchema = {
   type: "json_schema";
@@ -31,15 +31,15 @@ export const simplifiedStructuredOutputSchema: StructuredOutputSchema = {
   schema: {
     type: "object",
     description:
-      "Return a JSON object with a type field. Use 'message' for normal responses or 'implementation_plan' for multi-step plans with a plan object (plan.file must be a markdown filepath and should be written to disk; include plan.content when the file is not yet written).",
+      "Return a JSON object with a type field. Use 'message' for normal responses or 'plan' for multi-step plans with a plan object (plan.file must be a markdown filepath and should be written to disk; include plan.content when the file is not yet written).",
     additionalProperties: false,
     required: ["type"],
     properties: {
       type: {
         type: "string",
-        enum: ["message", "implementation_plan"],
+        enum: ["message", "plan"],
         description:
-          "Response type: 'message' for normal text or 'implementation_plan' for plans (create/write plan.file)",
+          "Response type: 'message' for normal text or 'plan' for plans (create/write plan.file)",
       },
 
       text: {

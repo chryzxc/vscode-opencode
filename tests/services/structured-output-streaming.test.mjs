@@ -27,6 +27,61 @@ const structuredSchemaSource = readSource(
   [joinFromRoot('src', 'shared', 'structuredOutputSchema.ts')],
   'structuredOutputSchema.ts',
 );
+const messageComponentsSource = readSource(
+  [joinFromRoot('webview', 'shared', 'src', 'chat', 'MessageComponents.tsx')],
+  'MessageComponents.tsx',
+);
+const walkthroughShellSource = readSource(
+  [joinFromRoot('webview', 'shared', 'src', 'walkthrough', 'WalkthroughShell.tsx')],
+  'WalkthroughShell.tsx',
+);
+
+test('webview normalizer reads canonical structured text fields', () => {
+  assert.match(
+    messageHandlerSource,
+    /const messageText\s*=\s*\n\s*asString\(sanitizedRec\.text\)/,
+    'canonical type/text payloads must survive webview normalization',
+  );
+});
+
+test('walkthrough chat card stays compact and defers detail to the viewer', () => {
+  const cardBody = extractFunctionBody(messageComponentsSource, 'function WalkthroughCard(');
+  assert.match(cardBody, /plan-card-content flex flex-1 flex-col/, 'walkthrough should use the implementation-plan card layout');
+  assert.match(cardBody, />\s*Walkthrough\s*</, 'the card should identify its artifact type');
+  assert.match(cardBody, /walkthrough\.file/, 'the card should show its artifact path');
+  assert.match(cardBody, />\s*View\s*</, 'the card should expose the walkthrough viewer action');
+  assert.doesNotMatch(cardBody, /walkthrough\.summary|walkthrough\.content|changeCount|verificationCount/, 'the card should defer walkthrough detail to the viewer');
+});
+
+test('walkthrough viewer owns a bounded vertical scroll region', () => {
+  assert.match(walkthroughShellSource, /h-screen min-h-0 flex-col overflow-hidden/, 'viewer shell should be bounded to the webview viewport');
+  assert.match(walkthroughShellSource, /min-h-0 flex-1 overflow-y-auto overscroll-contain/, 'walkthrough content should scroll independently inside the bounded shell');
+});
+
+test('completed assistant activity receives a persisted walkthrough when the model omits one', () => {
+  const processorSource = readSource(
+    [joinFromRoot('src', 'providers', 'chat', 'StructuredOutputProcessor.ts')],
+    'StructuredOutputProcessor.ts',
+  );
+  assert.match(processorSource, /private async ensureActivityWalkthrough\(message: any\)/);
+  assert.match(processorSource, /Generated from completed activity metadata because the model did not return a walkthrough payload/);
+  assert.match(processorSource, /await this\.persistPlan\(walkthrough\.content, walkthrough\.file\)/);
+  assert.match(processorSource, /createActivityWalkthrough\?: boolean/);
+  assert.match(
+    chatProviderSource,
+    /createActivityWalkthrough:\s*true/,
+    'live completed responses should enable the activity-derived walkthrough fallback',
+  );
+  const historyProcessorSource = readSource(
+    [joinFromRoot('src', 'providers', 'chat', 'HistoryProcessor.ts')],
+    'HistoryProcessor.ts',
+  );
+  assert.match(
+    historyProcessorSource,
+    /createActivityWalkthrough:\s*true/,
+    'hydrated completed activity should retain the same deterministic walkthrough',
+  );
+});
 
 // SKIP: Implementation has changed - structured output transport negotiation is different
 test.skip('chat provider negotiates structured json transport and caches per model', () => {

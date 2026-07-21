@@ -4,6 +4,10 @@ import assert from 'node:assert/strict';
 import { extractFunctionBody, joinFromRoot, readSource } from '../helpers/source-utils.mjs';
 
 const source = readSource([joinFromRoot('src', 'providers', 'ChatViewProvider.ts')], 'ChatViewProvider.ts');
+const structuredProcessorSource = readSource(
+  [joinFromRoot('src', 'providers', 'chat', 'StructuredOutputProcessor.ts')],
+  'StructuredOutputProcessor.ts',
+);
 
 test('schedulePromptDispatch exists with prompt mode parameter', () => {
   assert.match(source, /private async schedulePromptDispatch\(\s*mode: PromptDispatchMode,/, 'schedulePromptDispatch should accept a PromptDispatchMode parameter');
@@ -59,15 +63,91 @@ test('promptWithStructuredOutput exists and uses client.session.prompt', () => {
   assert.match(source, /client\.session\.prompt|session\.prompt|prompt\(/, 'should use session prompt API');
 });
 
+test('structured-output fallback retries on later requests instead of disabling the feature globally', () => {
+  const body = extractFunctionBody(source, '  private async promptWithStructuredOutput(');
+  assert.doesNotMatch(
+    body,
+    /this\.structuredOutputMode\s*=\s*"disabled"/,
+    'a single format rejection must not disable structured output for the rest of the extension session',
+  );
+  assert.match(
+    body,
+    /this\.structuredOutputFormatCompatibility\s*=\s*undefined/,
+    'a failed probe/request should clear compatibility cache so the next turn retries structured output',
+  );
+});
+
+test('structured-output request preserves strict root schema metadata', () => {
+  assert.match(
+    structuredProcessorSource,
+    /additionalProperties === false[\s\S]*additionalProperties: false/,
+    'the SDK format must preserve root additionalProperties=false instead of weakening the source schema',
+  );
+});
+
+test('walkthrough testing mode requires real SDK structured output', () => {
+  assert.match(
+    source,
+    /FORCE_STRUCTURED_OUTPUT_TEST_MODE = true/,
+    'transport testing mode should be explicitly discoverable and removable',
+  );
+  assert.doesNotMatch(
+    source,
+    /ensureTestingWalkthrough/,
+    'the host must not synthesize walkthrough data that is absent from SDK debug data',
+  );
+  assert.match(
+    source,
+    /Structured output is required for the selected thinking variant; refusing plain-text fallback/,
+    'testing mode should expose structured transport failures instead of masking them with plain text',
+  );
+  const forcedModeGuards = source.match(
+    /!ChatViewProvider\.FORCE_STRUCTURED_OUTPUT_TEST_MODE/g,
+  ) ?? [];
+  assert.ok(
+    forcedModeGuards.length >= 1,
+    'testing mode must block unusable-payload plain-text fallbacks',
+  );
+});
+
 test('structured-output format is verified through the SDK before a user prompt persists it', () => {
   const body = extractFunctionBody(source, '  private async promptWithStructuredOutput(');
   assert.match(source, /private ensureStructuredOutputFormatCompatibility\(client: any\): Promise<boolean>/, 'provider should define a server compatibility probe');
   assert.match(source, /noReply:\s*true/, 'the probe must not invoke a model');
   assert.match(source, /client\.session\.messages\(/, 'the probe must verify the persisted format through SDK rehydration');
   assert.match(source, /client\.session\.delete\(/, 'the disposable probe session must be cleaned up');
-  assert.match(body, /await this\.ensureStructuredOutputFormatCompatibility\(client\)/, 'a user prompt must wait for the compatibility probe');
+  assert.match(body, /requireStructuredOutput/, 'the selected thinking variant should explicitly require structured transport');
+  assert.match(body, /!requireStructuredOutput\s*&&\s*!\(await this\.ensureStructuredOutputFormatCompatibility\(client\)\)/, 'manual thinking variants must bypass the compatibility downgrade');
+  assert.match(
+    body,
+    /if \(requireStructuredOutput\) \{[\s\S]*?refusing plain-text fallback[\s\S]*?return attempt;/,
+    'a required structured prompt must return the structured transport result instead of retrying plain text',
+  );
   assert.match(body, /format:\s*schema/, 'structured output must use the SDK v2 format field');
   assert.doesNotMatch(body, /\["outputFormat"\]|outputFormat\s*:/, 'the legacy untyped outputFormat field must never be sent');
+});
+
+test('manual thinking variants enforce structured transport for new messages', () => {
+  const body = extractFunctionBody(source, '  private async handleSendMessage(');
+  assert.match(
+    body,
+    /const requireStructuredOutput\s*=\s*[\s\S]*?FORCE_STRUCTURED_OUTPUT_TEST_MODE[\s\S]*?thinkingLevel !== "auto"/,
+    'a manually selected thinking level must require structured output',
+  );
+  assert.match(
+    body,
+    /promptWithStructuredOutput\([\s\S]*?requireStructuredOutput,/,
+    'the enforcement flag must reach the SDK prompt transport',
+  );
+});
+
+test('structured-output transport omits optional retry metadata', () => {
+  const body = extractFunctionBody(structuredProcessorSource, '  getStructuredOutputFormat():');
+  assert.doesNotMatch(
+    body,
+    /retryCount\s*:/,
+    'the extension should send only the minimal documented json_schema transport shape',
+  );
 });
 
 test('non-timeout send failures surface user-facing error text', () => {
@@ -89,9 +169,9 @@ test('retryLastMessage uses stop flow instead of only clearing local processing 
   assert.doesNotMatch(retryBody, /this\.processingSessionIds\.delete\(retrySessionId\);/, 'retry should not only clear processingSessionIds without running full stop cleanup');
 });
 
-test('handleSendMessage persists the assistant response and posts messageResponse', () => {
+test('handleSendMessage posts the assistant response without local transcript persistence', () => {
   const body = extractFunctionBody(source, '  private async handleSendMessage(');
-  assert.match(body, /await this\.sessionService\.appendMessage\(session\.id, \{[\s\S]*role: "assistant"/, 'handleSendMessage should append the assistant response after the prompt returns');
+  assert.doesNotMatch(body, /appendMessage\(session\.id, \{[\s\S]*role: "assistant"/, 'the SDK owns the assistant transcript');
   assert.match(body, /this\.view\?\.webview\.postMessage\(\{\s*type: "messageResponse",/, 'handleSendMessage should post a messageResponse to the webview');
 });
 
@@ -231,6 +311,36 @@ test('provider hydrates history exclusively from SDK session messages', () => {
   assert.match(source, /const sessionHistory = await this\.loadSdkRenderableHistory\(\s*sessionId,\s*\)/, 'session loading should use the SDK history loader');
   assert.match(source, /const sessionHistory = await this\.loadSdkRenderableHistory\(\s*currentSession\.id,\s*\)/, 'webview ready hydration should use the SDK history loader');
   assert.match(source, /const sessionHistory = await this\.loadSdkRenderableHistory\(\s*retrySessionId,\s*\)/, 'retry hydration should use the SDK history loader');
+});
+
+test('terminal SDK history reconciles stale host processing markers without ending tool-call phases', () => {
+  const reconcileBody = extractFunctionBody(source, '  private reconcileProcessingStateFromSdkSnapshot(');
+
+  assert.match(
+    source,
+    /const sdkMessages = await this\.sessionSnapshotLoader\.loadMessagesOnly\(sessionId\);\s*this\.reconcileProcessingStateFromSdkSnapshot\(sessionId, sdkMessages\);/,
+    'every successful SDK hydration path must run the terminal-state reconciliation',
+  );
+  assert.match(
+    reconcileBody,
+    /finish === "stop"[\s\S]*finish === "length"[\s\S]*finish === "cancelled"/,
+    'only final SDK finish reasons should prove that the assistant turn ended',
+  );
+  assert.doesNotMatch(
+    reconcileBody,
+    /finish === "tool-calls"/,
+    'an intermediate tool-calls envelope must keep the containing assistant turn alive',
+  );
+  assert.match(
+    reconcileBody,
+    /this\.processingSessionIds\.delete\(sessionId\)/,
+    'terminal SDK history must remove the stale host processing marker',
+  );
+  assert.match(
+    reconcileBody,
+    /this\.activeStreamSessionId = undefined/,
+    'terminal SDK history must clear the matching active stream marker',
+  );
 });
 
 test('stream callback forwards a detached SDK event payload without persisting it', () => {

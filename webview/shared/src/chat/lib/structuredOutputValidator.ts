@@ -3,6 +3,7 @@
 // scripts/sync-structured-output-contract.mjs.
 
 export {
+  isWalkthroughNarrativeDistinct,
   sanitizeStructuredOutput,
   validateStructuredOutput,
   type StructuredOutputValidationResult,

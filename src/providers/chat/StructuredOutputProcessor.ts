@@ -14,6 +14,10 @@ import type {
 } from "./types";
 import {
   structuredOutputSchema,
+  type StructuredWalkthrough,
+  type StructuredWalkthroughChange,
+  type StructuredWalkthroughStep,
+  type StructuredWalkthroughVerification,
 } from "../../shared/structuredOutputSchema";
 import {
   sanitizeStructuredOutput,
@@ -47,6 +51,158 @@ export class StructuredOutputProcessor {
     return this.planManager.persistPlan(content, preferredPath);
   }
 
+  /**
+   * Derive a walkthrough only from the completed message's structured activity
+   * metadata. This never mutates the raw SDK message/debug payload.
+   */
+  private async ensureActivityWalkthrough(message: any): Promise<any> {
+    if (message?.walkthrough || this.asRecord(message?.structuredOutput)?.walkthrough) {
+      return message;
+    }
+
+    const rawSteps: unknown[] = Array.isArray(message?.steps) ? message.steps : [];
+    const activitySteps = rawSteps
+      .map((value: unknown) => this.asRecord(value))
+      .filter((step): step is Record<string, unknown> => {
+        if (!step) return false;
+        const activity = this.asRecord(step.activityDetail);
+        const tool = this.firstNonEmptyString(
+          activity?.tool,
+          step.tool,
+          step.partType === "tool" ? step.title : undefined,
+        )?.toLowerCase();
+        return !!tool && !tool.includes("structuredoutput") && !tool.includes("structured_output");
+      });
+    const rawEdits: unknown[] = Array.isArray(message?.edits) ? message.edits : [];
+    const edits = rawEdits
+      .map((value: unknown) => this.asRecord(value))
+      .filter((edit): edit is Record<string, unknown> => !!edit);
+
+    if (activitySteps.length === 0 && edits.length === 0) {
+      return message;
+    }
+
+    const messageId = this.firstNonEmptyString(message?.id, message?.info?.id) || `${Date.now()}`;
+    const safeMessageId = messageId.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const file = `.opencode/artifacts/walkthroughs/walkthrough-${safeMessageId}.md`;
+    const steps: StructuredWalkthroughStep[] = activitySteps.map((step) => {
+      const activity = this.asRecord(step.activityDetail);
+      const tool = this.firstNonEmptyString(activity?.tool, step.tool, step.title) || "activity";
+      const stepFile = this.firstNonEmptyString(activity?.file, step.filePath, step.file);
+      const command = this.firstNonEmptyString(
+        activity?.command,
+        this.asRecord(activity?.input)?.command,
+      );
+      const status = this.firstNonEmptyString(step.status)?.toLowerCase();
+      const failed = status === "error" || status === "failed";
+      return {
+        title: tool,
+        kind: command ? "verify" : stepFile ? "change" : "inspect",
+        summary: stepFile
+          ? `${tool} completed for ${stepFile}.`
+          : `${tool} completed during this response.`,
+        outcome: failed ? "The activity reported a failure." : "The activity completed.",
+        files: stepFile ? [stepFile] : undefined,
+        command,
+      };
+    });
+    if (steps.length === 0) {
+      steps.push({
+        title: "Recorded file changes",
+        kind: "change",
+        summary: `${edits.length} file change${edits.length === 1 ? "" : "s"} completed during this response.`,
+        files: edits
+          .map((edit) => this.firstNonEmptyString(edit.file, edit.path))
+          .filter((value): value is string => !!value),
+      });
+    }
+
+    const changes: StructuredWalkthroughChange[] = edits
+      .map((edit): StructuredWalkthroughChange | undefined => {
+        const changedFile = this.firstNonEmptyString(edit.file, edit.path);
+        if (!changedFile) return undefined;
+        return {
+          file: changedFile,
+          summary: "Changed during this response.",
+          kind: "modified" as const,
+        };
+      })
+      .filter((change): change is StructuredWalkthroughChange => !!change);
+    const verification: StructuredWalkthroughVerification[] = steps
+      .filter((step) => !!step.command)
+      .map((step) => ({
+        summary: `Ran ${step.command}.`,
+        status: step.outcome === "The activity reported a failure." ? "failed" : "passed",
+        command: step.command,
+      }));
+    if (verification.length === 0) {
+      verification.push({
+        summary: "No explicit verification command was reported in the completed activity.",
+        status: "not_run",
+      });
+    }
+
+    const walkthrough: StructuredWalkthrough = {
+      title: "Response activity walkthrough",
+      file,
+      summary: `Recorded ${steps.length} completed activity step${steps.length === 1 ? "" : "s"} from this response.`,
+      steps,
+      changes,
+      verification,
+      limitations: [
+        "Generated from completed activity metadata because the model did not return a walkthrough payload.",
+      ],
+      content: this.renderActivityWalkthroughMarkdown(steps, changes, verification),
+    };
+    try {
+      await this.persistPlan(walkthrough.content, walkthrough.file);
+    } catch (error) {
+      this.logger.error("Failed to persist activity-derived walkthrough", {}, error as Error);
+    }
+
+    this.logger.info("Created activity-derived walkthrough for completed assistant response", {
+      messageId,
+      activityStepCount: steps.length,
+      changeCount: changes.length,
+    });
+    return {
+      ...message,
+      walkthrough,
+      structuredOutput: {
+        ...(this.asRecord(message?.structuredOutput) || {}),
+        walkthrough,
+      },
+    };
+  }
+
+  private renderActivityWalkthroughMarkdown(
+    steps: StructuredWalkthroughStep[],
+    changes: StructuredWalkthroughChange[],
+    verification: StructuredWalkthroughVerification[],
+  ): string {
+    const lines = [
+      "## Summary",
+      `Recorded ${steps.length} completed activity step${steps.length === 1 ? "" : "s"} from this response.`,
+      "",
+      "## Walkthrough",
+    ];
+    steps.forEach((step, index) => {
+      lines.push(`${index + 1}. **${step.title}** — ${step.summary}`);
+      if (step.files?.length) lines.push(`   - Files: ${step.files.map((file) => `\`${file}\``).join(", ")}`);
+      if (step.command) lines.push(`   - Command: \`${step.command}\``);
+      if (step.outcome) lines.push(`   - Outcome: ${step.outcome}`);
+    });
+    lines.push("", "## Changes");
+    lines.push(...(changes.length > 0
+      ? changes.map((change) => `- \`${change.file}\` — ${change.summary}`)
+      : ["- No file change metadata was reported."]));
+    lines.push("", "## Verification");
+    lines.push(...verification.map((entry) => `- **${entry.status}** — ${entry.summary}`));
+    lines.push("", "## Limitations");
+    lines.push("- Generated from completed activity metadata because the model did not return a walkthrough payload.");
+    return lines.join("\n");
+  }
+
   private parseRawResponseRecord(rawResponse: unknown): Record<string, unknown> | undefined {
     const direct = this.asRecord(rawResponse);
     if (direct) {
@@ -70,6 +226,7 @@ export class StructuredOutputProcessor {
     }
   }
 
+
   /**
    * Get the structured output format for API requests
    */
@@ -77,25 +234,22 @@ export class StructuredOutputProcessor {
     const topLevel = structuredOutputSchema as unknown as Record<string, unknown>;
     const schemaRecord = this.asRecord(topLevel.schema);
     const properties = this.asRecord(schemaRecord?.properties) ?? {};
+    const additionalProperties = schemaRecord?.additionalProperties === false
+      ? false
+      : undefined;
     const required = Array.isArray(schemaRecord?.required)
       ? (schemaRecord?.required as string[]).filter(
         (item) => typeof item === "string" && item.trim().length > 0,
       )
       : ["type"];
-    const allOf = Array.isArray(schemaRecord?.allOf)
-      ? schemaRecord.allOf
-      : undefined;
-
     // Send a docs-style minimal JSON schema to maximize compatibility across providers.
     return {
       type: "json_schema",
-      retryCount:
-        typeof topLevel.retryCount === "number" ? topLevel.retryCount : 1,
       schema: {
         type: "object",
         properties,
         required,
-        ...(allOf ? { allOf } : {}),
+        ...(additionalProperties === false ? { additionalProperties: false } : {}),
       },
     };
   }
@@ -438,7 +592,10 @@ export class StructuredOutputProcessor {
     }
 
     const hasQuestion = interactiveEvents.some(
-      (event: any) => event.type === "question" || event.type === "confirm"
+      (event: any) =>
+        !!event &&
+        typeof event === "object" &&
+        (event.type === "question" || event.type === "confirm")
     );
 
     return hasQuestion;
@@ -1524,7 +1681,7 @@ export class StructuredOutputProcessor {
       updated.content = structuredText;
       updated.text = structuredText;
     } else if (fallbackMessage && !updated.content) {
-      // Structured response types like implementation_plan carry display text in
+      // Structured response types like plan carry display text in
       // plan.summary/intro rather than in a top-level message field. Populate
       // content from the fallback so the webview renders structured fields instead
       // of concatenating raw response parts.
@@ -1557,6 +1714,10 @@ export class StructuredOutputProcessor {
 
     if (structured.plan && !updated.plan) {
       updated.plan = structured.plan;
+    }
+
+    if (structured.walkthrough && !updated.walkthrough) {
+      updated.walkthrough = structured.walkthrough;
     }
 
     if (structured.reasoning && structured.reasoning.length > 0) {
@@ -1600,7 +1761,10 @@ export class StructuredOutputProcessor {
   /**
    * Enrich message with plan information
    */
-  async enrichMessageWithPlan(message: any): Promise<any> {
+  async enrichMessageWithPlan(
+    message: any,
+    options?: { createActivityWalkthrough?: boolean },
+  ): Promise<any> {
     if (!message) return message;
 
     const role = message?.info?.role || message?.role;
@@ -1641,7 +1805,27 @@ export class StructuredOutputProcessor {
       return message;
     }
 
+    if (options?.createActivityWalkthrough) {
+      message = await this.ensureActivityWalkthrough(message);
+    }
+
     if (structured) {
+      const structuredWalkthrough = this.asRecord(structured.walkthrough);
+      if (structuredWalkthrough) {
+        const walkthroughFile = this.firstNonEmptyString(structuredWalkthrough.file);
+        const walkthroughContent = this.firstNonEmptyString(structuredWalkthrough.content);
+        if (walkthroughFile && walkthroughContent) {
+          try {
+            await this.persistPlan(walkthroughContent, walkthroughFile);
+          } catch (err) {
+            this.logger.error("Failed to persist structured walkthrough", {}, err as Error);
+          }
+        }
+        message = {
+          ...message,
+          walkthrough: structured.walkthrough,
+        };
+      }
       const structuredPlanRecord = this.asRecord(structured.plan);
       const structuredPlanContent = this.firstNonEmptyString(
         structuredPlanRecord?.content,
@@ -1820,7 +2004,7 @@ export class StructuredOutputProcessor {
       .trim();
     // Hardened behavior: when providers emit plan-like content as plain
     // `responseType="message"` (or omit responseType), still run fallback plan
-    // heuristics below so we can promote into `implementation_plan`.
+    // heuristics below so we can promote into `plan`.
     //
     // We still do NOT run fallback plan heuristics for non-message structured
     // families (question/progress/etc.) to avoid cross-family misclassification.
@@ -1910,7 +2094,7 @@ export class StructuredOutputProcessor {
       /implementation\s*plan/i.test(fullContent) ||
       /goal\s*description/i.test(fullContent) ||
       /proposed\s*changes/i.test(fullContent) ||
-      /implementation_plan\.md/i.test(fullContent) ||
+      /plan\.md/i.test(fullContent) ||
       (/(plan|roadmap)/i.test(info.summary?.title || "") &&
         /(implementation|feature)/i.test(info.summary?.title || ""));
 
