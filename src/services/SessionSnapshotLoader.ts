@@ -4,6 +4,10 @@ import type { PermissionRequest } from "@opencode-ai/sdk/v2";
 import { OpencodeServerManager } from "./OpencodeServerManager";
 import { createLogger } from "../utils/Logger";
 import { LoggingCategories } from "../utils/LoggingSchema";
+import {
+  isPersistedStructuredFormatError,
+  SessionStructuredFormatRecovery,
+} from "./SessionStructuredFormatRecovery";
 
 export type SessionSnapshot = {
   session: Session;
@@ -21,9 +25,23 @@ type SdkResponse<T> = {
   response: { status: number };
 };
 
+export class SessionMessagesLoadError extends Error {
+  constructor(
+    readonly status: number,
+    readonly sdkError: unknown,
+  ) {
+    super(
+      `session.messages did not return an array (status ${status}): ${SessionSnapshotLoader.describeSdkError(sdkError)}`,
+    );
+    this.name = "SessionMessagesLoadError";
+  }
+}
+
 const log = createLogger(LoggingCategories.SESSION_SERVICE);
 
 export class SessionSnapshotLoader {
+  private readonly structuredFormatRecovery = new SessionStructuredFormatRecovery();
+
   constructor(private readonly serverManager: OpencodeServerManager) {}
 
   async loadSnapshot(sessionID: string): Promise<SessionSnapshot> {
@@ -108,10 +126,20 @@ export class SessionSnapshotLoader {
     // authoritative transcript source, and collapsing a failed SDK request
     // into `[]` makes a transport error indistinguishable from a genuinely
     // empty OpenCode session.
-    const response = await client.session.messages({
+    let response = await client.session.messages({
       sessionID,
       ...(directory ? { directory } : {}),
     });
+    if (
+      response.error &&
+      isPersistedStructuredFormatError(response.error) &&
+      await this.structuredFormatRecovery.repair(sessionID)
+    ) {
+      response = await client.session.messages({
+        sessionID,
+        ...(directory ? { directory } : {}),
+      });
+    }
     if (response.error || !Array.isArray(response.data)) {
       log.warn("[SDK-DEBUG] session.messages returned no usable data", {
         sessionId: sessionID,
@@ -120,8 +148,9 @@ export class SessionSnapshotLoader {
         hasData: response.data !== undefined,
         directory,
       });
-      throw new Error(
-        `session.messages did not return an array (status ${response.response.status}): ${this.describeSdkError(response.error)}`,
+      throw new SessionMessagesLoadError(
+        response.response.status,
+        response.error,
       );
     }
     const messages = response.data;
@@ -190,7 +219,7 @@ export class SessionSnapshotLoader {
     }
   }
 
-  private describeSdkError(error: unknown): string {
+  static describeSdkError(error: unknown): string {
     if (error instanceof Error) {
       return error.message;
     }
@@ -202,5 +231,9 @@ export class SessionSnapshotLoader {
     } catch {
       return "unserializable SDK error";
     }
+  }
+
+  private describeSdkError(error: unknown): string {
+    return SessionSnapshotLoader.describeSdkError(error);
   }
 }

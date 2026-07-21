@@ -1,47 +1,15 @@
 /**
- * Session Service - Session Management and Persistence
+ * Session Service - OpenCode SDK Session Management
  *
- * Manages chat sessions with persistence and server synchronization.
- * This service implements a "best of both worlds" strategy by combining
- * server-side session data with local caching for offline access.
+ * Manages chat sessions through the OpenCode SDK. SDK session and message
+ * responses are authoritative; extension-owned transcript fallback is
+ * intentionally disabled.
  *
  * **Architecture Overview:**
  * - Creates and deletes sessions via the OpenCode server
- * - Maintains local cache of session history
- * - Merges server and local data to prevent data loss
- * - Persists messages to workspace storage for offline access
- * - Manages current session state
- *
- * **Merge Strategy (Server + Local):**
- * The service combines data from two sources:
- * 1. **Server Sessions**: Sessions stored on the OpenCode server
- * 2. **Local History**: Sessions cached in VSCode workspace state
- *
- * **Merge Algorithm:**
- * ```
- * 1. Fetch sessions from server via API
- * 2. Load sessions from local workspace state
- * 3. Create a map using session ID as key
- * 4. Add all local sessions to map
- * 5. Add all server sessions to map (overwrites local if same ID)
- * 6. Convert map to array and sort by creation time (newest first)
- * ```
- *
- * **Conflict Resolution:**
- * - Same ID exists locally and server → Server version wins
- * - Only local exists → Kept (offline/local-only session)
- * - Only server exists → Added (new session from another device)
- *
- * **Persistence Layer:**
- * Uses VSCode's `workspaceState` for storage:
- * - `opencode.sessions`: Array of session metadata
- * - `opencode.session.messages.{id}`: Messages per session
- * - `opencode.currentSessionId`: Active session ID
- *
- * **State Initialization:**
- * - Loads persisted state asynchronously in constructor
- * - `getCurrentSession()` waits for initialization before returning
- * - Falls back to local-only session if server unavailable
+ * - Maintains only an in-memory view of the latest SDK session list
+ * - Never merges persisted session or message snapshots into SDK responses
+ * - Manages the active session for the current extension-host lifetime
  *
  *
  * @module SessionService
@@ -49,12 +17,15 @@
  * @see ChatViewProvider for session consumption
  */
 
-import * as vscode from "vscode";
+import type * as vscode from "vscode";
 import { OpencodeServerManager } from "./OpencodeServerManager";
 import type { Session } from "@opencode-ai/sdk/v2";
 import { createLogger } from "../utils/Logger";
 import { LoggingCategories } from "../utils/LoggingSchema";
-import { restoreCheckpointIfPresent } from "./CheckpointRestore";
+import {
+  isPersistedStructuredFormatError,
+  SessionStructuredFormatRecovery,
+} from "./SessionStructuredFormatRecovery";
 
 const log = createLogger(LoggingCategories.SESSION_SERVICE);
 const MAX_CACHED_MESSAGES_PER_SESSION = 200;
@@ -69,6 +40,14 @@ const MAX_COMPACT_STEPS = 200;
 const MAX_COMPACT_SUBAGENTS = 64;
 const MAX_COMPACT_SUBAGENT_EVENTS = 120;
 const MAX_COMPACT_INTERACTIVE_EVENTS = 40;
+const INTERNAL_SESSION_TITLE_PREFIXES = [
+  "OpenCode structured-output compatibility probe",
+] as const;
+
+function isInternalSession(session: Session | null | undefined): boolean {
+  const title = typeof session?.title === "string" ? session.title.trim() : "";
+  return INTERNAL_SESSION_TITLE_PREFIXES.some((prefix) => title.startsWith(prefix));
+}
 
 function isDataUrl(value: string): boolean {
   return /^data:[^;]+;base64,/i.test(value);
@@ -1149,6 +1128,7 @@ function coalesceSessionsById(sessions: Session[]): {
  * Message keys use dynamic suffix based on session ID.
  */
 export class SessionService {
+  private readonly structuredFormatRecovery = new SessionStructuredFormatRecovery();
   /** Currently active session (null if none selected) */
   private currentSession: Session | null = null;
 
@@ -1166,15 +1146,6 @@ export class SessionService {
   // ============================================================================
   // These keys are used for VSCode workspaceState storage.
   // All keys use "opencode." prefix to avoid collisions.
-
-  /** Key for storing session list array */
-  private static readonly SESSIONS_KEY = "opencode.sessions";
-
-  /** Prefix for storing messages per session (appended with session ID) */
-  private static readonly MESSAGES_PREFIX = "opencode.session.messages.";
-
-  /** Key for storing current session ID */
-  private static readonly SESSION_ID_KEY = "opencode.currentSessionId";
 
   /**
    * Fallback ID for messages without a session.
@@ -1205,21 +1176,12 @@ export class SessionService {
    * @param serverManager - Server manager for creating server client
    */
   constructor(
-    private context: vscode.ExtensionContext,
+    context: vscode.ExtensionContext,
     private serverManager: OpencodeServerManager,
   ) {
-    // Start loading persisted state asynchronously
-    // This ensures state is ready before we need it
-    // Try restoring any workspace-level checkpoint first (safe no-op)
-    this.initializationPromise = (async () => {
-      try {
-        await restoreCheckpointIfPresent(this.context);
-      } catch (e) {
-        // proceed even if restore fails; loadPersistedState will handle existing workspaceState
-        // We intentionally do not throw here to avoid breaking activation
-      }
-      await this.loadPersistedState();
-    })();
+    void context;
+    // History is initialized by SDK requests, never extension-owned snapshots.
+    this.initializationPromise = Promise.resolve();
   }
 
   /**
@@ -1308,25 +1270,26 @@ export class SessionService {
   }
 
   /**
-   * Gets the current active session, creating one if needed.
+   * Gets the current active session from the OpenCode SDK.
    *
    * This is the primary method for accessing the current session.
    * It implements the "ensure exists" pattern for convenience.
    *
    * **Behavior:**
    * 1. Waits for initialization to complete (if still loading)
-   * 2. Returns current session if exists
-   * 3. Creates new session if none exists
+   * 2. Returns current session if it was selected during this host lifetime
+   * 3. Selects the newest SDK session after an extension-host restart
+   * 4. Creates a new session only when the SDK confirms that none exist
    *
    * **Initialization Wait:**
    * The constructor loads state asynchronously. This method waits
    * for that to complete before checking for a current session.
    * This prevents returning a stale session during startup.
    *
-   * **Auto-Creation:**
-   * If no current session exists (first launch or all deleted),
-   * automatically creates a new session. This provides a better
-   * user experience than requiring manual session creation.
+   * **SDK-only selection:**
+   * The selected session is not restored from workspace storage. On restart,
+   * the SDK list is the sole authority; an unavailable SDK request must not
+   * be mistaken for an empty history and create a duplicate session.
    *
    * @returns Promise resolving to the current (or newly created) session
    *
@@ -1350,6 +1313,26 @@ export class SessionService {
       return this.currentSession;
     }
 
+    const client = await this.serverManager.ensureRunning();
+    const response = await client.session.list();
+    if (!Array.isArray(response.data)) {
+      throw new Error("OpenCode SDK session.list() returned no session array");
+    }
+
+    const normalized = coalesceSessionsById(
+      response.data.filter((session) => !isInternalSession(session)),
+    ).sessions;
+    this.sessionHistory = normalized;
+    const newestSdkSession = normalized[0];
+    if (newestSdkSession) {
+      this.currentSession = newestSdkSession;
+      log.sessionEvent("load", newestSdkSession.id, {
+        source: "sdk-startup-list",
+      });
+      return newestSdkSession;
+    }
+
+    // The SDK successfully confirmed that this workspace has no sessions.
     return this.createNewSession();
   }
 
@@ -1401,55 +1384,36 @@ export class SessionService {
    * @see persistState for how data is saved
    */
   async listSessions(): Promise<Session[]> {
-    // Ensure persisted local history is loaded before we merge with server data.
-    // Without this wait, early startup calls can clobber workspace history.
-    if (this.initializationPromise) {
-      await this.initializationPromise;
-    }
-
     try {
       const client = await this.serverManager.ensureRunning();
       const response = await client.session.list();
 
-      if (response.data) {
-        // Merge server sessions with local history
-        const serverSessions = response.data;
-        const localSessions = this.sessionHistory;
+      if (Array.isArray(response.data)) {
+        const serverSessions = response.data.filter(
+          (session) => !isInternalSession(session),
+        );
 
-        // Use a map to merge by ID, prioritizing server data but keeping local-only ones
-        const mergedMap = new Map<string, Session>();
-        localSessions.forEach((s) => {
-          mergedMap.set(s.id, s);
-        });
-        serverSessions.forEach((s) => {
-          mergedMap.set(s.id, s);
-        });
-
-        const mergedSessions = Array.from(mergedMap.values());
-        const normalized = coalesceSessionsById(mergedSessions);
-        if (hasSessionAliasConflicts(normalized.aliasesByCanonicalId)) {
-          await this.mergeMessagesForSessionAliases(
-            normalized.aliasesByCanonicalId,
-          );
+        if (isInternalSession(this.currentSession)) {
+          const internalSessionId = this.currentSession?.id;
+          this.currentSession = null;
+          log.warn("Removed internal compatibility probe from active session", {
+            sessionId: internalSessionId,
+          });
         }
+
+        const normalized = coalesceSessionsById(serverSessions);
 
         this.sessionHistory = normalized.sessions;
 
         this.persistState();
+      } else {
+        throw new Error("OpenCode SDK session.list() returned no session array");
       }
     } catch (error) {
       log.error("Failed to fetch sessions from server", {}, error as Error);
-      // Fallback to local history
-      const normalizedLocal = coalesceSessionsById(this.sessionHistory);
-      if (hasSessionAliasConflicts(normalizedLocal.aliasesByCanonicalId)) {
-        await this.mergeMessagesForSessionAliases(
-          normalizedLocal.aliasesByCanonicalId,
-        );
-      }
-      if (normalizedLocal.hadChanges) {
-        this.sessionHistory = normalizedLocal.sessions;
-        this.persistState();
-      }
+      // The SDK is the sole source of session history. Never substitute stale
+      // extension-owned snapshots when the server request is unavailable.
+      this.sessionHistory = [];
     }
 
     return this.sessionHistory;
@@ -1515,26 +1479,12 @@ export class SessionService {
       return response.data;
     } catch (error) {
       log.featureStep(flow, 'server_fetch_failed', { error: String(error) });
-      const localSession = this.sessionHistory.find((s) => s.id === sessionId);
-      if (!localSession) {
-        log.endFeatureFlow(flow, { status: 'failed', error: 'Session not found' });
-        throw error;
-      }
-
-      this.currentSession = localSession;
-      this.persistState();
-
-      log.sessionEvent("switch", sessionId, {
-        title: localSession.title,
-        source: 'local',
-      });
       log.endFeatureFlow(flow, {
-        status: 'completed',
+        status: 'failed',
         sessionId,
-        title: localSession.title,
-        source: 'local_fallback',
+        error: error instanceof Error ? error.message : String(error),
       });
-      return localSession;
+      throw error;
     }
   }
 
@@ -1586,14 +1536,6 @@ export class SessionService {
     }
 
     this.sessionHistory = this.sessionHistory.filter((s) => s.id !== sessionId);
-    await this.context.workspaceState.update(
-      `${SessionService.MESSAGES_PREFIX}${sessionId}`,
-      undefined,
-    );
-    await this.context.workspaceState.update(
-      `opencode.session.raw-messages.${sessionId}`,
-      undefined,
-    );
     this.persistState();
 
     log.sessionEvent("delete", sessionId, {
@@ -1742,37 +1684,40 @@ export class SessionService {
   async getMessages(sessionId: string): Promise<unknown[]> {
     const fetchStart = Date.now();
     log.debug("Fetching messages for session", { sessionId });
-    const localMessages = await this.loadSessionMessages(sessionId);
-
     try {
       const client = await this.serverManager.ensureRunning();
-      const response = await client.session.messages({
+      let response = await client.session.messages({
         sessionID: sessionId,
       });
 
-      if (response.data && response.data.length > 0) {
+      if (
+        response.error &&
+        isPersistedStructuredFormatError(response.error) &&
+        await this.structuredFormatRecovery.repair(sessionId)
+      ) {
+        response = await client.session.messages({
+          sessionID: sessionId,
+        });
+      }
+
+      if (Array.isArray(response.data)) {
         const serverDuplicateSummary = summarizePotentialAssistantDuplicates(response.data);
         log.info("Fetched messages from server", {
           sessionId,
           serverCount: response.data.length,
-          localCount: localMessages.length,
           rawAssistantDuplicateGroups: serverDuplicateSummary.duplicateGroups,
           rawAssistantDuplicateMessages: serverDuplicateSummary.duplicateMessages,
           durationMs: Date.now() - fetchStart,
         });
-        const mergedMessages =
-          localMessages.length > 0
-            ? mergeConversationMessages([localMessages, response.data])
-            : response.data;
-        const mergedDuplicateSummary =
-          summarizePotentialAssistantDuplicates(mergedMessages);
+        const mergedMessages = response.data;
+        const mergedDuplicateSummary = serverDuplicateSummary;
         if (
           serverDuplicateSummary.duplicateGroups > 0 ||
           mergedDuplicateSummary.duplicateGroups > serverDuplicateSummary.duplicateGroups
         ) {
           log.warn("Assistant duplicate analysis for session history hydration", {
             sessionId,
-            localCount: localMessages.length,
+            localCount: 0,
             serverCount: response.data.length,
             mergedCount: mergedMessages.length,
             serverDuplicateGroups: serverDuplicateSummary.duplicateGroups,
@@ -1785,23 +1730,21 @@ export class SessionService {
         }
         // Keep the nested info structure from server for proper type compatibility
         // Server returns: { info: {...}, parts: [...] } which matches Message interface
-        await this.saveSessionMessages(sessionId, mergedMessages);
         return mergedMessages;
       }
+      throw new Error(
+        `OpenCode SDK session.messages() returned no message array (status ${response.response?.status ?? "unknown"}): ${JSON.stringify(response.error ?? "no response data")}`,
+      );
     } catch (error) {
-      log.warn("Error fetching messages from server, using local cache", {
+      log.warn("Error fetching messages from server", {
         sessionId,
-        localCount: localMessages.length,
         error: error instanceof Error ? error.message : String(error),
         durationMs: Date.now() - fetchStart,
       });
+      throw error;
     }
 
-    log.debug("Returning local messages", {
-      sessionId,
-      count: localMessages.length,
-    });
-    return localMessages;
+    return [];
   }
 
   /**
@@ -1860,57 +1803,11 @@ export class SessionService {
     sessionId: string,
     messages: unknown[],
   ): Promise<void> {
-    let wasCompacted = false;
-    let persisted = messages.map((message) => sanitizeForPersistence(message));
-
-    if (persisted.length > MAX_CACHED_MESSAGES_PER_SESSION) {
-      wasCompacted = true;
-      persisted = persisted.slice(-MAX_CACHED_MESSAGES_PER_SESSION);
-    }
-
-    let estimatedSize = estimateSerializedBytes(persisted);
-    if (estimatedSize > MAX_CACHED_SESSION_BYTES) {
-      // Keep recent messages first when trimming for storage pressure.
-      while (
-        persisted.length > 1 &&
-        estimatedSize > MAX_CACHED_SESSION_BYTES
-      ) {
-        wasCompacted = true;
-        const trimCount = Math.max(1, Math.ceil(persisted.length * 0.1));
-        persisted = persisted.slice(trimCount);
-        estimatedSize = estimateSerializedBytes(persisted);
-      }
-    }
-
-    if (estimatedSize > MAX_CACHED_SESSION_BYTES) {
-      wasCompacted = true;
-      persisted = persisted.map((message) => compactMessageForPersistence(message));
-      estimatedSize = estimateSerializedBytes(persisted);
-    }
-
-    if (estimatedSize > MAX_CACHED_SESSION_BYTES) {
-      while (
-        persisted.length > 1 &&
-        estimatedSize > MAX_CACHED_SESSION_BYTES
-      ) {
-        wasCompacted = true;
-        persisted = persisted.slice(1);
-        estimatedSize = estimateSerializedBytes(persisted);
-      }
-    }
-
-    if (wasCompacted) {
-      log.warn("Cached messages were compacted", {
-        sessionId,
-        itemCount: persisted.length,
-        sizeKB: Math.round(estimatedSize / 1024),
-      });
-    }
-
-    await this.context.workspaceState.update(
-      `${SessionService.MESSAGES_PREFIX}${sessionId}`,
-      persisted,
-    );
+    void sessionId;
+    void messages;
+    // Intentionally not persisted. OpenCode SDK session.messages() is the
+    // only transcript source; extension-owned copies caused stale hydration
+    // and excessive VS Code workspace state.
   }
 
   /**
@@ -1936,10 +1833,8 @@ export class SessionService {
    * @see getMessages for server-fetching with fallback
    */
   async loadSessionMessages(sessionId: string): Promise<unknown[]> {
-    const value = this.context.workspaceState.get<unknown[]>(
-      `${SessionService.MESSAGES_PREFIX}${sessionId}`,
-    );
-    return Array.isArray(value) ? value : [];
+    void sessionId;
+    return [];
   }
 
 
@@ -1970,43 +1865,15 @@ export class SessionService {
    * ```
    */
   async appendMessage(sessionId: string, message: unknown): Promise<void> {
-    const messages = await this.loadSessionMessages(sessionId);
-    messages.push(message);
-    log.debug("Appending message to session", {
-      sessionId,
-      newTotal: messages.length,
-      role: (message as Record<string, unknown>)?.role,
-    });
-    await this.saveSessionMessages(sessionId, messages);
+    void sessionId;
+    void message;
+    // Live messages are owned by the SDK request and webview stream state.
   }
 
   async upsertMessage(sessionId: string, message: unknown): Promise<void> {
-    const messages = await this.loadSessionMessages(sessionId);
-    const incomingSignatures = getMessageSignaturesForMerge(message);
-    const existingIndex = messages.findIndex((candidate) => {
-      const candidateSignatures = getMessageSignaturesForMerge(candidate);
-      return incomingSignatures.some((signature) =>
-        candidateSignatures.includes(signature),
-      );
-    });
-    if (existingIndex >= 0) {
-      messages[existingIndex] = pickRicherMessage(
-        messages[existingIndex],
-        message,
-      );
-      log.debug("Upserted existing message in session", {
-        sessionId,
-        index: existingIndex,
-        totalMessages: messages.length,
-      });
-    } else {
-      messages.push(message);
-      log.debug("Appended new message to session via upsert", {
-        sessionId,
-        totalMessages: messages.length,
-      });
-    }
-    await this.saveSessionMessages(sessionId, messages);
+    void sessionId;
+    void message;
+    // Live messages are owned by the SDK request and webview stream state.
   }
 
   async dispose(): Promise<void> {
@@ -2014,220 +1881,8 @@ export class SessionService {
     // flushing or disposal.
   }
 
-  private async mergeMessagesForSessionAliases(
-    aliasesByCanonicalId: Map<string, string[]>,
-  ): Promise<void> {
-    log.debug("Starting session alias message merge", {
-      aliasGroupCount: aliasesByCanonicalId.size,
-    });
-
-    for (const [canonicalId, aliases] of Array.from(aliasesByCanonicalId.entries())) {
-      const normalizedCanonicalId = normalizeSessionId(canonicalId);
-      if (!normalizedCanonicalId) {
-        continue;
-      }
-
-      const uniqueAliases = Array.from(
-        new Set(
-          aliases.filter(
-            (alias): alias is string =>
-              typeof alias === "string" && alias.length > 0,
-          ),
-        ),
-      );
-
-      if (!uniqueAliases.includes(normalizedCanonicalId)) {
-        uniqueAliases.push(normalizedCanonicalId);
-      }
-
-      if (uniqueAliases.every((alias) => alias === normalizedCanonicalId)) {
-        continue;
-      }
-
-      const messageGroups: unknown[][] = [];
-      for (const alias of uniqueAliases) {
-        const cached = await this.loadSessionMessages(alias);
-        if (cached.length > 0) {
-          messageGroups.push(cached);
-        }
-      }
-
-      if (messageGroups.length > 0) {
-        const merged = mergeConversationMessages(messageGroups);
-        await this.saveSessionMessages(normalizedCanonicalId, merged);
-      }
-
-      for (const alias of uniqueAliases) {
-        if (alias === normalizedCanonicalId) {
-          continue;
-        }
-        await this.context.workspaceState.update(
-          `${SessionService.MESSAGES_PREFIX}${alias}`,
-          undefined,
-        );
-      }
-    }
-  }
-
-  /**
-   * Loads persisted state from workspace storage.
-   *
-   * This method is called asynchronously in the constructor to restore
-   * the extension state from the previous VSCode session.
-   *
-   ** What Gets Restored:**
-   * - Session history list
-   * - Current session ID
-   * - Selected model
-   *
-   * **Configuration Check:**
-   * If `opencode.persistSessions` is false, returns immediately
-   * without loading anything (fresh start).
-   *
-   * **Session Restoration:**
-   * If a current session ID was saved, tries to reconnect to it
-   * on the server. If the session no longer exists on the server,
-   * falls back to the local stub from history.
-   *
-   * **Initialization Pattern:**
-   * This runs asynchronously in the constructor. Other methods
-   * wait for `initializationPromise` before accessing state.
-   *
-   * @private
-   *
-   * @see persistState for the corresponding save method
-   */
-  private async loadPersistedState(): Promise<void> {
-    const config = vscode.workspace.getConfiguration("opencode");
-    if (!config.get("persistSessions", true)) {
-      log.info("Session persistence disabled, skipping state load");
-      return;
-    }
-
-    const loadStart = Date.now();
-    const persistedSessions = this.context.workspaceState.get<Session[]>(
-      SessionService.SESSIONS_KEY,
-      [],
-    );
-    const normalizedSessions = coalesceSessionsById(persistedSessions);
-    this.sessionHistory = normalizedSessions.sessions;
-
-    log.debug("Loaded persisted sessions", {
-      rawCount: persistedSessions.length,
-      normalizedCount: normalizedSessions.sessions.length,
-      hadChanges: normalizedSessions.hadChanges,
-      aliasConflicts: hasSessionAliasConflicts(normalizedSessions.aliasesByCanonicalId),
-    });
-
-    if (hasSessionAliasConflicts(normalizedSessions.aliasesByCanonicalId)) {
-      log.info("Merging messages for session aliases");
-      await this.mergeMessagesForSessionAliases(
-        normalizedSessions.aliasesByCanonicalId,
-      );
-    }
-
-    if (normalizedSessions.hadChanges) {
-      this.persistState();
-    }
-
-    const persistedSessionId = this.context.workspaceState.get<string>(
-      SessionService.SESSION_ID_KEY,
-    );
-    const sessionId = normalizeSessionId(persistedSessionId);
-
-    if (sessionId && persistedSessionId !== sessionId) {
-      log.debug("Normalized persisted session ID", {
-        original: persistedSessionId,
-        normalized: sessionId,
-      });
-      await this.context.workspaceState.update(
-        SessionService.SESSION_ID_KEY,
-        sessionId,
-      );
-    }
-
-    if (sessionId) {
-      try {
-        await this.switchSession(sessionId);
-        log.sessionEvent("restore", sessionId, {
-          title: this.currentSession?.title,
-          durationMs: Date.now() - loadStart,
-        });
-      } catch (e) {
-        log.debug("Session not found on server, keeping local stub", {
-          sessionId,
-        });
-        const stub = this.sessionHistory.find((s) => s.id === sessionId);
-        if (stub) {
-          this.currentSession = stub;
-          log.debug("Restored session from local history stub", {
-            sessionId,
-            title: stub.title,
-          });
-        }
-      }
-    } else {
-      log.debug("No persisted session ID found, will create on demand");
-    }
-
-    log.info("Persisted state loaded", {
-      sessionCount: this.sessionHistory.length,
-      hasCurrentSession: Boolean(this.currentSession),
-      durationMs: Date.now() - loadStart,
-    });
-  }
-
-  /**
-   * Persists current state to workspace storage.
-   *
-   * This method is called automatically whenever state changes to ensure
-   * data survives VSCode restarts.
-   *
-   ** What Gets Persisted:**
-   * - Session history list (all sessions)
-   * - Current session ID (for restoration on restart)
-   * - Selected model
-   *
-   * **Configuration Check:**
-   * If `opencode.persistSessions` is false, returns immediately
-   * without saving (state is not persisted).
-   *
-   * **Storage Locations:**
-   * - `opencode.sessions`: Session history array
-   * - `opencode.currentSessionId`: Active session ID
-   *
-   * **When Called:**
-   * - After creating a new session
-   * - After switching sessions
-   * - After deleting a session
-   * - After listing sessions from server
-   *
-   * **Storage Scope:**
-   * Uses VSCode's `workspaceState` which is specific to each
-   * workspace. Different workspaces have separate session histories.
-   *
-   * @private
-   *
-   * @see loadPersistedState for the corresponding load method
-   */
+  /** Retains the latest SDK session state in memory only. */
   private persistState(): void {
-    const config = vscode.workspace.getConfiguration("opencode");
-    if (!config.get("persistSessions", true)) {
-      return;
-    }
-
-    this.context.workspaceState.update(
-      SessionService.SESSIONS_KEY,
-      this.sessionHistory,
-    );
-
-    if (this.currentSession) {
-      this.context.workspaceState.update(
-        SessionService.SESSION_ID_KEY,
-        this.currentSession.id,
-      );
-    }
-
     const currentSessionId = this.currentSession?.id ?? "none";
     // Only log when session ID changes to avoid duplicate logs
     if (currentSessionId !== this.lastLoggedSessionId) {

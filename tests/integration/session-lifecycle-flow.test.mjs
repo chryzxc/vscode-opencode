@@ -2,13 +2,12 @@
  * Session Lifecycle Flow Integration Tests
  *
  * Validates the complete SessionService lifecycle:
- *   Initialization → restore persisted state
- *   Create session → server call + local cache
+ *   Initialization → restore active SDK session pointer
+ *   Create session → server call
  *   Get current session → auto-create if null
- *   List sessions → merge server + local
- *   Switch session → server fetch with local fallback
- *   Delete session → server + local cleanup
- *   Message persistence → sanitize → compact → save
+ *   List sessions → SDK server response only
+ *   Switch session → SDK server fetch
+ *   Delete session → SDK server + derived-cache cleanup
  *
  * Uses source-introspection to assert the codebase implements
  * every step of the session lifecycle and cross-service
@@ -40,19 +39,19 @@ test("SessionService constructor triggers async initialization", () => {
   );
 });
 
-test("SessionService restores persisted sessions on init", () => {
-  assert.match(
+test("SessionService does not initialize history from persisted snapshots", () => {
+  assert.doesNotMatch(
     sessionServiceSource,
-    /loadPersistedState/,
-    "SessionService must call loadPersistedState during initialization",
+    /loadPersistedState|restoreCheckpointIfPresent|workspaceState\.get/,
+    "initialization must leave history to the SDK",
   );
 });
 
-test("SessionService restores current session from persisted state", () => {
+test("SessionService tracks the current SDK session in memory", () => {
   assert.match(
     sessionServiceSource,
     /currentSession/,
-    "SessionService must track currentSession",
+    "SessionService must track the current SDK session",
   );
 });
 
@@ -111,15 +110,25 @@ test("getCurrentSession waits for initialization to complete", () => {
   );
 });
 
-test("getCurrentSession auto-creates a new session when none exists", () => {
+test("getCurrentSession selects an SDK session before creating an empty workspace session", () => {
   const getBody = extractFunctionBody(
     sessionServiceSource,
     "async getCurrentSession",
   );
   assert.match(
     getBody,
-    /createNewSession/,
-    "getCurrentSession must auto-create session when currentSession is null",
+    /client\.session\.list\(\)/,
+    "getCurrentSession must query SDK sessions when currentSession is null",
+  );
+  assert.match(
+    getBody,
+    /const newestSdkSession = normalized\[0\];/,
+    "getCurrentSession must reuse an SDK session after restart",
+  );
+  assert.match(
+    getBody,
+    /return this\.createNewSession\(\);/,
+    "getCurrentSession may create only when the SDK list is empty",
   );
 });
 
@@ -135,20 +144,10 @@ test("listSessions fetches sessions from server", () => {
   );
 });
 
-test("listSessions merges server results with local cache", () => {
-  assert.match(
-    sessionServiceSource,
-    /coalesceSessionsById/,
-    "listSessions must merge server + local via coalesceSessionsById",
-  );
-});
-
-test("listSessions handles alias conflicts by merging messages", () => {
-  assert.match(
-    sessionServiceSource,
-    /mergeMessagesForSessionAliases/,
-    "listSessions must merge messages when session aliases conflict",
-  );
+test("listSessions normalizes SDK results without local history", () => {
+  const listBody = extractFunctionBody(sessionServiceSource, "async listSessions");
+  assert.match(listBody, /coalesceSessionsById\(serverSessions\)/);
+  assert.doesNotMatch(listBody, /localSessions|mergeMessagesForSessionAliases/);
 });
 
 // ---------------------------------------------------------------------------
@@ -163,17 +162,13 @@ test("switchSession fetches session from server", () => {
   );
 });
 
-test("switchSession falls back to local cache when server fetch fails", () => {
+test("switchSession does not fall back to local session data", () => {
   const switchBody = extractFunctionBody(
     sessionServiceSource,
     "async switchSession",
   );
   assert.ok(switchBody, "switchSession method must exist");
-  assert.match(
-    switchBody,
-    /catch/,
-    "switchSession must handle server fetch failure",
-  );
+  assert.doesNotMatch(switchBody, /sessionHistory\.find|local stub|fallback/i);
 });
 
 test("switchSession updates currentSession reference", () => {
@@ -225,65 +220,33 @@ test("deleteSession clears currentSession if it matches the deleted session", ()
   );
 });
 
-test("deleteSession clears persisted messages for the deleted session", () => {
+test("deleteSession does not maintain an extension-owned transcript", () => {
   const deleteBody = extractFunctionBody(
     sessionServiceSource,
     "async deleteSession",
   );
-  assert.match(
+  assert.doesNotMatch(
     deleteBody,
-    /rawMessageCache\.delete|MESSAGES_PREFIX/,
-    "deleteSession must clean up persisted messages for deleted session",
+    /saveSessionMessages|loadSessionMessages|MESSAGES_PREFIX/,
+    "deleteSession must not depend on an extension-owned transcript",
   );
 });
 
 // ---------------------------------------------------------------------------
-// Message persistence flow
+// SDK-only message history
 // ---------------------------------------------------------------------------
 
-test("saveSessionMessages sanitizes messages before persisting", () => {
-  assert.match(
-    sessionServiceSource,
-    /saveSessionMessages/,
-    "SessionService must have saveSessionMessages method",
-  );
+test("getMessages reads SDK history without local transcript fallback", () => {
+  const getMessagesBody = extractFunctionBody(sessionServiceSource, "async getMessages");
+  assert.match(getMessagesBody, /client\.session\.messages/);
+  assert.doesNotMatch(getMessagesBody, /loadSessionMessages|saveSessionMessages|localMessages/);
 });
 
-test("saveSessionMessages enforces compaction limits", () => {
-  assert.match(
-    sessionServiceSource,
-    /compact/,
-    "saveSessionMessages must compact messages to enforce size limits",
-  );
-});
-
-test("SessionService persists messages to workspaceState", () => {
-  assert.match(
-    sessionServiceSource,
-    /workspaceState/,
-    "SessionService must use workspaceState for persistence",
-  );
-});
-
-test("appendMessage adds message to local cache", () => {
-  assert.match(
-    sessionServiceSource,
-    /appendMessage/,
-    "SessionService must have appendMessage method",
-  );
-});
-
-test("upsertMessage merges by signature and picks richer message", () => {
-  assert.match(
-    sessionServiceSource,
-    /upsertMessage/,
-    "SessionService must have upsertMessage method",
-  );
-  assert.match(
-    sessionServiceSource,
-    /pickRicherMessage/,
-    "upsertMessage must use pickRicherMessage for deduplication",
-  );
+test("legacy transcript persistence compatibility methods do not store data", () => {
+  const saveBody = extractFunctionBody(sessionServiceSource, "async saveSessionMessages");
+  const loadBody = extractFunctionBody(sessionServiceSource, "async loadSessionMessages");
+  assert.doesNotMatch(saveBody, /workspaceState|workspaceFileCache/);
+  assert.match(loadBody, /return \[\]/);
 });
 
 // ---------------------------------------------------------------------------
@@ -306,11 +269,11 @@ test("SessionService uses serverManager.ensureRunning for server access", () => 
   );
 });
 
-test("SessionService integrates with CheckpointRestore", () => {
-  assert.match(
+test("SessionService does not hydrate history from CheckpointRestore", () => {
+  assert.doesNotMatch(
     sessionServiceSource,
     /restoreCheckpointIfPresent|CheckpointRestore|checkpoint/i,
-    "SessionService must integrate with checkpoint restore on initialization",
+    "SessionService history must come from the SDK",
   );
 });
 
