@@ -1,0 +1,89 @@
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+
+import type { StreamingState } from "./lib/types";
+import { shouldShowStreamingCard } from "./lib/streamingCardVisibility";
+
+function streamingState(
+  overrides: Partial<StreamingState> = {},
+): StreamingState {
+  return {
+    messageId: "msg-live",
+    content: "",
+    hasRenderableContent: false,
+    reasoning: "",
+    reasoningEvents: [],
+    steps: [],
+    progressEvents: [],
+    edits: [],
+    isActive: true,
+    ...overrides,
+  };
+}
+
+describe("shouldShowStreamingCard live event ownership", () => {
+  it("keeps live reasoning visible when the transcript already has an assistant placeholder", () => {
+    const visible = shouldShowStreamingCard({
+      streaming: streamingState({
+        reasoningEvents: [
+          {
+            text: "Inspecting the event path",
+            createdAt: 1,
+            partID: "part-reasoning",
+            messageID: "msg-live",
+          },
+        ],
+      }),
+      hasTranscriptAssistantForCurrentTurn: true,
+      transcriptAssistantMessageIds: ["msg-live"],
+    });
+
+    assert.strictEqual(visible, true);
+  });
+
+  it("keeps live tool progress visible when its message ID already exists in the transcript", () => {
+    const visible = shouldShowStreamingCard({
+      streaming: streamingState({
+        progressEvents: [
+          {
+            id: "tool-live",
+            title: "Reading file",
+            status: "running",
+          },
+        ],
+      }),
+      transcriptAssistantMessageIds: ["msg-live"],
+    });
+
+    assert.strictEqual(visible, true);
+  });
+
+  it("hands the turn to the matching transcript after streaming completes", () => {
+    const visible = shouldShowStreamingCard({
+      streaming: streamingState({
+        isActive: false,
+        reasoningEvents: [
+          {
+            text: "Finished reasoning",
+            createdAt: 1,
+            messageID: "msg-live",
+          },
+        ],
+      }),
+      hasTranscriptAssistantForCurrentTurn: true,
+      transcriptAssistantMessageIds: ["msg-live"],
+    });
+
+    assert.strictEqual(visible, false);
+  });
+
+  it("does not mount an empty active card before the first live event", () => {
+    assert.strictEqual(
+      shouldShowStreamingCard({
+        streaming: streamingState(),
+        transcriptAssistantMessageIds: ["msg-live"],
+      }),
+      false,
+    );
+  });
+});

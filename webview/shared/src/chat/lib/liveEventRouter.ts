@@ -21,7 +21,11 @@
  */
 
 import type { CentralizedToastNotification, LiveSessionStatus } from "./toastEvents";
-import { toastNotificationFromPayload, liveSessionStatusFromPayload } from "./toastEvents";
+import {
+  toastNotificationFromPayload,
+  liveSessionStatusFromPayload,
+  toastNotificationFromSessionStatus,
+} from "./toastEvents";
 
 export type LiveEventDestination = "toast" | "session-status";
 
@@ -54,8 +58,10 @@ export interface LiveEventRouteResult {
 }
 
 export function routeLiveEvent(entry: unknown, index = 0): LiveEventRouteResult {
-  const toast = toastNotificationFromPayload(entry, index);
   const sessionStatus = liveSessionStatusFromPayload(entry);
+  const toast =
+    toastNotificationFromPayload(entry, index) ??
+    toastNotificationFromSessionStatus(sessionStatus);
   const result: LiveEventRouteResult = {};
   if (toast) {
     result.toast = toast;

@@ -264,7 +264,7 @@
     }
   },
   "scripts": {
-    "build": "npm run webview:build && npm run compile",
+    "build": "npm run structured-output:sync && npm run webview:build && npm run compile",
     "verify": "npm run build && npm run lint && npm test",
     "vscode:prepublish": "npm run build",
     "compile": "node esbuild.config.cjs",

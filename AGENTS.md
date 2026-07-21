@@ -36,7 +36,7 @@ vscode-opencode/
 | Extension startup, command wiring | `src/extension.ts` | `activate()` boot order matters: server → sessions → status → providers |
 | Main chat backend bridge | `src/providers/ChatViewProvider.ts` | Webview message protocol, send flow, plan detection, streaming fan-out |
 | Chat provider modular internals | `src/providers/chat/` | 12 modules: QueueManager, StreamEventHandler, StructuredOutputProcessor, PlanManager, SubagentPersistence, SessionHandler, ModelAndAgentManager, HistoryProcessor, CompactionManager, ErrorBuilder, DiagnosticsLogger |
-| Plan viewer host | `src/providers/PlanViewProvider.ts` | Separate webview provider for `implementation_plan.md` UX |
+| Plan viewer host | `src/providers/PlanViewProvider.ts` | Separate webview provider for `plan.md` UX |
 | Diff review host | `src/providers/DiffReviewProvider.ts` | Review panel for VCS changes linked to sessions |
 | Skills panel host | `src/providers/SkillsPanelProvider.ts` | Skills management webview |
 | Config files host | `src/providers/ConfigFilesProvider.ts` | Configuration file management |
@@ -46,7 +46,7 @@ vscode-opencode/
 | SSE streaming | `src/services/MessageStreamService.ts` | Event stream transport; feeds providers/tracker |
 | Subagent orchestration | `src/services/SubagentTracker.ts` | Parent/child task state and detail timeline assembly |
 | Quota polling | `src/services/QuotaService.ts` | Multi-provider quota APIs (OpenAI, Copilot, Gemini, Zhipu, Z.ai) |
-| Plan parsing | `src/services/PlanParser.ts` | Parses `implementation_plan.md` into structured data |
+| Plan parsing | `src/services/PlanParser.ts` | Parses `plan.md` into structured data |
 | Skill management | `src/services/SkillManagerService.ts`, `src/services/SkillManagementService.ts` | Install/validate/discover/enable-disable skills |
 | Model capabilities | `src/services/ModelCapabilitiesService.ts` | Reasoning detection via static map + models.dev |
 | Checkpoint restore | `src/services/CheckpointRestore.ts` | Startup checkpoint restore |
@@ -73,7 +73,7 @@ vscode-opencode/
 | `OpencodeServerManager` | class | `src/services/OpencodeServerManager.ts` | OpenCode CLI process lifecycle |
 | `MessageStreamService` | class | `src/services/MessageStreamService.ts` | SSE subscription transport |
 | `SubagentTracker` | class | `src/services/SubagentTracker.ts` | Subagent timeline/state collation |
-| `PlanParser` | class | `src/services/PlanParser.ts` | Parses `implementation_plan.md` into structured data |
+| `PlanParser` | class | `src/services/PlanParser.ts` | Parses `plan.md` into structured data |
 | `QuotaService` | class | `src/services/QuotaService.ts` | Multi-provider quota polling |
 | `SkillManagerService` | class | `src/services/SkillManagerService.ts` | Skill install/validate/discover |
 | `SkillManagementService` | class | `src/services/SkillManagementService.ts` | Skill enable/disable lifecycle |
@@ -91,7 +91,7 @@ vscode-opencode/
 - Wrapper prompt payloads stay transport-only. Behavioural/system instructions belong to OpenCode agents/server, not this extension.
 - Structured output schema originates in `src/shared/*` and is copied into `webview/shared/src/chat/lib/generated/*`; update through the sync script, not manual dual edits.
 - Structured-output handling must be schema/data-driven only; we do not want phrase-identification or prompt-text inference logic.
-- Implementation-plan contract: for `responseType="implementation_plan"`, treat `plan.file` as first-class (filepath-only payloads are valid and expected when the plan is written to disk). Do not require `plan.content` to render the plan card or enable `View Plan`.
+- Implementation-plan contract: for `responseType="plan"`, treat `plan.file` as first-class (filepath-only payloads are valid and expected when the plan is written to disk). Do not require `plan.content` to render the plan card or enable `View Plan`.
 - Tests primarily use Node's built-in runner with `.test.mjs`; Vitest exists for targeted unit runs.
 - For newly added files, default to modular design: avoid creating large monolith files, split by responsibility early, and prefer adding small focused modules/components over extending a single file.
 - Pre-push guard (`scripts/pre-push-check.mjs`) enforces: structured-output:check → compile → conditional webview build → lint → impacted tests. Use `npm run guard:prepush` to run manually.

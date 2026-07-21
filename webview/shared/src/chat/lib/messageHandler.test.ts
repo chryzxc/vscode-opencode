@@ -11,6 +11,7 @@ import {
   getCentralizedAssistantContentChunksFromRawSdkEventPayloads,
   getCentralizedAssistantTurnCompletionIndex,
   isAiResponseEvent,
+  permissionRequestFromSdkPayload,
   structuredOutputFromRawSdkEventPayloads,
   terminalEventMatchesAssistantTurn,
 } from './messageHandler';
@@ -21,6 +22,24 @@ import {
 import { appReducer, initialState } from './store';
 
 describe('normalizeMessage - responseType handling', () => {
+  it('ignores undefined interactive events from an untrusted payload', () => {
+    const result = normalizeMessage({
+      role: 'assistant',
+      content: 'Choose an option',
+      structuredOutput: {
+        responseType: 'question',
+        interactiveEvents: [undefined, {
+          type: 'question',
+          id: 'question-1',
+          question: 'Which option?',
+          options: [{ label: 'One', value: 'one' }, { label: 'Two', value: 'two' }],
+        }],
+      },
+    } as unknown as Message, null);
+
+    assert.deepEqual(result?.interactiveEvents?.map((event) => event.type), ['question']);
+  });
+
   it('should handle message with responseType field without throwing', () => {
     const inputMessage: Message = {
       role: 'assistant',
@@ -105,6 +124,27 @@ describe('terminalEventMatchesAssistantTurn', () => {
       ),
       false,
     );
+  });
+});
+
+describe('permissionRequestFromSdkPayload', () => {
+  const request = {
+    id: 'per-example',
+    sessionID: 'ses-example',
+    permission: 'read',
+    patterns: ['apps/backend/.env'],
+    always: ['*'],
+  };
+
+  it('normalizes the live permission.asked event envelope', () => {
+    assert.deepEqual(
+      permissionRequestFromSdkPayload({ type: 'permission.asked', properties: request }),
+      request,
+    );
+  });
+
+  it('normalizes the rehydrated permission-list record', () => {
+    assert.deepEqual(permissionRequestFromSdkPayload(request), request);
   });
 });
 
@@ -282,6 +322,166 @@ describe('createMessageHandler - terminal turn identity', () => {
 });
 
 describe('createMessageHandler - chatHistory hydration guards', () => {
+  it('surfaces a missing selected session instead of treating it as an empty chat', () => {
+    let state = {
+      ...initialState,
+      currentSessionId: 'ses-previous',
+      messages: [{ id: 'msg-previous', role: 'user', content: 'Previous chat' }],
+      isProcessing: true,
+      processingSessionIds: ['ses-missing'],
+      isLoadingSession: true,
+      loadingSessionId: 'ses-missing',
+    } as AppState;
+    const dispatch = (action: Parameters<typeof appReducer>[1]) => {
+      state = appReducer(state, action);
+    };
+    const handler = createMessageHandler(dispatch, () => state);
+
+    handler({
+      data: {
+        type: 'chatHistory',
+        sessionId: 'ses-missing',
+        available: false,
+        unavailableReason: 'not_found',
+        unavailableMessage: 'This session is not available on the current OpenCode server.',
+        unavailableStatus: 404,
+        messages: [],
+        sdkMessages: [],
+      },
+    } as MessageEvent);
+
+    assert.equal(state.currentSessionId, 'ses-missing');
+    assert.deepEqual(state.messages, []);
+    assert.deepEqual(state.sessionLoadError, {
+      sessionId: 'ses-missing',
+      reason: 'not_found',
+      message: 'This session is not available on the current OpenCode server.',
+      status: 404,
+    });
+    assert.equal(state.isLoadingSession, false);
+    assert.equal(state.isProcessing, false);
+    assert.deepEqual(state.processingSessionIds, []);
+  });
+
+  it('clears the unavailable state when SDK history becomes available', () => {
+    let state = {
+      ...initialState,
+      currentSessionId: 'ses-restored',
+      sessionLoadError: {
+        sessionId: 'ses-restored',
+        reason: 'not_found' as const,
+        message: 'Missing',
+        status: 404,
+      },
+    } as AppState;
+    const dispatch = (action: Parameters<typeof appReducer>[1]) => {
+      state = appReducer(state, action);
+    };
+    const handler = createMessageHandler(dispatch, () => state);
+
+    handler({
+      data: {
+        type: 'chatHistory',
+        sessionId: 'ses-restored',
+        available: true,
+        messages: [{ id: 'msg-restored', role: 'assistant', content: 'Restored' }],
+        sdkMessages: [],
+      },
+    } as MessageEvent);
+
+    assert.equal(state.sessionLoadError, null);
+    assert.equal(state.messages[0]?.content, 'Restored');
+  });
+
+  it('preserves an already visible transcript when rehydration fails for the active session', () => {
+    let state = {
+      ...initialState,
+      currentSessionId: 'ses-active',
+      messages: [{ id: 'msg-visible', role: 'assistant', content: 'Keep this visible' }],
+      isLoadingSession: true,
+      loadingSessionId: 'ses-active',
+    } as AppState;
+    const dispatch = (action: Parameters<typeof appReducer>[1]) => {
+      state = appReducer(state, action);
+    };
+    const handler = createMessageHandler(dispatch, () => state);
+
+    handler({
+      data: {
+        type: 'chatHistory',
+        sessionId: 'ses-active',
+        available: false,
+        unavailableReason: 'unavailable',
+        unavailableMessage: 'OpenCode could not decode structured-output metadata.',
+        unavailableStatus: 400,
+        messages: [],
+        sdkMessages: [],
+      },
+    } as MessageEvent);
+
+    assert.equal(state.messages[0]?.content, 'Keep this visible');
+    assert.equal(state.sessionLoadError?.status, 400);
+    assert.equal(state.isLoadingSession, false);
+  });
+
+  it('atomically clears stale loading and Stop state when SDK history ends in finish stop', () => {
+    let state = {
+      ...initialState,
+      currentSessionId: 'ses_082a1eab5ffelEiB03kCEV4H3m',
+      isProcessing: true,
+      processingSessionIds: ['ses_082a1eab5ffelEiB03kCEV4H3m'],
+      assistantTurnPending: true,
+      assistantTurnMessageId: 'msg_f7d7187fa001xFMswmdQqMS7Hn',
+      streaming: {
+        messageId: 'msg_f7d7187fa001xFMswmdQqMS7Hn',
+        content: 'All work is complete.',
+        reasoning: '',
+        reasoningEvents: [],
+        steps: [],
+        progressEvents: [],
+        edits: [],
+        isActive: true,
+      },
+    } as AppState;
+    const dispatch = (action: Parameters<typeof appReducer>[1]) => {
+      state = appReducer(state, action);
+    };
+    const handler = createMessageHandler(dispatch, () => state);
+
+    handler({
+      data: {
+        type: 'chatHistory',
+        sessionId: 'ses_082a1eab5ffelEiB03kCEV4H3m',
+        processingSessionIds: ['ses_082a1eab5ffelEiB03kCEV4H3m'],
+        messages: [
+          { id: 'msg_user', role: 'user', content: 'Finish the work' },
+          {
+            id: 'msg_f7d7187fa001xFMswmdQqMS7Hn',
+            role: 'assistant',
+            content: 'All work is complete.',
+            finish: 'stop',
+          },
+        ],
+        sdkMessages: [
+          { info: { id: 'msg_user', role: 'user', time: { created: 1784515977887 } } },
+          {
+            info: {
+              id: 'msg_f7d7187fa001xFMswmdQqMS7Hn',
+              role: 'assistant',
+              time: { created: 1784516020218, completed: 1784516026862 },
+              finish: 'stop',
+            },
+          },
+        ],
+      },
+    } as MessageEvent);
+
+    assert.equal(state.isProcessing, false);
+    assert.equal(state.assistantTurnPending, false);
+    assert.equal(state.streaming, null);
+    assert.deepEqual(state.processingSessionIds, []);
+  });
+
   it('should tolerate missing availableModels while recalculating context usage from chatHistory', () => {
     let state = {
       ...initialState,
@@ -458,6 +658,576 @@ describe('createMessageHandler - live tool activity identity', () => {
     assert.strictEqual(state.streaming?.messageId, 'msg-sync-tool');
     assert.strictEqual(state.streaming?.steps.length, 1);
     assert.strictEqual(state.streaming?.steps[0]?.callID, 'call-sync-tool');
+  });
+
+  it('renders the first sync-wrapped tool event before processing state is committed', () => {
+    let state: AppState = {
+      ...initialState,
+      currentSessionId: 'ses-sync-first-event',
+      isProcessing: false,
+    };
+    const dispatch = (action: Parameters<typeof appReducer>[1]) => {
+      state = appReducer(state, action);
+    };
+    const handler = createMessageHandler(dispatch, () => state);
+
+    handler({
+      data: {
+        type: 'streamEvent',
+        sessionId: 'ses-sync-first-event',
+        event: {
+          id: 'evt-sync-first-tool',
+          type: 'sync',
+          syncEvent: {
+            type: 'message.part.updated',
+            data: {
+              part: {
+                id: 'prt-sync-first-tool',
+                type: 'tool',
+                tool: 'bash',
+                callID: 'call-sync-first-tool',
+                messageID: 'msg-sync-first-tool',
+                state: { status: 'running', input: { command: 'pwd' } },
+              },
+            },
+          },
+        },
+      },
+    } as never);
+
+    assert.strictEqual(state.streaming?.messageId, 'msg-sync-first-tool');
+    assert.strictEqual(state.streaming?.steps.length, 1);
+    assert.strictEqual(state.streaming?.steps[0]?.callID, 'call-sync-first-tool');
+    assert.strictEqual(state.isProcessing, true);
+  });
+
+  it('retains Bash command and metadata output across live tool snapshots', () => {
+    let state: AppState = {
+      ...initialState,
+      currentSessionId: 'ses-live-bash-output',
+      isProcessing: true,
+    };
+    const dispatch = (action: Parameters<typeof appReducer>[1]) => {
+      state = appReducer(state, action);
+    };
+    const handler = createMessageHandler(dispatch, () => state);
+    const event = (id: string, statePatch: Record<string, unknown>) => ({
+      data: {
+        type: 'streamEvent',
+        sessionId: 'ses-live-bash-output',
+        event: {
+          id,
+          type: 'message.part.updated',
+          properties: {
+            sessionID: 'ses-live-bash-output',
+            part: {
+              id: 'prt-live-bash-output',
+              type: 'tool',
+              tool: 'bash',
+              callID: 'call-live-bash-output',
+              messageID: 'msg-live-bash-output',
+              state: statePatch,
+            },
+          },
+        },
+      },
+    });
+
+    handler(event('evt-bash-pending', { status: 'pending', input: {} }) as never);
+    handler(event('evt-bash-running', {
+      status: 'running',
+      input: { command: 'docker ps' },
+      metadata: { output: 'daemon unavailable' },
+    }) as never);
+
+    const step = state.streaming?.steps.find(
+      (candidate) => candidate.callID === 'call-live-bash-output',
+    );
+    assert.strictEqual(step?.activityDetail?.command, 'docker ps');
+    assert.strictEqual(step?.activityDetail?.output, 'daemon unavailable');
+  });
+});
+
+describe('createMessageHandler - live permissions', () => {
+  it('mounts a permission.asked event even when the agent is paused', () => {
+    let state: AppState = {
+      ...initialState,
+      currentSessionId: 'ses-permission',
+      isProcessing: false,
+      streaming: {
+        messageId: 'msg-permission-owner',
+        content: '',
+        reasoning: '',
+        reasoningEvents: [],
+        steps: [],
+        progressEvents: [],
+        edits: [],
+        interactiveEvents: [],
+        isActive: true,
+      },
+    };
+    const dispatch = (action: Parameters<typeof appReducer>[1]) => {
+      state = appReducer(state, action);
+    };
+    const handler = createMessageHandler(dispatch, () => state);
+
+    handler({
+      data: {
+        type: 'streamEvent',
+        sessionId: 'ses-permission',
+        event: {
+          id: 'evt-permission',
+          type: 'permission.asked',
+          properties: {
+            id: 'per-permission',
+            sessionID: 'ses-permission',
+            permission: 'read',
+            patterns: ['apps/backend/.env'],
+            always: ['*'],
+          },
+        },
+      },
+    } as never);
+
+    assert.equal(state.messages.some((message) => message.id === 'permission-per-permission'), false);
+    assert.deepEqual(state.interactiveEvents, [{
+      type: 'quick_actions',
+      id: 'permission-request-per-permission',
+      title: 'Allow read?',
+      uiCategory: 'quick_input',
+      contextMessage: 'OpenCode requests **read** access to:\n\n`apps/backend/.env`',
+      permissionID: 'per-permission',
+      sessionID: 'ses-permission',
+      permissionPatterns: ['apps/backend/.env'],
+      permissionName: 'read',
+      actions: [
+        { id: 'once', label: 'Allow', value: 'once', recommended: true },
+        { id: 'always', label: 'Always allow', value: 'always' },
+        { id: 'reject', label: 'Reject', value: 'reject' },
+      ],
+    }]);
+
+    handler({
+      data: {
+        type: 'streamEvent',
+        sessionId: 'ses-permission',
+        event: {
+          type: 'permission.replied',
+          properties: { sessionID: 'ses-permission', requestID: 'per-permission', reply: 'reject' },
+        },
+      },
+    } as never);
+    assert.deepEqual(state.interactiveEvents, []);
+
+    handler({
+      data: {
+        type: 'streamEvent',
+        sessionId: 'ses-permission',
+        event: {
+          type: 'permission.asked',
+          properties: {
+            id: 'per-permission-next',
+            sessionID: 'ses-permission',
+            permission: 'read',
+            patterns: ['apps/backend/.env'],
+            always: ['*'],
+          },
+        },
+      },
+    } as never);
+    assert.equal(state.interactiveEvents[0]?.id, 'permission-request-per-permission-next');
+  });
+});
+
+describe('createMessageHandler - adapted live text deltas', () => {
+  it('renders SDK-adapter text deltas as assistant content before hydration', () => {
+    let state: AppState = {
+      ...initialState,
+      currentSessionId: 'ses-live-text',
+      isProcessing: true,
+    };
+    const dispatch = (action: Parameters<typeof appReducer>[1]) => {
+      state = appReducer(state, action);
+    };
+    const handler = createMessageHandler(dispatch, () => state);
+
+    handler({
+      data: {
+        type: 'streamEventBatch',
+        events: [
+          {
+            sessionId: 'ses-live-text',
+            event: {
+              // MessageStreamService normalizes message.part.delta to this
+              // compatible part-update shape while preserving field + delta.
+              type: 'message.part.updated',
+              properties: {
+                sessionID: 'ses-live-text',
+                messageID: 'msg-live-text',
+                partID: 'prt-live-text',
+                field: 'text',
+                delta: 'Hello',
+                part: {
+                  id: 'prt-live-text',
+                  type: 'text',
+                  messageID: 'msg-live-text',
+                },
+              },
+            },
+          },
+        ],
+      },
+    } as never);
+
+    assert.strictEqual(state.streaming?.messageId, 'msg-live-text');
+    assert.strictEqual(state.streaming?.content, 'Hello');
+    assert.strictEqual(state.streaming?.reasoning, '');
+    assert.strictEqual(state.streaming?.hasRenderableContent, true);
+  });
+
+  it('preserves every text delta from the initial React-style batched dispatch', () => {
+    let state: AppState = {
+      ...initialState,
+      currentSessionId: 'ses-batched-text',
+      isProcessing: true,
+    };
+    const queuedActions: Parameters<typeof appReducer>[1][] = [];
+    // Model React's event callback semantics: dispatch queues reducer work,
+    // while getState keeps returning the last committed snapshot until the
+    // callback has finished.
+    const dispatch = (action: Parameters<typeof appReducer>[1]) => {
+      queuedActions.push(action);
+    };
+    const handler = createMessageHandler(dispatch, () => state);
+    const deltaEvent = (delta: string) => ({
+      sessionId: 'ses-batched-text',
+      event: {
+        type: 'message.part.updated',
+        properties: {
+          sessionID: 'ses-batched-text',
+          messageID: 'msg-batched-text',
+          partID: 'prt-batched-text',
+          field: 'text',
+          delta,
+          part: {
+            id: 'prt-batched-text',
+            type: 'text',
+            messageID: 'msg-batched-text',
+            text: delta,
+            delta,
+          },
+        },
+      },
+    });
+
+    handler({
+      data: {
+        type: 'streamEventBatch',
+        events: [deltaEvent('Hello'), deltaEvent(' world')],
+      },
+    } as never);
+    for (const action of queuedActions) {
+      state = appReducer(state, action);
+    }
+
+    assert.strictEqual(state.streaming?.content, 'Hello world');
+    assert.strictEqual(state.streaming?.hasRenderableContent, true);
+  });
+
+  it('retracts a text prelude when the same assistant turn starts a tool', () => {
+    let state: AppState = {
+      ...initialState,
+      currentSessionId: 'ses-tool-prelude',
+      isProcessing: true,
+    };
+    const dispatch = (action: Parameters<typeof appReducer>[1]) => {
+      state = appReducer(state, action);
+    };
+    const handler = createMessageHandler(dispatch, () => state);
+    const messageID = 'msg-tool-prelude';
+    const preludePartID = 'prt-tool-prelude';
+
+    handler({
+      data: {
+        type: 'streamEvent',
+        sessionId: 'ses-tool-prelude',
+        event: {
+          type: 'message.part.updated',
+          properties: {
+            sessionID: 'ses-tool-prelude',
+            messageID,
+            partID: preludePartID,
+            field: 'text',
+            delta: 'Now',
+            part: {
+              id: preludePartID,
+              type: 'text',
+              messageID,
+              text: 'Now',
+              delta: 'Now',
+            },
+          },
+        },
+      },
+    } as never);
+    assert.strictEqual(state.streaming?.content, 'Now');
+
+    handler({
+      data: {
+        type: 'streamEvent',
+        sessionId: 'ses-tool-prelude',
+        event: {
+          type: 'message.part.updated',
+          properties: {
+            sessionID: 'ses-tool-prelude',
+            messageID,
+            part: {
+              id: 'prt-tool-call',
+              type: 'tool',
+              tool: 'read',
+              callID: 'call-tool-prelude',
+              messageID,
+              state: { status: 'pending', input: {} },
+            },
+          },
+        },
+      },
+    } as never);
+    assert.strictEqual(state.streaming?.content, '');
+    assert.strictEqual(state.streaming?.hasRenderableContent, false);
+
+    handler({
+      data: {
+        type: 'streamEvent',
+        sessionId: 'ses-tool-prelude',
+        event: {
+          type: 'message.part.updated',
+          properties: {
+            sessionID: 'ses-tool-prelude',
+            messageID,
+            part: {
+              id: preludePartID,
+              type: 'text',
+              messageID,
+              text: 'Now let me inspect the files.',
+            },
+          },
+        },
+      },
+    } as never);
+    assert.strictEqual(state.streaming?.content, '');
+  });
+
+  it('locks tool-prelude suppression across a batched lifecycle without hiding the later answer', () => {
+    let state: AppState = {
+      ...initialState,
+      currentSessionId: 'ses-batched-tool-prelude',
+      isProcessing: true,
+    };
+    const dispatch = (action: Parameters<typeof appReducer>[1]) => {
+      state = appReducer(state, action);
+    };
+    const handler = createMessageHandler(dispatch, () => state);
+    const messageID = 'msg-batched-tool-prelude';
+    const preludePartID = 'prt-batched-tool-prelude';
+    const event = (part: Record<string, unknown>, extras: Record<string, unknown> = {}) => ({
+      sessionId: 'ses-batched-tool-prelude',
+      event: {
+        type: 'message.part.updated',
+        properties: {
+          sessionID: 'ses-batched-tool-prelude',
+          messageID,
+          partID: part.id,
+          part,
+          ...extras,
+        },
+      },
+    });
+
+    handler({
+      data: {
+        type: 'streamEventBatch',
+        events: [
+          event(
+            {
+              id: preludePartID,
+              type: 'text',
+              messageID,
+              text: 'Now',
+              delta: 'Now',
+            },
+            { field: 'text', delta: 'Now' },
+          ),
+          event({
+            id: 'prt-batched-tool',
+            type: 'tool',
+            tool: 'read',
+            callID: 'call-batched-tool-prelude',
+            messageID,
+            state: { status: 'pending', input: {} },
+          }),
+          // The server's completed snapshot is still the prelude part. It
+          // must not recreate the response card after its tool transition.
+          event({
+            id: preludePartID,
+            type: 'text',
+            messageID,
+            text: 'Now let me inspect the files.',
+          }),
+          // A new part after tool activity is the actual response and must
+          // remain renderable; suppression never applies across part IDs.
+          event(
+            {
+              id: 'prt-batched-final-answer',
+              type: 'text',
+              messageID,
+              text: 'The login flow is connected end to end.',
+              delta: 'The login flow is connected end to end.',
+            },
+            {
+              field: 'text',
+              delta: 'The login flow is connected end to end.',
+            },
+          ),
+        ],
+      },
+    } as never);
+
+    assert.deepEqual(state.streaming?.suppressedTextPartIDs, [preludePartID]);
+    assert.strictEqual(
+      state.streaming?.content,
+      'The login flow is connected end to end.',
+    );
+    assert.strictEqual(state.streaming?.hasRenderableContent, true);
+    assert.strictEqual(
+      state.streaming?.lastRenderableTextPartID,
+      'prt-batched-final-answer',
+    );
+  });
+
+  it('keeps adapted field=text deltas on their active reasoning part', () => {
+    let state: AppState = {
+      ...initialState,
+      currentSessionId: 'ses-reasoning-text',
+      isProcessing: true,
+    };
+    const dispatch = (action: Parameters<typeof appReducer>[1]) => {
+      state = appReducer(state, action);
+    };
+    const handler = createMessageHandler(dispatch, () => state);
+    const streamEvent = (part: Record<string, unknown>, extra = {}) => ({
+      data: {
+        type: 'streamEvent',
+        sessionId: 'ses-reasoning-text',
+        event: {
+          type: 'message.part.updated',
+          properties: {
+            sessionID: 'ses-reasoning-text',
+            messageID: 'msg-reasoning-text',
+            partID: part.id,
+            part,
+            ...extra,
+          },
+        },
+      },
+    });
+
+    handler(streamEvent({
+      id: 'prt-reasoning-text',
+      type: 'reasoning',
+      messageID: 'msg-reasoning-text',
+      text: 'Inspecting',
+    }) as never);
+    handler(streamEvent({
+      id: 'prt-reasoning-text',
+      type: 'text',
+      messageID: 'msg-reasoning-text',
+      text: ' the code',
+      delta: ' the code',
+    }, {
+      field: 'text',
+      delta: ' the code',
+    }) as never);
+
+    assert.strictEqual(state.streaming?.content, '');
+    assert.match(state.streaming?.reasoning ?? '', /Inspecting[\s\S]*the code/);
+    assert.strictEqual(
+      state.streaming?.activeReasoningPartID,
+      'prt-reasoning-text',
+    );
+
+    handler(streamEvent({
+      id: 'prt-response-text',
+      type: 'text',
+      messageID: 'msg-reasoning-text',
+      text: 'Final answer',
+      delta: 'Final answer',
+    }, {
+      field: 'text',
+      delta: 'Final answer',
+    }) as never);
+
+    assert.strictEqual(state.streaming?.content, 'Final answer');
+    assert.strictEqual(state.streaming?.inReasoningPart, false);
+    assert.strictEqual(state.streaming?.activeReasoningPartID, undefined);
+  });
+
+  it('keeps reasoning text deltas out of the response before React commits the prior frame', () => {
+    const state: AppState = {
+      ...initialState,
+      currentSessionId: 'ses-stale-reasoning',
+      isProcessing: true,
+    };
+    const actions: Parameters<typeof appReducer>[1][] = [];
+    // Native webview messages can arrive back-to-back before React has
+    // committed the reducer state from the preceding reasoning-start frame.
+    // Deliberately keep getState stale to cover that timing boundary.
+    const dispatch = (action: Parameters<typeof appReducer>[1]) => {
+      actions.push(action);
+    };
+    const handler = createMessageHandler(dispatch, () => state);
+    const partEvent = (part: Record<string, unknown>, extra = {}) => ({
+      data: {
+        type: 'streamEvent',
+        sessionId: 'ses-stale-reasoning',
+        event: {
+          type: 'message.part.updated',
+          properties: {
+            sessionID: 'ses-stale-reasoning',
+            messageID: 'msg-stale-reasoning',
+            partID: part.id,
+            part,
+            ...extra,
+          },
+        },
+      },
+    });
+
+    handler(partEvent({
+      id: 'prt-stale-reasoning',
+      type: 'reasoning',
+      messageID: 'msg-stale-reasoning',
+      text: '',
+    }) as never);
+    handler(partEvent({
+      id: 'prt-stale-reasoning',
+      type: 'text',
+      messageID: 'msg-stale-reasoning',
+      text: 'Interesting',
+      delta: 'Interesting',
+    }, {
+      field: 'text',
+      delta: 'Interesting',
+    }) as never);
+
+    assert.ok(actions.some((action) =>
+      action.type === 'UPDATE_STREAMING_REASONING' &&
+      action.payload.reasoning === 'Interesting',
+    ));
+    assert.ok(!actions.some((action) =>
+      action.type === 'UPDATE_STREAMING_CONTENT' &&
+      action.payload.content === 'Interesting',
+    ));
   });
 });
 

@@ -28,10 +28,19 @@ class WebviewLogger {
   }
 
   streamPerformance(metric: string, context: Record<string, unknown> = {}): void {
+    const durationMs = context.durationMs;
+    // Do not emit routine stream/scroll telemetry. A blocked frame is still
+    // reported for diagnosis, but successful batches create no IPC or logs.
+    if (typeof durationMs !== "number" || durationMs < 16) {
+      return;
+    }
     const now = performance.now();
     const previous = this.lastPerformanceLogAt.get(metric) ?? -Infinity;
     // Instrumentation must not become a stream-event bottleneck itself.
-    if (now - previous < 250) {
+    // Crossing webview IPC to report a metric has its own serialization and
+    // host logging cost. One summary per two seconds is enough to diagnose a
+    // sustained stall without turning instrumentation into stream traffic.
+    if (now - previous < 2_000) {
       return;
     }
     this.lastPerformanceLogAt.set(metric, now);
@@ -64,6 +73,10 @@ class WebviewLogger {
 
     const levels: LogLevel[] = ['debug', 'info', 'warn', 'error'];
     return levels.indexOf(level) >= levels.indexOf(this.logLevel);
+  }
+
+  wouldLog(level: LogLevel): boolean {
+    return this.shouldLog(level);
   }
 
   private log(level: LogLevel, message: string, context?: Record<string, unknown>): void {

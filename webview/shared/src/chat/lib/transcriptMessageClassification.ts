@@ -79,12 +79,12 @@ export function classifyCentralizedTranscriptMessage(params: {
     return "hidden";
   }
 
-  if (role === "system") {
-    return text.length > 0 ? "system" : "hidden";
-  }
-
   if ((message as Record<string, unknown>).type === "permission") {
     return "permission";
+  }
+
+  if (role === "system") {
+    return text.length > 0 ? "system" : "hidden";
   }
 
   return role === "user" ? "user" : "assistant";

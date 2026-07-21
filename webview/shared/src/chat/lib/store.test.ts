@@ -23,7 +23,7 @@ import {
   mergeActivityArraysLocal,
   getTimestampForItem,
 } from './store';
-import type { Message, Session, TodoItem } from './types';
+import type { AppState, Message, Session, TodoItem } from './types';
 
 describe('pending user messages', () => {
   it('adds a pending user message keyed by session', () => {
@@ -741,31 +741,6 @@ describe('raw event capture', () => {
   });
 });
 
-describe('live event stream debug capture', () => {
-  it('keeps unfiltered events in browser-only state and clears them on hydration', () => {
-    const liveOnlyEvent = {
-      type: 'message.part.updated',
-      sessionId: 'ses_123',
-      properties: { part: { type: 'reasoning', delta: 'private live chunk' } },
-    };
-    const captured = appReducer(
-      { ...initialState, currentSessionId: 'ses_123' },
-      {
-        type: 'APPEND_LIVE_EVENT_STREAM_DEBUG',
-        payload: { sessionId: 'ses_123', event: liveOnlyEvent },
-      },
-    );
-
-    assert.deepStrictEqual(
-      captured.liveEventStreamBySessionId?.['ses_123'],
-      [liveOnlyEvent],
-    );
-
-    const cleared = appReducer(captured, { type: 'CLEAR_LIVE_EVENT_STREAM_DEBUG' });
-    assert.deepStrictEqual(cleared.liveEventStreamBySessionId, {});
-  });
-});
-
 describe('hasSystemMessagePatternInText', () => {
   it('should detect square-bracketed system messages in plain text', () => {
     const text = '[analyze-mode]';
@@ -993,6 +968,46 @@ describe("appReducer render-stability guards", () => {
     assert.strictEqual(next.interactiveEvents.length, 0);
   });
 
+  it("does not dismiss a later permission request that has the same title", () => {
+    const firstPermission = {
+      type: "quick_actions" as const,
+      id: "permission-request-first",
+      title: "Allow read?",
+      permissionID: "per-first",
+      actions: [{ id: "reject", label: "Reject", value: "reject" }],
+    };
+    const secondPermission = {
+      ...firstPermission,
+      id: "permission-request-second",
+      permissionID: "per-second",
+    };
+    const dismissed = appReducer(
+      { ...initialState, interactiveEvents: [firstPermission] },
+      { type: "DISMISS_INTERACTIVE_EVENT", payload: firstPermission.id },
+    );
+
+    const next = appReducer(dismissed, {
+      type: "SET_INTERACTIVE_EVENTS",
+      payload: [secondPermission],
+    });
+
+    assert.deepStrictEqual(next.interactiveEvents, [secondPermission]);
+  });
+
+  it("accepts interactive events from legacy state without dismissed-event keys", () => {
+    const legacyState = {
+      ...initialState,
+      dismissedInteractiveEventKeys: undefined,
+    } as unknown as typeof initialState;
+
+    const next = appReducer(legacyState, {
+      type: "SET_INTERACTIVE_EVENTS",
+      payload: [{ type: "message", id: "legacy-event", message: "Hello" }],
+    });
+
+    assert.strictEqual(next.interactiveEvents.length, 1);
+  });
+
   it("preserves rawSdkEventPayloads when caching session streaming state", () => {
     const payloads = [
       { type: "message.start", id: "evt-1" },
@@ -1054,6 +1069,63 @@ describe("appReducer render-stability guards", () => {
     assert.deepStrictEqual(nextState.streaming?.reasoningEvents, []);
     assert.deepStrictEqual(nextState.streaming?.edits, []);
     assert.deepStrictEqual(nextState.streaming?.interactiveEvents, []);
+  });
+
+  it("locks rendered activity steps across a live stream message-id transition", () => {
+    const firstPhase = appReducer(initialState, {
+      type: "SET_STREAMING",
+      payload: {
+        messageId: "msg-tool-phase",
+        content: "",
+        reasoning: "",
+        reasoningEvents: [],
+        steps: [{
+          id: "part-edit",
+          callID: "call-edit",
+          title: "Edit src/chat.tsx",
+          type: "tool",
+          status: "done",
+          filePath: "src/chat.tsx",
+          diffStats: { added: 3, deleted: 1 },
+        }],
+        progressEvents: [],
+        edits: [],
+        interactiveEvents: [],
+        isActive: true,
+      } as any,
+    });
+
+    const nextPhase = appReducer(firstPhase, {
+      type: "SET_STREAMING",
+      payload: {
+        messageId: "msg-response-phase",
+        content: "",
+        reasoning: "",
+        reasoningEvents: [],
+        steps: [{
+          id: "part-read",
+          callID: "call-read",
+          title: "Read src/chat.tsx",
+          type: "tool",
+          status: "running",
+        }],
+        progressEvents: [],
+        edits: [],
+        interactiveEvents: [],
+        isActive: true,
+      } as any,
+    });
+
+    assert.deepStrictEqual(
+      nextPhase.streaming?.steps?.map((step) => step.callID),
+      ["call-edit", "call-read"],
+      "a later live snapshot must not remove an already-rendered edit step",
+    );
+    assert.deepStrictEqual(
+      nextPhase.streaming?.steps?.[0]?.diffStats,
+      { added: 3, deleted: 1 },
+      "the retained edit step must keep the diff data that selects its UI",
+    );
   });
 
   it("normalizes incomplete streaming snapshots before subsequent updates", () => {

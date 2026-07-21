@@ -6,9 +6,64 @@ import {
   hasActiveAssistantReplyInCentralizedTape,
   hasBusySessionStatusInCentralizedTape,
   hasCompletedAssistantReplyInCentralizedTape,
+  hasTerminalAssistantReplyForLatestSdkTurn,
   isAssistantRespondingInCurrentSession,
   computeQueuedUserMessageIndexes,
 } from './sessionProcessing';
+
+describe('hasTerminalAssistantReplyForLatestSdkTurn', () => {
+  it('locks the captured regression: a final stop envelope beats stale processing state', () => {
+    const capturedTail = [
+      {
+        info: {
+          id: 'msg_tool',
+          role: 'assistant',
+          time: { created: 1784516011548, completed: 1784516020210 },
+          finish: 'tool-calls',
+        },
+      },
+      {
+        info: {
+          id: 'msg_final',
+          role: 'assistant',
+          time: { created: 1784516020218, completed: 1784516026862 },
+          finish: 'stop',
+        },
+      },
+    ];
+
+    assert.strictEqual(
+      hasTerminalAssistantReplyForLatestSdkTurn(capturedTail),
+      true,
+    );
+  });
+
+  it('does not end a turn at an intermediate completed tool-calls envelope', () => {
+    assert.strictEqual(
+      hasTerminalAssistantReplyForLatestSdkTurn([
+        { info: { role: 'user', time: { created: 1 } } },
+        {
+          info: {
+            role: 'assistant',
+            finish: 'tool-calls',
+            time: { created: 2, completed: 3 },
+          },
+        },
+      ]),
+      false,
+    );
+  });
+
+  it('keeps a newer user turn active after an older terminal assistant reply', () => {
+    assert.strictEqual(
+      hasTerminalAssistantReplyForLatestSdkTurn([
+        { info: { role: 'assistant', finish: 'stop' } },
+        { info: { role: 'user', time: { created: 2 } } },
+      ]),
+      false,
+    );
+  });
+});
 
 describe('isAssistantRespondingInCurrentSession', () => {
   it('does not treat a blank new session as actively responding just because processing is true', () => {
@@ -561,6 +616,15 @@ describe('computeQueuedUserMessageIndexes', () => {
       { id: 'assistant-old', role: 'assistant' },
       { id: 'user-current', role: 'user' },
     ]);
+
+    assert.deepStrictEqual([...queuedIndexes], []);
+  });
+
+  it('does not inherit a stopped assistant identity when the next turn starts', () => {
+    const queuedIndexes = computeQueuedUserMessageIndexes([
+      { id: 'assistant-stopped', role: 'assistant', aborted: true },
+      { id: 'user-next-turn', role: 'user' },
+    ], 'assistant-stopped');
 
     assert.deepStrictEqual([...queuedIndexes], []);
   });
