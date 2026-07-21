@@ -9,8 +9,8 @@ const messageComponentsSource = readSource(
 );
 
 const streamingComponentsSource = readSource(
-  [joinFromRoot('webview', 'shared', 'src', 'chat', 'StreamingComponents.tsx')],
-  'StreamingComponents.tsx',
+  [joinFromRoot('webview', 'shared', 'src', 'chat', 'lib', 'streamingCardVisibility.ts')],
+  'streaming card visibility',
 );
 
 const toastEventsSource = readSource(
@@ -28,9 +28,19 @@ const chatShellSource = readSource(
   'ChatShell.tsx',
 );
 
+const toastOverlaySource = readSource(
+  [joinFromRoot('webview', 'shared', 'src', 'chat', 'ToastOverlay.tsx')],
+  'ToastOverlay.tsx',
+);
+
 const liveEventRouterSource = readSource(
   [joinFromRoot('webview', 'shared', 'src', 'chat', 'lib', 'liveEventRouter.ts')],
   'liveEventRouter.ts',
+);
+
+const chatViewProviderSource = readSource(
+  [joinFromRoot('src', 'providers', 'ChatViewProvider.ts')],
+  'ChatViewProvider.ts',
 );
 
 describe('Live-only session status rendering', () => {
@@ -67,6 +77,29 @@ describe('Live-only session status rendering', () => {
       messageComponentsSource,
       /Next retry in \{liveStatusCountdown\}/,
       'live retry row should show a countdown label instead of relying on centralized transcript timing',
+    );
+  });
+
+  test('session-status toasts are pinned above the composer while tui notifications stay at the top', () => {
+    assert.match(
+      chatShellSource,
+      /<LiveEventBanner[\s\S]*?placement="top"/,
+      'general tui.show notifications should remain in the top notification slot',
+    );
+    assert.match(
+      chatShellSource,
+      /data-chat-composer-status-slot[\s\S]*?placement="composer"[\s\S]*?<InputWrapper \/>/,
+      'session-status notifications should occupy a dedicated non-overlay slot immediately above the chat composer',
+    );
+    assert.doesNotMatch(
+      chatShellSource,
+      /SESSION_STATUS_TOAST_PREVIEW|previewNotification/,
+      'the composer status slot must render only real session.status events after visual QA is complete',
+    );
+    assert.match(
+      toastOverlaySource,
+      /const isComposerPlacement = placement === "composer";[\s\S]*?isComposerPlacement \? "items-center py-1\.5" : "items-start py-2"/s,
+      'composer-bound status notifications should use a compact row instead of the full top-toast layout',
     );
   });
 });
@@ -133,10 +166,34 @@ describe('Live-only event parsing and leak prevention', () => {
     );
   });
 
+  test('retry status events bypass the stopped-session content guard', () => {
+    assert.match(
+      messageHandlerSource,
+      /isStoppedSession\(eventSessionId, activeSessionId\) &&\s*streamEventType !== "session\.status"/s,
+      'a retry/usage-limit session.status event must still reach the live-status UI after a stop acknowledgement',
+    );
+    assert.match(
+      messageHandlerSource,
+      /isStoppedSession\(eventSessionId, activeSessionId\) &&\s*evtType !== "session\.status"/s,
+      'batched retry/usage-limit session.status events must follow the same visibility rule',
+    );
+    assert.match(
+      messageHandlerSource,
+      /const isSessionStatusEvent = streamEventType === "session\.status";[\s\S]*?if \(isSessionStatusEvent\) \{[\s\S]*?appendLiveEventsToDebugPanel/s,
+      'session.status must enter the temporary Live Events debug buffer before lifecycle gates can discard it',
+    );
+    assert.match(
+      messageHandlerSource,
+      /const isSessionStatusEvent = evtType === "session\.status";[\s\S]*?if \(isSessionStatusEvent\) \{[\s\S]*?appendLiveEventsToDebugPanel/s,
+      'batched session.status frames must also be retained in the temporary Live Events debug buffer',
+    );
+  });
+
+
   test('client-only live event batches route tui.show notifications into the toast overlay', () => {
     assert.match(
       messageHandlerSource,
-      /case "liveEventStreamDebugBatch": \{[\s\S]*?routeLiveEventToUi\(event, sessionId, "liveEventStreamDebugBatch", eventIndex\)/s,
+      /case "liveEventStreamDebugBatch": \{[\s\S]*?routeLiveEventToUi\([\s\S]*?event,[\s\S]*?sessionId,[\s\S]*?"liveEventStreamDebugBatch",[\s\S]*?eventIndex,[\s\S]*?\)/s,
       'startup tui.show events that only reach the client-only live stream should still be rendered as toasts',
     );
   });
@@ -179,6 +236,42 @@ describe('Live-only event parsing and leak prevention', () => {
       messageHandlerSource,
       /const routeLiveEventToUi = \([\s\S]*?routeLiveEvent\(payload, index\)/s,
       'stream events should use the centralized router for live-event dispatch',
+    );
+  });
+
+  test('object-shaped idle status terminates the host processing state', () => {
+    assert.match(
+      chatViewProviderSource,
+      /if \(eventType === "session\.status"\) \{[\s\S]*?statusRecord\?\.type[\s\S]*?return status === "idle";/,
+      'OpenCode session.status uses properties.status.type, which must clear the host processing marker',
+    );
+    assert.match(
+      chatViewProviderSource,
+      /this\.processingSessionIds\.delete\(resolvedSessionId\);[\s\S]*?this\.sendProcessingSessionsUpdate\(\);[\s\S]*?finalizeParentMessage/s,
+      'the processing update must reach the webview before optional subagent finalization completes',
+    );
+  });
+
+  test('idle status latches the completed turn against late stream events', () => {
+    assert.match(
+      messageHandlerSource,
+      /const terminalIdleSessionIds = new Set<string>\(\);/,
+      'the webview should remember SDK-confirmed idle sessions until a new user turn',
+    );
+    assert.match(
+      messageHandlerSource,
+      /liveRoute\.sessionStatus\?\.statusType === "idle"[\s\S]*?markSessionIdle\(/,
+      'an idle status must immediately clear active processing/streaming state',
+    );
+    assert.match(
+      messageHandlerSource,
+      /terminalIdleSessionIds\.has\(resolvedBatchSessionId\)[\s\S]*?evtType !== "session\.status"[\s\S]*?continue;/,
+      'late non-status events in a batch must not resurrect the completed turn',
+    );
+    assert.match(
+      messageHandlerSource,
+      /terminalIdleSessionIds\.delete\(resumedSessionId\)/,
+      'a new user message must open the session for its next assistant turn',
     );
   });
 });

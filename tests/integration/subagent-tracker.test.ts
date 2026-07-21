@@ -1,6 +1,8 @@
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { SubagentTracker } from "../../src/services/SubagentTracker.js";
+import { adaptSdkMessage } from "../../src/services/SdkMessageAdapter.js";
+import { normalizeMessage } from "../../webview/shared/src/chat/lib/messageHandler.js";
 
 function makeEvent(type: string, properties: Record<string, unknown>) {
   return { type, properties };
@@ -47,6 +49,57 @@ describe("SubagentTracker", () => {
   });
 
   describe("consumeStreamEvent — subtask creation", () => {
+    it("links native call_omo_agent child sessions without a session.created event", () => {
+      const launch = tracker.consumeStreamEvent(
+        makeEvent("message.part.updated", {
+          part: {
+            type: "tool",
+            id: "part-launch",
+            callID: "call-launch",
+            sessionID: "parent-session-1",
+            messageID: "msg-1",
+            tool: "call_omo_agent",
+            state: {
+              status: "completed",
+              input: { description: "Explore login/auth flow", subagent_type: "explore" },
+              output: "Background agent task launched successfully.\n\nTask ID: bg_auth\nSession ID: ses_auth\nDescription: Explore login/auth flow\nAgent: explore (subagent)",
+            },
+          },
+        }),
+      );
+
+      assert.ok(launch);
+      const detail = Object.values(launch.detailsById)[0];
+      assert.equal(detail.backgroundTaskId, "bg_auth");
+      assert.equal(detail.childSessionId, "ses_auth");
+      assert.equal(detail.latestActivity, "Explore login/auth flow");
+
+      const childActivity = tracker.consumeStreamEvent(
+        makeEvent("message.part.updated", {
+          part: {
+            type: "reasoning",
+            id: "child-thought",
+            sessionID: "ses_auth",
+            messageID: "child-message-1",
+            text: "Inspecting authentication routes",
+          },
+        }),
+      );
+      assert.ok(childActivity, "mapped child activity should update the parent card");
+      const updated = Object.values(childActivity.detailsById)[0];
+      assert.equal(updated.parentMessageId, "msg-1");
+      assert.equal(updated.thinkingEvents[0].text, "Inspecting authentication routes");
+      assert.equal(updated.conversationEvents[0].text, "Inspecting authentication routes");
+      assert.ok(
+        updated.timelineEvents.some((event) => event.label === "Inspecting authentication routes"),
+        "child stream activity should be emitted to the parent-owned modal timeline",
+      );
+      assert.ok(
+        updated.rawEvents.some((event: any) => event?.properties?.part?.id === "child-thought"),
+        "the child event tape should reach the modal",
+      );
+    });
+
     it("creates a subagent from a subtask part in the active session", () => {
       const payload = tracker.consumeStreamEvent(
         makeEvent("message.part.updated", {
@@ -186,6 +239,42 @@ describe("SubagentTracker", () => {
   });
 
   describe("seedFromMessages", () => {
+    it("recreates call_omo_agent ownership from the rehydrated SDK transcript", () => {
+      const sdkMessage = {
+        info: {
+          id: "msg-1",
+          role: "assistant",
+          sessionID: "parent-session-1",
+          time: { created: 1 },
+        },
+        parts: [{
+          type: "tool",
+          id: "part-launch",
+          tool: "call_omo_agent",
+          state: {
+            status: "completed",
+            input: { description: "Explore gameplay flow", subagent_type: "explore" },
+            output: "Task ID: bg_gameplay\nSession ID: ses_gameplay\nDescription: Explore gameplay flow\nAgent: explore (subagent)",
+          },
+        }],
+      } as any;
+
+      const rendered = adaptSdkMessage(sdkMessage);
+      assert.equal(rendered.subagents?.[0]?.backgroundTaskId, "bg_gameplay");
+      assert.equal(rendered.subagents?.[0]?.childSessionId, "ses_gameplay");
+      const normalized = normalizeMessage(rendered as any, null);
+      assert.equal(
+        normalized?.subagents?.[0]?.childSessionId,
+        "ses_gameplay",
+        "the rehydrated invocation must remain available to the inline subagent card",
+      );
+
+      tracker.seedFromMessages([sdkMessage]);
+      const detail = Object.values(tracker.getSnapshotPayload().detailsById)[0];
+      assert.equal(detail.backgroundTaskId, "bg_gameplay");
+      assert.equal(detail.childSessionId, "ses_gameplay");
+    });
+
     it("seeds subagent state from persisted message history", () => {
       const messages = [
         {

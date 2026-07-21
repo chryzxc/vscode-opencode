@@ -12,6 +12,10 @@ const chatShellSource = readSource(
   [joinFromRoot('webview', 'shared', 'src', 'chat', 'ChatShell.tsx')],
   'ChatShell.tsx',
 );
+const chatCssSource = readSource(
+  [joinFromRoot('webview', 'shared', 'src', 'chat', 'index.css')],
+  'index.css',
+);
 
 test('AssistantMessage uses content-first response and secondary activity sections', () => {
   assert.match(
@@ -84,7 +88,7 @@ test('ChatShell implements smart auto-follow pause and jump-to-latest control', 
   );
   assert.match(
     chatShellSource,
-    /now - lastFollowAutoScrollAtRef\.current >= 33/,
+    /const elapsed = performance\.now\(\) - lastFollowAutoScrollAtRef\.current;[\s\S]*?elapsed < 33/s,
     'chat shell should throttle follow-mode scroll writes during streaming',
   );
   assert.match(
@@ -94,18 +98,38 @@ test('ChatShell implements smart auto-follow pause and jump-to-latest control', 
   );
   assert.match(
     chatShellSource,
-    /const onScroll = \(\) => \{[\s\S]*?distanceFromBottom > AUTO_FOLLOW_THRESHOLD_PX[\s\S]*?pauseFollow\("scroll"\)/s,
+    /const onScroll = \(\) => \{[\s\S]*?distanceFromBottom > AUTO_FOLLOW_THRESHOLD_PX[\s\S]*?pauseFollow\(\)/s,
     'chat shell should synchronously pause follow mode on user scroll so streaming updates cannot fight the gesture',
   );
-  assert.match(
+  assert.doesNotMatch(
     chatShellSource,
-    /const onWheel = \(event: WheelEvent\) => \{[\s\S]*?pauseFollow\("wheel"\)/s,
-    'chat shell should pause follow mode on wheel intent before a small scroll can be overwritten',
+    /manualScrollIntentUntil|pauseFollow\("wheel"\)|pauseFollow\("touch"\)/,
+    'input-intent latches must not leave follow mode disabled after the viewport reaches bottom',
   );
   assert.match(
     chatShellSource,
-    /manualScrollIntentUntil = Date\.now\(\) \+ 180/,
-    'chat shell should keep manual scroll intent long enough for the scroll frame to settle',
+    /const AUTO_FOLLOW_THRESHOLD_PX = 2;/,
+    'chat shell should only follow from the true bottom, with minimal rounding tolerance',
+  );
+  assert.match(
+    chatShellSource,
+    /new ResizeObserver\(scheduleFollowAutoScroll\)/,
+    'chat shell should follow component growth as well as stream state changes',
+  );
+  assert.match(
+    chatShellSource,
+    /new MutationObserver\(scheduleFollowAutoScroll\)[\s\S]*?childList: true, subtree: true/s,
+    'chat shell should also detect newly mounted activity components',
+  );
+  assert.match(
+    chatShellSource,
+    /className="oc-chat-scroll-anchor"/,
+    'chat shell should render a dedicated bottom anchor',
+  );
+  assert.match(
+    chatCssSource,
+    /\.oc-chat-scroll \*[\s\S]*?overflow-anchor:\s*none;[\s\S]*?\.oc-chat-scroll \.oc-chat-scroll-anchor[\s\S]*?height:\s*1px;[\s\S]*?overflow-anchor:\s*auto;/s,
+    'chat should let the browser anchor only the visible transcript end marker',
   );
 });
 

@@ -23,7 +23,7 @@ const schemaSource = readSource(
   "structuredOutputSchema.ts",
 );
 
-test.skip("implementation_plan normalization does not synthesize plan.file path prefixes", () => {
+test.skip("plan normalization does not synthesize plan.file path prefixes", () => {
   const normalizeBody = extractFunctionBody(
     structuredOutputProcessorSource,
     "normalizeStructuredOutput(",
@@ -32,17 +32,17 @@ test.skip("implementation_plan normalization does not synthesize plan.file path 
   assert.match(
     normalizeBody,
     /canonicalResponseType === "implementation_plan"/,
-    "normalizeStructuredOutput should have an implementation_plan normalization branch",
+    "normalizeStructuredOutput should have a plan normalization branch",
   );
   assert.doesNotMatch(
     normalizeBody,
     /buildGeneratedPlanFilePath\(/,
-    "implementation_plan normalization should not invent synthetic plan file paths",
+    "plan normalization should not invent synthetic plan file paths",
   );
   assert.match(
     normalizeBody,
     /nextPlan:\s*Record<string, unknown>[\s\S]*file:\s*ensuredPlanFile/s,
-    "implementation_plan normalization should only normalize an existing plan.file",
+    "plan normalization should only normalize an existing plan.file",
   );
 });
 
@@ -69,11 +69,11 @@ test.skip("plan persistence requires AI-provided path and does not create synthe
   );
 });
 
-test.skip("validator and schema require plan.file for implementation_plan payloads", () => {
+test.skip("validator and schema require plan.file for plan payloads", () => {
   assert.match(
     validatorSource,
-    /implementation_plan requires plan\.file string/,
-    "validator should require plan.file for implementation_plan",
+    /implementation_plan responseType requires plan\.file string/,
+    "validator should require plan.file for plan",
   );
   assert.match(
     schemaSource,

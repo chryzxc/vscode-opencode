@@ -483,7 +483,7 @@ describe("conversation pipeline", () => {
       assert.deepEqual(part.input, { filePath: "src/example.ts", content: "export const ok = true;" });
     });
 
-    it("enriches implementation_plan structured output and forwards to webview", async () => {
+    it("enriches plan structured output and forwards to webview", async () => {
       const { handler, getMessagesByType } = setupPipeline();
 
       await handler.handleStreamEvent({
@@ -495,7 +495,7 @@ describe("conversation pipeline", () => {
             structured: {
               responseType: "implementation_plan",
               message: "Plan ready",
-              plan: { file: "implementation_plan.md", title: "Pipeline Plan" },
+              plan: { file: "plan.md", title: "Pipeline Plan" },
             },
           },
         },
@@ -504,7 +504,7 @@ describe("conversation pipeline", () => {
       const event = eventOf(streamOf(getMessagesByType)[0]);
       assert.equal(event.hasStructuredOutput, true);
       assert.equal(event.structuredOutput.responseType, "implementation_plan");
-      assert.deepEqual(event.structuredOutput.plan, { file: "implementation_plan.md", title: "Pipeline Plan" });
+      assert.deepEqual(event.structuredOutput.plan, { file: "plan.md", title: "Pipeline Plan" });
     });
 
     it("enriches question structured output type", async () => {

@@ -125,25 +125,18 @@ test("history timestamps parse numeric created fields instead of falling back to
   );
 });
 
-test("session override persistence intentionally keeps rawResponse debug payload", () => {
-  const persistOverrideBody = extractFunctionBody(chatProviderSource, 'persistSessionMessageOverride(',
-  );
-
-  assert.doesNotMatch(
-    persistOverrideBody,
-    /delete\s+\(sanitized as Record<string, unknown>\)\.rawResponse;/,
-    "persistSessionMessageOverride should not strip rawResponse from hydrated overrides",
-  );
+test("session hydration does not apply extension-owned message overrides", () => {
+  assert.doesNotMatch(chatProviderSource, /applySessionMessageOverrides\(sessionId, messages\)/);
 });
 
-test("final assistant response persists debug override payload for refresh parity", () => {
+test("final assistant response does not persist a debug hydration override", () => {
   const sendBody = extractFunctionBody(chatProviderSource, 'private async handleSendMessage(',
   );
 
-  assert.match(
+  assert.doesNotMatch(
     sendBody,
-    /await\s+this\.persistSessionMessageOverride\(session\.id,\s*\{[\s\S]*\.\.\.debugMessage,/,
-    "handleSendMessage should persist debugMessage payload (with rawResponse) into hydration overrides",
+    /persistSessionMessageOverride/,
+    "SDK history must not be replaced with a local debug payload",
   );
 });
 

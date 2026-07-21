@@ -16,21 +16,11 @@ test("final assistant message stamps prompt variant for hydration parity", () =>
   );
 });
 
-test("variant-bearing final message is persisted and sent to webview", () => {
-  assert.match(
-    providerSource,
-    /await this\.sessionService\.appendMessage\(session\.id,\s*\{[\s\S]*\.\.\.finalMessage[\s\S]*\}\);/,
-    "appendMessage should persist the variant-enriched final message",
-  );
-  assert.match(
-    providerSource,
-    /await this\.persistSessionMessageOverride\(session\.id,\s*\{[\s\S]*\.\.\.debugMessage[\s\S]*\}\);/,
-    "message override should persist rawResponse + variant for hydrated reload parity",
-  );
+test("variant-bearing final message is sent live without a local hydration override", () => {
+  assert.doesNotMatch(providerSource, /persistSessionMessageOverride/);
   assert.match(
     providerSource,
     /type:\s*"messageResponse"[\s\S]*message:\s*\{[\s\S]*\.\.\.debugMessage[\s\S]*\}/,
     "webview messageResponse should include debugMessage carrying variant metadata",
   );
 });
-

@@ -215,7 +215,7 @@ Line 3`;
         it("should render message with plan", () => {
             const message = createAssistantMessage("Here's my plan", {
                 plan: {
-                    file: "implementation_plan.md",
+                    file: "plan.md",
                     title: "Implementation Plan",
                     content: "# Plan\n\n1. Step 1\n2. Step 2",
                 },

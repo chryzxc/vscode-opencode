@@ -15,7 +15,7 @@ const messageHandlerSource = readSource(
   "messageHandler.ts",
 );
 
-test("implementation_plan turns do not use a legacy structured text fallback in the generic assistant response body", () => {
+test("plan turns do not use a legacy structured text fallback in the generic assistant response body", () => {
   assert.doesNotMatch(
     messageComponentsSource,
     /const structuredResponseMessage\s*=/,
@@ -47,11 +47,11 @@ test("implementation_plan turns do not use a legacy structured text fallback in 
   );
 });
 
-test("centralized assistant content extractor skips structured implementation_plan tool text", () => {
+test("centralized assistant content extractor skips structured plan tool text", () => {
   assert.match(
     messageHandlerSource,
     /const structuredType = firstNonEmptyString\([\s\S]*\?\.toLowerCase\(\);[\s\S]*if \(structuredType === "implementation_plan"\) \{\s*continue;\s*\}/s,
-    "implementation_plan structured tool payloads should not be treated as generic assistant response text",
+    "plan structured tool payloads should not be treated as generic assistant response text",
   );
 });
 

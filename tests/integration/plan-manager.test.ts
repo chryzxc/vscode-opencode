@@ -139,10 +139,10 @@ describe("PlanManager", () => {
   });
 
   describe("derivePlanTitleFromFilePath", () => {
-    it("derives a title from implementation_plan filenames", () => {
+    it("derives a title from plan filenames", () => {
       const manager = createPlanManager();
       assert.equal(
-        manager.derivePlanTitleFromFilePath("docs/implementation_plan_chat-shell.md"),
+        manager.derivePlanTitleFromFilePath("docs/plan_chat-shell.md"),
         "Chat Shell",
       );
     });
@@ -158,14 +158,14 @@ describe("PlanManager", () => {
     it("strips markdown wrappers, file URIs, and timestamp suffixes", () => {
       const manager = createPlanManager();
       assert.equal(
-        manager.derivePlanTitleFromFilePath("<file:///tmp/implementation_plan_request-budgeter_20260421010101.md>"),
+        manager.derivePlanTitleFromFilePath("<file:///tmp/plan_request-budgeter_20260421010101.md>"),
         "Request Budgeter",
       );
     });
 
     it("returns undefined for generic filenames or invalid input", () => {
       const manager = createPlanManager();
-      assert.equal(manager.derivePlanTitleFromFilePath("implementation_plan.md"), undefined);
+      assert.equal(manager.derivePlanTitleFromFilePath("plan.md"), undefined);
       assert.equal(manager.derivePlanTitleFromFilePath("''"), undefined);
       assert.equal(manager.derivePlanTitleFromFilePath(undefined), undefined);
     });
@@ -176,8 +176,8 @@ describe("PlanManager", () => {
       const manager = createPlanManager();
       assert.equal(
         manager.resolvePlanTitle({
-          plan: { title: "Chat Shell Refresh", file: "implementation_plan.md" },
-          planFile: "docs/implementation_plan_other.md",
+          plan: { title: "Chat Shell Refresh", file: "plan.md" },
+          planFile: "docs/plan_other.md",
           fallback: "Fallback Title",
         }),
         "Chat Shell Refresh",
@@ -188,8 +188,8 @@ describe("PlanManager", () => {
       const manager = createPlanManager();
       assert.equal(
         manager.resolvePlanTitle({
-          plan: { title: "Implementation Plan", file: "docs/implementation_plan.md" },
-          planFile: "plans/implementation_plan_chat-streaming.md",
+          plan: { title: "Implementation Plan", file: "docs/plan.md" },
+          planFile: "plans/plan_chat-streaming.md",
           fallback: "Fallback Title",
         }),
         "Chat Streaming",
@@ -210,7 +210,7 @@ describe("PlanManager", () => {
       const manager = createPlanManager();
       assert.equal(
         manager.resolvePlanTitle({
-          plan: { title: "Plan", file: "implementation_plan.md" },
+          plan: { title: "Plan", file: "plan.md" },
           fallback: "Quota Guardrails",
         }),
         "Quota Guardrails",
@@ -221,7 +221,7 @@ describe("PlanManager", () => {
       const manager = createPlanManager();
       assert.equal(
         manager.resolvePlanTitle({
-          plan: { title: "Plan", file: "implementation_plan.md" },
+          plan: { title: "Plan", file: "plan.md" },
           fallback: "Implementation Plan",
         }),
         undefined,
@@ -230,9 +230,9 @@ describe("PlanManager", () => {
   });
 
   describe("getPlanFileCandidateScore", () => {
-    it("heavily favors implementation_plan.md in plan directories", () => {
+    it("heavily favors plan.md in plan directories", () => {
       const manager = createPlanManager();
-      const top = manager.getPlanFileCandidateScore("plans/implementation_plan.md");
+      const top = manager.getPlanFileCandidateScore("plans/plan.md");
       const plain = manager.getPlanFileCandidateScore("docs/notes.md");
       assert.ok(top > plain);
       assert.ok(top >= 170);
@@ -250,7 +250,7 @@ describe("PlanManager", () => {
     it("zeroes out paths inside node_modules or .git", () => {
       const manager = createPlanManager();
       assert.equal(manager.getPlanFileCandidateScore("repo/node_modules/pkg/plan.md"), 0);
-      assert.equal(manager.getPlanFileCandidateScore("repo/.git/hooks/implementation_plan.md"), 0);
+      assert.equal(manager.getPlanFileCandidateScore("repo/.git/hooks/plan.md"), 0);
     });
   });
 
@@ -259,13 +259,13 @@ describe("PlanManager", () => {
       const manager = createPlanManager();
       const explicitFiles = new Set(["docs/plan-notes.md"]);
       const prioritized = manager.prioritizePlanFileCandidates(
-        ["plans/implementation_plan.md", "docs/plan-notes.md", "notes.md"],
+        ["plans/plan.md", "docs/plan-notes.md", "notes.md"],
         explicitFiles,
       );
 
       assert.deepEqual(prioritized, [
         "docs/plan-notes.md",
-        "plans/implementation_plan.md",
+        "plans/plan.md",
         "notes.md",
       ]);
     });
@@ -303,18 +303,18 @@ describe("PlanManager", () => {
     it("collects normalized file and files entries without duplicates", () => {
       const manager = createPlanManager();
       const candidates = manager.collectPlanFileCandidatesFromStructuredPlan({
-        file: "`plans/implementation_plan.md`",
-        files: ["plans/implementation_plan.md", "docs/plan.md", "", null],
+        file: "`plans/plan.md`",
+        files: ["plans/plan.md", "docs/plan.md", "", null],
       });
 
-      assert.deepEqual(candidates, ["plans/implementation_plan.md", "docs/plan.md"]);
+      assert.deepEqual(candidates, ["plans/plan.md", "docs/plan.md"]);
     });
 
     it("returns an empty list for content-only or invalid structures", () => {
       const manager = createPlanManager();
       assert.deepEqual(
         manager.collectPlanFileCandidatesFromStructuredPlan({
-          content: "See [plan](docs/implementation_plan.md)",
+          content: "See [plan](docs/plan.md)",
         }),
         [],
       );
@@ -326,15 +326,15 @@ describe("PlanManager", () => {
     it("extracts markdown links, reference definitions, and bare markdown filenames", () => {
       const manager = createPlanManager();
       const references = manager.extractMarkdownFileReferences(`
-See [plan](docs/implementation_plan.md) and release-plan.md.
+See [plan](docs/plan.md) and release-plan.md.
 
 [follow-up]: plans/next-steps.md
       `);
 
       assert.deepEqual(references, [
-        "docs/implementation_plan.md",
+        "docs/plan.md",
         "plans/next-steps.md",
-        "implementation_plan.md",
+        "plan.md",
         "release-plan.md",
         "next-steps.md",
       ]);
@@ -365,7 +365,7 @@ See [plan](docs/implementation_plan.md) and release-plan.md.
   describe("isLikelyPlanMarkdownFile", () => {
     it("accepts plan markdown files by filename or directory", () => {
       const manager = createPlanManager();
-      assert.equal(manager.isLikelyPlanMarkdownFile("implementation_plan_auth.md"), true);
+      assert.equal(manager.isLikelyPlanMarkdownFile("plan_auth.md"), true);
       assert.equal(manager.isLikelyPlanMarkdownFile("planning/overview.md"), true);
       assert.equal(manager.isLikelyPlanMarkdownFile("docs/release-plan.md"), true);
     });
@@ -373,7 +373,7 @@ See [plan](docs/implementation_plan.md) and release-plan.md.
     it("rejects non-markdown, comment files, and node_modules paths", () => {
       const manager = createPlanManager();
       assert.equal(manager.isLikelyPlanMarkdownFile("docs/release-plan.txt"), false);
-      assert.equal(manager.isLikelyPlanMarkdownFile("plans/implementation_plan_comments_a1b2.md"), false);
+      assert.equal(manager.isLikelyPlanMarkdownFile("plans/plan_comments_a1b2.md"), false);
       assert.equal(manager.isLikelyPlanMarkdownFile("docs/release_comments.md"), false);
       assert.equal(manager.isLikelyPlanMarkdownFile("repo/node_modules/pkg/plan.md"), false);
       assert.equal(manager.isLikelyPlanMarkdownFile("docs/design.md"), false);

@@ -170,7 +170,7 @@ test('assistant message UI renders plan buttons and core plan card affordances',
   assert.match(messageSource, /title=\{`View \$\{plan\.title \|\| "Implementation Plan"\}`\}/, 'plan button should expose a descriptive view-plan tooltip');
   assert.match(messageSource, /onClick=\{\(\)\s*=>\s*vscode\.postMessage\(\{\s*type:\s*["']viewPlan["'],\s*plan\s*\}\)\}/, 'plan button should dispatch viewPlan event');
   assert.match(messageSource, /className="plan-card[^"]*"/, 'assistant message should render plan card container');
-  assert.match(messageSource, /View Plan/, 'plan card must expose a view-plan call-to-action');
+  assert.match(messageSource, />\s*View\s*</, 'plan card must expose a view-plan call-to-action');
 });
 
 test('chat provider extractMessageBodyText uses space separator between text parts', () => {

@@ -16,6 +16,7 @@ const MODULE_PATH = "webview/shared/src/chat/lib/toastEvents.ts";
 const {
   toastNotificationFromPayload,
   liveSessionStatusFromPayload,
+  toastNotificationFromSessionStatus,
   extractCentralizedToastNotifications,
 } = await importWebviewModule(MODULE_PATH);
 
@@ -278,6 +279,38 @@ describe("toastEvents", () => {
       assert.equal(status.sessionId, "session-3");
       assert.equal(status.source, "session.status");
       assert.equal(status.updatedAt, undefined);
+    });
+  });
+
+  describe("toastNotificationFromSessionStatus", () => {
+    it("renders retry/usage-limit state as an ephemeral warning toast", () => {
+      const notification = toastNotificationFromSessionStatus({
+        statusType: "retry",
+        attempt: 9,
+        message: "Usage limit reached for 5 hour. Your limit will reset at 2026-07-21 19:33:52",
+        next: 1784618568254,
+        sessionId: "ses_07d6c6611ffeVq6amwM6ZEic1G",
+      });
+
+      assert.equal(notification.type, "session.status");
+      assert.equal(notification.title, "Session status · retry · attempt 9");
+      assert.equal(notification.variant, "warning");
+      assert.equal(notification.durationMs, 12_000);
+      assert.equal(notification.next, 1784618568254);
+      assert.match(notification.message, /Usage limit reached/);
+    });
+
+    it("does not toast noisy busy or idle session status frames", () => {
+      assert.equal(toastNotificationFromSessionStatus({ statusType: "busy" }), null);
+      assert.equal(toastNotificationFromSessionStatus({ statusType: "idle" }), null);
+    });
+
+    it("uses the status type alone when the event has no attempt", () => {
+      const notification = toastNotificationFromSessionStatus({
+        statusType: "retry",
+        message: "Waiting for capacity.",
+      });
+      assert.equal(notification.title, "Session status · retry");
     });
   });
 

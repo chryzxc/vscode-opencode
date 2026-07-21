@@ -155,3 +155,11 @@ test("UserMessage file chips render with truncate and FileIcon", () => {
     "file chip label must use truncate class",
   );
 });
+
+test("Plan Approved keeps SDK file parts visible as openable plan attachments", () => {
+  assert.match(
+    messageComponentsSource,
+    /if \(isPlanProceedMessageContent\(content\)\) \{[\s\S]*?fileChips\.length > 0[\s\S]*?oc-plan-approved-attachment[\s\S]*?type: "openFile"[\s\S]*?file\.path \|\| file\.label/s,
+    "plan approval rendering must retain SDK file parts and open their source path",
+  );
+});

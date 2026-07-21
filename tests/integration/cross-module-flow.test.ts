@@ -176,7 +176,7 @@ describe("cross-module flow", () => {
       assert.ok(lastMsg.event.hasStructuredOutput);
     });
 
-    it("processes an implementation_plan structured output end-to-end", async () => {
+    it("processes a plan structured output end-to-end", async () => {
       const { streamHandler, getMessagesByType } = setupFlow();
 
       await streamHandler.handleStreamEvent({
@@ -189,7 +189,7 @@ describe("cross-module flow", () => {
             structured: {
               responseType: "implementation_plan",
               message: "Here's the plan",
-              plan: { file: "./implementation_plan.md", title: "Refactor Auth" },
+              plan: { file: "./plan.md", title: "Refactor Auth" },
             },
           },
         },
@@ -200,7 +200,7 @@ describe("cross-module flow", () => {
       const lastEvent = streamMsgs[streamMsgs.length - 1].event;
       assert.ok(lastEvent.hasStructuredOutput);
       assert.equal(lastEvent.structuredOutput.responseType, "implementation_plan");
-      assert.equal(lastEvent.structuredOutput.plan.file, "./implementation_plan.md");
+      assert.equal(lastEvent.structuredOutput.plan.file, "./plan.md");
     });
   });
 
@@ -426,7 +426,7 @@ describe("cross-module flow", () => {
                 type: "implementation_plan",
                 text: "Plan ready",
                 plan: {
-                  file: "./implementation_plan.md",
+                  file: "./plan.md",
                   title: "Exact Flow Plan",
                 },
               },
@@ -487,7 +487,7 @@ describe("cross-module flow", () => {
       );
       assert.equal(entries[1].event.hasStructuredOutput, true);
       assert.equal(entries[1].event.structuredOutput.responseType, "implementation_plan");
-      assert.equal(entries[1].event.structuredOutput.plan.file, "./implementation_plan.md");
+      assert.equal(entries[1].event.structuredOutput.plan.file, "./plan.md");
 
       assert.deepEqual(geminiTokenTracker._recordings, [
         {

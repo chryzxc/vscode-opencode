@@ -172,6 +172,34 @@ test('ChatViewProvider stamps active sessionId onto every streamEvent forwarded 
     );
 });
 
+test('ChatViewProvider drops an older session hydration when a newer switch wins the race', () => {
+    const loadSessionBody = extractFunctionBody(
+        chatViewProviderSource,
+        'private async handleLoadSession(',
+    );
+
+    assert.match(
+        loadSessionBody,
+        /const\s+loadGeneration\s*=\s*\+\+this\.sessionLoadGeneration/,
+        'each session load must receive a monotonic generation token',
+    );
+    assert.match(
+        loadSessionBody,
+        /const\s+isCurrentLoad\s*=\s*\(\)\s*=>\s*loadGeneration\s*===\s*this\.sessionLoadGeneration/,
+        'the load must compare its token with the latest requested session load',
+    );
+    assert.match(
+        loadSessionBody,
+        /await\s+this\.loadSdkRenderableHistory\(\s*sessionId,?\s*\)[\s\S]*?abandonIfStale\("loadSdkRenderableHistory"\)/,
+        'a completed older history request must be rejected before it can post chatHistory',
+    );
+    assert.match(
+        loadSessionBody,
+        /await\s+this\.compactionManager\.sendCompactionViewStateForMessages\([\s\S]*?abandonIfStale\("sendCompactionViewState"\)/,
+        'a switch that occurs during compaction-state hydration must prevent the stale initState follow-up',
+    );
+});
+
 // ---------------------------------------------------------------------------
 // Webview message handler – handleStreamEvent session filter covers infoRecord
 // ---------------------------------------------------------------------------

@@ -27,3 +27,24 @@ const messageComponentsSource = readSource(
     "rehydrated output should use the same expandable preview as other activity content",
   );
 });
+
+test("live Bash activity renders its terminal payload without requiring a summary", () => {
+  assert.match(
+    messageComponentsSource,
+    /\{labelLower === "bash" \|\| isGlobSearch \? \(\s*<div className="oc-refined-event-summary">\s*<TerminalBlockWithOutput/s,
+    "Bash/Glob terminal previews must be selected before the generic visibleSummary gate",
+  );
+  assert.match(
+    messageComponentsSource,
+    /labelLower !== "read" && labelLower !== "todowrite" && !isEditLike && visibleSummary && \(/,
+    "other generic activity rows should retain the existing summary visibility guard",
+  );
+});
+
+test("empty system transport envelopes do not render an empty expandable card", () => {
+  assert.match(
+    messageComponentsSource,
+    /if \(!displayContent\) \{\s*return null;\s*\}\s*\n\s*return \(\s*<div className="oc-message-enter mb-4"/s,
+    "SystemMessage must return no UI when its transport envelope has no displayable text",
+  );
+});

@@ -77,13 +77,13 @@ test('StructuredOutputProcessor.applyStructuredOutputToMessage sets content from
   );
 });
 
-test('StructuredOutputProcessor.createFallbackMessage returns plan.intro/summary for implementation_plan', () => {
+test('StructuredOutputProcessor.createFallbackMessage returns plan.intro/summary for plan', () => {
   const fallbackBody = extractFunctionBody(structOutputSource, 'createFallbackMessage');
 
   assert.match(
     fallbackBody,
-    /case\s*["']implementation_plan["'][\s\S]*plan\?\.intro[\s\S]*plan\?\.summary/,
-    'must return plan.intro || plan.summary || plan.title for implementation_plan fallback',
+    /case\s*["']plan["'][\s\S]*plan\?\.intro[\s\S]*plan\?\.summary/,
+    'must return plan.intro || plan.summary || plan.title for plan fallback',
   );
 });
 

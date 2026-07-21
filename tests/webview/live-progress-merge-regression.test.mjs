@@ -34,6 +34,12 @@ test("AssistantResponseCardInner merges live streaming progress rows into the ac
 
   assert.match(
     messageComponentsSource,
+    /function progressItemIdentityKey\([\s\S]*?stableActivityIdentity\(\{[\s\S]*?callID: item\.callID,[\s\S]*?if \(stableIdentity\) \{\s*return stableIdentity;/,
+    "SDK lifecycle snapshots must collapse by callID/part ID before mutable titles, paths, and output are considered",
+  );
+
+  assert.match(
+    messageComponentsSource,
     /function mergeProgressItemRecord\(/,
     "Progress rows should merge repeated status updates into one canonical row",
   );
@@ -42,6 +48,12 @@ test("AssistantResponseCardInner merges live streaming progress rows into the ac
     messageComponentsSource,
     /function mergeStickyDisplayEventsForTurn\(/,
     "Activity timeline rows should be merged through a sticky turn-scoped helper",
+  );
+
+  assert.match(
+    messageComponentsSource,
+    /function mergeStickyDisplayEvent\([\s\S]*?LOCKED UI INVARIANT:[\s\S]*?diffStats: incoming\.diffStats \?\? existing\.diffStats,[\s\S]*?activityDetail: incoming\.activityDetail \?\? existing\.activityDetail,/,
+    "A sparse live update must preserve the edit/diff fields of an already-rendered activity component",
   );
 
   assert.match(

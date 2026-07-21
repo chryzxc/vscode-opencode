@@ -227,7 +227,7 @@ describe("HistoryProcessor", () => {
                 role: "assistant",
                 content: "# Implementation Plan\n\n## Steps",
                 plan: {
-                    file: "implementation_plan.md",
+                    file: "plan.md",
                     title: "Plan Title",
                 },
             };

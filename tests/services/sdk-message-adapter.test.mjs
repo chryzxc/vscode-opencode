@@ -35,8 +35,8 @@ test('adaptStructuredOutput handles all structured response types', () => {
   // Must handle plan, question, and generic message response types
   assert.match(
     adapterSource,
-    /implementation_plan|plan !== undefined/,
-    'should detect implementation_plan from structured data',
+    /"plan"|plan !== undefined/,
+    'should detect the plan response type from structured data',
   );
   assert.match(
     adapterSource,
@@ -47,6 +47,14 @@ test('adaptStructuredOutput handles all structured response types', () => {
     adapterSource,
     /: "message"/,
     'should fall back to message response type',
+  );
+});
+
+test('SDK adapter does not hydrate copied plan prose as a walkthrough', () => {
+  assert.match(
+    adapterSource,
+    /walkthrough && isWalkthroughNarrativeDistinct\(structured\)/,
+    'raw OpenCode history should apply the shared distinct-walkthrough guard',
   );
 });
 

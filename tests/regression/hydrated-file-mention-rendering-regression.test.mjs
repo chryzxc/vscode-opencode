@@ -26,6 +26,14 @@ test("hydrated user bubbles exclude synthetic file-read echoes", () => {
   );
 });
 
+test("hydrated user bubbles exclude text already represented by an attached file", () => {
+  assert.match(
+    source,
+    /\.map\(\(text\) => text\.trim\(\)\)[\s\S]*?attachmentContents\.has\(text\)/,
+    "attachment data-URL contents and rendered text parts must use the same trimmed form",
+  );
+});
+
 test("attached file mentions use the SDK source path", () => {
   assert.match(
     source,

@@ -54,13 +54,13 @@ describe('Session error banner rendering', () => {
     );
     assert.match(
       chatShellSource,
-      /function CompactErrorItem[\s\S]*?rounded-\[10px\]/s,
-      'session error should render as a compact transcript row instead of a floating bubble card',
+      /function CompactErrorItem[\s\S]*?<ErrorBanner message=\{errorMessage\}/s,
+      'session errors must use the standard error-card renderer used by assistant failures',
     );
     assert.doesNotMatch(
       sessionErrorBranch,
-      /backdrop-blur-\[10px\]|linear-gradient\(180deg|boxShadow:/s,
-      'session error row should not keep the old glow, blur, or glassy gradient treatment',
+      /backdrop-blur-\[10px\]|linear-gradient\(180deg|boxShadow:|vscode-errorForeground/s,
+      'session error row should not keep bespoke error styling',
     );
     assert.match(
       chatShellSource,

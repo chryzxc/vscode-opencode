@@ -41,7 +41,7 @@ test('chat css pipeline keeps Tailwind enabled for utility-heavy React chat comp
 test('details overview uses the same content gutter as the other tabs', () => {
   assert.match(
     chatCssSource,
-    /\.oc-details-sheet\s+\.oc-details-tab-content--overview\s*\{[^}]*padding:\s*8px\s+10px\s+10px;/s,
+    /\.oc-details-sheet\s+\.oc-details-tab-content--overview\s*\{[^}]*padding:\s*8px\s+0\s+10px;/s,
     'the Active Task overview should align with Quota, Integrations, and Tools content',
   );
   assert.match(

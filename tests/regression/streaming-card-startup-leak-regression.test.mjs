@@ -4,8 +4,8 @@ import assert from "node:assert/strict";
 import { joinFromRoot, readSource } from "../helpers/source-utils.mjs";
 
 const streamingComponentsSource = readSource(
-  [joinFromRoot("webview", "shared", "src", "chat", "StreamingComponents.tsx")],
-  "StreamingComponents.tsx",
+  [joinFromRoot("webview", "shared", "src", "chat", "lib", "streamingCardVisibility.ts")],
+  "streaming card visibility",
 );
 
 test("streaming card does not show an empty active shell before current-turn payload arrives", () => {
