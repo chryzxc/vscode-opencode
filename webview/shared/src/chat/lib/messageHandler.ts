@@ -1,5 +1,6 @@
-import { startTransition, type Dispatch } from 'react';
+import type { Dispatch } from 'react';
 
+import { config } from '../../config';
 import type { AppAction } from './store';
 import { appReducer, hasSystemMessagePatternInText } from './store';
 import logger from './logger';
@@ -38,13 +39,19 @@ import type {
   SubagentPresentationPolicy,
   TodoItem,
 } from "./types";
-import type { StructuredResponseType } from "./generated/structuredOutputSchema";
+import type {
+  StructuredResponseType,
+  StructuredWalkthrough,
+  WalkthroughChangeKind,
+  WalkthroughStepKind,
+  WalkthroughVerificationStatus,
+} from "./generated/structuredOutputSchema";
 import {
+  isWalkthroughNarrativeDistinct,
   sanitizeStructuredOutput,
   validateStructuredOutput,
 } from "./structuredOutputValidator";
 import { getCentralizedDebugPayloadDisposition } from "./generated/centralizedDebugPayloadFilter";
-import { config } from "../../config";
 import vscode from "./vscode";
 import {
   PENDING_CURRENT_SESSION_KEY,
@@ -54,6 +61,12 @@ import {
   toastNotificationFromPayload,
 } from "./toastEvents";
 import { routeLiveEvent } from "./liveEventRouter";
+import { hasTerminalAssistantReplyForLatestSdkTurn } from "./sessionProcessing";
+import {
+  appendLiveSdkDebugEvents,
+  clearLiveSdkDebugEvents,
+  setRehydratedSdkDebugMessages,
+} from "./sdkDebugStore";
 
 // NEW: Import modular subagent processing functions
 import {
@@ -85,6 +98,7 @@ import {
   latestSubagentEventTimestamp,
   shouldFreezeSubagentForPresentation as uiShouldFreezeSubagentForPresentation,
 } from './subagents/uiFormatter';
+import { formatCallOmoAgentAsSubagentDetail } from './subagents/callOmoFormatter';
 
 // Export modular function with original name for backward compatibility
 export const extractSubagentsFromCentralizedEvents = modularExtractSubagentsFromCentralizedEvents;
@@ -811,6 +825,44 @@ export function normalizeCentralizedEventPayloads(
   return normalized;
 }
 
+/**
+ * The canonical permission extractor for both live SSE envelopes and restored
+ * centralized SDK event payloads. OpenCode puts the request in `properties`,
+ * while `permission.list` returns that same request object without an event
+ * wrapper, so intentionally support both shapes here.
+ */
+export function permissionRequestFromSdkPayload(
+  payload: unknown,
+  fallbackSessionID?: string | null,
+): {
+  id: string;
+  sessionID: string;
+  permission?: string;
+  patterns: unknown[];
+  always: unknown[];
+} | undefined {
+  const event = normalizeCentralizedEventPayload(payload) ?? asRecord(payload);
+  if (!event) return undefined;
+  const eventType = getCentralizedEventType(event);
+  const properties = asRecord(event.properties) ?? event;
+  const isPermissionRequest =
+    eventType === "permission.asked" ||
+    eventType === "permission.request" ||
+    (!eventType && typeof properties.permission === "string");
+  if (!isPermissionRequest) return undefined;
+  const id = asString(properties.id) || asString(properties.permissionID);
+  const sessionID =
+    asString(properties.sessionID) || asString(properties.sessionId) || fallbackSessionID || "";
+  if (!id || !sessionID) return undefined;
+  return {
+    id,
+    sessionID,
+    permission: asOptionalString(properties.permission),
+    patterns: Array.isArray(properties.patterns) ? properties.patterns : [],
+    always: Array.isArray(properties.always) ? properties.always : [],
+  };
+}
+
 export function getCentralizedAssistantContentChunksFromRawSdkEventPayloads(
   rawSdkEventPayloads?: unknown[],
 ): string[] {
@@ -822,6 +874,23 @@ export function getCentralizedAssistantContentChunksFromRawSdkEventPayloads(
     latestAssistantMessageIdFromCentralizedTape(rawSdkEventPayloads);
   if (!assistantMessageId) {
     return [];
+  }
+
+  // Providers can reuse a reasoning part's ID for its token delta, but label
+  // that transient delta as `text`. Treat the ID's established ownership as
+  // authoritative: otherwise a partial thought (for example, "The") is
+  // rendered as an assistant response during hydration.
+  const reasoningPartIDs = new Set<string>();
+  for (const payload of rawSdkEventPayloads) {
+    const part = getCentralizedEventPart(payload);
+    if (!part || asString(part.type).trim().toLowerCase() !== "reasoning") {
+      continue;
+    }
+    const partMessageId = firstNonEmptyString(part.messageID, part.messageId) || "";
+    const partID = firstNonEmptyString(part.id, part.partID, part.partId) || "";
+    if (partMessageId === assistantMessageId && partID) {
+      reasoningPartIDs.add(partID);
+    }
   }
 
   for (let index = rawSdkEventPayloads.length - 1; index >= 0; index -= 1) {
@@ -927,6 +996,10 @@ export function getCentralizedAssistantContentChunksFromRawSdkEventPayloads(
         part.messageId,
       ) || "";
     if (partMessageId !== assistantMessageId) {
+      continue;
+    }
+    const partID = firstNonEmptyString(part.id, part.partID, part.partId) || "";
+    if (partID && reasoningPartIDs.has(partID)) {
       continue;
     }
 
@@ -2022,7 +2095,10 @@ function normalizeActivityDetail(value: unknown): ActivityDetail | undefined {
   // Extract input properties supporting both rec.input and rec.state.input
   const inputRec = asRecord(rec.input) || asRecord(asRecord(rec.state)?.input);
   const stateRec = asRecord(rec.state);
-  const outputText = asOptionalString(rec.output) || asOptionalString(asRecord(rec.state)?.output);
+  const outputText =
+    asOptionalString(rec.output) ||
+    asOptionalString(asRecord(rec.state)?.output) ||
+    asOptionalString(metadataRec?.output);
   const files = asArray(
     rec.files,
     (item): item is string => typeof item === "string" && item.trim().length > 0,
@@ -2364,7 +2440,9 @@ function extractActivityStepsFromParts(
         normalizeActivityDetail(rec.activityDetail) ||
         (() => {
           const recMetadata = asRecord(rec.metadata);
-          const metadataPreview = asOptionalString(recMetadata?.preview);
+          const metadataPreview =
+            asOptionalString(recMetadata?.preview) ||
+            asOptionalString(recMetadata?.output);
           const metadataTruncated = recMetadata?.truncated === true;
           const stateOutput = asOptionalString(stateRec?.output);
           const finalOutput = stateOutput || metadataPreview;
@@ -2584,6 +2662,7 @@ type StructuredOutput = {
     summary?: string;
     fileCount?: number;
   };
+  walkthrough?: StructuredWalkthrough;
   reasoning?: string[];
   progressUpdates?: StructuredProgressUpdate[];
   interactiveEvents?: StructuredInteractiveEvent[];
@@ -2873,6 +2952,84 @@ function finalizeStructuredOutput(normalizedRecord: StructuredOutput): Structure
   };
 }
 
+function normalizeWalkthrough(value: UnknownRecord | undefined): StructuredWalkthrough | undefined {
+  if (!value) return undefined;
+  const title = asString(value.title);
+  const file = asString(value.file);
+  if (!title || !file) return undefined;
+
+  const changes = Array.isArray(value.changes)
+    ? value.changes
+      .map((item) => {
+        const change = asRecord(item);
+        const changeFile = asString(change?.file);
+        const summary = asString(change?.summary);
+        if (!changeFile || !summary) return undefined;
+        const kind = asString(change?.kind);
+        return {
+          file: changeFile,
+          summary,
+          kind: ["added", "modified", "deleted", "renamed"].includes(kind)
+            ? kind as WalkthroughChangeKind
+            : undefined,
+        };
+      })
+      .filter((item): item is NonNullable<StructuredWalkthrough["changes"]>[number] => !!item)
+    : undefined;
+  const verification = Array.isArray(value.verification)
+    ? value.verification
+      .map((item) => {
+        const entry = asRecord(item);
+        const summary = asString(entry?.summary);
+        const status = asString(entry?.status);
+        if (!summary || !["passed", "failed", "not_run"].includes(status)) return undefined;
+        return {
+          summary,
+          status: status as WalkthroughVerificationStatus,
+          command: asString(entry?.command) || undefined,
+        };
+      })
+      .filter((item): item is NonNullable<StructuredWalkthrough["verification"]>[number] => !!item)
+    : undefined;
+  const steps = Array.isArray(value.steps)
+    ? value.steps
+      .map((item) => {
+        const step = asRecord(item);
+        const stepTitle = asString(step?.title);
+        const summary = asString(step?.summary);
+        const kind = asString(step?.kind);
+        if (!stepTitle || !summary || !["inspect", "decide", "change", "verify", "note"].includes(kind)) {
+          return undefined;
+        }
+        const files = Array.isArray(step?.files)
+          ? step.files.filter((file): file is string => typeof file === "string" && file.trim().length > 0)
+          : undefined;
+        return {
+          title: stepTitle,
+          summary,
+          kind: kind as WalkthroughStepKind,
+          outcome: asString(step?.outcome) || undefined,
+          files: files?.length ? files : undefined,
+          command: asString(step?.command) || undefined,
+        };
+      })
+      .filter((item): item is NonNullable<StructuredWalkthrough["steps"]>[number] => !!item)
+    : undefined;
+
+  return {
+    title,
+    file,
+    content: asString(value.content) || undefined,
+    summary: asString(value.summary) || undefined,
+    steps: steps?.length ? steps : undefined,
+    changes: changes?.length ? changes : undefined,
+    verification: verification?.length ? verification : undefined,
+    limitations: Array.isArray(value.limitations)
+      ? value.limitations.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+      : undefined,
+  };
+}
+
 function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined {
   let candidate: unknown = value;
   if (typeof candidate === 'string') {
@@ -2920,7 +3077,9 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
     return undefined;
   }
   const messageText =
+    asString(sanitizedRec.text) ||
     asString(sanitizedRec.message) ||
+    asString((rec as UnknownRecord).text) ||
     asString((rec as UnknownRecord).message) ||
     undefined;
   const planRec = asRecord(sanitizedRec.plan) ?? asRecord(rec.plan);
@@ -2945,6 +3104,11 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
       normalizedPlan.content ||
       (Array.isArray(normalizedPlan.files) && normalizedPlan.files.length > 0)
     );
+
+  const walkthroughRec = asRecord(sanitizedRec.walkthrough) ?? asRecord(rec.walkthrough);
+  const normalizedWalkthrough = isWalkthroughNarrativeDistinct(rec)
+    ? normalizeWalkthrough(walkthroughRec)
+    : undefined;
 
   const normalizeChoices = (raw: unknown): InteractiveChoice[] => {
     let candidate = raw;
@@ -3325,6 +3489,7 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
   if (
     !messageText &&
     !hasNormalizedPlan &&
+    !normalizedWalkthrough &&
     interactiveEvents.length === 0 &&
     subagents.length === 0 &&
     !subagentsDelta
@@ -3336,6 +3501,7 @@ function normalizeStructuredOutput(value: unknown): StructuredOutput | undefined
     responseType,
     message: messageText,
     plan: hasNormalizedPlan ? normalizedPlan : undefined,
+    walkthrough: normalizedWalkthrough,
     interactiveEvents: interactiveEvents.length > 0 ? interactiveEvents : undefined,
     subagents: subagents.length > 0 ? subagents : undefined,
     subagentsDelta
@@ -3385,6 +3551,9 @@ function salvageStructuredOutput(value: unknown): StructuredOutput | undefined {
       asString(plan.content).trim() ||
       (Array.isArray(plan.files) && plan.files.length > 0)
     );
+  const walkthrough = isWalkthroughNarrativeDistinct(rec)
+    ? normalizeWalkthrough(asRecord(rec.walkthrough))
+    : undefined;
 
   const normalizedResponseType =
     responseType || (hasPlan ? "implementation_plan" : undefined);
@@ -3399,6 +3568,7 @@ function salvageStructuredOutput(value: unknown): StructuredOutput | undefined {
     !effectiveResponseType &&
     !message &&
     !hasPlan &&
+    !walkthrough &&
     !rawInteractiveEvents
   ) {
     return undefined;
@@ -3408,6 +3578,7 @@ function salvageStructuredOutput(value: unknown): StructuredOutput | undefined {
     responseType: effectiveResponseType,
     message,
     plan: hasPlan ? plan : undefined,
+    walkthrough,
     interactiveEvents: rawInteractiveEvents as StructuredOutput["interactiveEvents"] | undefined,
   });
 }
@@ -3762,7 +3933,12 @@ function ingestNormalizedTodo(
 }
 
 function toInteractiveEvents(structured?: StructuredOutput): InteractiveEvent[] {
-  const events = structured?.interactiveEvents ?? [];
+  // Structured output crosses the extension/webview boundary at runtime.  Do
+  // not assume a typed array is dense: a malformed or partially streamed
+  // entry must not take down the whole chat while we inspect its discriminator.
+  const events = Array.isArray(structured?.interactiveEvents)
+    ? structured.interactiveEvents
+    : [];
   const structuredRec = asRecord(structured as UnknownRecord | undefined);
   const contextMessage: string | undefined =
     asOptionalString(structuredRec?.displayPrompt) ||
@@ -3771,6 +3947,9 @@ function toInteractiveEvents(structured?: StructuredOutput): InteractiveEvent[] 
 
   const mapped = events
     .map((event, index) => {
+      if (!event || typeof event !== "object") {
+        return undefined;
+      }
       const id = event.id || `interactive-${Date.now()}-${index}`;
       if (event.type === 'confirm') {
         if (!event.question) {
@@ -3871,6 +4050,9 @@ function interactiveEventKey(event: InteractiveEvent): string {
     ].join("::");
   }
   if (event.type === "quick_actions") {
+    if (event.permissionID) {
+      return ["permission", normalizeComparableText(asString(event.permissionID))].join("::");
+    }
     const actions = Array.isArray(event.actions)
       ? event.actions.map(interactiveChoiceKey).join("|")
       : "";
@@ -4647,33 +4829,6 @@ function isActivityLikePart(part: UnknownRecord): boolean {
   ];
 
   return activityKeys.some((key) => typeof part[key] !== "undefined");
-}
-
-function isImmediateActivityStreamPayload(payload: UnknownRecord): boolean {
-  // The server may wrap the semantic SDK event in a `sync` envelope. Use the
-  // same canonical extractors as centralized-data hydration; otherwise the
-  // event is persisted to the tape as `message.part.updated` but scheduled as
-  // an unimportant transport `sync` event for live rendering.
-  const eventType = getCentralizedEventType(payload);
-  if (!eventType.startsWith("message.part.")) {
-    return false;
-  }
-
-  const properties = asRecord(payload.properties);
-  const part =
-    getCentralizedEventPart(payload) ??
-    asRecord(payload.part) ??
-    asRecord(properties?.part);
-  const partType = normalizePartType(part?.type);
-  return (
-    partType === "tool" ||
-    partType === "step-start" ||
-    partType === "step-finish" ||
-    partType === "step-stop" ||
-    partType === "patch" ||
-    partType === "subtask" ||
-    partType === "agent"
-  );
 }
 
 function isRenderableAssistantTextPart(part: UnknownRecord): boolean {
@@ -5762,6 +5917,9 @@ export function normalizeMessage(message: Message, streaming: StreamingState | n
         ...normalizedStructuredOutput.plan,
       };
     }
+    if (!normalized.walkthrough && normalizedStructuredOutput.walkthrough) {
+      normalized.walkthrough = normalizedStructuredOutput.walkthrough;
+    }
     if (
       (!Array.isArray(normalized.interactiveEvents) ||
         normalized.interactiveEvents.length === 0)
@@ -5973,6 +6131,46 @@ export function normalizeMessage(message: Message, streaming: StreamingState | n
   if (canonicalSteps.length > 0) {
     normalized.steps = canonicalSteps;
     normalized.progressEvents = canonicalSteps;
+
+    // A native call_omo_agent tool is the authoritative creation record for a
+    // background child. Project it into the same subagent collection consumed
+    // by SubagentsInlineCard, so the card and the invocation row share one
+    // detail contract during both streaming and hydration.
+    const existingSubagents = Array.isArray(normalized.subagents)
+      ? normalized.subagents
+      : [];
+    const invocationDetails = canonicalSteps
+      .filter((step) => {
+        const tool = asString(step.activityDetail?.tool).toLowerCase();
+        const title = asString(step.title).toLowerCase();
+        return tool === "call_omo_agent" || title === "call_omo_agent";
+      })
+      .map((step) => formatCallOmoAgentAsSubagentDetail({
+        callID: step.callID,
+        parentSessionId: firstNonEmptyString(
+          asString(asRecord(normalized.info)?.sessionID),
+          asString((normalized as UnknownRecord).sessionID),
+        ),
+        parentMessageId: getMessageId(normalized) || undefined,
+        childSessionId: step.sessionID,
+        startedAt: step.startedAt,
+        endedAt: step.endedAt,
+        status: step.status === "error" ? "error" : step.status === "done" ? "done" : "pending",
+        activityDetail: step.activityDetail,
+      }));
+    if (invocationDetails.length > 0) {
+      const merged = [...existingSubagents];
+      for (const detail of invocationDetails) {
+        const isAlreadyRepresented = merged.some((candidate) =>
+          (detail.backgroundTaskId && candidate.backgroundTaskId === detail.backgroundTaskId) ||
+          (detail.childSessionId && candidate.childSessionId === detail.childSessionId),
+        );
+        if (!isAlreadyRepresented) {
+          merged.push(detail);
+        }
+      }
+      normalized.subagents = merged;
+    }
   }
 
   // Extract file edits from patch-type parts when edits are not already populated.
@@ -7114,6 +7312,9 @@ function hasRenderableHistoryPayload(message: Message): boolean {
   if (message.plan && typeof message.plan === 'object') {
     return true;
   }
+  if (message.walkthrough && typeof message.walkthrough === 'object') {
+    return true;
+  }
 
   // Preserve assistant turns that only contain activity parts
   // (tool/reasoning/step/patch) so reload matches stream-time rendering.
@@ -7224,6 +7425,7 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
   let latestTextPart: MessagePart | undefined;
   let latestInteractiveEvents: InteractiveEvent[] | undefined;
   let latestPlan = base.plan;
+  let latestWalkthrough = base.walkthrough;
   const subagentsByMessageId = new Map<string, Message["subagents"]>();
   let latestSubagentsWithoutMessageId: Message["subagents"] | undefined;
   let latestError = asString((base as unknown as UnknownRecord).error);
@@ -7368,6 +7570,9 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
     if (message.plan && typeof message.plan === "object") {
       latestPlan = message.plan;
     }
+    if (message.walkthrough && typeof message.walkthrough === "object") {
+      latestWalkthrough = message.walkthrough;
+    }
     if (Array.isArray(message.subagents) && message.subagents.length > 0) {
       if (messageId) {
         subagentsByMessageId.set(messageId, message.subagents);
@@ -7445,6 +7650,9 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
   }
   if (latestPlan) {
     base.plan = latestPlan;
+  }
+  if (latestWalkthrough) {
+    base.walkthrough = latestWalkthrough;
   }
   const hasPlanAttachment =
     !!base.plan &&
@@ -8753,7 +8961,8 @@ function handleStreamEvent(
   payload: UnknownRecord,
   terminalErrorReached: boolean,
   shouldSuppressProcessingBootstrap: boolean = false,
-  markAssistantTurnClosed?: (...messageIds: Array<string | null | undefined>) => void
+  markAssistantTurnClosed?: (...messageIds: Array<string | null | undefined>) => void,
+  knownReasoningPartIDs?: Set<string>,
 ): void {
   const dispatchProcessingTrue = () => {
     if (!shouldSuppressProcessingBootstrap) {
@@ -8767,15 +8976,17 @@ function handleStreamEvent(
   // part, and info belong to `syncEvent`. Reading the envelope here caused
   // activity to be persisted but not rendered until a later hydration pass.
   const eventType = getCentralizedEventType(payload);
-  logger.debug(`Handling Stream Event: ${eventType}`, {
-    timestamp: new Date().toISOString(),
-    eventType,
-    payloadKeys: Object.keys(payload),
-    hasProperties: !!asRecord(payload.properties),
-    hasPart: !!asRecord(payload.part),
-    hasStructured: !!asRecord(payload.structured),
-    terminalErrorReached,
-  });
+  if (logger.wouldLog('debug')) {
+    logger.debug(`Handling Stream Event: ${eventType}`, {
+      timestamp: new Date().toISOString(),
+      eventType,
+      payloadKeys: Object.keys(payload),
+      hasProperties: !!asRecord(payload.properties),
+      hasPart: !!asRecord(payload.part),
+      hasStructured: !!asRecord(payload.structured),
+      terminalErrorReached,
+    });
+  }
 
   // Ignore streaming parts after a terminal error to prevent showing both
   // error banner and active streaming state simultaneously
@@ -9140,6 +9351,28 @@ function handleStreamEvent(
       }
       break;
     }
+    case 'permission.asked':
+    case 'permission.request': {
+      // Permission requests are mounted by `routeLiveEventToUi` before the
+      // normal stream gate so paused turns are handled consistently.
+      break;
+    }
+    case 'permission.replied': {
+      const properties = asRecord(payload.properties) ?? payload;
+      const permissionID =
+        asString(properties.permissionID) ||
+        asString(properties.requestID) ||
+        asString(properties.id);
+      if (permissionID) {
+        dispatch({
+          type: "SET_INTERACTIVE_EVENTS",
+          payload: getState().interactiveEvents.filter(
+            (event) => event.type !== "quick_actions" || event.permissionID !== permissionID,
+          ),
+        });
+      }
+      break;
+    }
     case 'message.part.updated':
     case 'message.part.added':
     case 'message.part.created': {
@@ -9198,18 +9431,42 @@ function handleStreamEvent(
         asRichString(part.delta);
       const rawPartText = asRichString(part.text) || asRichString(part.content);
       const isRawDeltaReasoningField =
-        eventType === "message.part.delta" &&
+        (eventType === "message.part.delta" || rawUpdatedDelta.trim().length > 0) &&
         (deltaField === "reasoning" || deltaField === "thinking");
       // Token streams may be emitted as a bare message.part.delta envelope:
       // `properties.field` identifies the content field while `part.type` is
       // absent. Treat text/content deltas as normal assistant output so they
       // update the live card instead of waiting for final history hydration.
       const isRawDeltaTextField =
-        eventType === "message.part.delta" &&
+        (eventType === "message.part.delta" || rawUpdatedDelta.trim().length > 0) &&
         (deltaField === "text" ||
           deltaField === "content" ||
           deltaField === "message" ||
           deltaField === "output_text");
+      // OpenCode currently emits a typed `reasoning` frame followed by token
+      // deltas labeled `field: "text"` for the *same* part ID. React can batch
+      // these native webview messages before its reducer state commits, so the
+      // streaming-state identity below is not sufficient on its own. Retain
+      // the transport identity at the handler boundary; this is structural
+      // provenance, not a heuristic based on the text itself.
+      if (currentPartType === "reasoning" && reasoningPartID) {
+        knownReasoningPartIDs?.add(reasoningPartID);
+      }
+      const isDeltaForKnownReasoningPart = Boolean(
+        rawUpdatedDelta.trim().length > 0 &&
+        reasoningPartID &&
+        knownReasoningPartIDs?.has(reasoningPartID),
+      );
+      // `message.part.delta` only says which field changed (`text`); after the
+      // SDK adapter normalizes it, that alone cannot distinguish assistant
+      // response text from the `text` field of a reasoning part. The preceding
+      // full part update establishes ownership by partID, so keep matching
+      // deltas in the reasoning lane until a different part begins.
+      const isDeltaForActiveReasoningPart = Boolean(
+        isInReasoningPart &&
+        reasoningPartID &&
+        currentStreamingState?.activeReasoningPartID === reasoningPartID,
+      );
       // Some providers emit an intermediate thought as a `message.part.updated`
       // text snapshot instead of a typed reasoning part. Its full `part.text`
       // exactly equals the delta. Normal response token streaming uses the
@@ -9217,6 +9474,8 @@ function handleStreamEvent(
       // thought out of the response card without inspecting its wording.
       const isDeltaOnlyUpdatedTextSnapshot =
         eventType === "message.part.updated" &&
+        !isRawDeltaTextField &&
+        !isRawDeltaReasoningField &&
         currentPartType === "text" &&
         rawUpdatedDelta.trim().length > 0 &&
         rawPartText.trim() === rawUpdatedDelta.trim();
@@ -9224,6 +9483,8 @@ function handleStreamEvent(
         currentPartType === 'reasoning' ||
         currentStructuredKind === 'thinking' ||
         isRawDeltaReasoningField ||
+        isDeltaForKnownReasoningPart ||
+        isDeltaForActiveReasoningPart ||
         isDeltaOnlyUpdatedTextSnapshot;
       
       // Only emit the "enter reasoning sequence" signal when we first detect a
@@ -9237,7 +9498,26 @@ function handleStreamEvent(
           isRawDeltaReasoningField,
           deltaField,
         });
-        dispatch({ type: 'UPDATE_STREAMING_REASONING', payload: { reasoning: '', append: false, inReasoningPart: true } });
+        dispatch({
+          type: 'UPDATE_STREAMING_REASONING',
+          payload: {
+            reasoning: '',
+            append: false,
+            inReasoningPart: true,
+            partID: reasoningPartID,
+            messageID: messageId || undefined,
+          },
+        });
+      }
+
+      // A reasoning part may briefly arrive as a text delta with the same
+      // part ID. Persist that identity-level suppression so batching or a
+      // later completed snapshot cannot reintroduce it into the response body.
+      if (isReasoning && reasoningPartID) {
+        dispatch({
+          type: "SUPPRESS_STREAMING_TEXT_PART",
+          payload: { partID: reasoningPartID },
+        });
       }
 
       // Detect end of reasoning part (when we get ANY non-reasoning part after reasoning)
@@ -9399,6 +9679,22 @@ function handleStreamEvent(
                 isRawDeltaTextField)));
 
         if (canAppendMainContent) {
+          const textPartID = asString(part.id).trim();
+          const isSuppressedToolPrelude = Boolean(
+            textPartID &&
+              streamingState?.suppressedTextPartIDs?.includes(textPartID),
+          );
+          if (isSuppressedToolPrelude) {
+            // STREAMING INVARIANT: never re-promote a suppressed tool prelude.
+            // The raw event tape commonly sends this as a later non-delta,
+            // completed snapshot. It remains the same part and therefore is
+            // still tool-phase bridge text, not a newly authored response.
+            // A real answer arrives under a new text part ID and follows the
+            // normal content path below. This is structural classification;
+            // do not infer intent from the text itself.
+            dispatchProcessingTrue();
+            break;
+          }
           let candidateChunk = textChunk;
 
           const rawReasoningLike = containsThoughtTagReasoning(candidateChunk);
@@ -9520,6 +9816,7 @@ function handleStreamEvent(
                 renderable:
                   isRenderableStreamingPartType(partType) ||
                   isRawDeltaTextField,
+                partID: textPartID || undefined,
               },
             });
           }
@@ -9575,6 +9872,23 @@ function handleStreamEvent(
       }
 
       if (partType === 'tool') {
+        const preludePartID = getState().streaming?.lastRenderableTextPartID;
+        const toolPartID = asString(part.id).trim();
+        if (preludePartID && preludePartID !== toolPartID) {
+          // STREAMING INVARIANT: a text-part → tool-part transition in one
+          // assistant turn retracts the preceding text part. A model may emit
+          // the first token of a planning sentence before a tool starts. The
+          // SDK labels it `text`, but this transition is the durable evidence
+          // that it belongs to the tool phase rather than the response body.
+          //
+          // Keep this part-ID relationship. Do not use content length, timing,
+          // or wording heuristics here: those all vary across providers and
+          // can suppress a legitimate final response.
+          dispatch({
+            type: "SUPPRESS_STREAMING_TEXT_PART",
+            payload: { partID: preludePartID },
+          });
+        }
         const tool = asString(part.tool);
         const stateObj = asRecord(part.state);
         const inputObj = asRecord(stateObj?.input);
@@ -9656,7 +9970,9 @@ function handleStreamEvent(
         // 1. From state.output (tool state)
         // 2. From metadata.preview (debug metadata)
         const stateOutput = asOptionalString(stateObj?.output);
-        const metadataPreview = asOptionalString(partMetadata?.preview);
+        const metadataPreview =
+          asOptionalString(partMetadata?.preview) ||
+          asOptionalString(partMetadata?.output);
         const metadataTruncated = partMetadata?.truncated === true;
         const finalOutput = stateOutput || metadataPreview;
 
@@ -11118,8 +11434,14 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
   let latestStreamingSnapshot: StreamingState | null = null;
   let terminalErrorReached = false;
   let activeSubagentParentMessageIds = new Set<string>();
+  // Retains reasoning-part provenance across native webview events that can
+  // arrive before React commits the preceding reducer update.
+  const knownReasoningPartIDs = new Set<string>();
   const closedAssistantTurnMessageIds = new Set<string>();
   const stoppedSessionIds = new Set<string>();
+  // `session.status: idle` is authoritative SDK completion evidence. Late
+  // metadata frames must not re-open the completed turn's loading state.
+  const terminalIdleSessionIds = new Set<string>();
   let awaitingInteractiveTurnStart = false;
 
   // Stopping is an immediate, user-owned transition. The server can still
@@ -11140,8 +11462,28 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
     }
   };
 
+  const markSessionIdle = (sessionId: string | null): void => {
+    if (!sessionId) return;
+    terminalIdleSessionIds.add(sessionId);
+    const state = getState();
+    dispatch({
+      type: "SET_PROCESSING_SESSIONS",
+      payload: state.processingSessionIds.filter((id) => id !== sessionId),
+    });
+    if (state.currentSessionId !== sessionId) return;
+    latestStreamingSnapshot = null;
+    dispatch({ type: "SET_ASSISTANT_TURN_PENDING", payload: { pending: false } });
+    dispatch({ type: "SET_PROCESSING", payload: false });
+    dispatch({ type: "FINISH_STREAMING" });
+    dispatch({ type: "SET_STREAMING", payload: null });
+  };
+
   const streamEventCanStartVisibleAssistantTurn = (payload: UnknownRecord): boolean => {
-    const eventType = asString(payload.type) || asString(payload.event) || asString(payload.kind);
+    // Use the same semantic envelope readers as handleStreamEvent. SDK stream
+    // frames can arrive as `{ type: "sync", syncEvent: { type, data } }`;
+    // treating `sync` as the event type here rejects a valid first assistant
+    // part before the renderer gets a chance to unwrap it.
+    const eventType = getCentralizedEventType(payload);
     if (eventType === "start" || eventType === "streamStart") {
       return true;
     }
@@ -11150,9 +11492,10 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
     }
 
     const properties = asRecord(payload.properties);
-    const partRecord = asRecord(properties?.part);
-    const infoRecord = asRecord(payload.info) ?? asRecord(properties?.info);
+    const partRecord = getCentralizedEventPart(payload) ?? asRecord(properties?.part);
+    const infoRecord = getCentralizedEventInfo(payload) ?? asRecord(properties?.info);
     const eventPart =
+      getCentralizedEventPart(payload) ??
       asRecord(payload.part) ??
       partRecord ??
       (eventType.startsWith("message.part.") ? asRecord(properties) : null);
@@ -11192,6 +11535,39 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
     return false;
   };
 
+  const upsertPermissionRequest = (
+    payload: unknown,
+    fallbackSessionID?: string | null,
+  ) => {
+    const request = permissionRequestFromSdkPayload(payload, fallbackSessionID);
+    if (!request || request.sessionID !== getState().currentSessionId) return;
+    const interactiveId = `permission-request-${request.id}`;
+    if (getState().interactiveEvents.some((event) => event.id === interactiveId)) return;
+    dispatch({
+      type: "SET_INTERACTIVE_EVENTS",
+      payload: [...getState().interactiveEvents, {
+        type: "quick_actions",
+        id: interactiveId,
+        title: `Allow ${request.permission || "operation"}?`,
+        uiCategory: "quick_input",
+        contextMessage: request.patterns.length > 0
+          ? `OpenCode requests **${request.permission || "operation"}** access to:\n\n${request.patterns.map((pattern) => `\`${String(pattern)}\``).join("\n")}`
+          : "OpenCode requests your permission to continue.",
+        permissionID: request.id,
+        sessionID: request.sessionID,
+        permissionPatterns: request.patterns.map((pattern) => String(pattern)),
+        permissionName: request.permission,
+        actions: [
+          { id: "once", label: "Allow", value: "once", recommended: true },
+          ...(request.always.length > 0
+            ? [{ id: "always", label: "Always allow", value: "always" }]
+            : []),
+          { id: "reject", label: "Reject", value: "reject" },
+        ],
+      }],
+    });
+  };
+
   /** Route all ephemeral SDK UI events through one observable path. */
   const routeLiveEventToUi = (
     payload: unknown,
@@ -11199,6 +11575,9 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
     source: "streamEvent" | "streamEventBatch" | "liveEventStreamDebugBatch",
     index = 0,
   ) => {
+    // This is deliberately before normal stream gating: a paused agent may no
+    // longer report `processing`, but a permission request must still render.
+    upsertPermissionRequest(payload, sessionId);
     const liveRoute = routeLiveEvent(payload, index);
     logger.info("[LIVE-TOAST] route", {
       source,
@@ -11219,6 +11598,34 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
       dispatch({ type: "UPDATE_LIVE_SESSION_STATUS", payload: liveRoute.sessionStatus });
     }
     return liveRoute;
+  };
+
+  // Keep the SDK debug panel useful without recreating the old performance
+  // problem: retain references to the already-received payloads, group them
+  // into one reducer update per session/batch, and let the reducer enforce the
+  // fixed-size window. Nothing here is serialized or persisted.
+  const appendLiveEventsToDebugPanel = (
+    items: Array<{ event: unknown; sessionId: string | null }>,
+  ) => {
+    if (!config.debug.showSdkEventDebug || items.length === 0) {
+      return;
+    }
+    const eventsBySessionId = new Map<string, unknown[]>();
+    for (const item of items) {
+      const sessionId = item.sessionId || getState().currentSessionId;
+      if (!sessionId) {
+        continue;
+      }
+      const sessionEvents = eventsBySessionId.get(sessionId);
+      if (sessionEvents) {
+        sessionEvents.push(item.event);
+      } else {
+        eventsBySessionId.set(sessionId, [item.event]);
+      }
+    }
+    for (const [sessionId, events] of eventsBySessionId) {
+      appendLiveSdkDebugEvents(sessionId, events);
+    }
   };
 
   const isLikelyInteractiveAnswerSubmissionMessage = (message: Message): boolean => {
@@ -11275,13 +11682,18 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
       const type = asString(data.type);
       const eventMessageId = extractEventMessageId(data);
 
-      // Log ALL events for comprehensive debugging
-      logger.debug(`Received Event: ${type}`, {
-        timestamp: new Date().toISOString(),
-        eventType: type,
-        dataKeys: Object.keys(data),
-        fullData: data,
-      });
+      // Avoid allocating and retaining the complete IPC payload when debug
+      // output is filtered. This listener runs for every stream batch.
+      if (logger.wouldLog('debug')) {
+        logger.debug(`Received Event: ${type}`, {
+          timestamp: new Date().toISOString(),
+          eventType: type,
+          dataKeys: Object.keys(data),
+          // Never pass the full event graph to DevTools. Console entries retain
+          // object references and can keep complete streamed payloads alive.
+          eventCount: Array.isArray(data.events) ? data.events.length : undefined,
+        });
+      }
 
       // Set processing state BEFORE handling message types to ensure streaming state is created early.
       // Never bootstrap "in progress" UI from compaction lifecycle messages.
@@ -11296,6 +11708,10 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
       const currentStreamingTurnIsClosed =
         !!currentStreamingMessageId &&
         closedAssistantTurnMessageIds.has(currentStreamingMessageId);
+      const terminalIdleActiveSession = !!(
+        getState().currentSessionId &&
+        terminalIdleSessionIds.has(getState().currentSessionId)
+      );
       const shouldSuppressProcessingBootstrap = !!(
         awaitingInteractiveTurnStart &&
         asBoolean(data.processing, false) &&
@@ -11306,12 +11722,18 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
       ) || (
         !!eventMessageId &&
         closedAssistantTurnMessageIds.has(eventMessageId)
-      ) || currentAssistantTurnIsClosed || currentStreamingTurnIsClosed;
+      ) || currentAssistantTurnIsClosed || currentStreamingTurnIsClosed ||
+        isStoppedSession(
+          asString(data.sessionId),
+          asString(data.sessionID),
+          getState().currentSessionId,
+        );
       if (
         asBoolean(data.processing, false) &&
         type !== "compactionStatus" &&
         type !== "compactionViewState" &&
-        !shouldSuppressProcessingBootstrap
+        !shouldSuppressProcessingBootstrap &&
+        !terminalIdleActiveSession
       ) {
         dispatch({ type: "SET_PROCESSING", payload: true });
       }
@@ -11737,8 +12159,16 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               asString(data.sessionID),
               deriveSessionIdFromMessage(msg, getState().currentSessionId),
             ) ?? undefined;
-          if (responseSessionId) {
-            stoppedSessionIds.delete(responseSessionId);
+          const responseMessageId = getMessageId(msg);
+          if (
+            isStoppedSession(responseSessionId, getState().currentSessionId) ||
+            (responseMessageId && closedAssistantTurnMessageIds.has(responseMessageId))
+          ) {
+            logger.info("[STOP] ignoring late message response", {
+              sessionId: responseSessionId ?? getState().currentSessionId ?? null,
+              messageId: responseMessageId,
+            });
+            break;
           }
           const currentMessages = getState().messages;
 
@@ -11770,7 +12200,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             payload: getMessageInputTokens(msg),
           });
 
-          const responseMessageId = getMessageId(msg);
           const currentStateForResponse = getState();
           const currentStreaming = currentStateForResponse.streaming;
           const snapshotMessageId = latestStreamingSnapshot?.messageId || null;
@@ -12078,6 +12507,63 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           const cancelIncompleteHydratedSubagents = false;
           try {
             terminalErrorReached = false;
+            const historyAvailable = asBoolean(
+              (data as UnknownRecord).available,
+              true,
+            );
+            if (!historyAvailable) {
+              const unavailableSessionId = asString(data.sessionId);
+              const currentState = getState();
+              const shouldPreserveVisibleTranscript = !!(
+                unavailableSessionId &&
+                currentState.currentSessionId === unavailableSessionId &&
+                currentState.messages.length > 0
+              );
+              const unavailableReason =
+                asString((data as UnknownRecord).unavailableReason) === "not_found"
+                  ? "not_found"
+                  : "unavailable";
+              if (unavailableSessionId) {
+                dispatch({ type: "SET_SESSION_ID", payload: unavailableSessionId });
+              }
+              // A transient or server-side decoding failure must not erase a
+              // transcript that is already visible in this webview. A newly
+              // opened unavailable session still starts empty and renders the
+              // dedicated recovery state below.
+              if (!shouldPreserveVisibleTranscript) {
+                dispatch({ type: "SET_MESSAGES", payload: [] });
+              }
+              dispatch({
+                type: "SET_PROCESSING_SESSIONS",
+                payload: getState().processingSessionIds.filter(
+                  (sessionId) => sessionId !== unavailableSessionId,
+                ),
+              });
+              dispatch({
+                type: "SET_SESSION_LOAD_ERROR",
+                payload: unavailableSessionId
+                  ? {
+                      sessionId: unavailableSessionId,
+                      reason: unavailableReason,
+                      message:
+                        asString((data as UnknownRecord).unavailableMessage) ||
+                        "The conversation could not be loaded from the OpenCode server.",
+                      status: normalizeTokenCount(
+                        (data as UnknownRecord).unavailableStatus,
+                      ),
+                    }
+                  : null,
+              });
+              dispatch({ type: "SET_PROCESSING", payload: false });
+              dispatch({ type: "SET_STREAMING", payload: null });
+              dispatch({
+                type: "SET_ASSISTANT_TURN_PENDING",
+                payload: { pending: false, messageId: null },
+              });
+              dispatch({ type: "END_SESSION_LOADING" });
+              break;
+            }
+            dispatch({ type: "SET_SESSION_LOAD_ERROR", payload: null });
             const sdkMessages = asArray(data.messages, isMessage);
             const rawSdkMessages = asArray<unknown>(
               (data as UnknownRecord).sdkMessages,
@@ -12094,10 +12580,13 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             const hasEmptySdkSnapshot =
               sdkMessages.length === 0 && rawSdkMessages.length === 0;
             const hasVisibleCurrentTranscript = currentState.messages.length > 0;
-            const hasLiveEventsForHistorySession = !!(
-              historySessionId &&
-              (currentState.liveEventStreamBySessionId?.[historySessionId]?.length ?? 0) > 0
-            );
+            const historySessionStreaming = historySessionId
+              ? currentState.currentSessionId === historySessionId
+                ? currentState.streaming
+                : currentState.streamingBySessionId?.[historySessionId]
+              : null;
+            const hasLiveEventsForHistorySession =
+              !!historySessionStreaming && hasVisibleStreamingSnapshot(historySessionStreaming);
 
             // A post-stop refresh can race OpenCode's session persistence. An
             // empty response for the already-visible session is therefore not
@@ -12115,20 +12604,40 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                 sessionId: historySessionId,
                 renderedMessageCount: currentState.messages.length,
                 liveEventCount:
-                  currentState.liveEventStreamBySessionId?.[historySessionId ?? ""]?.length ?? 0,
+                  historySessionStreaming?.rawSdkEventPayloads?.length ?? 0,
               });
               dispatch({ type: "END_SESSION_LOADING" });
               break;
             }
 
+            if (historySessionId && config.debug.showSdkEventDebug) {
+              // This is the unmodified `session.messages()` payload supplied
+              // by the extension host, not the adapted render transcript.
+              setRehydratedSdkDebugMessages(historySessionId, rawSdkMessages);
+            }
+
             // Hydration is now authoritative, so its completed SDK snapshot
             // replaces the transient live-event debug buffer atomically.
-            dispatch({ type: "CLEAR_LIVE_EVENT_STREAM_DEBUG" });
+            clearLiveSdkDebugEvents();
             // Hydration renders the SDK `session.messages()` snapshot only.
             const sourceMessages = sdkMessages;
             const normalizedMessages = sourceMessages
               .map((msg) => normalizeMessage(msg, null))
               .filter((msg): msg is Message => !!msg)
+              // A parent history response can occasionally include child
+              // session envelopes. Those belong to the subagent modal, never
+              // the main transcript. Keep session-less legacy records, but
+              // reject any explicitly owned by a different SDK session.
+              .filter((msg) => {
+                const messageInfo = asRecord(msg.info);
+                const messageSessionId = firstNonEmptyString(
+                  asString(messageInfo?.sessionID),
+                  asString(messageInfo?.sessionId),
+                  asString((msg as UnknownRecord).sessionID),
+                  asString((msg as UnknownRecord).sessionId),
+                );
+                return !historySessionId || !messageSessionId || messageSessionId === historySessionId;
+              })
               .filter((msg) => isRenderableHistoryMessage(msg));
             // `session.messages()` returns complete SDK message envelopes.
             // Adjacent assistant messages can be distinct turns sharing the
@@ -12147,20 +12656,30 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             activeSubagentParentMessageIds = new Set<string>();
 
             chatHistorySessionId = asString(data.sessionId);
-            if (chatHistorySessionId) {
-              dispatch({
-                type: "SET_SDK_MESSAGES_DEBUG",
-                payload: { sessionId: chatHistorySessionId, messages: rawSdkMessages },
-              });
-            }
             const payloadProcessingSessionIds = asArray(
               data.processingSessionIds,
               (item): item is string => typeof item === "string",
             );
-            const effectiveProcessingSessionIds =
+            const hydratedTurnIsTerminal =
+              hasTerminalAssistantReplyForLatestSdkTurn(rawSdkMessages);
+            const inheritedProcessingSessionIds =
               payloadProcessingSessionIds.length > 0
                 ? payloadProcessingSessionIds
                 : currentState.processingSessionIds;
+            // LOCKED REHYDRATION INVARIANT: SDK history is durable turn state;
+            // processingSessionIds is an eventually-consistent transport hint.
+            // A terminal latest SDK envelope must atomically evict this session
+            // from the hint list or the independently rendered composer will
+            // keep showing Stop after the response card is already complete.
+            const effectiveProcessingSessionIds = hydratedTurnIsTerminal
+              ? inheritedProcessingSessionIds.filter(
+                  (sessionId) => sessionId !== chatHistorySessionId,
+                )
+              : inheritedProcessingSessionIds;
+            dispatch({
+              type: "SET_PROCESSING_SESSIONS",
+              payload: effectiveProcessingSessionIds,
+            });
             const isSessionProcessing = !!(chatHistorySessionId &&
               effectiveProcessingSessionIds.includes(chatHistorySessionId));
             const currentStreamingSnapshot = currentState.streaming;
@@ -12169,6 +12688,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               currentState.currentSessionId === chatHistorySessionId
             );
             const shouldPreserveActiveStreaming =
+              !hydratedTurnIsTerminal &&
               isSameActiveSessionHydration &&
               currentStreamingSnapshot?.isActive === true &&
               hasVisibleStreamingSnapshot(currentStreamingSnapshot);
@@ -12218,6 +12738,18 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               latestStreamingSnapshot = null;
             }
 
+            if (hydratedTurnIsTerminal) {
+              // These three fields feed separate UI surfaces (transcript,
+              // ticker, and composer). Clear them as one terminal transition;
+              // clearing only one is the historical source of this regression.
+              dispatch({ type: "FINISH_STREAMING" });
+              dispatch({ type: "SET_STREAMING", payload: null });
+              dispatch({
+                type: "SET_ASSISTANT_TURN_PENDING",
+                payload: { pending: false },
+              });
+            }
+
             if (
               !shouldPreserveActiveStreaming &&
               (!isSwitchingSession || suppressSessionLoading)
@@ -12231,6 +12763,17 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             }
 
             dispatch({ type: "SET_MESSAGES", payload: canonicalMessages });
+            // Rehydrated transcript messages retain their centralized raw SDK
+            // event tape. Replay permission requests through the exact same
+            // extractor used by live SSE so a webview reload cannot hide an
+            // already-pending approval.
+            for (const message of canonicalMessages) {
+              const rawEvents = (message as UnknownRecord).rawSdkEventPayloads;
+              if (!Array.isArray(rawEvents)) continue;
+              for (const rawEvent of rawEvents) {
+                upsertPermissionRequest(rawEvent, chatHistorySessionId);
+              }
+            }
             if (suppressSessionLoading) {
               const stateAfterForkHistory = getState();
               logger.warn("[FORK_TRACE][WEBVIEW] fork chatHistory applied", {
@@ -12291,10 +12834,27 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           }
           dispatch({ type: "CLEAR_SUBAGENTS_FOR_SESSION" });
 
+          // A subagent is owned by the assistant message that contains its
+          // invocation. Reassert that relationship from the enclosing
+          // transcript message during hydration: child-session events can
+          // carry their own message id, but that id must never become the key
+          // used by the parent response card.
           const detailsById = Object.fromEntries(
-            canonicalMessages.flatMap((message) =>
-              (message.subagents ?? []).map((detail) => [detail.id, detail]),
-            ),
+            canonicalMessages.flatMap((message) => {
+              const parentMessageId = getMessageId(message);
+              const parentSessionId = firstNonEmptyString(
+                asString(asRecord(message.info)?.sessionID),
+                asString((message as UnknownRecord).sessionID),
+              );
+              return (message.subagents ?? []).map((detail) => [
+                detail.id,
+                {
+                  ...detail,
+                  parentMessageId: parentMessageId || detail.parentMessageId,
+                  parentSessionId: parentSessionId || detail.parentSessionId,
+                },
+              ]);
+            }),
           );
           const summariesByParentMessageId = canonicalMessages.reduce<
             Record<string, SubagentSummary[]>
@@ -12972,6 +13532,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         }
         case "liveEventStreamDebugBatch": {
           const events = Array.isArray(data.events) ? data.events : [];
+          const debugEvents: Array<{ event: unknown; sessionId: string | null }> = [];
           for (const [eventIndex, item] of events.entries()) {
             const event = asRecord(item.event) ?? item;
             const sessionId =
@@ -12983,18 +13544,20 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               asString(asRecord(event.properties)?.sessionID) ||
               getState().currentSessionId ||
               null;
-            dispatch({
-              type: "APPEND_LIVE_EVENT_STREAM_DEBUG",
-              payload: { sessionId, event },
-            });
-
-            // The host mirrors every SDK event into this client-only batch
-            // before its processing gate. That includes startup `tui.show`
-            // notifications, which can otherwise never reach streamEvent.
-            // Route them here as well so the centralized live tape remains
-            // the source for visible, ephemeral UI notifications.
-            routeLiveEventToUi(event, sessionId, "liveEventStreamDebugBatch", eventIndex);
+            debugEvents.push({ event, sessionId });
+            // Startup `tui.show` notifications can bypass streamEvent. Route
+            // them directly without retaining a duplicate diagnostic tape.
+            const liveRoute = routeLiveEventToUi(
+              event,
+              sessionId,
+              "liveEventStreamDebugBatch",
+              eventIndex,
+            );
+            if (liveRoute.sessionStatus?.statusType === "idle") {
+              markSessionIdle(sessionId);
+            }
           }
+          appendLiveEventsToDebugPanel(debugEvents);
           break;
         }
         case "streamEvent": {
@@ -13010,17 +13573,37 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             asString(payload.sessionID) ||
             asString(asRecord(payload.properties)?.sessionId) ||
             asString(asRecord(payload.properties)?.sessionID);
-          if (config.debug.showSdkEventDebug) {
-            dispatch({
-              type: "APPEND_LIVE_EVENT_STREAM_DEBUG_BATCH",
-              payload: {
-                sessionId: eventSessionId || stateBeforeStreamEvent.currentSessionId,
-                events: [payload],
-              },
-            });
-          }
           const activeSessionId = stateBeforeStreamEvent.currentSessionId;
-          if (isStoppedSession(eventSessionId, activeSessionId)) {
+          const resolvedStreamSessionId = eventSessionId || activeSessionId || null;
+          // `session.status` is intentionally filtered from the centralized
+          // transcript, but it remains valuable transient diagnostic data.
+          // Store it in the bounded Live Events buffer before any lifecycle
+          // gate can discard the event from normal stream processing.
+          const isSessionStatusEvent = streamEventType === "session.status";
+          if (isSessionStatusEvent) {
+            appendLiveEventsToDebugPanel([
+              { event: payload, sessionId: resolvedStreamSessionId },
+            ]);
+          }
+          if (
+            resolvedStreamSessionId &&
+            terminalIdleSessionIds.has(resolvedStreamSessionId) &&
+            streamEventType !== "session.status"
+          ) {
+            appendLiveEventsToDebugPanel([
+              { event: payload, sessionId: resolvedStreamSessionId },
+            ]);
+            break;
+          }
+          // A retry status is actionable UI state (for example a provider
+          // usage-limit reset time), not a buffered assistant-content frame.
+          // Let it reach the live-status route even after a prior stop so the
+          // user can see why the session is waiting. Other late events remain
+          // suppressed to prevent a stopped turn from resuming its content.
+          if (
+            isStoppedSession(eventSessionId, activeSessionId) &&
+            streamEventType !== "session.status"
+          ) {
             logger.info("[LIVE-EVENT] ignoring late event for stopped session", {
               streamEventType,
               sessionId: eventSessionId || activeSessionId || null,
@@ -13041,6 +13624,12 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           // 4) this is an explicit stream start signal (can race ahead of state flags).
           const isExplicitStreamStart =
             streamEventType === "start" || streamEventType === "streamStart";
+          // Permission prompts intentionally arrive while the agent is paused,
+          // so they may be the first event observed after the processing flag
+          // has been cleared. They still require immediate UI mounting.
+          const isPermissionRequest =
+            streamEventType === "permission.asked" ||
+            streamEventType === "permission.request";
           const canStartVisibleAssistantTurn =
             streamEventCanStartVisibleAssistantTurn(payload);
           const liveRoute = routeLiveEventToUi(
@@ -13048,6 +13637,18 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             eventSessionId || activeSessionId || null,
             "streamEvent",
           );
+          if (liveRoute.sessionStatus?.statusType === "idle") {
+            markSessionIdle(resolvedStreamSessionId);
+            appendLiveEventsToDebugPanel([
+              { event: payload, sessionId: resolvedStreamSessionId },
+            ]);
+            break;
+          }
+          if (!isSessionStatusEvent) {
+            appendLiveEventsToDebugPanel([
+              { event: payload, sessionId: eventSessionId || activeSessionId || null },
+            ]);
+          }
           const liveToastNotification = liveRoute.toast ?? null;
           const liveSessionStatus = liveRoute.sessionStatus ?? null;
           const shouldLogStreamEvent = !streamEventType.includes("message.part") ||
@@ -13069,6 +13670,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             !hasConfirmedProcessingSession &&
             !stateBeforeStreamEvent.streaming &&
             !isExplicitStreamStart &&
+            !isPermissionRequest &&
             !canStartVisibleAssistantTurn
           ) {
             logger.info("[LIVE-EVENT] breaking early — no active streaming/processing state", {
@@ -13119,6 +13721,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                 case "SET_STREAMING":
                 case "APPEND_SDK_EVENT_PAYLOAD":
                 case "UPDATE_STREAMING_CONTENT":
+                case "SUPPRESS_STREAMING_TEXT_PART":
                 case "UPDATE_STREAMING_REASONING":
                 case "SET_IN_REASONING_PART":
                 case "SET_ASSISTANT_TURN_PENDING":
@@ -13141,7 +13744,8 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                 payload,
                 terminalErrorReached,
                 shouldSuppressProcessingBootstrap,
-                markAssistantTurnClosed
+                markAssistantTurnClosed,
+                knownReasoningPartIDs,
               );
               dispatch({
                 type: "SET_SESSION_STREAMING",
@@ -13151,21 +13755,28 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                 },
               });
             };
-            if (data.immediate === true || isImmediateActivityStreamPayload(payload)) {
-              processScopedStreamEvent();
-            } else {
-              startTransition(processScopedStreamEvent);
-            }
+            // Inactive sessions retain their own live stream cache. Deferring
+            // these updates means activity disappears when the user switches
+            // to that session mid-turn, so use the same direct path as the
+            // currently selected session.
+            processScopedStreamEvent();
             break;
           }
-          const processStreamEvent = () => {
-            handleStreamEvent(dispatch, getState, payload, terminalErrorReached, shouldSuppressProcessingBootstrap, markAssistantTurnClosed);
-          };
-          if (data.immediate === true || isImmediateActivityStreamPayload(payload)) {
-            processStreamEvent();
-          } else {
-            startTransition(processStreamEvent);
-          }
+          // Live response state is user-visible, time-sensitive UI. Marking
+          // every token update as a transition lets a continuous stream keep
+          // interrupting the previous transition, so React may not commit the
+          // assistant card until the terminal history refresh. The provider
+          // already bounds delivery to small batches; process the active
+          // session synchronously so each batch can paint.
+          handleStreamEvent(
+            dispatch,
+            getState,
+            payload,
+            terminalErrorReached,
+            shouldSuppressProcessingBootstrap,
+            markAssistantTurnClosed,
+            knownReasoningPartIDs,
+          );
           const streamingAfter = getState().streaming;
           if (streamingAfter) {
             latestStreamingSnapshot = streamingAfter;
@@ -13204,39 +13815,12 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         }
         case "streamEventBatch": {
           const events = Array.isArray(data.events) ? data.events : [];
+          const debugEvents: Array<{ event: unknown; sessionId: string | null }> = [];
           const batchStartedAt = performance.now();
-          if (config.debug.showSdkEventDebug) {
-            const eventsBySessionId = new Map<string, unknown[]>();
-            const fallbackSessionId = getState().currentSessionId;
-            for (const item of events) {
-              const event = asRecord(item.event) ?? item;
-              const eventSessionId =
-                asString(item.sessionId) ||
-                asString(item.sessionID) ||
-                asString(event.sessionId) ||
-                asString(event.sessionID) ||
-                asString(asRecord(event.properties)?.sessionId) ||
-                asString(asRecord(event.properties)?.sessionID) ||
-                fallbackSessionId;
-              if (!eventSessionId) {
-                continue;
-              }
-              const bucket = eventsBySessionId.get(eventSessionId) ?? [];
-              bucket.push(event);
-              eventsBySessionId.set(eventSessionId, bucket);
-            }
-            for (const [sessionId, rawEvents] of eventsBySessionId) {
-              dispatch({
-                type: "APPEND_LIVE_EVENT_STREAM_DEBUG_BATCH",
-                payload: { sessionId, events: rawEvents },
-              });
-            }
-          }
           // Perf rationale: React's useReducer dispatch commits state
           // asynchronously — stateRef.current only updates on the next render
           // commit, so a post-dispatch getState() snapshot can return
-          // pre-batch state. Combined with startTransition deferral below,
-          // reading getState() here produces false-zero
+          // pre-batch state. Reading getState() here produces false-zero
           // streamingContentLength / streamingReasoningLength readings in the
           // perf metric. trackedDispatch mirrors the reducer's append/replace
           // logic on the dispatched payloads so the metric reflects post-batch
@@ -13245,6 +13829,13 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           // the false-zero streaming-perf reports documented in
           // tests/webview/stream-performance-debug.test.mjs.
           const stateAtBatchStart = getState();
+          // React does not commit useReducer state between dispatches made in
+          // the same message callback. Keep a local reducer mirror so event N
+          // observes the stream created/updated by event N-1. Without this,
+          // every delta in an initial multi-event batch can re-bootstrap an
+          // empty StreamingState and erase the preceding chunk.
+          let stateWithinBatch = stateAtBatchStart;
+          const getStateWithinBatch = () => stateWithinBatch;
           let trackedStreamingContentLength =
             stateAtBatchStart.streaming?.content?.length ?? 0;
           let trackedStreamingReasoningLength =
@@ -13274,6 +13865,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                 ? trackedStreamingReasoningLength + incomingLen
                 : incomingLen;
             }
+            stateWithinBatch = appReducer(stateWithinBatch, action);
             dispatch(action);
           };
           const processBatchEvents = () => {
@@ -13291,19 +13883,50 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                 asString(asRecord(evtPayload.properties)?.sessionID);
               const stateBeforeBatchEvent = getState();
               const activeSessionId = stateBeforeBatchEvent.currentSessionId;
-              if (isStoppedSession(eventSessionId, activeSessionId)) {
+              const resolvedBatchSessionId = eventSessionId || activeSessionId || null;
+              const isSessionStatusEvent = evtType === "session.status";
+              // Keep status frames in the temporary debug buffer even though
+              // the centralized transcript filter excludes them as live-only.
+              if (isSessionStatusEvent) {
+                appendLiveEventsToDebugPanel([
+                  { event: evtPayload, sessionId: resolvedBatchSessionId },
+                ]);
+              } else {
+                debugEvents.push({
+                  event: evtPayload,
+                  sessionId: resolvedBatchSessionId,
+                });
+              }
+              if (
+                resolvedBatchSessionId &&
+                terminalIdleSessionIds.has(resolvedBatchSessionId) &&
+                evtType !== "session.status"
+              ) {
+                continue;
+              }
+              // Keep session.status visible after a stopped/terminal turn.
+              // Retry metadata can arrive after the stop acknowledgement and
+              // contains the only user-facing explanation and retry time.
+              if (
+                isStoppedSession(eventSessionId, activeSessionId) &&
+                evtType !== "session.status"
+              ) {
                 logger.info("[LIVE-EVENT] ignoring late batch event for stopped session", {
                   streamEventType: evtType,
                   sessionId: eventSessionId || activeSessionId || null,
                 });
                 continue;
               }
-              routeLiveEventToUi(
+              const liveRoute = routeLiveEventToUi(
                 evtPayload,
                 eventSessionId || activeSessionId || null,
                 "streamEventBatch",
                 eventIndex,
               );
+              if (liveRoute.sessionStatus?.statusType === "idle") {
+                markSessionIdle(resolvedBatchSessionId);
+                continue;
+              }
               if (
                 eventSessionId &&
                 activeSessionId &&
@@ -13323,6 +13946,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                     case "SET_STREAMING":
                     case "APPEND_SDK_EVENT_PAYLOAD":
                     case "UPDATE_STREAMING_CONTENT":
+                    case "SUPPRESS_STREAMING_TEXT_PART":
                     case "UPDATE_STREAMING_REASONING":
                     case "SET_IN_REASONING_PART":
                     case "SET_ASSISTANT_TURN_PENDING":
@@ -13352,6 +13976,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                   terminalErrorReached,
                   scopedTurnIsClosed,
                   markAssistantTurnClosed,
+                  knownReasoningPartIDs,
                 );
                 dispatch({
                   type: "SET_SESSION_STREAMING",
@@ -13362,7 +13987,8 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                 });
               } else {
                 const batchEventMessageId = extractEventMessageId(evtPayload);
-                const activeStreamingMessageId = getState().streaming?.messageId;
+                const activeStreamingMessageId =
+                  getStateWithinBatch().streaming?.messageId;
                 const batchTurnIsClosed = !!(
                   (batchEventMessageId &&
                     closedAssistantTurnMessageIds.has(batchEventMessageId)) ||
@@ -13371,11 +13997,12 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                 );
                 handleStreamEvent(
                   trackedDispatch,
-                  getState,
+                  getStateWithinBatch,
                   evtPayload,
                   terminalErrorReached,
                   batchTurnIsClosed,
                   markAssistantTurnClosed,
+                  knownReasoningPartIDs,
                 );
               }
 
@@ -13391,14 +14018,15 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                 if (
                   finish &&
                   terminalEventMatchesAssistantTurn(evtPayload, [
-                    getState().streaming?.messageId,
-                    getState().assistantTurnMessageId,
+                    getStateWithinBatch().streaming?.messageId,
+                    getStateWithinBatch().assistantTurnMessageId,
                   ])
                 ) {
                   dispatch({ type: "SET_PROCESSING", payload: false });
                 }
               }
             }
+            appendLiveEventsToDebugPanel(debugEvents);
             // Emit inside processBatchEvents so the tracked accumulators
             // have observed every dispatched payload before the read.
             logger.streamPerformance("stream-event-batch", {
@@ -13408,16 +14036,11 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               streamingReasoningLength: trackedStreamingReasoningLength,
             });
           };
-          const hasImmediateActivity = events.some((item) =>
-            item.immediate === true ||
-            isImmediateActivityStreamPayload(asRecord(item.event) ?? item),
-          );
-          if (hasImmediateActivity) {
-            processBatchEvents();
-          } else {
-            startTransition(processBatchEvents);
-          }
-          const streamingAfter = getState().streaming;
+          // Do not put the active assistant stream in a React transition.
+          // Continuous low-priority batches can be starved until completion,
+          // leaving the response surface empty despite accepted SDK events.
+          processBatchEvents();
+          const streamingAfter = stateWithinBatch.streaming;
           if (streamingAfter) {
             latestStreamingSnapshot = streamingAfter;
           }
@@ -13755,6 +14378,51 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           }
           break;
         }
+        case "permissionResolved": {
+          const permissionID = asString(data.permissionID) || asString(data.permissionId);
+          if (permissionID) {
+            dispatch({
+              type: "SET_INTERACTIVE_EVENTS",
+              payload: getState().interactiveEvents.filter(
+                (event) => event.type !== "quick_actions" || event.permissionID !== permissionID,
+              ),
+            });
+          }
+          break;
+        }
+        case "permissionReplyFailed": {
+          const error = asString(data.error) || "Unable to submit permission response";
+          dispatch({ type: "ADD_ERROR_MESSAGE", payload: error });
+          break;
+        }
+        case "pendingInteractions": {
+          const interactionSessionId = asString(data.sessionId);
+          if (!interactionSessionId || interactionSessionId !== getState().currentSessionId) {
+            break;
+          }
+          const permissions = asArray<UnknownRecord>(
+            data.permissions,
+            (item): item is UnknownRecord => !!asRecord(item),
+          );
+          const pendingPermissionIDs = new Set(
+            permissions
+              .map((permission) => permissionRequestFromSdkPayload(permission, interactionSessionId)?.id)
+              .filter((id): id is string => !!id),
+          );
+          dispatch({
+            type: "SET_INTERACTIVE_EVENTS",
+            payload: getState().interactiveEvents.filter(
+              (event) =>
+                event.type !== "quick_actions" ||
+                !event.permissionID ||
+                pendingPermissionIDs.has(event.permissionID),
+            ),
+          });
+          for (const permission of permissions) {
+            upsertPermissionRequest(permission, interactionSessionId);
+          }
+          break;
+        }
         case "userMessageAppended": {
           terminalErrorReached = false;
           const message = data.message as Message;
@@ -13770,6 +14438,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           );
           if (resumedSessionId) {
             stoppedSessionIds.delete(resumedSessionId);
+            terminalIdleSessionIds.delete(resumedSessionId);
           }
           if (messageSessionId) {
             dispatch({ type: "SET_SESSION_ID", payload: messageSessionId });
@@ -13987,7 +14656,11 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           );
           dispatch({
             type: "SET_PROCESSING_SESSIONS",
-            payload: sessionIds,
+            payload: sessionIds.filter(
+              (sessionId) =>
+                !terminalIdleSessionIds.has(sessionId) &&
+                !stoppedSessionIds.has(sessionId),
+            ),
           });
           break;
         }

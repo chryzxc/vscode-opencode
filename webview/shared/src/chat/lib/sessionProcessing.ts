@@ -181,6 +181,60 @@ function latestRoleBoundaryIndexes(messages: unknown[] | undefined): {
   return { lastUserIndex, lastAssistantIndex };
 }
 
+const TERMINAL_ASSISTANT_FINISH_REASONS = new Set([
+  "stop",
+  "length",
+  "cancelled",
+  "canceled",
+  "error",
+]);
+
+/**
+ * Returns true when an SDK `session.messages()` snapshot proves that its latest
+ * user turn has received a terminal assistant reply.
+ *
+ * LOCKED REHYDRATION INVARIANT:
+ *
+ * A session-level `processingSessionIds` entry is only a transient transport
+ * hint. The SDK message envelope is durable turn evidence. When the latest
+ * conversational envelope is an assistant message whose final finish reason is
+ * terminal, hydration must not resurrect the loading ticker or Stop button from
+ * an older processing flag.
+ *
+ * Do not broaden this to `time.completed` or every non-empty finish reason.
+ * Intermediate assistant envelopes commonly finish with `tool-calls` and the
+ * same assistant turn is still running after those envelopes complete.
+ */
+export function hasTerminalAssistantReplyForLatestSdkTurn(
+  sdkMessages?: unknown[],
+): boolean {
+  if (!Array.isArray(sdkMessages) || sdkMessages.length === 0) {
+    return false;
+  }
+
+  for (let index = sdkMessages.length - 1; index >= 0; index -= 1) {
+    const message = asRecord(sdkMessages[index]);
+    const info = asRecord(message?.info) ?? message;
+    const role = asString(info?.role).trim().toLowerCase();
+    if (role === "user") {
+      return false;
+    }
+    if (role !== "assistant") {
+      continue;
+    }
+
+    if (info?.aborted === true || message?.aborted === true || info?.error) {
+      return true;
+    }
+
+    return TERMINAL_ASSISTANT_FINISH_REASONS.has(
+      asString(info?.finish ?? message?.finish).trim().toLowerCase(),
+    );
+  }
+
+  return false;
+}
+
 function latestCentralizedRoleBoundaryIndexes(rawSdkEventPayloads?: unknown[]): {
   lastUserIndex: number;
   lastAssistantIndex: number;
@@ -521,6 +575,8 @@ export function computeQueuedUserMessageIndexes<
     messageId?: string;
     role?: string;
     info?: { id?: string; role?: string };
+    finish?: string;
+    aborted?: boolean;
   },
 >(messages: T[], activeAssistantMessageId?: string | null): Set<number> {
   let latestAssistantIndex = -1;
@@ -534,8 +590,18 @@ export function computeQueuedUserMessageIndexes<
   const latestAssistant = messages[latestAssistantIndex];
   const latestAssistantId =
     latestAssistant?.info?.id ?? latestAssistant?.id ?? latestAssistant?.messageId;
+  const latestAssistantInfo = latestAssistant?.info as
+    | { finish?: string; aborted?: boolean }
+    | undefined;
+  const latestAssistantIsTerminal =
+    latestAssistant?.aborted === true ||
+    latestAssistantInfo?.aborted === true ||
+    typeof latestAssistant?.finish === "string" && latestAssistant.finish.trim().length > 0 ||
+    typeof latestAssistantInfo?.finish === "string" && latestAssistantInfo.finish.trim().length > 0;
   const transcriptOwnsActiveAssistant =
-    !!activeAssistantMessageId && latestAssistantId === activeAssistantMessageId;
+    !latestAssistantIsTerminal &&
+    !!activeAssistantMessageId &&
+    latestAssistantId === activeAssistantMessageId;
   const queuedIndexes = new Set<number>();
   let foundCurrentTurnUser = transcriptOwnsActiveAssistant;
 

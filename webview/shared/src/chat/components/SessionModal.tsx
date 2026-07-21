@@ -381,9 +381,9 @@ export function SessionModal({ isOpen, onClose }: SessionModalProps) {
                           >
                             <div className="flex items-center gap-1.5 min-w-0">
                               {isProcessing ? (
-                                <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-oc-accent-soft ring-1 ring-oc-accent/45">
+                                <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-oc-border-soft bg-oc-panel-soft">
                                   <Loader2
-                                    className="h-3.5 w-3.5 animate-spin text-oc-accent"
+                                    className="h-3.5 w-3.5 animate-spin text-[var(--oc-text-soft)]"
                                     aria-label="Processing"
                                   />
                                 </span>

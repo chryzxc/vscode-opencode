@@ -118,7 +118,10 @@ import {
   adaptSubtaskPart as sdkAdaptSubtaskPart,
 } from "../services/SdkMessageAdapter";
 import { SessionService } from "../services/SessionService";
-import { SessionSnapshotLoader } from "../services/SessionSnapshotLoader";
+import {
+  SessionMessagesLoadError,
+  SessionSnapshotLoader,
+} from "../services/SessionSnapshotLoader";
 import { SkillManagerService } from "../services/SkillManagerService";
 import { SkillManagementService } from "../services/SkillManagementService";
 import {
@@ -238,9 +241,8 @@ type MessageChangeSummary = {
  */
 export class ChatViewProvider
   implements vscode.WebviewViewProvider, FileThemeProcessorObserver {
-  private static readonly STREAM_WEBVIEW_FLUSH_INTERVAL_MS = 50;
-  private static readonly MAX_STREAM_WEBVIEW_EVENTS_PER_BATCH = 8;
-  private static readonly STREAM_WEBVIEW_BACKLOG_YIELD_MS = 16;
+  /** Temporary: make SDK structured transport observable during walkthrough testing. */
+  private static readonly FORCE_STRUCTURED_OUTPUT_TEST_MODE = true;
   private static readonly MAX_STREAM_WEBVIEW_TOOL_OUTPUT_CHARS = 16_384;
 
   private static readonly SUBAGENT_SNAPSHOT_PREFIX =
@@ -324,102 +326,34 @@ export class ChatViewProvider
 
   /** ID of the session currently active in the webview (undefined until first bootstrap) */
   private currentSessionId: string | undefined;
+  /**
+   * Session hydration performs several network requests.  A user can select B
+   * while the earlier request for A is still in flight; only the newest
+   * request is allowed to update the active-session UI when it completes.
+   */
+  private sessionLoadGeneration = 0;
   /** Session ID that owns the currently active AI stream. Used to prevent
    *  cross-session event leakage when the user switches sessions while a
    *  response is still streaming from the server. */
   private activeStreamSessionId: string | undefined;
   private turnEpochBySession = new Map<string, number>();
-  private pendingStreamWebviewEvents: Array<{
-    event: unknown;
-    sessionId?: string;
-    immediate?: boolean;
-  }> = [];
   /**
    * The first event of a newly-started turn is presentation-critical: it is
    * what replaces the generic thinking bubble with the live assistant card.
    * Later events remain batched to protect the webview during token streams.
    */
   private firstStreamWebviewEventPendingBySession = new Set<string>();
-  private streamWebviewFlushTimer: ReturnType<typeof setTimeout> | undefined;
   private lastStreamPerformanceLogAt = 0;
   /**
-   * Debug-only mirror of every event that reaches this provider. This is sent
-   * to the webview but deliberately never enters SessionService persistence.
+   * `/event` and `/global/event` can emit the same SDK event in direct and
+   * sync-wrapped forms. Keep a short, bounded identity window so one SDK
+   * operation creates one live timeline row.
    */
-  private pendingLiveEventDebugEvents: Array<{ event: unknown; sessionId?: string }> = [];
-  private liveEventDebugFlushTimer: ReturnType<typeof setTimeout> | undefined;
+  private readonly recentStreamEventIdentities = new Map<string, number>();
+  private static readonly STREAM_EVENT_DEDUP_WINDOW_MS = 60_000;
+  private static readonly MAX_RECENT_STREAM_EVENT_IDENTITIES = 2_000;
   private currentTodoItems: unknown[] = [];
   private compatibilityWarningsOverride: CompatibilityResult[] | null = null;
-  private subagentProjectionWrites = new Map<string, Promise<void>>();
-  private readonly subagentProjectionDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  private static readonly SUBAGENT_PROJECTION_DEBOUNCE_MS = 500;
-
-  private getSubagentProjectionStorageKey(sessionId: string): string {
-    return `opencode.session.subagentProjection.${sessionId}`;
-  }
-
-  /** Persist the extension-owned subagent projection; SDK history does not expose it. */
-  private persistSubagentProjection(
-    sessionId: string,
-    projection: SubagentUpdatePayload,
-  ): Promise<void> {
-    const previous = this.subagentProjectionWrites.get(sessionId) ?? Promise.resolve();
-    const write = previous
-      .catch(() => undefined)
-      .then(() =>
-        this.context.workspaceState.update(this.getSubagentProjectionStorageKey(sessionId), {
-          sessionId,
-          savedAt: Date.now(),
-          ...projection,
-        }),
-      );
-    this.subagentProjectionWrites.set(sessionId, write);
-    void write.finally(() => {
-      if (this.subagentProjectionWrites.get(sessionId) === write) {
-        this.subagentProjectionWrites.delete(sessionId);
-      }
-    });
-    return write;
-  }
-
-  /** Trailing-debounce projection persist; coalesces rapid subagent bursts into one write. */
-  private scheduleSubagentProjectionPersist(sessionId: string): void {
-    const existing = this.subagentProjectionDebounceTimers.get(sessionId);
-    if (existing) {
-      clearTimeout(existing);
-    }
-    const timer = setTimeout(() => {
-      this.subagentProjectionDebounceTimers.delete(sessionId);
-      void this.persistSubagentProjection(
-        sessionId,
-        this.subagentTracker.getSnapshotPayload(),
-      );
-    }, ChatViewProvider.SUBAGENT_PROJECTION_DEBOUNCE_MS);
-    this.subagentProjectionDebounceTimers.set(sessionId, timer);
-  }
-
-  private async restorePersistedSubagentProjection(sessionId: string): Promise<void> {
-    const projection = this.context.workspaceState.get<
-      SubagentUpdatePayload & { sessionId?: string }
-    >(this.getSubagentProjectionStorageKey(sessionId));
-    if (projection?.sessionId && projection.sessionId !== sessionId) {
-      return;
-    }
-    if (
-      !projection ||
-      (!Object.keys(projection.summariesByParentMessageId ?? {}).length &&
-        !Object.keys(projection.detailsById ?? {}).length)
-    ) {
-      return;
-    }
-    this.view?.webview.postMessage({
-      type: "subagentUpdate",
-      sessionId,
-      summariesByParentMessageId: projection.summariesByParentMessageId,
-      detailsById: projection.detailsById,
-    });
-  }
-
   private getTodoStorageKey(sessionId: string): string {
     return `opencode.session.todos.${sessionId}`;
   }
@@ -467,27 +401,20 @@ export class ChatViewProvider
   private enqueueStreamWebviewEvent(
     event: unknown,
     sessionId: string | undefined,
-    flushImmediately = false,
+    _flushImmediately = false,
     immediate = false,
   ): void {
-    this.pendingStreamWebviewEvents.push({ event, sessionId, immediate });
-
-    if (flushImmediately) {
-      // Lifecycle events should start delivery immediately, but must not
-      // bypass the per-message cap. A terminal event can arrive behind a large
-      // tool/subagent burst; posting that entire backlog in one IPC message
-      // blocks the webview and makes scrolling freeze.
-      this.flushStreamWebviewEvents();
-      return;
-    }
-
-    if (this.streamWebviewFlushTimer) {
-      return;
-    }
-
-    this.streamWebviewFlushTimer = setTimeout(() => {
-      this.flushStreamWebviewEvents();
-    }, ChatViewProvider.STREAM_WEBVIEW_FLUSH_INTERVAL_MS);
+    // Live activity is product UI, not a deferred tape. Send every SDK event
+    // immediately; the payload-size boundary below remains to protect IPC from
+    // one oversized tool result.
+    const startedAt = performance.now();
+    this.view?.webview.postMessage({
+      type: "streamEvent",
+      event,
+      sessionId,
+      immediate,
+    });
+    this.logStreamPerformance("provider-webview-event", startedAt, 1);
   }
 
   private truncateStreamToolTextForWebview(value: unknown): unknown {
@@ -590,98 +517,33 @@ export class ChatViewProvider
     return node;
   }
 
-  private flushStreamWebviewEvents(): void {
-    const startedAt = performance.now();
-    if (this.streamWebviewFlushTimer) {
-      clearTimeout(this.streamWebviewFlushTimer);
-      this.streamWebviewFlushTimer = undefined;
-    }
-
-    const pending = this.pendingStreamWebviewEvents.splice(
-      0,
-      ChatViewProvider.MAX_STREAM_WEBVIEW_EVENTS_PER_BATCH,
-    );
-    if (pending.length === 0) {
-      return;
-    }
-    const hasBacklog = this.pendingStreamWebviewEvents.length > 0;
-
-    if (pending.length === 1) {
-      const item = pending[0];
-      this.view?.webview.postMessage({
-        type: "streamEvent",
-        event: item.event,
-        sessionId: item.sessionId,
-        immediate: item.immediate === true,
-      });
-      this.logStreamPerformance("provider-webview-flush", startedAt, 1);
-      this.scheduleStreamWebviewBacklogFlush(hasBacklog);
-      return;
-    }
-
-    this.view?.webview.postMessage({
-      type: "streamEventBatch",
-      events: pending.map((item) => ({
-        event: item.event,
-        sessionId: item.sessionId,
-        immediate: item.immediate === true,
-      })),
-    });
-    this.logStreamPerformance("provider-webview-flush", startedAt, pending.length);
-    this.scheduleStreamWebviewBacklogFlush(hasBacklog);
-  }
-
-  private scheduleStreamWebviewBacklogFlush(hasBacklog: boolean): void {
-    if (!hasBacklog || this.streamWebviewFlushTimer) {
-      return;
-    }
-    this.streamWebviewFlushTimer = setTimeout(() => {
-      this.flushStreamWebviewEvents();
-    }, ChatViewProvider.STREAM_WEBVIEW_BACKLOG_YIELD_MS);
-  }
-
   private logStreamPerformance(
     metric: string,
     startedAt: number,
     batchSize: number,
   ): void {
+    const durationMs = performance.now() - startedAt;
+    // Normal stream delivery is not log-worthy. Only retain a bounded signal
+    // for a genuinely blocked frame; routine instrumentation previously added
+    // continuous serialization/console work to the path it measured.
+    if (durationMs < 16) {
+      return;
+    }
     const now = Date.now();
-    if (now - this.lastStreamPerformanceLogAt < 250) {
+    // Performance instrumentation must stay far below the presentation rate.
+    // At four entries/second this logger was itself measurable during long
+    // streams because every entry is cloned, serialized and printed.
+    if (now - this.lastStreamPerformanceLogAt < 2_000) {
       return;
     }
     this.lastStreamPerformanceLogAt = now;
+    const memory = process.memoryUsage();
     this.logger.info(`[STREAM-PERF] ${metric}`, {
       batchSize,
-      durationMs: Number((performance.now() - startedAt).toFixed(2)),
-    });
-  }
-
-  private enqueueLiveEventDebugEvent(
-    event: unknown,
-    sessionId: string | undefined,
-  ): void {
-    this.pendingLiveEventDebugEvents.push({ event, sessionId });
-    if (this.liveEventDebugFlushTimer) {
-      return;
-    }
-    this.liveEventDebugFlushTimer = setTimeout(() => {
-      this.flushLiveEventDebugEvents();
-    }, 32);
-  }
-
-  private flushLiveEventDebugEvents(): void {
-    if (this.liveEventDebugFlushTimer) {
-      clearTimeout(this.liveEventDebugFlushTimer);
-      this.liveEventDebugFlushTimer = undefined;
-    }
-    const events = this.pendingLiveEventDebugEvents;
-    if (events.length === 0) {
-      return;
-    }
-    this.pendingLiveEventDebugEvents = [];
-    this.view?.webview.postMessage({
-      type: "liveEventStreamDebugBatch",
-      events,
+      durationMs: Number(durationMs.toFixed(2)),
+      queueDepth: 0,
+      heapUsedMb: Number((memory.heapUsed / 1_048_576).toFixed(1)),
+      rssMb: Number((memory.rss / 1_048_576).toFixed(1)),
     });
   }
 
@@ -864,10 +726,10 @@ export class ChatViewProvider
     }
   }
 
-  private async handleSdkTodoUpdatedEvent(
+  private handleSdkTodoUpdatedEvent(
     event: unknown,
     fallbackSessionId?: string,
-  ): Promise<boolean> {
+  ): boolean {
     const ev = this.asRecord(event);
     if (ev?.type !== "todo.updated") {
       return false;
@@ -883,8 +745,15 @@ export class ChatViewProvider
     }
 
     const items = this.normalizeSdkTodoItems(sessionId, rawTodos);
-    await this.persistNormalizedTodoItems(sessionId, items);
+    // The snapshot is live UI. Do not put it behind workspace-state I/O.
+    this.currentTodoItems = items;
     this.postTodoSnapshot(sessionId, items, "sdk-event");
+    void this.persistNormalizedTodoItems(sessionId, items).catch((error) => {
+      this.logger.warn("Failed to persist SDK todo snapshot", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
     return true;
   }
 
@@ -1549,11 +1418,6 @@ export class ChatViewProvider
    */
   private async handleGetSessions(): Promise<void> {
     const sessions = await this.sessionService.listSessions();
-    const sessionIds = new Set(
-      sessions
-        .map((session: any) => this.firstNonEmptyString(session?.id))
-        .filter((id): id is string => typeof id === "string" && id.length > 0),
-    );
     const topLevelSessions = sessions.filter((session: any) => {
       const parentSessionId = this.firstNonEmptyString(
         session?.parentSessionId,
@@ -1567,7 +1431,10 @@ export class ChatViewProvider
       if (sessionId && parentSessionId === sessionId) {
         return true;
       }
-      return !sessionIds.has(parentSessionId);
+      // Child sessions are detail-only subagent transcripts. They must never
+      // become selectable main conversations, even if the server's list is
+      // incomplete and does not currently include their parent.
+      return false;
     });
     const sessionsPayload = topLevelSessions.map((session: any) => ({
       id: session.id,
@@ -1617,22 +1484,8 @@ export class ChatViewProvider
     }
 
     try {
-      let processedMessages: any[];
-      try {
-        const sdkMessages = await this.sessionSnapshotLoader.loadMessagesOnly(childSessionId);
-        processedMessages = adaptSdkMessages(sdkMessages);
-      } catch (sdkError) {
-        this.logger.warn("SDK child session transcript load failed; falling back", {
-          subagentId,
-          childSessionId,
-          error: sdkError instanceof Error ? sdkError.message : String(sdkError),
-        });
-        const rawMessages = await this.sessionService.getMessages(childSessionId);
-        processedMessages = await this.processHistoryMessages(
-          Array.isArray(rawMessages) ? rawMessages : [],
-          childSessionId,
-        );
-      }
+      const sdkMessages = await this.sessionSnapshotLoader.loadMessagesOnly(childSessionId);
+      const processedMessages = adaptSdkMessages(sdkMessages);
 
       const conversationEvents = this.buildAssistantConversationEvents(
         processedMessages,
@@ -1837,7 +1690,6 @@ export class ChatViewProvider
         contextInputTokens: history.contextInputTokens,
         processingSessionIds: this.getEffectiveProcessingSessionIds(),
       });
-      await this.restorePersistedSubagentProjection(sessionId);
       await this.refreshPendingInteractionsFromSdk(sessionId);
     } catch (err) {
       this.logger.warn("Post-turn SDK refresh failed", {
@@ -2035,12 +1887,20 @@ export class ChatViewProvider
       ["true", "done", "stop", "complete", "completed", "success", "finished", "finish", "error", "aborted", "abort", "idle"].includes(normalize(value) || "");
 
     if (eventType === "session.status") {
-      const status = normalize(
+      const statusPayload =
         properties.status ??
         properties.state ??
         (properties.session as Record<string, unknown> | undefined)?.status ??
-        (properties.info as Record<string, unknown> | undefined)?.status,
-      );
+        (properties.info as Record<string, unknown> | undefined)?.status;
+      const statusRecord = statusPayload && typeof statusPayload === "object"
+        ? statusPayload as Record<string, unknown>
+        : undefined;
+      // OpenCode emits `{ status: { type: "idle" } }`. Treat that terminal
+      // signal exactly like a string-form idle status so stale processing
+      // markers cannot keep the loading ticker/Stop control alive.
+      const status = normalize(statusRecord?.type) ||
+        normalize(statusRecord?.status) ||
+        normalize(statusPayload);
       return status === "idle";
     }
 
@@ -2079,10 +1939,44 @@ export class ChatViewProvider
       return;
     }
 
+    const loadGeneration = ++this.sessionLoadGeneration;
+    const isCurrentLoad = () => loadGeneration === this.sessionLoadGeneration;
+    const abandonIfStale = (stage: string): boolean => {
+      if (isCurrentLoad()) {
+        return false;
+      }
+      this.logger.debug("Ignoring stale session hydration result", {
+        sessionId,
+        loadGeneration,
+        latestLoadGeneration: this.sessionLoadGeneration,
+        stage,
+      });
+      return true;
+    };
+
     try {
       // CRITICAL: Switch the active session in SessionService
       // This updates the service's internal state and persists it
-      await this.sessionService.switchSession(sessionId);
+      const requestedSession = await this.sessionService.switchSession(sessionId);
+      if (abandonIfStale("switchSession")) return;
+      const parentSessionId = this.firstNonEmptyString(
+        requestedSession.parentSessionId,
+        requestedSession.parentID,
+        requestedSession.parentId,
+      );
+      if (parentSessionId && parentSessionId !== sessionId) {
+        // A child is only ever rendered in SubagentDetailModal. Resolve an
+        // accidental direct navigation to its parent before any chat history
+        // reaches the webview, so the child transcript cannot leak into the
+        // main assistant response list.
+        this.logger.debug("Redirecting child session load to parent conversation", {
+          requestedChildSessionId: sessionId,
+          parentSessionId,
+        });
+        sessionId = parentSessionId;
+        await this.sessionService.switchSession(sessionId);
+        if (abandonIfStale("redirectChildSession")) return;
+      }
       this.currentSessionId = sessionId;
       this.subagentTracker.setActiveSession(sessionId);
       // Clear in-memory todo cache to avoid cross-session leakage
@@ -2090,6 +1984,7 @@ export class ChatViewProvider
 
       // Restore per-session agent / model / thinking selections
       await this.modelAndAgentManager.applySessionSettings(sessionId);
+      if (abandonIfStale("applySessionSettings")) return;
 
       // ============================================================================
       // CRITICAL: Message Ordering for Session Switch
@@ -2115,6 +2010,7 @@ export class ChatViewProvider
       const sessionHistory = await this.loadSdkRenderableHistory(
         sessionId,
       );
+      if (abandonIfStale("loadSdkRenderableHistory")) return;
       const messages = sessionHistory.messages;
 
       this.logger.debug('[handleLoadSession] Processed messages', {
@@ -2148,12 +2044,15 @@ export class ChatViewProvider
         messages: messages,
         sdkMessages: sessionHistory.sdkMessages,
         contextInputTokens: sessionHistory.contextInputTokens,
+        available: sessionHistory.available,
+        unavailableReason: sessionHistory.unavailableReason,
+        unavailableMessage: sessionHistory.unavailableMessage,
+        unavailableStatus: sessionHistory.unavailableStatus,
         // A fork is already a completed snapshot. It needs history hydration,
         // but must not present as a newly-running assistant turn.
         suppressSessionLoading: options?.suppressSessionLoading === true,
         processingSessionIds: this.getEffectiveProcessingSessionIds(),
       });
-      await this.restorePersistedSubagentProjection(sessionId);
       this.logger.warn("[FORK_TRACE][HOST] chatHistory posted", {
         sessionId,
         suppressSessionLoading: options?.suppressSessionLoading === true,
@@ -2166,6 +2065,7 @@ export class ChatViewProvider
         sessionId,
         messages,
       );
+      if (abandonIfStale("sendCompactionViewState")) return;
 
       // Step 4: NOW send initState with the updated session ID
       // This comes AFTER chatHistory so the session switch is already detected
@@ -2222,6 +2122,9 @@ export class ChatViewProvider
           this.modelAndAgentManager.getSelectedModel()?.modelID ?? "",
         )
         .then((capability) => {
+          if (!isCurrentLoad()) {
+            return;
+          }
           const merged = this.resolveCapabilityForModel(
             this.modelAndAgentManager.getSelectedModel()?.providerID ?? "",
             this.modelAndAgentManager.getSelectedModel()?.modelID ?? "",
@@ -2252,6 +2155,7 @@ export class ChatViewProvider
       // Sync persisted revert state so the webview knows if this session
       // is currently reverted (Undo button → Restore after reload).
       await this.syncRevertStateFromServer(sessionId);
+      if (abandonIfStale("syncRevertState")) return;
 
       // Update the list selection
       await this.handleGetSessions();
@@ -2554,17 +2458,6 @@ export class ChatViewProvider
   }
 
   /**
-   * Wrapper: Apply session message overrides
-   * Delegates to HistoryProcessor module
-   */
-  private async applySessionMessageOverrides(
-    sessionId: string,
-    messages: any[],
-  ): Promise<any[]> {
-    return this.historyProcessor.applySessionMessageOverrides(sessionId, messages);
-  }
-
-  /**
    * Wrapper: Normalize structured output
    * Delegates to StructuredOutputProcessor module
    */
@@ -2577,17 +2470,6 @@ export class ChatViewProvider
     },
   ): any {
     return this.structuredOutputProcessor.normalizeStructuredOutput(content, context);
-  }
-
-  /**
-   * Wrapper: Persist session message override
-   * Delegates to HistoryProcessor module
-   */
-  private async persistSessionMessageOverride(
-    sessionId: string,
-    override: any,
-  ): Promise<void> {
-    return this.historyProcessor.persistSessionMessageOverride(sessionId, override);
   }
 
   /**
@@ -2611,7 +2493,9 @@ export class ChatViewProvider
    * Delegates to StructuredOutputProcessor module
    */
   private async enrichMessageWithPlan(message: any): Promise<any> {
-    return await this.structuredOutputProcessor.enrichMessageWithPlan(message);
+    return await this.structuredOutputProcessor.enrichMessageWithPlan(message, {
+      createActivityWalkthrough: true,
+    });
   }
 
   /**
@@ -3477,6 +3361,10 @@ export class ChatViewProvider
                 messages: messages,
                 sdkMessages: sessionHistory.sdkMessages,
                 contextInputTokens: sessionHistory.contextInputTokens,
+                available: sessionHistory.available,
+                unavailableReason: sessionHistory.unavailableReason,
+                unavailableMessage: sessionHistory.unavailableMessage,
+                unavailableStatus: sessionHistory.unavailableStatus,
                 
                 processingSessionIds: this.getEffectiveProcessingSessionIds(),
               });
@@ -3484,7 +3372,6 @@ export class ChatViewProvider
               this.subagentTracker.resetForSession(currentSession.id);
               this.streamedSubtaskPartsBySessionId.clear();
               this.structuredOutputProcessor.clearDiagnostics();
-              await this.restorePersistedSubagentProjection(currentSession.id);
               this.sendQueueUpdate(currentSession.id);
             } else {
               this.subagentTracker.resetForSession(null);
@@ -3779,6 +3666,70 @@ export class ChatViewProvider
           }
           break;
         }
+        case "permissionReply": {
+          const permissionID = this.firstNonEmptyString(message.permissionID, message.permissionId);
+          const sessionID = this.firstNonEmptyString(message.sessionId, this.currentSessionId);
+          const response = this.firstNonEmptyString(message.response);
+          if (!permissionID || !sessionID || !["once", "always", "reject"].includes(response ?? "")) {
+            this.logger.warn("Ignoring malformed permission reply", {
+              hasPermissionID: !!permissionID,
+              hasSessionID: !!sessionID,
+              response,
+            });
+            break;
+          }
+
+          try {
+            const client = await this.serverManager.ensureRunning();
+            const sdkClient = client as any;
+            const directory = this.getWorkspaceDirectory();
+            // SDK v2's active permission API is namespaced:
+            // POST /permission/{requestID}/reply with `{ reply }`.
+            // Keep the generated root endpoint as a compatibility fallback for
+            // newer SDKs that have moved this operation again.
+            const result = typeof sdkClient.permission?.reply === "function"
+              ? await sdkClient.permission.reply({
+                  requestID: permissionID,
+                  reply: response,
+                  ...(directory ? { directory } : {}),
+                })
+              : typeof sdkClient.permission?.respond === "function"
+                ? await sdkClient.permission.respond({
+                    sessionID,
+                    permissionID,
+                    response,
+                    ...(directory ? { directory } : {}),
+                  })
+                : await sdkClient.postSessionIdPermissionsPermissionId({
+                    path: { id: sessionID, permissionID },
+                    body: { response },
+                    ...(directory ? { query: { directory } } : {}),
+                  });
+            if (result?.error) {
+              throw new Error(typeof result.error === "string" ? result.error : "Permission reply failed");
+            }
+            this.view?.webview.postMessage({
+              type: "permissionResolved",
+              sessionId: sessionID,
+              permissionID,
+            });
+            void this.refreshPendingInteractionsFromSdk(sessionID);
+          } catch (error) {
+            this.logger.error("Failed to reply to OpenCode permission request", {
+              sessionID,
+              permissionID,
+              response,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            this.view?.webview.postMessage({
+              type: "permissionReplyFailed",
+              sessionId: sessionID,
+              permissionID,
+              error: error instanceof Error ? error.message : "Unable to submit permission response",
+            });
+          }
+          break;
+        }
         case "newSession":
         case "createSession": {
           const correlationId = this.logger.startFeatureFlow('create-session');
@@ -3862,6 +3813,16 @@ export class ChatViewProvider
 
           if (message.plan) {
             await this.handleViewPlan(message.plan);
+          }
+          break;
+        }
+        case "viewWalkthrough": {
+          if (message.walkthrough) {
+            await vscode.commands.executeCommand("opencode.showWalkthrough", {
+              content: message.walkthrough.content,
+              title: message.walkthrough.title,
+              sourceFile: message.walkthrough.file,
+            });
           }
           break;
         }
@@ -4370,6 +4331,10 @@ export class ChatViewProvider
               messages: messages,
               sdkMessages: sessionHistory.sdkMessages,
               contextInputTokens: sessionHistory.contextInputTokens,
+              available: sessionHistory.available,
+              unavailableReason: sessionHistory.unavailableReason,
+              unavailableMessage: sessionHistory.unavailableMessage,
+              unavailableStatus: sessionHistory.unavailableStatus,
               
               processingSessionIds: this.getEffectiveProcessingSessionIds(),
             });
@@ -4520,9 +4485,23 @@ export class ChatViewProvider
       const eventType = (eventRec?.type as string) || "unknown";
       const properties = (eventRec?.properties as Record<string, unknown> | undefined) || {};
       const part = (properties?.part as Record<string, unknown> | undefined) || {};
-      const eventKind = (part?.type as string | undefined) || "unknown";
       const streamEventSessionId = this.extractEventSessionId(event);
-      if (this.shouldVerboseStreamDebug()) {
+      const verboseStreamDebugEnabled = this.shouldVerboseStreamDebug();
+      const streamDelta =
+        typeof properties?.delta === "string"
+          ? properties.delta
+          : typeof part?.delta === "string"
+            ? part.delta
+            : undefined;
+      const isHighFrequencyDelta = Boolean(
+        eventType.startsWith("message.part.") &&
+        typeof streamDelta === "string",
+      );
+      // Lifecycle/tool events keep their detailed logs. Token deltas use the
+      // render path only; logging them adds allocation without diagnostic value.
+      const shouldLogVerboseStreamDetail =
+        verboseStreamDebugEnabled && !isHighFrequencyDelta;
+      if (shouldLogVerboseStreamDetail) {
         this.logger.debug("[CENTRALIZED-TAPE][HOST] stream_callback_received", {
           eventType,
           eventSessionId: streamEventSessionId,
@@ -4566,6 +4545,15 @@ export class ChatViewProvider
       }
 
       const eventSessionId = this.extractEventSessionId(event);
+      if (this.isDuplicateStreamEvent(event, eventSessionId)) {
+        this.logger.debug("[CHAT-STREAMING] duplicate SDK event suppressed", {
+          eventId: typeof eventRec?.id === "string" ? eventRec.id : undefined,
+          eventType,
+          sessionId: eventSessionId,
+          source: typeof eventRec?.source === "string" ? eventRec.source : undefined,
+        });
+        return;
+      }
       if (eventType === "question.asked") {
         const props = (eventRec?.properties as Record<string, unknown> | undefined) || {};
         const questions = Array.isArray(props.questions) ? props.questions : [];
@@ -4621,28 +4609,22 @@ export class ChatViewProvider
           type: "subagentUpdate",
           ...subagentUpdate,
         });
-        if (subagentParentSessionId) {
-          this.scheduleSubagentProjectionPersist(subagentParentSessionId);
-        }
         this.sendProcessingSessionsUpdate();
       }
 
-      // The client-only mirror is only needed for live-only UI events that
-      // deliberately bypass the persisted transcript. Mirroring every token
-      // doubled IPC and reducer work during normal streams.
-      if (
-        eventType === "tui.show" ||
-        eventType === "tui.toast.show" ||
-        eventType === "session.status"
-      ) {
-        this.enqueueLiveEventDebugEvent(
-          event,
-          subagentParentSessionId ||
-            eventSessionId ||
-            this.activeStreamSessionId ||
-            this.currentSessionId,
-        );
+      // A child session is rendered exclusively through its owning subagent
+      // card/modal. Its events are already captured above by SubagentTracker;
+      // forwarding them as ordinary parent stream events makes the child's
+      // reasoning and tool transcript appear in the main conversation.
+      const isSubagentOwnedEvent = Boolean(
+        subagentParentSessionId &&
+          eventSessionId &&
+          eventSessionId !== subagentParentSessionId,
+      );
+      if (isSubagentOwnedEvent) {
+        return;
       }
+
       if (eventType === "tui.show" || eventType === "tui.toast.show") {
         this.logger.info("[LIVE-TOAST][HOST] captured", {
           eventType,
@@ -4690,7 +4672,7 @@ export class ChatViewProvider
       // to attribute it. If the user switched sessions mid-stream, forwarding
       // with that resolved id lets the webview update the inactive session's
       // streaming cache instead of losing activity events.
-      if (await this.handleSdkTodoUpdatedEvent(event, eventSessionId)) {
+      if (this.handleSdkTodoUpdatedEvent(event, eventSessionId)) {
         this.logger.info("[CENTRALIZED-TAPE][HOST] stream_event_consumed_before_persist", {
           reason: "todo-updated",
           eventType,
@@ -4700,12 +4682,7 @@ export class ChatViewProvider
         });
         return;
       }
-      if (
-        await this.compactionManager.handleSdkCompactionStreamEvent(
-          event,
-          this.sessionService,
-        )
-      ) {
+      if (this.compactionManager.handleSdkCompactionStreamEvent(event, this.sessionService)) {
         this.logger.info("[CENTRALIZED-TAPE][HOST] stream_event_consumed_before_persist", {
           reason: "compaction",
           eventType,
@@ -4717,52 +4694,13 @@ export class ChatViewProvider
       }
 
 
-      const shouldBypassProcessingGate =
-        eventType === "question.asked" ||
-        eventType === "permission.asked" ||
-        eventType === "permission.request" ||
-        eventType === "message.updated" ||
-        eventType === "message.complete" ||
-        eventType === "message.completed" ||
-        eventType === "message.error" ||
-        eventType === "message.aborted" ||
-        eventType === "session.completed" ||
-        eventType === "session.error" ||
-        eventType === "error" ||
-        eventType === "session.diff" ||
-        eventType === "session.status";
-      if (
-        eventSessionId &&
-        !shouldBypassProcessingGate &&
-        !this.isSessionEffectivelyProcessing(eventSessionId)
-      ) {
-        this.logger.warn("[CENTRALIZED-TAPE][HOST] stream_event_skipped_before_persist", {
-          reason: "non-processing-session",
-          sessionId: eventSessionId,
-          eventType: event.type,
-          activeStreamSessionId: this.activeStreamSessionId,
-          currentSessionId: this.currentSessionId,
-          processingSessionIds: Array.from(this.processingSessionIds),
-        });
-        return;
-      }
-      // For events without an explicit sessionId, check the active stream session.
-      // If activeStreamSessionId was cleared (e.g., after stop), skip these events.
-      if (
-        !eventSessionId &&
-        this.activeStreamSessionId &&
-        !shouldBypassProcessingGate &&
-        !this.isSessionEffectivelyProcessing(this.activeStreamSessionId)
-      ) {
-        this.logger.warn("[CENTRALIZED-TAPE][HOST] stream_event_skipped_before_persist", {
-          reason: "stopped-active-stream-session",
-          activeStreamSessionId: this.activeStreamSessionId,
-          eventType: event.type,
-          currentSessionId: this.currentSessionId,
-          processingSessionIds: Array.from(this.processingSessionIds),
-        });
-        return;
-      }
+      // Every SDK stream event is eligible for live delivery. Processing
+      // bookkeeping can race the SDK (especially after a tool-call turn), and
+      // treating it as an admission gate dropped assistant parts while bare
+      // heartbeats still reached the webview. The webview owns the terminal
+      // and stopped-turn guards, where it has the authoritative current UI
+      // state, so it can safely ignore stale events without suppressing a
+      // newly active assistant response.
 
       // Track token usage from message.updated events
       if (event.type === "message.updated" && event.properties) {
@@ -4826,8 +4764,9 @@ export class ChatViewProvider
       this.logStreamEventDiagnostics(event, enrichedEvent);
       const partType = typeof part?.type === "string" ? part.type.toLowerCase() : "";
 
-      // Log stream event for debugging response types (with error handling)
-      try {
+      // Token payloads are deliberately never logged. Non-delta lifecycle,
+      // tool and error events keep their detailed diagnostics.
+      if (shouldLogVerboseStreamDetail) try {
         const responseContext: Record<string, unknown> = {
           eventType: event.type || "unknown",
           kind: typeof part?.type === "string" ? part.type : "unknown",
@@ -4892,7 +4831,7 @@ export class ChatViewProvider
         (typeof properties?.content === "string" && properties.content) ||
         undefined;
 
-      if (this.shouldVerboseStreamDebug()) {
+      if (shouldLogVerboseStreamDetail) {
         this.logger.debug("[CHAT-STREAMING] queueing stream event for webview", {
           eventType: event.type || "unknown",
           sessionId: resolvedSessionId,
@@ -4935,7 +4874,7 @@ export class ChatViewProvider
         eventType === "permission.request" ||
         isTerminalState ||
         // Tool/progress activity is the first visible evidence of work. Do not
-        // leave it behind the 50 ms presentation batch while the raw tape has
+        // leave it behind the next-frame presentation batch while the raw tape has
         // already been persisted; the webview must be able to replace its
         // loading placeholder as soon as this event reaches the host.
         (
@@ -4979,25 +4918,31 @@ export class ChatViewProvider
         if (this.activeStreamSessionId === resolvedSessionId) {
           this.activeStreamSessionId = undefined;
         }
+        // The SDK has already declared this turn terminal. Clear the
+        // user-facing processing state now; subagent finalization is optional
+        // bookkeeping and must never hold the loading ticker hostage.
+        this.sendProcessingSessionsUpdate();
         
         const client = this.serverManager.getClient();
         const assistantMessageId = this.subagentTracker.getLatestParentMessageId(resolvedSessionId);
         
         if (client && assistantMessageId) {
-          // Fire-and-forget finalize to freeze incomplete subagents, then update UI state
+          // Fire-and-forget finalize to freeze incomplete subagents. Processing
+          // was already cleared above from the authoritative SDK idle signal.
           void this.subagentTracker.finalizeParentMessage({
             client,
             parentSessionId: resolvedSessionId,
             parentMessageId: assistantMessageId,
-          }).then(() => {
-            this.sendProcessingSessionsUpdate();
+          }).catch((error) => {
+            this.logger.debug("Subagent finalization after terminal stream failed", {
+              sessionId: resolvedSessionId,
+              error: error instanceof Error ? error.message : String(error),
+            });
           });
-        } else {
-          this.sendProcessingSessionsUpdate();
         }
       }
 
-      if (this.shouldVerboseStreamDebug()) {
+      if (shouldLogVerboseStreamDetail) {
         this.logger.debug("streamEvent forwarded", {
           type: (enrichedEvent as any)?.type || event.type,
           kind: partType || "unknown",
@@ -5110,8 +5055,6 @@ export class ChatViewProvider
         this.unsubscribe();
         this.unsubscribe = undefined;
       }
-      this.flushStreamWebviewEvents();
-      this.flushLiveEventDebugEvents();
       this.isBootstrappingWebview = false;
       this.hasInitializedWebview = false;
       this.sessionsListRequestVersion = 0;
@@ -5173,11 +5116,7 @@ export class ChatViewProvider
     }
 
     try {
-      // Load any session overrides first
-      const overriddenMessages = await this.historyProcessor.applySessionMessageOverrides(sessionId, messages);
-
-      // Then process through the canonical pipeline
-      const processed = await this.historyProcessor.processHistoryMessages(overriddenMessages, sessionId);
+      const processed = await this.historyProcessor.processHistoryMessages(messages, sessionId);
 
       return processed || [];
     } catch (error) {
@@ -5237,6 +5176,9 @@ export class ChatViewProvider
     sdkMessages: unknown[];
     /** Latest SDK-reported context size for the session's most recent assistant turn. */
     contextInputTokens?: number;
+    unavailableReason?: "not_found" | "unavailable";
+    unavailableMessage?: string;
+    unavailableStatus?: number;
   }> {
     this.logger.debug(`[loadSdkRenderableHistory] START sessionId=${sessionId}`);
     const start = Date.now();
@@ -5247,6 +5189,11 @@ export class ChatViewProvider
       // webview boundary; never replace this with centralized event
       // persistence, SessionService caches, or webview-local data.
       const sdkMessages = await this.sessionSnapshotLoader.loadMessagesOnly(sessionId);
+      this.reconcileProcessingStateFromSdkSnapshot(sessionId, sdkMessages);
+      // Rebuild child-session ownership from the authoritative SDK transcript
+      // before forwarding rehydrated UI. This mirrors the live
+      // `call_omo_agent` bridge so later child events still update their card.
+      this.subagentTracker.seedFromMessages(sdkMessages);
       const messages = adaptSdkMessages(sdkMessages);
       const latestAssistantMessage = [...sdkMessages]
         .reverse()
@@ -5270,12 +5217,98 @@ export class ChatViewProvider
       };
     } catch (err: any) {
       this.logger.error(`[loadSdkRenderableHistory] ERROR: ${err.message}`, { stack: err.stack });
+      const unavailableStatus = err instanceof SessionMessagesLoadError
+        ? err.status
+        : undefined;
+      const unavailableReason = unavailableStatus === 404
+        ? "not_found"
+        : "unavailable";
+      const structuredFormatRehydrationFailure =
+        err instanceof SessionMessagesLoadError &&
+        this.structuredFormatValidationError(err.sdkError);
+      if (unavailableReason === "not_found") {
+        const removedProcessingMarker = this.processingSessionIds.delete(sessionId);
+        const clearedActiveStream = this.activeStreamSessionId === sessionId;
+        if (clearedActiveStream) {
+          this.activeStreamSessionId = undefined;
+        }
+        if (removedProcessingMarker || clearedActiveStream) {
+          this.sendProcessingSessionsUpdate();
+        }
+      }
       return {
         available: false,
         messages: [],
         sdkMessages: [],
         contextInputTokens: undefined,
+        unavailableReason,
+        unavailableMessage: unavailableReason === "not_found"
+          ? "This session is not available on the current OpenCode server."
+          : structuredFormatRehydrationFailure
+            ? "OpenCode rejected structured-output metadata that it previously saved on this session. The transcript is still stored, but this OpenCode server cannot reload it."
+            : "The conversation could not be loaded from the OpenCode server.",
+        unavailableStatus,
       };
+    }
+  }
+
+  /**
+   * LOCKED REHYDRATION INVARIANT: a terminal latest SDK message is stronger
+   * evidence than this provider's in-memory processing marker. The marker can
+   * survive a missed/delayed terminal SSE event; `session.messages()` cannot.
+   *
+   * Only final turn reasons are accepted. In particular, `tool-calls` and a
+   * mere `time.completed` timestamp belong to intermediate assistant envelopes
+   * and must not end the containing agent turn.
+   */
+  private reconcileProcessingStateFromSdkSnapshot(
+    sessionId: string,
+    sdkMessages: unknown[],
+  ): void {
+    let latestConversationMessage: Record<string, unknown> | undefined;
+    for (let index = sdkMessages.length - 1; index >= 0; index -= 1) {
+      const candidate = this.asRecord(sdkMessages[index]);
+      const candidateInfo = this.asRecord(candidate?.info);
+      const role = this.firstNonEmptyString(
+        candidateInfo?.role,
+        candidate?.role,
+      )?.trim().toLowerCase();
+      if (role === "user" || role === "assistant") {
+        latestConversationMessage = candidate;
+        break;
+      }
+    }
+
+    const info =
+      this.asRecord(latestConversationMessage?.info) ?? latestConversationMessage;
+    if (this.firstNonEmptyString(info?.role)?.trim().toLowerCase() !== "assistant") {
+      return;
+    }
+
+    const finish = this.firstNonEmptyString(info?.finish)?.trim().toLowerCase();
+    const isTerminal =
+      info?.aborted === true ||
+      !!info?.error ||
+      finish === "stop" ||
+      finish === "length" ||
+      finish === "cancelled" ||
+      finish === "canceled" ||
+      finish === "error";
+    if (!isTerminal) {
+      return;
+    }
+
+    const removedProcessingMarker = this.processingSessionIds.delete(sessionId);
+    const clearedActiveStream = this.activeStreamSessionId === sessionId;
+    if (clearedActiveStream) {
+      this.activeStreamSessionId = undefined;
+    }
+    if (removedProcessingMarker || clearedActiveStream) {
+      this.sendProcessingSessionsUpdate();
+      this.logger.warn("Reconciled stale processing state from terminal SDK history", {
+        sessionId,
+        finish,
+      });
     }
   }
 
@@ -5748,9 +5781,11 @@ export class ChatViewProvider
       hasFiles?: boolean;
       hasContexts?: boolean;
       hasImages?: boolean;
+      requireStructuredOutput?: boolean;
     },
   ) {
     const workspaceDirectory = this.getWorkspaceDirectory();
+    const requireStructuredOutput = options?.requireStructuredOutput === true;
 
     const callPrompt = (requestBody: Record<string, unknown>) => {
       const sdkStartTime = Date.now();
@@ -5771,6 +5806,7 @@ export class ChatViewProvider
         hasContexts: options?.hasContexts,
         hasImages: options?.hasImages,
         useStructuredOutput,
+        requireStructuredOutput,
       });
 
       const promise = client.session.prompt({
@@ -5818,11 +5854,11 @@ export class ChatViewProvider
       return callPrompt(body as Record<string, unknown>);
     }
 
-    if (!(await this.ensureStructuredOutputFormatCompatibility(client))) {
-      this.structuredOutputMode = "disabled";
+    if (!requireStructuredOutput && !(await this.ensureStructuredOutputFormatCompatibility(client))) {
       this.logger.warn(
-        "OpenCode server rejected structured output during the SDK rehydration probe. Falling back to plain text before sending the user prompt.",
+        "OpenCode server rejected structured output during the SDK rehydration probe. Falling back before the user message is persisted; the next request will retry structured output.",
       );
+      this.structuredOutputFormatCompatibility = undefined;
       return callPrompt(body as Record<string, unknown>);
     }
 
@@ -5842,10 +5878,17 @@ export class ChatViewProvider
 
     // If structured output failed, immediately fall back to plain text
     if (this.isStructuredFormatUnsupportedError(attempt.error)) {
-      this.structuredOutputMode = "disabled";
+      if (requireStructuredOutput) {
+        this.logger.error(
+          "Structured output is required for the selected thinking variant; refusing plain-text fallback",
+          { sessionID, error: attempt.error },
+        );
+        return attempt;
+      }
       log.warn(
-        "Structured output failed with this model. Falling back to plain text.",
+        "Structured output failed with this model. Falling back for this request; the next request will retry structured output.",
       );
+      this.structuredOutputFormatCompatibility = undefined;
       return callPrompt(body as Record<string, unknown>);
     }
 
@@ -5888,6 +5931,42 @@ export class ChatViewProvider
       (typeof info.sessionId === 'string' && info.sessionId) ||
       undefined
     );
+  }
+
+  private isDuplicateStreamEvent(event: unknown, sessionId?: string): boolean {
+    const record = this.asRecord(event);
+    if (!record) return false;
+
+    const eventId = this.firstNonEmptyString(record.id, record.eventID, record.eventId);
+    const properties = this.asRecord(record.properties) ?? {};
+    const part = this.asRecord(properties.part) ?? this.asRecord(record.part) ?? {};
+    const partId = this.firstNonEmptyString(part.id, part.partID, part.partId);
+    const messageId = this.firstNonEmptyString(part.messageID, part.messageId, properties.messageID, properties.messageId);
+    const callId = this.firstNonEmptyString(part.callID, part.callId);
+    const state = this.asRecord(part.state) ?? {};
+    const fallbackIdentity = partId
+      ? [
+          this.firstNonEmptyString(sessionId, properties.sessionID, properties.sessionId) ?? "",
+          this.firstNonEmptyString(record.type, record.event, record.kind) ?? "",
+          partId,
+          messageId ?? "",
+          callId ?? "",
+          this.firstNonEmptyString(part.type) ?? "",
+          this.firstNonEmptyString(part.text, part.content, part.delta, properties.delta) ?? "",
+          this.firstNonEmptyString(state.status) ?? "",
+        ].join("|")
+      : undefined;
+    const identity = eventId ? `sdk-event:${eventId}` : fallbackIdentity ? `sdk-part:${fallbackIdentity}` : undefined;
+    if (!identity) return false;
+
+    const now = Date.now();
+    const previous = this.recentStreamEventIdentities.get(identity);
+    this.recentStreamEventIdentities.set(identity, now);
+    if (this.recentStreamEventIdentities.size > ChatViewProvider.MAX_RECENT_STREAM_EVENT_IDENTITIES) {
+      const oldest = this.recentStreamEventIdentities.keys().next().value;
+      if (oldest) this.recentStreamEventIdentities.delete(oldest);
+    }
+    return typeof previous === "number" && now - previous < ChatViewProvider.STREAM_EVENT_DEDUP_WINDOW_MS;
   }
 
   private firstNonEmptyString(...values: unknown[]): string | undefined {
@@ -7858,13 +7937,17 @@ export class ChatViewProvider
       const disableThinkingStructuredOutput =
         thinkingLevel === "auto" ||
         (thinkingLevel === "none" && modelReasoning);
+      const requireStructuredOutput =
+        ChatViewProvider.FORCE_STRUCTURED_OUTPUT_TEST_MODE &&
+        thinkingLevel !== "auto";
       const useStructuredOutput =
         !slashCommandInvocation &&
         !retryWithoutStructuredOutput &&
-        !disableThinkingStructuredOutput &&
-        this.shouldUseStructuredOutput(
-          this.getStructuredOutputModelKey(this.selectedModel.providerID, this.selectedModel.modelID)
-        );
+        (requireStructuredOutput ||
+          (!disableThinkingStructuredOutput &&
+            this.shouldUseStructuredOutput(
+              this.getStructuredOutputModelKey(this.selectedModel.providerID, this.selectedModel.modelID)
+            )));
       const promptBody: NonNullable<SessionPromptData["body"]> = {
         model: this.selectedModel,
         agent: agent || this.selectedAgent,
@@ -7934,6 +8017,7 @@ export class ChatViewProvider
                 hasFiles: Boolean(files?.length),
                 hasContexts: Boolean(contexts?.length),
                 hasImages: Boolean(images?.length),
+                requireStructuredOutput,
               },
             );
             this.logger.info("[OPENCOD GO MODEL] SDK prompt call returned", {
@@ -8043,24 +8127,13 @@ export class ChatViewProvider
           });
           // Re-create the session on the server
           try {
-            const localMessages = await this.sessionService.loadSessionMessages(
-              session.id,
-            );
             const newSession = await this.sessionService.createNewSession(
               session.title,
             );
             log.info("Session recovered successfully", {
               oldSessionId: session.id,
               newSessionId: newSession.id,
-              migratedMessageCount: localMessages.length,
             });
-
-            // Migrate local messages from old ID to new ID
-            await this.sessionService.saveSessionMessages(
-              newSession.id,
-              localMessages,
-            );
-            // Optionally delete old messages? No, leave them for now.
 
             // Set as current session and retry
             await this.sessionService.switchSession(newSession.id);
@@ -8071,11 +8144,6 @@ export class ChatViewProvider
             // Notify UI of the ID change if possible, or just refresh sessions
             await this.handleGetSessions();
 
-            const recoveryTranscript =
-              this.buildRecoveredTranscript(localMessages);
-            if (recoveryTranscript) {
-              await this.saveSessionRecoveryMap(session.id, newSession.id);
-            }
             this.migrateSessionSettings(session.id, newSession.id);
             this.currentSessionId = newSession.id;
 
@@ -8087,12 +8155,7 @@ export class ChatViewProvider
               images,
               agent,
               true,
-              recoveryTranscript
-                ? {
-                  previousSessionId: session.id,
-                  transcript: recoveryTranscript,
-                }
-                : undefined,
+              undefined,
               retryWithoutStructuredOutput,
               structuredFallbackReason,
             );
@@ -8120,7 +8183,10 @@ export class ChatViewProvider
           if (modelKey) {
             this.structuredOutputIncompatibleModelKeys.add(modelKey);
           }
-          if (!retryWithoutStructuredOutput) {
+          if (
+            !retryWithoutStructuredOutput &&
+            !ChatViewProvider.FORCE_STRUCTURED_OUTPUT_TEST_MODE
+          ) {
             const retryFlow = log.startFeatureFlow('StructuredOutputRetry', {
               sessionId: session.id,
               providerID: this.selectedModel.providerID,
@@ -8260,6 +8326,7 @@ export class ChatViewProvider
         );
         if (
           !retryWithoutStructuredOutput &&
+          !ChatViewProvider.FORCE_STRUCTURED_OUTPUT_TEST_MODE &&
           structuredFailureText &&
           this.isStructuredOutputFailureMessage(structuredFailureText)
         ) {
@@ -8484,22 +8551,6 @@ export class ChatViewProvider
           structOutMsg: String(debugMessage?.structuredOutput?.message).slice(0, 200),
           hasRawResponse: !!debugMessage?.rawResponse,
           type: "messageResponse",
-        });
-
-        // Persist canonical assistant message without raw debug payload so
-        // session storage/write path stays lightweight.
-        await this.sessionService.appendMessage(session.id, {
-          ...finalMessage,
-          timing: {
-            duration: duration,
-          },
-        });
-        // Persist a hydrated override that *includes* rawResponse for reload parity.
-        await this.persistSessionMessageOverride(session.id, {
-          ...debugMessage,
-          timing: {
-            duration: duration,
-          },
         });
 
         this.view?.webview.postMessage({
@@ -10815,8 +10866,6 @@ export class ChatViewProvider
       this.unsubscribe();
       this.unsubscribe = undefined;
     }
-    this.flushStreamWebviewEvents();
-    this.flushLiveEventDebugEvents();
     this.quotaService.off("quotaUpdate", this.handleQuotaUpdate);
     if (this.webviewMessageListener) {
       this.webviewMessageListener.dispose();
@@ -10844,10 +10893,6 @@ export class ChatViewProvider
     this.seenClientRequestIds.clear();
     this.executingQueueSessionIds.clear();
     this.sessionsNeedingTitle?.clear();
-    for (const timer of this.subagentProjectionDebounceTimers.values()) {
-      clearTimeout(timer);
-    }
-    this.subagentProjectionDebounceTimers.clear();
     this.view = undefined;
   }
 

@@ -15,6 +15,7 @@ export default defineConfig({
       input: {
         chat: path.resolve(__dirname, 'src/chat/index.tsx'),
         plan: path.resolve(__dirname, 'src/plan/index.tsx'),
+        walkthrough: path.resolve(__dirname, 'src/walkthrough/index.tsx'),
       },
       output: {
         entryFileNames: '[name].js',

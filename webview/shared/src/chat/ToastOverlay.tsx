@@ -35,20 +35,40 @@ function toastVariantStyles(variant: ToastVariant) {
   }
 }
 
+function formatRetryCountdown(next: number, now: number): string {
+  const totalSeconds = Math.max(0, Math.ceil((next - now) / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0
+    ? `${minutes}:${String(seconds).padStart(2, "0")}`
+    : `${seconds}s`;
+}
+
 export function LiveEventBanner({
   sessionId,
   rawSdkEventPayloads,
   liveNotifications,
+  placement = "top",
 }: {
   sessionId?: string | null;
   rawSdkEventPayloads?: unknown[];
   liveNotifications?: CentralizedToastNotification[];
+  /** `tui.show` remains at the top; retry/error session status sits above the composer. */
+  placement?: "top" | "composer";
 }) {
+  const isComposerPlacement = placement === "composer";
   const notifications = useMemo(() => {
     const persisted = extractCentralizedToastNotifications(rawSdkEventPayloads);
-    return [...persisted, ...(liveNotifications ?? [])];
-  }, [liveNotifications, rawSdkEventPayloads]);
+    const allNotifications = [...persisted, ...(liveNotifications ?? [])];
+    const placedNotifications = allNotifications.filter((notification) =>
+      placement === "composer"
+        ? notification.type === "session.status"
+        : notification.type !== "session.status",
+    );
+    return placedNotifications;
+  }, [liveNotifications, placement, rawSdkEventPayloads]);
   const [activeToast, setActiveToast] = useState<CentralizedToastNotification | null>(null);
+  const [toastNow, setToastNow] = useState(() => Date.now());
   const toastQueueRef = useRef<CentralizedToastNotification[]>([]);
   const activeToastRef = useRef<CentralizedToastNotification | null>(null);
   const seenToastKeysRef = useRef<Set<string>>(new Set());
@@ -66,6 +86,15 @@ export function LiveEventBanner({
       });
     }
   }, [activeToast, sessionId]);
+
+  useEffect(() => {
+    if (!activeToast?.next) {
+      return;
+    }
+    setToastNow(Date.now());
+    const intervalId = window.setInterval(() => setToastNow(Date.now()), 1000);
+    return () => window.clearInterval(intervalId);
+  }, [activeToast?.next]);
 
   const clearActiveTimer = () => {
     if (timeoutHandleRef.current !== null) {
@@ -158,7 +187,8 @@ export function LiveEventBanner({
           <div
             key={activeToast.key}
             className={cn(
-              "pointer-events-auto border-b border-l-2 border-oc-border bg-oc-panel",
+              "pointer-events-auto border-l-2 border-oc-border bg-oc-panel",
+              isComposerPlacement ? "border-t" : "border-b",
             )}
             style={{
               borderLeftColor: styles.accent,
@@ -168,25 +198,35 @@ export function LiveEventBanner({
             role="status"
             aria-live="polite"
           >
-            <div className="flex items-start gap-2.5 px-3 py-2">
-              <div className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center" style={{ color: styles.accent }} aria-hidden="true">
-                <Icon className="h-3.5 w-3.5" />
+            <div className={cn("flex gap-2.5 px-3", isComposerPlacement ? "items-center py-1.5" : "items-start py-2")}>
+              <div className={cn("flex shrink-0 items-center justify-center", isComposerPlacement ? "h-3.5 w-3.5" : "mt-0.5 h-4 w-4")} style={{ color: styles.accent }} aria-hidden="true">
+                <Icon className={isComposerPlacement ? "h-3.5 w-3.5" : "h-3.5 w-3.5"} />
               </div>
               <div className="min-w-0 flex-1">
-                <div className="flex min-w-0 items-baseline gap-2">
+                <div className={cn("flex min-w-0", isComposerPlacement ? "items-center gap-1.5" : "items-baseline gap-2")}>
                   <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.1em]" style={{ color: styles.accent }}>
                     {styles.label}
                   </span>
-                  <span className="truncate text-[13px] font-semibold leading-4 text-oc-text">
+                  <span className={cn("truncate font-semibold text-oc-text", isComposerPlacement ? "text-[12px] leading-4" : "text-[13px] leading-4")}>
                     {activeToast.title}
                   </span>
+                  {isComposerPlacement && activeToast.message ? (
+                    <span className="min-w-0 flex-1 truncate text-[11px] leading-4 text-oc-text opacity-75" title={activeToast.message}>
+                      {activeToast.message}
+                    </span>
+                  ) : null}
                 </div>
-                {activeToast.message ? (
+                {!isComposerPlacement && activeToast.message ? (
                   <div className="mt-0.5 whitespace-pre-wrap break-words text-[12px] leading-4 text-oc-text opacity-90">
                     {activeToast.message}
                   </div>
                 ) : null}
               </div>
+              {activeToast.type === "session.status" && activeToast.next ? (
+                <div className={cn("shrink-0 font-medium tabular-nums", isComposerPlacement ? "text-[11px]" : "mt-1 text-[11px]")} style={{ color: styles.accent }}>
+                  Retrying in {formatRetryCountdown(activeToast.next, toastNow)}
+                </div>
+              ) : null}
             </div>
           </div>
         );

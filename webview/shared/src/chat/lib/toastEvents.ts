@@ -11,6 +11,8 @@ export interface CentralizedToastNotification {
   variant: ToastVariant;
   durationMs: number;
   sessionId?: string;
+  /** Epoch milliseconds for a scheduled retry, when supplied by session.status. */
+  next?: number;
 }
 
 export interface LiveSessionStatus {
@@ -301,6 +303,49 @@ export function liveSessionStatusFromPayload(
     sessionId: eventSessionId(payload),
     source: firstString(payload.source, eventType) ?? eventType,
     updatedAt: Number.isFinite(updatedAt as number) ? updatedAt : undefined,
+  };
+}
+
+/**
+ * Converts actionable session lifecycle state into the same ephemeral toast
+ * contract used by `tui.show`. Busy and idle frames are deliberately omitted:
+ * they are frequent transport state and would flood the notification queue.
+ */
+export function toastNotificationFromSessionStatus(
+  status: LiveSessionStatus | null | undefined,
+): CentralizedToastNotification | null {
+  if (!status || (status.statusType !== "retry" && status.statusType !== "error")) {
+    return null;
+  }
+
+  const attemptLabel =
+    typeof status.attempt === "number" ? ` · attempt ${status.attempt}` : "";
+  const title =
+    `Session status · ${status.statusType.replace(/[_-]+/g, " ")}${attemptLabel}`;
+  const message =
+    status.message ||
+    (status.statusType === "retry"
+      ? "Waiting before the next retry."
+      : "The session reported an error.");
+  const identity = [
+    status.sessionId || "current-session",
+    status.statusType,
+    status.attempt ?? "",
+    status.next ?? "",
+    message,
+  ].join(":");
+
+  return {
+    key: `session-status:${identity}`,
+    type: "session.status",
+    title,
+    message,
+    variant: status.statusType === "retry" ? "warning" : "error",
+    // Long enough to read a provider quota/reset message without turning
+    // retry heartbeats into a persistent notification surface.
+    durationMs: 12_000,
+    sessionId: status.sessionId,
+    next: status.next,
   };
 }
 

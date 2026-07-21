@@ -39,6 +39,19 @@ export class DiagnosticsLogger {
     const part = this.asRecord(properties?.part);
     const info = this.asRecord(properties?.info);
 
+    // Token deltas are summarized by ChatViewProvider's sampled AI stream log.
+    // Building another preview/context here for every chunk duplicates the
+    // hottest logging work and makes DevTools retain extra entries.
+    if (
+      eventType.startsWith("message.part.") &&
+      (
+        typeof properties.delta === "string" ||
+        typeof part?.delta === "string"
+      )
+    ) {
+      return;
+    }
+
     const sessionID =
       this.firstNonEmptyString(
         properties?.sessionID,

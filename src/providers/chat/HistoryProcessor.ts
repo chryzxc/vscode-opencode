@@ -183,7 +183,13 @@ export class HistoryProcessor {
    * Enrich message with plan information
    */
   private async enrichMessageWithPlan(message: any): Promise<any> {
-    return await this.structuredOutputProcessor.enrichMessageWithPlan(message);
+    // OpenCode's native JSON schema transport can be unavailable even though
+    // the raw SDK transcript contains completed tool/file activity. Derive the
+    // same deterministic walkthrough during hydration so completed activity
+    // never loses its walkthrough after a reload.
+    return await this.structuredOutputProcessor.enrichMessageWithPlan(message, {
+      createActivityWalkthrough: true,
+    });
   }
 
   /**
@@ -197,9 +203,8 @@ export class HistoryProcessor {
    * Load session message overrides
    */
   async loadSessionMessageOverrides(sessionId: string): Promise<Record<string, any>> {
-    const key = `opencode.session.messageOverrides.${sessionId}`;
-    const raw = this.workspaceState.get<Record<string, any>>(key);
-    return raw || {};
+    void sessionId;
+    return {};
   }
 
   /**
@@ -209,13 +214,8 @@ export class HistoryProcessor {
     sessionId: string,
     override: any,
   ): Promise<void> {
-    const overrides = await this.loadSessionMessageOverrides(sessionId);
-    const messageId = this.extractHistoryMessageId(override);
-    if (messageId) {
-      overrides[messageId] = override;
-    }
-    const key = `opencode.session.messageOverrides.${sessionId}`;
-    await this.workspaceState.update(key, overrides);
+    void sessionId;
+    void override;
   }
 
   /**
@@ -277,8 +277,7 @@ export class HistoryProcessor {
    * Clear session message overrides
    */
   async clearSessionMessageOverrides(sessionId: string): Promise<void> {
-    const key = `opencode.session.messageOverrides.${sessionId}`;
-    await this.workspaceState.update(key, undefined);
+    void sessionId;
   }
 
   /**

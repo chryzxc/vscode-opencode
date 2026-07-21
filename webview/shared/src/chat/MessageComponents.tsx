@@ -3,6 +3,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   memo,
   type CSSProperties,
 } from "react";
@@ -21,7 +22,6 @@ import {
   CornerDownLeft,
   AtSign,
   Terminal,
-  RotateCw,
   AlertCircle,
   AlertTriangle,
   Clock,
@@ -38,6 +38,8 @@ import {
   Ban,
   Database,
   RotateCcw,
+  History,
+  Plus,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -64,6 +66,7 @@ import { CallOmoAgentStep } from "./components/activity-steps/CallOmoAgentStep";
 import { BackgroundOutputStep } from "./components/activity-steps/BackgroundOutputStep";
 import { DiffPreviewStep } from "./components/activity-steps/DiffPreviewStep";
 import { ActivityTimelineItem } from "./components/activity-steps/ActivityTimelineItem";
+import { stableActivityIdentity } from "./lib/activityIdentity";
 import { SearchActivityPreview } from "./components/activity-steps/SearchActivityPreview";
 import { ActivityDiffExcerpt } from "./components/ActivityDiffExcerpt";
 import { ImagePreviewModal } from "./ImagePreviewModal";
@@ -124,6 +127,10 @@ import {
   getSubagentDisplayDurationMs,
 } from "./lib/subagentDuration";
 import { config } from "../config";
+import {
+  getSdkDebugSnapshot,
+  subscribeToSdkDebugStore,
+} from "./lib/sdkDebugStore";
 
 // File extension color mapping for icons
 const FILE_COLOR_MAP: Record<string, string> = {
@@ -407,39 +414,6 @@ function isStructuredOutputFailureMessage(value?: unknown): boolean {
     normalized.includes("json_schema") ||
     normalized.includes("structuredoutput")
   );
-}
-
-function patchMessageRetryState(
-  message: Message,
-  retryWithoutStructuredOutput: boolean,
-): Message {
-  const retryMessage = retryWithoutStructuredOutput
-    ? "Retrying without structured output..."
-    : "Retrying request...";
-  const existingParts = Array.isArray(message.parts) ? [...message.parts] : [];
-  const nextParts =
-    existingParts.length > 0
-      ? existingParts.map((part, index) => {
-        if (index === 0 && (part.type === "text" || !part.type)) {
-          return { ...part, type: "text", text: retryMessage };
-        }
-        return part;
-      })
-      : [{ type: "text", text: retryMessage }];
-  return {
-    ...message,
-    aborted: false,
-    error: undefined,
-    content: retryMessage,
-    text: retryMessage,
-    parts: nextParts,
-    retryWithoutStructuredOutput,
-    retryState: retryWithoutStructuredOutput
-      ? "retrying_without_structured_output"
-      : undefined,
-    retryMessage,
-    retryStartedAt: Date.now(),
-  };
 }
 
 const SUBAGENT_HUES = [12, 36, 58, 92, 128, 166, 198, 228, 264, 312, 338];
@@ -932,6 +906,28 @@ function shouldDisplayImplementationPlanCard(params: {
   return ownIndex === Math.max(...matchingPlanIndexes);
 }
 
+function shouldDisplayWalkthroughCard(params: {
+  walkthrough?: NonNullable<Message["walkthrough"]>;
+  message?: Message;
+  messageId?: string;
+  messages?: Message[];
+}): boolean {
+  const { walkthrough, message, messageId, messages } = params;
+  if (!walkthrough?.file) return false;
+  const ownIndex = (messages || []).findIndex(
+    (candidate) => candidate === message || (!!messageId && (candidate.info?.id === messageId || candidate.id === messageId)),
+  );
+  if (ownIndex < 0) return true;
+  const matchingIndexes = (messages || [])
+    .map((candidate, index) => {
+      const structured = structuredOutputFromRawSdkEventPayloads(candidate.rawSdkEventPayloads);
+      const candidateWalkthrough = structured?.walkthrough ?? candidate.walkthrough;
+      return areLikelySamePlanFilePath(candidateWalkthrough?.file, walkthrough.file) ? index : -1;
+    })
+    .filter((index) => index >= 0);
+  return matchingIndexes.length === 0 || ownIndex === Math.max(...matchingIndexes);
+}
+
 function getRenderablePlanResponseChunks(params: {
   visibleResponseBodyChunks: string[];
   planPrelude: string;
@@ -1214,12 +1210,18 @@ function messageBodyFromParts(
   if (!parts) {
     return "";
   }
+  const isUserMessage = role?.toLowerCase() === "user";
   const attachmentContents = new Set(
     parts
       .map((part) => asRecord(part) as MessagePart | undefined)
       .filter((part): part is MessagePart => !!part)
       .map((part) => textFromAttachedDataUrl(part))
-      .filter((text): text is string => typeof text === "string"),
+      // SDK text parts are trimmed before rendering, while the pasted data URL
+      // preserves its final newline. Normalize both sides so an attached text
+      // snippet cannot also leak into the user bubble as a duplicate body.
+      .filter((text): text is string => typeof text === "string")
+      .map((text) => text.trim())
+      .filter((text) => text.length > 0),
   );
   return parts
     .map((part) => {
@@ -1227,7 +1229,7 @@ function messageBodyFromParts(
       if (
         !partRec ||
         !(
-          role?.toLowerCase() === "user"
+          isUserMessage
             ? isRenderableUserTextPart(partRec as MessagePart)
             : isRenderableAssistantTextPart(partRec as MessagePart)
         )
@@ -1240,7 +1242,7 @@ function messageBodyFromParts(
         (partRec.content as string | undefined) ??
         ""
       ).trim();
-      return role?.toLowerCase() === "user" && attachmentContents.has(text) ? "" : text;
+      return isUserMessage && attachmentContents.has(text) ? "" : text;
     })
     .filter((partText) => partText.length > 0)
     .join("\n\n")
@@ -1829,30 +1831,32 @@ function ImplementationPlanCard({
   return (
     <div className="plan-card flex items-start justify-between gap-3">
       <div className="plan-card-content flex flex-1 flex-col gap-2 min-w-0">
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="plan-card-title text-oc-xs font-semibold tracking-normal">
-            {plan.title || "Implementation Plan"}
+        {(isRevisedPlan || planStatus === "Executing" || planStatus === "Revision Requested" || planStatus === "Draft") && (
+          <div className="flex flex-wrap items-center gap-2">
+            {isRevisedPlan && (
+              <span className="plan-status-badge plan-status-badge-blue rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
+                Revised
+              </span>
+            )}
+            {planStatus === "Executing" && (
+              <span className="plan-status-badge plan-status-badge-green rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
+                Approved
+              </span>
+            )}
+            {planStatus === "Revision Requested" && (
+              <span className="plan-status-badge plan-status-badge-yellow rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
+                Revision Requested
+              </span>
+            )}
+            {planStatus === "Draft" && (
+              <span className="plan-status-badge plan-status-badge-neutral rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
+                Draft
+              </span>
+            )}
           </div>
-          {isRevisedPlan && (
-            <span className="plan-status-badge plan-status-badge-blue rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
-              Revised
-            </span>
-          )}
-          {planStatus === "Executing" && (
-            <span className="plan-status-badge plan-status-badge-green rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
-              Approved
-            </span>
-          )}
-          {planStatus === "Revision Requested" && (
-            <span className="plan-status-badge plan-status-badge-yellow rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
-              Revision Requested
-            </span>
-          )}
-          {planStatus === "Draft" && (
-            <span className="plan-status-badge plan-status-badge-neutral rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
-              Draft
-            </span>
-          )}
+        )}
+        <div className="plan-card-title text-oc-xs font-semibold tracking-normal">
+          {plan.title || "Implementation Plan"}
         </div>
         {plan.file ? (
           <div className="plan-card-file mt-1 flex items-center gap-1.5 text-[11px] font-medium">
@@ -1874,7 +1878,45 @@ function ImplementationPlanCard({
         className="oc-plan-btn plan-card-action shrink-0 self-start"
       >
         <FileTextIcon className="h-3 w-3" />
-        View Plan
+        View
+      </button>
+    </div>
+  );
+}
+
+function WalkthroughCard({
+  walkthrough,
+}: {
+  walkthrough: NonNullable<Message["walkthrough"]>;
+}) {
+  return (
+    <div className="plan-card walkthrough-card flex items-start justify-between gap-3">
+      <div className="plan-card-content flex flex-1 flex-col gap-2 min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="plan-status-badge plan-status-badge-neutral rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
+            Walkthrough
+          </span>
+        </div>
+        <div className="plan-card-title text-oc-xs font-semibold tracking-normal">
+          {walkthrough.title || "Walkthrough"}
+        </div>
+        {walkthrough.file ? (
+          <div className="plan-card-file mt-1 flex items-center gap-1.5 text-[11px] font-medium">
+            <FileIcon filePath={walkthrough.file} />
+            <span className="truncate" title={walkthrough.file}>
+              {toWorkspaceRelativePath(walkthrough.file)}
+            </span>
+          </div>
+        ) : null}
+      </div>
+      <button
+        type="button"
+        title={`View ${walkthrough.title}`}
+        onClick={() => vscode.postMessage({ type: "viewWalkthrough", walkthrough })}
+        className="oc-plan-btn plan-card-action shrink-0 self-start"
+      >
+        <FileTextIcon className="h-3 w-3" />
+        View
       </button>
     </div>
   );
@@ -3474,6 +3516,19 @@ function progressItemIdentityKey(item: {
   partType?: string;
   activityDetail?: ActivityDetail;
 }): string {
+  const stableIdentity = stableActivityIdentity({
+    callID: item.callID,
+    id: item.id,
+    messageID: item.messageID,
+    tool: item.activityDetail?.tool,
+    title: item.title,
+    filePath: item.filePath,
+    partType: item.partType,
+  });
+  if (stableIdentity) {
+    return stableIdentity;
+  }
+
   const detailSummary = firstNonEmptyString(
     asString(item.activityDetail?.summary),
     asString(item.activityDetail?.output),
@@ -4968,48 +5023,6 @@ export function SharedActivityStep({
 
 const ACTIVITY_TIMELINE_DIAGNOSTIC_LOG = "[ACTIVITY-TIMELINE-DIAG]";
 
-// Constants for activity event identity prefixes
-const ACTIVITY_IDENTITY_PREFIXES = {
-  CALL: "activity-call",
-  PART: "activity-part",
-  MESSAGE: "activity-msg",
-  KEY: "activity-key",
-} as const;
-
-// System event types that may lack standard IDs but have stable keys
-const SYSTEM_EVENT_PATTERNS = {
-  FILE_WATCHER: ["file.watcher", "file_watcher"],
-  // Add other system event patterns here as needed
-  // e.g., FILE_SYSTEM: ["file.system", "file_system"],
-} as const;
-
-/**
- * Checks if an event is a known system event type that may lack standard IDs.
- * @param partType - The event's part type
- * @param activityTool - The activity detail's tool name
- * @returns true if this is a known system event type
- */
-function isSystemEventWithoutStandardIds(
-  partType: string,
-  activityTool: string,
-): boolean {
-  const normalizedPartType = partType.toLowerCase();
-  const normalizedTool = activityTool.toLowerCase();
-
-  for (const patterns of Object.values(SYSTEM_EVENT_PATTERNS)) {
-    for (const pattern of patterns) {
-      if (
-        normalizedPartType.includes(pattern.toLowerCase()) ||
-        normalizedTool.includes(pattern.toLowerCase())
-      ) {
-        return true;
-      }
-    }
-  }
-
-  return false;
-}
-
 function summarizeCentralizedEventForTimelineDiagnostics(
   value: unknown,
   index: number,
@@ -5134,45 +5147,18 @@ function displayEventSourcePriority(source?: DisplayEvent["source"]): number {
  * @returns A stable identity string, or empty string if no stable identity can be generated
  */
 function activityDisplayEventIdentity(event: DisplayEvent): string {
-  const callID = (event.callID ?? "").trim().toLowerCase();
-  const partID = (event.partID ?? "").trim().toLowerCase();
-  const messageID = (event.messageID ?? "").trim().toLowerCase();
-  const label = (event.label ?? "").trim().toLowerCase();
-  const activityTool = (event.activityDetail?.tool ?? "").trim().toLowerCase();
-  const filePath = (event.filePath ?? "").trim().toLowerCase();
-  const partType = (event.partType ?? "").trim().toLowerCase();
-
-  // Priority 1: Use callID if available (most stable identity)
-  if (callID) {
-    return [ACTIVITY_IDENTITY_PREFIXES.CALL, callID, activityTool || label].join("|");
-  }
-
-  // Priority 2: Use partID if available (stable within a message)
-  if (partID) {
-    return [ACTIVITY_IDENTITY_PREFIXES.PART, partID, activityTool || label].join("|");
-  }
-
-  // Priority 3: Use messageID + filePath (message-scoped identity)
-  if (messageID) {
-    return [ACTIVITY_IDENTITY_PREFIXES.MESSAGE, messageID, activityTool || label, filePath].join("|");
-  }
-
-  // Priority 4: Use event.key as fallback for system events without standard IDs
-  // This handles file watcher events and other system-generated events that
-  // don't have callID/partID/messageID but still need stable deduplication
-  if (event.key) {
-    const key = event.key.trim().toLowerCase();
-    if (!key) {
-      return "";
-    }
-
-    // For known system event types, use a more specific identity
-    if (isSystemEventWithoutStandardIds(partType, activityTool)) {
-      return [ACTIVITY_IDENTITY_PREFIXES.KEY, key, partType, filePath].join("|");
-    }
-
-    // Generic fallback for other events with key but no standard IDs
-    return [ACTIVITY_IDENTITY_PREFIXES.KEY, key, activityTool || label, filePath].join("|");
+  const stableIdentity = stableActivityIdentity({
+    callID: event.callID,
+    partID: event.partID,
+    messageID: event.messageID,
+    tool: event.activityDetail?.tool,
+    label: event.label,
+    filePath: event.filePath,
+    key: event.key,
+    partType: event.partType,
+  });
+  if (stableIdentity) {
+    return stableIdentity;
   }
 
   // No stable identity available
@@ -5262,6 +5248,33 @@ function displayEventNeedsReplacement(
   );
 }
 
+function mergeStickyDisplayEvent(
+  existing: DisplayEvent,
+  incoming: DisplayEvent,
+): DisplayEvent {
+  // LOCKED UI INVARIANT: once an activity row has rendered for this assistant
+  // turn, a later live-event snapshot may enrich it but must never remove the
+  // fields that choose its visible component (especially edit/diff payloads).
+  // OpenCode emits the same tool lifecycle through normal and `sync`-wrapped
+  // events; the later event is often intentionally sparse. Spreading that
+  // sparse shape over the existing row used to make an already-rendered file
+  // edit disappear while the stream was still active.
+  return {
+    ...existing,
+    ...incoming,
+    summary: incoming.summary || existing.summary,
+    description: incoming.description ?? existing.description,
+    detail: incoming.detail ?? existing.detail,
+    filePath: incoming.filePath ?? existing.filePath,
+    viewDiffFile: incoming.viewDiffFile ?? existing.viewDiffFile,
+    diffStats: incoming.diffStats ?? existing.diffStats,
+    activityDetail: incoming.activityDetail ?? existing.activityDetail,
+    startedAt: incoming.startedAt ?? existing.startedAt,
+    endedAt: incoming.endedAt ?? existing.endedAt,
+    updateCount: existing.updateCount + 1,
+  };
+}
+
 function mergeStickyDisplayEventsForTurn(
   previousEvents: DisplayEvent[],
   nextEvents: DisplayEvent[],
@@ -5319,11 +5332,7 @@ function mergeStickyDisplayEventsForTurn(
         incomingPriority > existingPriority ||
         needsReplacement
       ) {
-        merged[matchingIndex] = {
-          ...existing,
-          ...event,
-          updateCount: existing.updateCount + 1,
-        };
+        merged[matchingIndex] = mergeStickyDisplayEvent(existing, event);
       }
       continue;
     }
@@ -6500,6 +6509,16 @@ export const SystemMessage = memo(function SystemMessage({
     [accentColor],
   );
 
+  // A transport envelope can be classified as a system row before it carries
+  // its text part (or after that part has been replaced by an empty snapshot).
+  // Do not mount the expandable system-card chrome for that empty envelope:
+  // it appears as a duplicate blank panel with only a chevron and provides no
+  // user-visible state. Real system directives still have displayContent and
+  // render unchanged.
+  if (!displayContent) {
+    return null;
+  }
+
   return (
     <div className="oc-message-enter mb-4" style={DEFERRED_CHAT_CARD_STYLE}>
       <section className="oc-system-message" style={systemMessageStyle}>
@@ -6736,12 +6755,28 @@ export const UserMessage = memo(function UserMessage({ message, isQueued = false
 
   if (isPlanProceedMessageContent(content)) {
     return (
-    <div className="oc-message-enter mt-6 mb-3.5 flex justify-end" style={DEFERRED_CHAT_CARD_STYLE}>
-        <div className="flex w-fit max-w-[78%] flex-col items-end gap-2">
+      <div className="oc-message-enter mt-6 mb-3.5 flex justify-end" style={DEFERRED_CHAT_CARD_STYLE}>
+        <div className="oc-plan-approved-message flex w-fit max-w-[78%] flex-col items-end">
           <div className="oc-plan-approved-badge flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-oc-xs">
             <Check className="h-3.5 w-3.5" />
             <span className="font-medium">Plan Approved</span>
           </div>
+          {fileChips.length > 0 && (
+            <div className="oc-plan-approved-attachments" aria-label="Attached plan files">
+              {fileChips.map((file, index) => (
+                <button
+                  key={`approved-plan-file-${index}:${file.path ?? file.label}`}
+                  type="button"
+                  className="oc-plan-approved-attachment"
+                  onClick={() => vscode.postMessage({ type: "openFile", file: file.path || file.label })}
+                  title={`Open ${file.path || file.label}`}
+                >
+                  <FileIcon filePath={file.path || file.label} className="h-3.5 w-3.5 shrink-0" />
+                  <span className="truncate">{file.label}</span>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     );
@@ -7610,32 +7645,24 @@ function ResponseMessageInner({
     shallowEqual,
   );
 
-  // NEW: Use custom hooks for subagent data access
+  // NEW: Use custom hooks for simplified subagent data access
   const messageId = message?.id || message?.info?.id;
   const formattedSubagents = useSubagentsForParentMessage(messageId);
-  // A child session can be observed before OpenCode supplies the final parent
-  // assistant message id. Those entries are intentionally retained under an
-  // `orphan-…` key in centralized state. Surface them once on the final visible
-  // assistant card of the response block instead of dropping them.
-  const orphanSubagentsForBlock = useMemo(() => {
-    if (!isLastInBlock || !currentSessionId) {
-      return [] as SubagentSummary[];
+  // The final visible card is the one stable place for a response block's
+  // shared UI. Keep each subagent's actual parentMessageId intact, then gather
+  // those message-owned entries onto that final card for presentation.
+  const inlineSubagentParentMessageIds = useMemo(() => {
+    if (!messageId || !isLastInBlock || !blockGroupKey || !messages) {
+      return messageId ? [messageId] : [];
     }
-    const byId = new Map<string, SubagentSummary>();
-    for (const [parentKey, summaries] of Object.entries(
-      subagentsByParentMessageId || {},
-    )) {
-      if (!parentKey.startsWith("orphan-")) {
-        continue;
-      }
-      for (const summary of Array.isArray(summaries) ? summaries : []) {
-        if (summary?.parentSessionId === currentSessionId) {
-          byId.set(summary.id, summary);
-        }
-      }
-    }
-    return Array.from(byId.values());
-  }, [currentSessionId, isLastInBlock, subagentsByParentMessageId]);
+    return messages
+      .filter((candidate) =>
+        firstNonEmptyString(candidate.role, candidate.info?.role)?.toLowerCase() === "assistant" &&
+        firstNonEmptyString(candidate.info?.parentID, candidate.info?.parentId) === blockGroupKey,
+      )
+      .map((candidate) => firstNonEmptyString(candidate.id, candidate.info?.id))
+      .filter((id): id is string => Boolean(id));
+  }, [blockGroupKey, isLastInBlock, messageId, messages]);
 
   const [showSubagents, setShowSubagents] = useState(true);
   const [showAllSubagents, setShowAllSubagents] = useState(false);
@@ -8102,6 +8129,7 @@ const centralizedRawResponse = message?.rawResponse;
   );
   const responseType = (structured?.type ?? structured?.responseType)?.toLowerCase();
   const plan = structured?.plan;
+  const walkthrough = structured?.walkthrough ?? cardMessage?.walkthrough;
   const messageChangeSummary = message?.changeSummary;
   const fileChanges = useMemo(() => {
     if (Array.isArray(messageChangeSummary?.files) && messageChangeSummary.files.length > 0) {
@@ -8306,6 +8334,10 @@ const centralizedRawResponse = message?.rawResponse;
         messages,
       }),
     [message, messageId, messages, plan, responseType],
+  );
+  const shouldShowWalkthroughCard = useMemo(
+    () => shouldDisplayWalkthroughCard({ walkthrough, message, messageId, messages }),
+    [message, messageId, messages, walkthrough],
   );
   const latestAssistantMessageId = useMemo(() => {
     if (!Array.isArray(messages)) return undefined;
@@ -8817,32 +8849,23 @@ const centralizedRawResponse = message?.rawResponse;
 // NEW: Use custom hooks for simplified subagent data access
 	// The custom hooks handle all the filtering, formatting, and data processing
 	const subagents = useMemo(() => {
-		// Filter for active session and current message only
-		const activeSessionId = currentSessionId;
-		const candidates = [...formattedSubagents, ...orphanSubagentsForBlock];
+    const candidates = isLastInBlock
+      ? inlineSubagentParentMessageIds.flatMap(
+          (parentMessageId) => subagentsByParentMessageId?.[parentMessageId] ?? [],
+        )
+      : formattedSubagents;
 		const filtered = candidates.filter((subagent) => {
 			// Check if in active session
-			if (activeSessionId && subagent.parentSessionId !== activeSessionId) {
+			if (currentSessionId && subagent.parentSessionId !== currentSessionId) {
 				return false;
 			}
-			// Check if belongs to current message
-			if (!messageId) {
-				return true;
-			}
-			// More flexible message ID matching to handle different ID formats
-			return subagent.parentMessageId === messageId ||
-			       subagent.id === messageId ||
-			       (subagent.parentMessageId && messageId.includes(subagent.parentMessageId)) ||
-			       (isLastInBlock && subagent.parentMessageId?.startsWith("orphan-"));
+			return true;
 		});
 
 		return Array.from(new Map(filtered.map((subagent) => [subagent.id, subagent])).values());
-	}, [messageId, currentSessionId, formattedSubagents, orphanSubagentsForBlock, isLastInBlock]);
-  // A response block can consist of several assistant messages (for example,
-  // a tool phase followed by the text answer). Render its shared subagent
-  // panel only on the final visible message. The live streaming card has no
-  // persisted message or block position, so it remains responsible for its
-  // own panel while the turn is in flight.
+	}, [currentSessionId, formattedSubagents, inlineSubagentParentMessageIds, isLastInBlock, subagentsByParentMessageId]);
+  // Show it once, on the response card excluded from the collapsed earlier
+  // activity. The live card has no persisted block position and owns itself.
   const shouldRenderSubagentsInlineCard = !message || isLastInBlock !== false;
   const previousSubagentCount = useRef(subagents.length);
 
@@ -9588,33 +9611,6 @@ const hasVisibleResponseSectionContent =
     currentStreaming?.isActive,
     currentStreaming?.messageId,
   ]);
-const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
-    dispatch({ type: "SET_PROCESSING", payload: true });
-    const targetMessageIndex = (messages || []).findIndex((candidate) => {
-      if (messageId) {
-        const candidateId = candidate.info?.id ?? candidate.id;
-        return candidateId === messageId;
-      }
-      return candidate === message;
-    });
-    if (targetMessageIndex >= 0) {
-      let persistedPatchedMessage: Message | undefined;
-      const nextMessages = (messages || []).map((candidate, index) => {
-        if (index !== targetMessageIndex) return candidate;
-        const patched = patchMessageRetryState(
-          candidate,
-          retryWithoutStructuredOutput,
-        );
-        persistedPatchedMessage = patched;
-        return patched;
-      });
-      dispatch({ type: "SET_MESSAGES", payload: nextMessages });
-    }
-    vscode.postMessage({
-      type: "retryLastMessage",
-      retryWithoutStructuredOutput,
-    });
-  };
   const openSubagentModal = (subagentId: string) => {
     dispatch({ type: "SELECT_SUBAGENT", payload: subagentId });
   };
@@ -10137,6 +10133,8 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
                                         <CallOmoAgentStep
                                           callID={event.callID}
                                           sessionID={event.sessionID}
+                                          parentSessionId={centralizedSessionId ?? undefined}
+                                          parentMessageId={assistantMessageId ?? undefined}
                                           startedAt={event.startedAt}
                                           endedAt={event.endedAt}
                                           status={event.status}
@@ -10221,7 +10219,11 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
                                           <div className="flex flex-col gap-1 w-full">
                                               {/* For read, todowrite, and edit events, skip the generic summary block here — they have their own custom UI below.
                                                   For all other events, render the file link or summary as usual. */}
-                                              {isGlobSearch ? (
+                                              {/* Bash/Glob payloads live in activityDetail, not necessarily in the
+                                                  generic summary.  Render their terminal surface directly so live
+                                                  tool snapshots do not disappear until SDK rehydration supplies a
+                                                  summary. */}
+                                              {labelLower === "bash" || isGlobSearch ? (
                                                 <div className="oc-refined-event-summary">
                                                   <TerminalBlockWithOutput
                                                     event={event}
@@ -10538,6 +10540,17 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
                   />
                 </div>
               )}
+              {walkthrough && shouldShowWalkthroughCard && !isStreamingActive && (
+                <div
+                  className={
+                    shouldShowPlanCard || showResponseBody
+                      ? "oc-response-plan-separator mt-3 pt-3 border-t"
+                      : undefined
+                  }
+                >
+                  <WalkthroughCard walkthrough={walkthrough} />
+                </div>
+              )}
               {!isStreamingActive && !hasCopyableResponseContent && (
                 <div className="mt-2 flex items-center justify-start">
                   {/* For intermediate messages without copyable text,
@@ -10691,29 +10704,7 @@ const retryLastMessage = (retryWithoutStructuredOutput: boolean) => {
 
         {showLegacyErrorBanner && (
           <div className="mt-2">
-            {(() => {
-              const retryWithoutStructuredOutput =
-                cardMessage?.retryWithoutStructuredOutput === true ||
-                isStructuredOutputFailureMessage(cardMessage?.error);
-              return (
-                <ErrorBanner
-                  message={cardMessage?.error ?? ""}
-                  retryLabel={
-                    retryWithoutStructuredOutput
-                      ? "Retry Without Structured Output"
-                      : "Retry"
-                  }
-                  retryHint={
-                    retryWithoutStructuredOutput
-                      ? "This will resend your last prompt as plain text (no json_schema)."
-                      : undefined
-                  }
-                  onRetry={() => {
-                    retryLastMessage(retryWithoutStructuredOutput);
-                  }}
-                />
-              );
-            })()}
+            <ErrorBanner message={cardMessage?.error ?? ""} />
           </div>
         )}
 
@@ -11265,6 +11256,8 @@ function areResponseMessagePropsEqual(
     prevProps.messages?.length !== nextProps.messages?.length ||
     prevProps.currentSessionId !== nextProps.currentSessionId ||
     prevProps.hideFileChangesSection !== nextProps.hideFileChangesSection ||
+    prevProps.subagentsByParentMessageId !== nextProps.subagentsByParentMessageId ||
+    prevProps.subagentDetailsById !== nextProps.subagentDetailsById ||
     prevProps.todoItems !== nextProps.todoItems ||
     prevProps.blockGroupKey !== nextProps.blockGroupKey ||
     prevProps.isLastInBlock !== nextProps.isLastInBlock ||
@@ -11361,7 +11354,22 @@ export const ResponseMessage = memo(function ResponseMessage({
   );
 }, areResponseMessagePropsEqual);
 export const PermissionCard = memo(function PermissionCard({ perm }: { perm: unknown }) {
-  const label = typeof perm === "string" ? perm : JSON.stringify(perm);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const permission = (perm && typeof perm === "object" ? perm : {}) as Record<string, unknown>;
+  const permissionID = asString(permission.permissionID) || asString(permission.id);
+  const sessionID = asString(permission.sessionID) || asString(permission.sessionId);
+  const permissionKind = asString(permission.permission) || "operation";
+  const patterns = Array.isArray(permission.patterns)
+    ? permission.patterns.filter((pattern): pattern is string => typeof pattern === "string")
+    : [];
+  const canAlwaysAllow = Array.isArray(permission.always) && permission.always.length > 0;
+
+  const reply = (response: "once" | "always" | "reject") => {
+    if (!permissionID || !sessionID || isSubmitting) return;
+    setIsSubmitting(true);
+    vscode.postMessage({ type: "permissionReply", sessionId: sessionID, permissionID, response });
+  };
+
   return (
     <div className="oc-message-enter mb-3.5 px-4">
       <div className="rounded-xl border oc-warning-border oc-warning-bg p-3">
@@ -11374,7 +11382,41 @@ export const PermissionCard = memo(function PermissionCard({ perm }: { perm: unk
           </div>
         </div>
         <div className="text-oc-sm text-oc-text-soft opacity-70 leading-relaxed">
-          {label}
+          Allow OpenCode to use <span className="font-medium text-oc-text">{permissionKind}</span>
+          {patterns.length > 0 ? " for:" : "?"}
+        </div>
+        {patterns.length > 0 && (
+          <div className="mt-2 rounded-md border border-[var(--oc-border)] bg-[var(--oc-bg)] px-2 py-1.5 font-mono text-oc-xs text-oc-text">
+            {patterns.join("\n")}
+          </div>
+        )}
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            disabled={isSubmitting || !permissionID || !sessionID}
+            onClick={() => reply("once")}
+            className="rounded-md bg-[var(--oc-accent)] px-2.5 py-1.5 text-oc-xs font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isSubmitting ? "Responding…" : "Allow"}
+          </button>
+          {canAlwaysAllow && (
+            <button
+              type="button"
+              disabled={isSubmitting || !permissionID || !sessionID}
+              onClick={() => reply("always")}
+              className="rounded-md border border-[var(--oc-border)] px-2.5 py-1.5 text-oc-xs font-medium text-oc-text-soft hover:bg-[var(--oc-hover)] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Always allow
+            </button>
+          )}
+          <button
+            type="button"
+            disabled={isSubmitting || !permissionID || !sessionID}
+            onClick={() => reply("reject")}
+            className="rounded-md px-2.5 py-1.5 text-oc-xs font-medium text-oc-red hover:bg-[var(--oc-hover)] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            Reject
+          </button>
         </div>
       </div>
     </div>
@@ -11383,14 +11425,8 @@ export const PermissionCard = memo(function PermissionCard({ perm }: { perm: unk
 
 export function ErrorBanner({
   message,
-  onRetry,
-  retryLabel,
-  retryHint,
 }: {
   message: string;
-  onRetry?: () => void;
-  retryLabel?: string;
-  retryHint?: string;
 }) {
   const errorDetails =
     typeof message === "string" && message.trim().length > 0
@@ -11400,37 +11436,18 @@ export function ErrorBanner({
   return (
     <div className="mb-2">
       <div className="oc-error">
-        <div className="flex min-w-0 items-start gap-2">
+        <div className="oc-error-content">
           <span className="oc-error-icon">
             <AlertCircle className="h-3.5 w-3.5 shrink-0" />
           </span>
-          <div className="min-w-0 flex-1">
-            <div className="text-[12px] font-semibold leading-5 text-oc-text">
-              Request failed
-            </div>
-            <p className="mt-0.5 whitespace-pre-wrap break-words text-[12px] leading-5 text-oc-text-secondary">
+          <div className="oc-error-copy">
+            <span className="oc-error-title">Request failed</span>
+            <span className="oc-error-separator" aria-hidden="true" />
+            <p className="oc-error-message">
               {errorDetails}
             </p>
           </div>
         </div>
-
-        {(onRetry || retryHint) && (
-          <div className="oc-error-footer">
-            {onRetry && (
-            <button
-              type="button"
-              onClick={onRetry}
-              className="oc-error-action"
-            >
-              <RotateCw className="h-3 w-3" />
-              <span>{retryLabel || "Retry"}</span>
-            </button>
-            )}
-            {retryHint ? (
-              <div className="oc-error-hint">{retryHint}</div>
-            ) : null}
-          </div>
-        )}
       </div>
     </div>
   );
@@ -11443,6 +11460,12 @@ interface InfoBannerProps {
 }
 
 export function InfoBanner({ message, error }: InfoBannerProps) {
+  // Error data can arrive through the typed display-error path or the legacy
+  // message.error path. Both use the same display-only error card.
+  if (error) {
+    return <ErrorBanner message={error.message} />;
+  }
+
   // Error type styling configuration - maps to semantic CSS classes
   const errorStyles = {
     api_error: {
@@ -11472,11 +11495,7 @@ export function InfoBanner({ message, error }: InfoBannerProps) {
   let styles = errorStyles.api_error;
   let Icon = Info;
 
-  if (error) {
-    displayMessage = error.message;
-    styles = errorStyles[error.type as keyof typeof errorStyles] || errorStyles.unknown;
-    Icon = styles.icon;
-  } else if (message) {
+  if (message) {
     displayMessage = typeof message === 'string' && message.trim().length > 0
       ? message.trim()
       : 'Working...';
@@ -11600,6 +11619,55 @@ export const EmptyState = memo(function EmptyState({
   );
 });
 
+export const SessionUnavailableState = memo(function SessionUnavailableState({
+  error,
+}: {
+  error: NonNullable<AppState["sessionLoadError"]>;
+}) {
+  const dispatch = useAppDispatch();
+  const isNotFound = error.reason === "not_found";
+
+  return (
+    <div className="flex min-h-[320px] h-full items-center justify-center px-4 py-10">
+      <div className="w-full max-w-[520px] border-l-2 border-[var(--vscode-errorForeground)] pl-5 sm:pl-6">
+        <div className="mb-3 flex items-center gap-2 text-[var(--vscode-errorForeground)]">
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          <span className="text-[11px] font-semibold uppercase tracking-[0.12em]">
+            Session unavailable
+          </span>
+        </div>
+        <h2 className="text-lg font-semibold tracking-tight text-oc-text">
+          {isNotFound ? "Session not found" : "Couldn’t load this session"}
+        </h2>
+        <p className="mt-1.5 text-sm leading-relaxed text-oc-text-soft">
+          {error.message} It may have been removed or created in a different workspace or server data directory.
+        </p>
+        <code className="mt-3 block break-all text-[11px] text-oc-text-soft opacity-75">
+          {error.sessionId}
+        </code>
+        <div className="mt-5 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => dispatch({ type: "SET_SESSION_MODAL_OPEN", payload: true })}
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-oc-border bg-oc-panel px-3 text-xs font-medium text-oc-text transition-colors hover:border-oc-border-strong hover:bg-oc-panel-hover"
+          >
+            <History className="h-3.5 w-3.5" />
+            Choose another session
+          </button>
+          <button
+            type="button"
+            onClick={() => vscode.postMessage({ type: "newSession" })}
+            className="inline-flex h-8 items-center gap-1.5 rounded-md bg-oc-accent px-3 text-xs font-medium text-[var(--vscode-button-foreground)] transition-opacity hover:opacity-90"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            New session
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+});
+
 export function MessageStatus({
   active,
   failed,
@@ -11632,50 +11700,87 @@ export const SdkEventDebugPanel = memo(function SdkEventDebugPanel() {
 
 const SdkEventDebugPanelContents = memo(function SdkEventDebugPanelContents() {
   const [copiedDebugPanel, setCopiedDebugPanel] = useState(false);
-  const {
-    currentSessionId,
-    sdkMessagesBySessionId,
-    liveEventStreamBySessionId,
-  } = useAppState(
-    (state) => ({
-      currentSessionId: state.currentSessionId,
-      sdkMessagesBySessionId: state.sdkMessagesBySessionId,
-      liveEventStreamBySessionId: state.liveEventStreamBySessionId,
-    }),
-    shallowEqual,
+  const [showRawDebugData, setShowRawDebugData] = useState(false);
+  const sessionId = useAppState((state) => state.currentSessionId);
+  const { rehydratedSdkMessages, liveEvents } = useSyncExternalStore(
+    subscribeToSdkDebugStore,
+    () => getSdkDebugSnapshot(sessionId),
+    () => getSdkDebugSnapshot(sessionId),
   );
-
-  const sessionId = currentSessionId;
-  const rehydratedSdkMessages = sessionId && Array.isArray(sdkMessagesBySessionId?.[sessionId])
-    ? sdkMessagesBySessionId[sessionId]
-    : [];
-  const liveEvents = sessionId && Array.isArray(liveEventStreamBySessionId?.[sessionId])
-    ? liveEventStreamBySessionId[sessionId]
-    : [];
   const debugData = {
     sessionId,
     rehydratedSdkMessages,
     liveEvents,
   };
+  const visibleSdkMessages = useMemo(
+    () => rehydratedSdkMessages.slice(-50),
+    [rehydratedSdkMessages],
+  );
+  const visibleLiveEvents = useMemo(
+    () => liveEvents.slice(-100),
+    [liveEvents],
+  );
+  const visibleDebugJson = useMemo(
+    () =>
+      showRawDebugData
+        ? JSON.stringify(
+            {
+              sessionId,
+              rehydratedSdkMessages: visibleSdkMessages,
+              liveEvents: visibleLiveEvents,
+              displayWindow: {
+                sdkMessages: `${visibleSdkMessages.length}/${rehydratedSdkMessages.length}`,
+                liveEvents: `${visibleLiveEvents.length}/${liveEvents.length}`,
+              },
+            },
+            null,
+            2,
+          )
+        : "",
+    [
+      liveEvents.length,
+      rehydratedSdkMessages.length,
+      sessionId,
+      showRawDebugData,
+      visibleLiveEvents,
+      visibleSdkMessages,
+    ],
+  );
 
   return (
     <div className="mx-4 my-2 rounded-md border border-oc-border bg-oc-panel overflow-hidden text-[10px] font-mono">
       <div className="flex items-center justify-between bg-oc-panel-hover px-2 py-1 border-b border-oc-border">
-        <span className="font-semibold text-oc-text">SDK Events (Debug)</span>
-        <button 
-          onClick={() => {
-            navigator.clipboard.writeText(JSON.stringify(debugData, null, 2));
-            setCopiedDebugPanel(true);
-            setTimeout(() => setCopiedDebugPanel(false), 2000);
-          }}
-          className="text-oc-text-muted hover:text-oc-text"
-        >
-          {copiedDebugPanel ? "Copied!" : "Copy"}
-        </button>
+        <span className="font-semibold text-oc-text">
+          SDK Events (Debug) · {rehydratedSdkMessages.length} messages · {liveEvents.length} live
+        </span>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowRawDebugData((visible) => !visible)}
+            className="text-oc-text-muted hover:text-oc-text"
+          >
+            {showRawDebugData ? "Hide" : "Show recent"}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              // Full serialization is intentionally user-triggered. Performing
+              // it during every streaming render was the main-thread freeze.
+              navigator.clipboard.writeText(JSON.stringify(debugData, null, 2));
+              setCopiedDebugPanel(true);
+              setTimeout(() => setCopiedDebugPanel(false), 2000);
+            }}
+            className="text-oc-text-muted hover:text-oc-text"
+          >
+            {copiedDebugPanel ? "Copied!" : "Copy all"}
+          </button>
+        </div>
       </div>
-      <div className="p-2 max-h-48 overflow-y-auto text-oc-text-muted">
-        <pre>{JSON.stringify(debugData, null, 2)}</pre>
-      </div>
+      {showRawDebugData ? (
+        <div className="p-2 max-h-48 overflow-y-auto text-oc-text-muted">
+          <pre>{visibleDebugJson}</pre>
+        </div>
+      ) : null}
     </div>
   );
 });

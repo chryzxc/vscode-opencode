@@ -136,7 +136,6 @@ export class PlanManager {
     const withoutExt = fileName.replace(/\.md$/i, "");
 
     const cleaned = withoutExt
-      .replace(/^implementation[_-]?plan[_-]?/i, "")
       .replace(/^plan[_-]?/i, "")
       .replace(/[_-]plan$/i, "")
       .replace(/[_-]\d{8,}$/, "")
@@ -319,7 +318,7 @@ export class PlanManager {
       return false;
     }
     if (
-      /(^|\/)implementation_plan_comments_[^/]+\.md$/.test(lower) ||
+      /(^|\/)plan_comments_[^/]+\.md$/.test(lower) ||
       /(^|\/)[^/]+_comments\.md$/.test(lower)
     ) {
       return false;
@@ -328,7 +327,7 @@ export class PlanManager {
       /(^|\/)\.?plans?\//.test(lower) || /(^|\/)planning\//.test(lower);
     return (
       isPlanDirectoryPath ||
-      /(^|\/)implementation_plan(?:_[a-z0-9-]+)?\.md$/.test(lower) ||
+      /(^|\/)plan(?:_[a-z0-9-]+)?\.md$/.test(lower) ||
       /(^|\/)plans?\//.test(lower) ||
       lower.includes("plan")
     );
@@ -350,11 +349,11 @@ export class PlanManager {
       score += 50;
     }
 
-    if (/(^|\/)implementation_plan\.md$/.test(normalized)) {
+    if (/(^|\/)plan\.md$/.test(normalized)) {
       score += 40;
     }
 
-    if (/(^|\/)implementation_plan_[a-z0-9-]+\.md$/.test(normalized)) {
+    if (/(^|\/)plan_[a-z0-9-]+\.md$/.test(normalized)) {
       score += 35;
     }
 
@@ -677,7 +676,7 @@ export class PlanManager {
       const fallbackContent = this.buildFallbackPlanContent(plan)!;
       const defaultPath =
         normalizedPlanFile ||
-        "docs/implementation-plan.md";
+        "docs/plan.md";
       const persistedPath = await this.persistPlan(
         fallbackContent.trim(),
         defaultPath,

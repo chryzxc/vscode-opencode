@@ -7,6 +7,7 @@
 
 import type {
   StructuredResponseType as StructuredResponseTypeDefinition,
+  StructuredWalkthrough,
 } from "../../shared/structuredOutputSchema";
 
 /**
@@ -308,6 +309,7 @@ export type StructuredAssistantOutput = {
     files?: any[]; // To match ImplementationPlan structure
     fileCount?: number;
   };
+  walkthrough?: StructuredWalkthrough;
 };
 
 /**

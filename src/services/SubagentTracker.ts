@@ -78,6 +78,8 @@ export type SubagentSummary = {
   parentSessionId: string;
   parentMessageId: string;
   childSessionId?: string;
+  /** Native background-task identifier, when the spawning tool exposes one. */
+  backgroundTaskId?: string;
   agentId?: string;
   providerID?: string;
   modelID?: string;
@@ -150,6 +152,64 @@ function asNumber(value: unknown): number | undefined {
 
 function asBoolean(value: unknown): boolean {
   return typeof value === "boolean" ? value : false;
+}
+
+type BackgroundTaskLaunch = {
+  taskId?: string;
+  childSessionId?: string;
+  description?: string;
+  agentId?: string;
+};
+
+/**
+ * `call_omo_agent` is a native OpenCode tool rather than an SDK `subtask`
+ * part. Its completed result is the authoritative ownership record for the
+ * spawned child: it contains both the background-task ID and child session ID.
+ * Keep this protocol parsing here so child events are linked before they reach
+ * the webview, rather than relying on the UI to infer ownership from text.
+ */
+function backgroundTaskLaunchFromToolPart(
+  part: UnknownRecord,
+): BackgroundTaskLaunch | null {
+  if (asString(part.type).toLowerCase() !== "tool") {
+    return null;
+  }
+  const tool = asString(part.tool).trim().toLowerCase();
+  if (tool !== "call_omo_agent") {
+    return null;
+  }
+
+  const state = asRecord(part.state);
+  const input = asRecord(state?.input);
+  const output = state?.output;
+  const outputRecord = asRecord(output);
+  const outputText =
+    asString(output) ||
+    asString(outputRecord?.text) ||
+    asString(outputRecord?.output);
+  const taskId =
+    asString(outputRecord?.taskId) ||
+    asString(outputRecord?.taskID) ||
+    /(?:^|\n)\s*Task ID:\s*(bg_[a-z0-9_-]+)/i.exec(outputText)?.[1] ||
+    undefined;
+  const childSessionId =
+    asString(outputRecord?.sessionId) ||
+    asString(outputRecord?.sessionID) ||
+    /(?:^|\n)\s*Session ID:\s*(ses_[a-z0-9_-]+)/i.exec(outputText)?.[1] ||
+    undefined;
+  const description =
+    asString(input?.description) ||
+    /(?:^|\n)\s*Description:\s*([^\n]+)/i.exec(outputText)?.[1]?.trim() ||
+    undefined;
+  const agentId =
+    asString(input?.subagent_type) ||
+    asString(input?.agent) ||
+    /(?:^|\n)\s*Agent:\s*([^\n(]+)/i.exec(outputText)?.[1]?.trim() ||
+    undefined;
+
+  return taskId || childSessionId
+    ? { taskId, childSessionId, description, agentId }
+    : null;
 }
 
 function extractErrorText(value: unknown): string {
@@ -366,6 +426,13 @@ function sanitizeActivityLabel(value: string): string {
   return trimmed.replace(/\s+/g, " ");
 }
 
+/** SDK status envelopes are not child conversation content. The matching raw
+ * tool part is already retained and renders as the normal activity row. */
+function isLifecycleActivityEnvelope(value: string): boolean {
+  const text = value.trim();
+  return /^(?:step\s+(?:started|finished)\b|[a-z][a-z0-9_-]*\s+-\s+(?:completed|running|pending|failed|error)\b)/i.test(text);
+}
+
 function joinConversationText(previous: string, incoming: string): string {
   if (!previous) {
     return incoming;
@@ -577,6 +644,44 @@ export class SubagentTracker {
         if (!detail) {
           continue;
         }
+        this.upsertDetail(detail);
+      }
+
+      // Raw SDK history retains native tool parts. Recreate the same ownership
+      // bridge used for live events so child activity remains attributable after
+      // a session reload, even though `call_omo_agent` has no `subtask` part.
+      const parts = Array.isArray(message.parts) ? message.parts : [];
+      for (const rawPart of parts) {
+        const part = asRecord(rawPart);
+        if (!part) {
+          continue;
+        }
+        const launch = backgroundTaskLaunchFromToolPart(part);
+        if (!launch) {
+          continue;
+        }
+        const partId = asString(part.id) || "background-task";
+        const detailId = `background:${parentSessionId}:${parentMessageId}:${partId}`;
+        const detail: SubagentDetail = {
+          id: detailId,
+          parentSessionId,
+          parentMessageId,
+          childSessionId: launch.childSessionId,
+          backgroundTaskId: launch.taskId,
+          agentId: launch.agentId,
+          status: launch.childSessionId ? "running" : "pending",
+          latestActivity: launch.description || "Background agent requested",
+          references: [{
+            messageID: parentMessageId,
+            partID: partId,
+            callID: asString(part.callID) || undefined,
+          }],
+          rawEvents: [],
+          thinkingEvents: [],
+          conversationEvents: [],
+          progressEvents: [],
+          timelineEvents: [],
+        };
         this.upsertDetail(detail);
       }
     }
@@ -1209,6 +1314,56 @@ export class SubagentTracker {
       return;
     }
 
+    const backgroundLaunch = backgroundTaskLaunchFromToolPart(part);
+    if (backgroundLaunch && sessionId === this.activeSessionId) {
+      const detailId = `background:${sessionId}:${messageId}:${partId}`;
+      const existing = this.detailsById.get(detailId);
+      const detail: SubagentDetail = existing || {
+        id: detailId,
+        parentSessionId: sessionId,
+        parentMessageId: messageId,
+        status: "pending",
+        latestActivity: "Background agent requested",
+        references: [],
+        rawEvents: [],
+        thinkingEvents: [],
+        conversationEvents: [],
+        progressEvents: [],
+        timelineEvents: [],
+      };
+
+      detail.backgroundTaskId = backgroundLaunch.taskId || detail.backgroundTaskId;
+      detail.childSessionId = backgroundLaunch.childSessionId || detail.childSessionId;
+      detail.agentId = backgroundLaunch.agentId || detail.agentId;
+      detail.latestActivity =
+        backgroundLaunch.description || detail.latestActivity;
+      detail.startedAt = detail.startedAt ?? createdAt;
+      detail.status = detail.childSessionId ? "running" : "pending";
+      if (detail.childSessionId) {
+        this.childSessionToSubagentId.set(detail.childSessionId, detailId);
+        this.childSessionToParentSessionId.set(detail.childSessionId, sessionId);
+      }
+      this.addReference(detail, {
+        messageID: messageId,
+        partID: partId,
+        callID: asString(part.callID) || undefined,
+      });
+      this.pushTimeline(detail, {
+        key: this.makeTimelineKey("background-task", messageId, partId, createdAt),
+        type: "background-task",
+        label: detail.latestActivity,
+        createdAt,
+        messageID: messageId,
+        partID: partId,
+        callID: asString(part.callID) || undefined,
+      });
+      this.latestParentMessageBySessionId.set(sessionId, messageId);
+      this.upsertDetail(detail);
+      changedParents.add(messageId);
+      changedDetails.add(detailId);
+      return;
+    }
+
     if (
       (partType === "subtask" || partType === "agent") &&
       sessionId === this.activeSessionId
@@ -1285,7 +1440,8 @@ export class SubagentTracker {
       asString(part.content) ||
       (isReasoningPart(part) ? "" : delta);
     const thinkingText = sanitizeReasoningText(
-      asString(part.reasoning) ||
+      (isReasoningPart(part) ? asString(part.text) : "") ||
+        asString(part.reasoning) ||
         asString(part.thought) ||
         asString(part.thinking) ||
         (isReasoningPart(part) ? delta : ""),
@@ -1341,7 +1497,7 @@ export class SubagentTracker {
       }
       detail.latestActivity = progress.title;
     }
-    if (isAssistantRole && messageText.trim()) {
+    if (isAssistantRole && messageText.trim() && !isLifecycleActivityEnvelope(messageText)) {
       this.pushConversation(detail, {
         role: "assistant",
         kind: "message",
@@ -1475,18 +1631,20 @@ export class SubagentTracker {
     this.recomputeDuration(detail);
 
     const label = detail.latestActivity || "Message updated";
-    this.pushTimeline(detail, {
-      key: this.makeTimelineKey(
-        "message.updated",
-        messageId,
-        undefined,
+    if (!isLifecycleActivityEnvelope(messageText) && label !== "Completed") {
+      this.pushTimeline(detail, {
+        key: this.makeTimelineKey(
+          "message.updated",
+          messageId,
+          undefined,
+          createdAt,
+        ),
+        type: "message.updated",
+        label,
         createdAt,
-      ),
-      type: "message.updated",
-      label,
-      createdAt,
-      messageID: messageId || undefined,
-    });
+        messageID: messageId || undefined,
+      });
+    }
     this.addReference(detail, {
       messageID: messageId || undefined,
     });

@@ -13,6 +13,7 @@ import type { SubagentDetail } from "./lib/subagents/types";
 type ModalTimelineEvent = {
 	id: string;
 	createdAt: number;
+	partID?: string;
 	status?: "pending" | "running" | "done" | "error" | "cancelled";
 	activity: SharedActivityEvent;
 };
@@ -34,6 +35,16 @@ function toolDataText(value: unknown): string {
 	} catch {
 		return "";
 	}
+}
+
+function isLifecycleEnvelope(value: string | undefined): boolean {
+	const text = value?.trim() || "";
+	return /^(?:step\s+(?:started|finished)\b|[a-z][a-z0-9_-]*\s+-\s+(?:completed|running|pending|failed|error)\b)/i.test(text);
+}
+
+function displayToolLabel(value: string): string {
+	const match = /^tool:\s*(.+)$/i.exec(value.trim());
+	return (match?.[1] || value).trim();
 }
 
 function rawToolTimeline(detail: SubagentDetail, forceCancelled: boolean): ModalTimelineEvent[] {
@@ -72,6 +83,7 @@ function rawToolTimeline(detail: SubagentDetail, forceCancelled: boolean): Modal
 		byPartId.set(key, {
 			id: key,
 			createdAt: Math.max(existing?.createdAt ?? 0, createdAt),
+			partID: partId || undefined,
 			status,
 			activity: {
 				key,
@@ -83,6 +95,9 @@ function rawToolTimeline(detail: SubagentDetail, forceCancelled: boolean): Modal
 				// collapsible content preview.
 				summary: output || inputSummary,
 				status,
+				source: "stream",
+				partType: "tool",
+				partID: partId || undefined,
 				startedAt: typeof startedAt === "number" ? startedAt : createdAt,
 				activityDetail: { tool, input: input ?? {}, output },
 				updateCount: 1,
@@ -90,6 +105,134 @@ function rawToolTimeline(detail: SubagentDetail, forceCancelled: boolean): Modal
 		});
 	}
 	return [...byPartId.values()].sort((left, right) => left.createdAt - right.createdAt);
+}
+
+/**
+ * Live child-session tracking produces normalized events before (and sometimes
+ * without) a raw tool-event tape. Keep those events visible in the canonical
+ * modal so opening a subagent always shows its own activity timeline.
+ */
+function trackedActivityTimeline(
+	detail: SubagentDetail,
+	forceCancelled: boolean,
+): ModalTimelineEvent[] {
+	const tracked: ModalTimelineEvent[] = [];
+	const status = forceCancelled ? "cancelled" : undefined;
+	const timelinePartIds = new Set<string>();
+
+	for (const event of detail.timelineEvents ?? []) {
+		if (!event?.label) continue;
+		if (
+			event.type === "step-start" ||
+			event.type === "step-finish" ||
+			(event.type === "message.updated" &&
+				(isLifecycleEnvelope(event.label) || event.label === "Completed"))
+		) {
+			continue;
+		}
+		if (event.partID) timelinePartIds.add(event.partID);
+		const isThought = event.type === "reasoning" || event.type === "thinking" || event.type === "thought";
+		const toolLabel = event.type === "tool" ? displayToolLabel(event.label) : "";
+		const label = isThought ? "Thought" : toolLabel || event.type || "Activity";
+		tracked.push({
+			id: event.key || `timeline:${event.createdAt}:${event.label}`,
+			createdAt: event.createdAt || Date.now(),
+			partID: event.partID,
+			status,
+			activity: {
+				key: event.key || `timeline:${event.createdAt}:${event.label}`,
+				kind: isThought ? "reasoning" : "activity",
+				label,
+				summary: toolLabel ? undefined : event.label,
+				status,
+				source: "stream",
+				partType: event.type || "activity",
+				messageID: event.messageID,
+				partID: event.partID,
+				callID: event.callID,
+				startedAt: event.createdAt,
+				activityDetail: { tool: event.type || "activity", kind: isThought ? "reasoning" : "activity" },
+				updateCount: 1,
+			},
+		});
+	}
+
+	for (const event of detail.thinkingEvents ?? []) {
+		if (!event?.text || (event.partID && timelinePartIds.has(event.partID))) continue;
+		tracked.push({
+			id: event.id || `thought:${event.createdAt}:${event.text}`,
+			createdAt: event.createdAt || Date.now(),
+			partID: event.partID,
+			status,
+			activity: {
+				key: event.id || `thought:${event.createdAt}:${event.text}`,
+				kind: "reasoning",
+				label: "Thought",
+				summary: event.text,
+				status,
+				source: "stream",
+				partType: "reasoning",
+				messageID: event.messageID,
+				partID: event.partID,
+				startedAt: event.createdAt,
+				activityDetail: { tool: "reasoning", kind: "reasoning" },
+				updateCount: 1,
+			},
+		});
+	}
+
+	for (const event of detail.progressEvents ?? []) {
+		if (!event?.title || (event.partID && timelinePartIds.has(event.partID))) continue;
+		if (isLifecycleEnvelope(event.title) || /^[a-f0-9-]{16,}$/i.test(event.title)) continue;
+		const label = displayToolLabel(event.title);
+		tracked.push({
+			id: event.id || `progress:${event.createdAt}:${event.title}`,
+			createdAt: event.createdAt || Date.now(),
+			partID: event.partID,
+			status,
+			activity: {
+				key: event.id || `progress:${event.createdAt}:${event.title}`,
+				kind: "activity",
+				label,
+				summary: event.meta,
+				status,
+				source: "stream",
+				partType: "progress",
+				messageID: event.messageID,
+				partID: event.partID,
+				startedAt: event.createdAt,
+				activityDetail: { tool: "progress" },
+				updateCount: 1,
+			},
+		});
+	}
+
+	for (const event of detail.conversationEvents ?? []) {
+		if (!event?.text || (event.partID && timelinePartIds.has(event.partID))) continue;
+		if (event.kind !== "message" || isLifecycleEnvelope(event.text)) continue;
+		tracked.push({
+			id: event.id || `message:${event.createdAt}:${event.text}`,
+			createdAt: event.createdAt || Date.now(),
+			partID: event.partID,
+			status,
+			activity: {
+				key: event.id || `message:${event.createdAt}:${event.text}`,
+				kind: "activity",
+				label: event.kind === "reasoning" ? "Thought" : "Message",
+				summary: event.text,
+				status,
+				source: "stream",
+				partType: event.kind || "message",
+				messageID: event.messageID,
+				partID: event.partID,
+				startedAt: event.createdAt,
+				activityDetail: { tool: event.kind || "message" },
+				updateCount: 1,
+			},
+		});
+	}
+
+	return tracked.sort((left, right) => left.createdAt - right.createdAt);
 }
 
 function isBackgroundTaskId(value: string | undefined): boolean {
@@ -192,7 +335,12 @@ export function SubagentDetailModal({
 	const backgroundTaskId = isBackgroundTaskId(detail.backgroundTaskId)
 		? detail.backgroundTaskId
 		: isBackgroundTaskId(detail.id)
-			? detail.id
+		? detail.id
+			: undefined;
+	const agentLabel = detail.agentId?.trim() || "Subagent";
+	const taskLabel =
+		detail.latestActivity && !["Completed", "Running", "Pending"].includes(detail.latestActivity)
+			? detail.latestActivity
 			: undefined;
 
 	const hasTerminalStopMarker = useMemo(() => {
@@ -208,8 +356,13 @@ export function SubagentDetailModal({
 
 	const renderedTimeline = useMemo<ModalTimelineEvent[]>(() => {
 		const rawTools = rawToolTimeline(detail, status === "cancelled");
-		if (rawTools.length > 0) return rawTools;
-		return [];
+		const rawToolPartIds = new Set(
+			rawTools.map((event) => event.partID).filter((id): id is string => Boolean(id)),
+		);
+		const tracked = trackedActivityTimeline(detail, status === "cancelled").filter(
+			(event) => !event.partID || !rawToolPartIds.has(event.partID),
+		);
+		return [...rawTools, ...tracked].sort((left, right) => left.createdAt - right.createdAt);
 	}, [detail]);
 
 	// Debug logging for conversation events
@@ -239,18 +392,18 @@ export function SubagentDetailModal({
 				aria-label="Close subagent details"
 			/>
 			<div
-				className="oc-modal-shell relative z-50 grid h-[min(92vh,860px)] min-h-0 w-full max-w-5xl grid-rows-[auto_minmax(0,1fr)] overflow-hidden text-foreground animate-in zoom-in-95 duration-200"
+				className="oc-modal-shell relative z-50 grid h-[min(72vh,620px)] min-h-0 w-full max-w-3xl grid-rows-[auto_minmax(0,1fr)] overflow-hidden text-foreground animate-in zoom-in-95 duration-200"
 				role="dialog"
 				aria-modal="true"
 				aria-label={title}
 			>
-				<div className="oc-modal-header shrink-0 bg-oc-panel-soft/70 p-3 sm:p-4">
+				<div className="oc-modal-header shrink-0 bg-oc-panel-soft/70 p-2.5 sm:p-3">
 					<div className="flex items-start justify-between gap-3">
 							<div className="flex min-w-0 items-start gap-3">
 								<div className="min-w-0">
 									<div className="flex flex-wrap items-center gap-2">
-										<span className="oc-subagent-modal-title text-sm font-semibold sm:text-base">
-											{title}
+										<span className="oc-subagent-modal-title text-[11px] font-semibold leading-tight">
+											{agentLabel}
 										</span>
 									<Badge
 										variant="outline"
@@ -268,26 +421,29 @@ export function SubagentDetailModal({
 										{status.toUpperCase()}
 									</Badge>
 								</div>
-								{backgroundTaskId && (
-									<div className="mt-1 text-xs font-medium oc-text-secondary break-words">
-										BG ID: {backgroundTaskId}
+									{taskLabel && (
+										<div className="mt-1 text-[11px] leading-[1.34] oc-text-secondary break-words">{taskLabel}</div>
+									)}
+									<div className="mt-1.5 flex flex-wrap gap-x-2.5 gap-y-0.5 text-[10px] leading-[1.3] oc-text-secondary">
+										{title !== agentLabel && <span>Model: {title}</span>}
+										{backgroundTaskId && <span>BG: {backgroundTaskId}</span>}
+										{detail.childSessionId && <span>Session: {detail.childSessionId}</span>}
 									</div>
-								)}
 							</div>
 						</div>
 						<button
 							type="button"
-							className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-oc-border bg-oc-bg-soft oc-text-secondary transition-colors hover:bg-oc-panel hover:text-foreground"
+							className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-oc-border bg-oc-bg-soft oc-text-secondary transition-colors hover:bg-oc-panel hover:text-foreground"
 							onClick={onClose}
 							aria-label="Close"
 						>
-							<X className="h-5 w-5" />
+							<X className="h-4 w-4" />
 						</button>
 					</div>
 				</div>
 
-				<div className="oc-modal-content min-h-0 overflow-y-auto overscroll-contain p-3 sm:p-4 lg:p-5">
-					<div className="mb-3 flex items-center justify-between border-b border-oc-border-soft pb-2">
+				<div className="oc-modal-content min-h-0 overflow-y-auto overscroll-contain p-2.5 sm:p-3">
+					<div className="mb-2 flex items-center justify-between border-b border-oc-border-soft pb-1.5">
 						<span className="text-[11px] font-medium uppercase tracking-wider text-oc-text-soft">
 							Activity Timeline
 						</span>

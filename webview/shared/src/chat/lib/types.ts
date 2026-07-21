@@ -1,4 +1,7 @@
-import type { StructuredResponseType as SharedStructuredResponseType } from "./generated/structuredOutputSchema";
+import type {
+  StructuredResponseType as SharedStructuredResponseType,
+  StructuredWalkthrough,
+} from "./generated/structuredOutputSchema";
 import type { DisplayError } from "../../../../../src/providers/chat/types";
 
 export interface SessionStats {
@@ -33,6 +36,13 @@ export interface Session {
   title?: string;
   createdAt?: number;
   parentSessionId?: string;
+}
+
+export interface SessionLoadError {
+  sessionId: string;
+  reason: "not_found" | "unavailable";
+  message: string;
+  status?: number;
 }
 
 export interface ContextItem {
@@ -273,6 +283,7 @@ export interface StreamingState {
     summary?: string;
     fileCount?: number;
   };
+  walkthrough?: StructuredWalkthrough;
   structuredOutput?: {
     type?: StructuredResponseType;
     text?: string;
@@ -289,6 +300,7 @@ export interface StreamingState {
       summary?: string;
       fileCount?: number;
     };
+    walkthrough?: StructuredWalkthrough;
     progressUpdates?: Array<{
       title?: string;
       status?: "pending" | "done" | "error";
@@ -318,6 +330,27 @@ export interface StreamingState {
   inThoughtBlock?: boolean;
   /** Track if currently processing a reasoning part to prevent content leakage */
   inReasoningPart?: boolean;
+  /** SDK part currently owning text deltas while reasoning is active. */
+  activeReasoningPartID?: string;
+  /**
+   * STREAMING INVARIANT — tool-prelude text must never remain in the response
+   * card. A provider can emit a `text` delta immediately before a `tool` part
+   * in the same assistant turn. The SDK does not identify that delta as
+   * reasoning, but the subsequent activity transition proves it was a bridge
+   * into the tool phase rather than the user-facing answer. Once suppressed,
+   * every later snapshot of that exact part stays out of `content`.
+   *
+   * This is intentionally keyed by part ID, not by its prose. Do not replace
+   * it with phrase matching such as "Now let me…" — providers and languages
+   * vary, while the text-part → tool-part lifecycle is stable.
+   */
+  suppressedTextPartIDs?: string[];
+  /**
+   * The latest text part allowed to paint the response card. A following tool
+   * uses this identity to retract only that prelude, preserving later text
+   * parts that contain the real response.
+   */
+  lastRenderableTextPartID?: string;
   rawSdkEventPayloads?: unknown[];
 }
 
@@ -636,6 +669,13 @@ export interface InteractiveQuickActionsEvent {
   title?: string;
   uiCategory?: InteractiveUiCategory;
   actions: InteractiveChoice[];
+  /** OpenCode permission metadata; routes the answer to the permission API. */
+  permissionID?: string;
+  sessionID?: string;
+  /** Local UI-only permission prompt used while refining the popover layout. */
+  permissionPreview?: boolean;
+  permissionPatterns?: string[];
+  permissionName?: string;
   /** Optional full AI context shown as header in the popup card. Sourced from displayPrompt. */
   contextMessage?: string;
 }
@@ -690,6 +730,7 @@ export interface Message {
       summary?: string;
       fileCount?: number;
     };
+    walkthrough?: StructuredWalkthrough;
   };
   parts?: MessagePart[];
   text?: string;
@@ -713,6 +754,7 @@ export interface Message {
     summary?: string;
     fileCount?: number;
   };
+  walkthrough?: StructuredWalkthrough;
   edits?: MessageEdit[];
   steps?: MessageStep[];
   timing?: { duration?: number };
@@ -851,16 +893,9 @@ export interface AppState {
   isProcessing: boolean;
   isSteering: boolean;
   currentSessionId: string | null;
+  sessionLoadError: SessionLoadError | null;
   messages: Message[];
   messagesBySessionId?: Record<string, Message[]>;
-  /**
-   * LOCKED CONTRACT — copied only from the current OpenCode SDK server
-   * `client.session.messages()` response. This is an in-memory debug mirror,
-   * never persisted and never a source/fallback for rehydration.
-   */
-  sdkMessagesBySessionId?: Record<string, unknown[]>;
-  /** Unfiltered live stream mirror for debugging; intentionally never persisted. */
-  liveEventStreamBySessionId?: Record<string, unknown[]>;
   liveToastNotificationsBySessionId?: Record<string, import("./toastEvents").CentralizedToastNotification[]>;
   promptQueue: QueueItem[];
   queueBySessionId: Record<string, QueueItem[]>;

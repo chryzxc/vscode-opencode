@@ -1,7 +1,13 @@
 import * as vscode from 'vscode';
 import * as path from "path";
+import {
+  CssGenerator,
+  FileThemeProcessor,
+  type FileThemeProcessorObserver,
+  type FileThemeProcessorState,
+} from "vscode-file-theme-processor";
 
-export class PlanViewProvider {
+export class PlanViewProvider implements FileThemeProcessorObserver {
   public static readonly viewType = 'opencode.planView';
   private static currentPanel: PlanViewProvider | undefined;
   private readonly _panel: vscode.WebviewPanel;
@@ -15,6 +21,9 @@ export class PlanViewProvider {
   private _currentContent: string;
   private _currentTitle: string;
   private _currentSourceFile?: string;
+  private readonly _fileThemeProcessor: FileThemeProcessor;
+  private readonly _cssGenerator: CssGenerator;
+  private _themeCss: string | undefined;
 
   private constructor(
     panel: vscode.WebviewPanel,
@@ -29,6 +38,12 @@ export class PlanViewProvider {
     this._currentContent = content;
     this._currentTitle = title?.trim() || this.deriveTitle(content) || 'Implementation Plan';
     this._currentSourceFile = sourceFile?.trim() || undefined;
+    this._fileThemeProcessor = new FileThemeProcessor(context);
+    this._cssGenerator = new CssGenerator();
+    this._fileThemeProcessor.subscribe(this);
+    // The processor can already be ready from its cache before this panel
+    // subscribes, so hydrate the current theme synchronously as well.
+    this.updateThemeCss();
 
     this.loadComments();
 
@@ -262,6 +277,7 @@ export class PlanViewProvider {
 
     // Clean up our resources
     this._panel.dispose();
+    this._fileThemeProcessor.unsubscribe(this);
 
     while (this._disposables.length) {
       const x = this._disposables.pop();
@@ -269,6 +285,38 @@ export class PlanViewProvider {
         x.dispose();
       }
     }
+  }
+
+  public notify(state: FileThemeProcessorState): void {
+    if (state !== "ready") return;
+
+    if (!this.updateThemeCss()) return;
+
+    this._update(this._currentContent, this._currentTitle);
+  }
+
+  private updateThemeCss(): boolean {
+    const themeData = this._fileThemeProcessor.getThemeData();
+    if (!themeData.data || !themeData.themeId) return false;
+
+    const cssData = this._cssGenerator.getCss(
+      themeData.data,
+      themeData.themeId,
+      this._panel.webview,
+    );
+    this._themeCss = `${cssData.fontFaceCss}\n${cssData.iconCss}`;
+
+    if (themeData.localResourceRoots.length > 0) {
+      this._panel.webview.options = {
+        ...this._panel.webview.options,
+        localResourceRoots: [
+          this._extensionUri,
+          ...themeData.localResourceRoots.map((root) => vscode.Uri.file(root)),
+        ],
+      };
+    }
+
+    return true;
   }
 
   private deriveTitle(content: string): string | undefined {
@@ -305,19 +353,24 @@ export class PlanViewProvider {
       raw: content,
       title,
       sourceFile: this._currentSourceFile,
+      workspaceRoot: this.getWorkspaceRootForSourceFile(this._currentSourceFile),
       comments: this._commentsByPlan.get(planId) ?? [],
       revision: 0,
       planId,
     };
     const planDataJson = JSON.stringify(planData);
+    const themeCssBlock = this._themeCss
+      ? `<style id="vscode-theme-icons">${this._themeCss}</style>`
+      : "";
 
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'nonce-${nonce}';">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data: blob:; font-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'nonce-${nonce}';">
     <link href="${stylesUri}" rel="stylesheet">
+    ${themeCssBlock}
     <title>Implementation Plan</title>
 </head>
 <body>
@@ -328,6 +381,22 @@ export class PlanViewProvider {
     <script type="module" nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
+  }
+
+  private getWorkspaceRootForSourceFile(sourceFile?: string): string | undefined {
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    if (folders.length === 0) return undefined;
+
+    const normalizedSource = sourceFile ? path.normalize(sourceFile) : undefined;
+    const matchingFolder = normalizedSource
+      ? folders.find((folder) => {
+          if (folder.uri.scheme !== "file") return false;
+          const root = path.normalize(folder.uri.fsPath);
+          return normalizedSource === root || normalizedSource.startsWith(`${root}${path.sep}`);
+        })
+      : undefined;
+
+    return (matchingFolder ?? folders[0]).uri.fsPath;
   }
 
 }

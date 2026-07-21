@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 
 import { MarkdownRenderer } from "../components/MarkdownRenderer";
+import { ThemeFileIcon } from "../components/ThemeFileIcon";
 import { toWorkspaceRelativePath } from "@/utils";
 import vscode from "@/chat/lib/vscode";
 
@@ -15,6 +16,7 @@ interface PlanEnvelope {
   raw?: string;
   title?: string;
   sourceFile?: string;
+  workspaceRoot?: string;
   comments?: PlanComment[];
   planId?: string;
 }
@@ -90,7 +92,7 @@ export default function PlanShell() {
   const displayedPlan = stripRedundantLeadingTitle(rawPlan, planTitle);
   const sourceFile = envelope?.sourceFile?.trim();
   const displayedSourceFile = sourceFile
-    ? toWorkspaceRelativePath(sourceFile)
+    ? toWorkspaceRelativePath(sourceFile, envelope?.workspaceRoot)
     : "";
   const planId = envelope?.planId?.trim() || planTitle;
 
@@ -538,18 +540,19 @@ export default function PlanShell() {
 
   return (
     <div className="plan-view-shell flex h-screen min-h-0 flex-col overflow-hidden bg-[var(--vscode-editor-background)] text-[var(--vscode-editor-foreground)]">
-      <header className="flex-shrink-0 border-b border-[var(--vscode-panel-border)] bg-[linear-gradient(180deg,var(--vscode-sideBar-background,var(--vscode-editor-background))_0%,color-mix(in_srgb,var(--vscode-sideBar-background,var(--vscode-editor-background))_92%,var(--vscode-focusBorder)_8%)_100%)] px-5 py-3.5">
-        <div className="flex items-center justify-between gap-3">
+      <header className="flex-shrink-0 border-b border-[var(--vscode-panel-border)] px-6 py-5">
+        <div className="mx-auto flex max-w-4xl items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
-            <div className="mb-1 flex items-center">
-              <h1 className="line-clamp-2 text-sm font-semibold leading-tight">{planTitle}</h1>
+            <div className="flex items-center">
+              <h1 className="line-clamp-2 text-xl font-semibold leading-tight">{planTitle}</h1>
             </div>
             {sourceFile ? (
-              <p className="line-clamp-2 break-all font-medium text-[11px] text-[color-mix(in_srgb,var(--vscode-descriptionForeground)_75%,var(--vscode-editor-foreground)_25%)]" title={sourceFile}>
-                Source: {displayedSourceFile}
-              </p>
+              <div className="mt-2 flex items-start gap-1.5 text-xs text-oc-text-soft" title={sourceFile}>
+                <ThemeFileIcon filePath={sourceFile} className="mt-px" />
+                <span className="line-clamp-2 break-all">{displayedSourceFile}</span>
+              </div>
             ) : (
-              <p className="font-medium text-[11px] italic text-[color-mix(in_srgb,var(--vscode-descriptionForeground)_75%,var(--vscode-editor-foreground)_25%)]">
+              <p className="mt-2 text-xs italic text-[var(--vscode-descriptionForeground)]">
                 (no source file)
               </p>
             )}
@@ -599,17 +602,17 @@ export default function PlanShell() {
         ) : null}
       </header>
 
-      <main className="min-h-0 flex-1 overflow-y-auto px-6 pb-12 pt-5">
+      <main className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
         {displayedPlan.trim() ? (
           <div
             ref={planSurfaceRef}
-            className="relative rounded-xl border border-[color-mix(in_srgb,var(--vscode-panel-border)_80%,transparent)] bg-[color-mix(in_srgb,var(--vscode-editor-background)_86%,var(--vscode-focusBorder)_14%)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]"
+            className="relative mx-auto max-w-4xl px-6 py-7 pb-12"
           >
             <MarkdownRenderer
               ref={planContentRef}
               content={renderedHtml}
               isPreParsed={true}
-              className="prose prose-invert max-w-none cursor-text select-text px-5 py-4 pr-20 text-[13px] leading-7 text-[var(--vscode-editor-foreground)] [&_h1]:mb-3 [&_h1]:text-lg [&_h1]:font-bold [&_h2]:mb-2 [&_h2]:mt-6 [&_h2]:rounded-md [&_h2]:px-1.5 [&_h2]:py-0.5 [&_h2]:text-sm [&_h2]:font-semibold [&_h3]:mb-1.5 [&_h3]:mt-4 [&_h3]:rounded-md [&_h3]:px-1.5 [&_h3]:py-0.5 [&_h3]:text-sm [&_h3]:font-semibold [&_li]:rounded-md [&_li]:px-1.5 [&_li]:py-0.5 [&_p]:rounded-md [&_p]:px-1.5 [&_p]:py-0.5 [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:border [&_pre]:border-[var(--vscode-panel-border)] [&_pre]:bg-[color-mix(in_srgb,var(--vscode-editor-background)_74%,black_26%)] [&_pre]:p-3 [&_code]:rounded [&_code]:bg-[color-mix(in_srgb,var(--vscode-editor-background)_75%,black_25%)] [&_code]:px-1 [&_em]:italic [&_li]:mb-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:mb-3 [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:pl-5"
+              className="prose prose-invert max-w-none cursor-text select-text pr-20 text-[13px] leading-7 text-[var(--vscode-editor-foreground)] [&_h1]:mb-3 [&_h1]:text-lg [&_h1]:font-bold [&_h2]:mb-2 [&_h2]:mt-6 [&_h2]:text-sm [&_h2]:font-semibold [&_h3]:mb-1.5 [&_h3]:mt-4 [&_h3]:text-sm [&_h3]:font-semibold [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:border [&_pre]:border-[var(--vscode-panel-border)] [&_pre]:bg-[color-mix(in_srgb,var(--vscode-editor-background)_74%,black_26%)] [&_pre]:p-3 [&_code]:rounded [&_code]:bg-[color-mix(in_srgb,var(--vscode-editor-background)_75%,black_25%)] [&_code]:px-1 [&_em]:italic [&_li]:mb-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:mb-3 [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:pl-5"
             />
             {positionedComments.map((comment) => (
               <button

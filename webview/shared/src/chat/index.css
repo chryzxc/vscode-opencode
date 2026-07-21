@@ -4,6 +4,21 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * Keep Chromium's native scroll anchoring focused on the transcript end.
+ * The 1px marker is eligible only while the viewport is at the true bottom;
+ * once the reader scrolls up it leaves view and newly rendered activity no
+ * longer moves their position. Native anchoring also avoids JS layout churn.
+ */
+.oc-chat-scroll * {
+  overflow-anchor: none;
+}
+
+.oc-chat-scroll .oc-chat-scroll-anchor {
+  height: 1px;
+  overflow-anchor: auto;
+}
+
 /* ── shadcn semantic tokens → VS Code theme variables ───────────────────── */
 :root {
   --background: var(--vscode-editor-background, #1e1e2e);
@@ -819,15 +834,16 @@ body {
   font-size: 10px;
 }
 
-/* Every Details tab starts from the same content inset. Individual panels own
- * their internal rows, never their outer gutter. */
+/* Details tabs share one full-width content track. Each panel owns the same
+ * compact 4px horizontal inset so Overview, Quota, Integrations, and Tools
+ * line up at the same x-coordinates. */
 .oc-details-sheet .oc-details-tab-content {
   box-sizing: border-box;
-  padding: 8px 10px 10px;
+  padding: 8px 0 10px;
 }
 
 .oc-details-sheet .oc-details-tab-content--overview {
-  padding: 8px 10px 10px;
+  padding: 8px 0 10px;
 }
 
 .oc-details-sheet .oc-details-tab-stack {
@@ -846,6 +862,11 @@ body {
   margin: 0;
   padding-right: 0;
   padding-left: 0;
+}
+
+.oc-details-sheet .oc-details-tab-content--overview > .oc-active-task-panel {
+  padding-right: 4px;
+  padding-left: 4px;
 }
 
 .oc-details-sheet .oc-details-tab-content--overview > .oc-active-task-panel {
@@ -2618,6 +2639,11 @@ body {
   vertical-align: middle;
 }
 
+.walkthrough-card {
+  min-height: 44px;
+  padding: 9px 12px;
+}
+
 .plan-status-badge {
   border: 1px solid color-mix(in srgb, var(--oc-text) 30%, var(--oc-border));
 }
@@ -2662,6 +2688,49 @@ body {
     var(--vscode-editor-foreground, var(--oc-text)) 82%,
     var(--vscode-terminal-ansiGreen, var(--oc-green)) 18%
   );
+}
+
+/* Keep the execution acknowledgement compact, while preserving the plan that
+ * initiated it as a real, openable attachment. */
+.oc-plan-approved-message {
+  gap: 6px;
+}
+
+.oc-plan-approved-attachments {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  width: min(100%, 340px);
+}
+
+.oc-plan-approved-attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid color-mix(in srgb, var(--oc-accent) 22%, var(--oc-border));
+  border-radius: 9px 3px 9px 9px;
+  background: color-mix(in srgb, var(--oc-panel-soft) 88%, var(--oc-accent) 12%);
+  color: var(--oc-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-align: left;
+  transition: border-color 140ms ease, background 140ms ease, color 140ms ease;
+}
+
+.oc-plan-approved-attachment:hover {
+  border-color: color-mix(in srgb, var(--oc-accent) 48%, var(--oc-border));
+  background: color-mix(in srgb, var(--oc-panel-soft) 74%, var(--oc-accent) 26%);
+  color: var(--oc-text);
+}
+
+.oc-plan-approved-attachment:focus-visible {
+  outline: 1px solid var(--oc-accent);
+  outline-offset: 2px;
 }
 
 .oc-response-plan-separator {
@@ -6186,33 +6255,61 @@ body {
   border-color: var(--oc-border-soft);
 }
 
-/* Error notice — neutral surface with a local semantic failure signal. */
+/* Error notice — a compact status row with one clear recovery action. */
 .oc-error {
-  @apply rounded-lg border px-3 py-2.5 transition-colors duration-150;
-  border-color: var(--oc-surface-border);
-  background: var(--oc-surface-fill);
-  box-shadow: inset 2px 0 0 var(--oc-red);
+  @apply grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 rounded-md border px-2.5 py-2 transition-colors duration-150;
+  border-color: color-mix(in srgb, var(--oc-red) 26%, var(--oc-surface-border));
+  background: color-mix(in srgb, var(--oc-surface-fill) 94%, var(--oc-red) 6%);
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--oc-red) 88%, transparent);
+}
+
+.oc-error-content {
+  @apply flex min-w-0 items-center gap-2;
 }
 
 .oc-error-icon {
-  @apply inline-flex h-5 w-5 shrink-0 items-center justify-center;
+  @apply inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full;
+  background: color-mix(in srgb, var(--oc-red) 14%, transparent);
   color: var(--oc-red);
 }
 
+.oc-error-copy {
+  @apply flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5;
+}
+
+.oc-error-title {
+  @apply text-[11px] font-semibold leading-4;
+  color: var(--oc-text);
+}
+
+.oc-error-separator {
+  @apply h-3 w-px;
+  background: color-mix(in srgb, var(--oc-text-secondary) 42%, transparent);
+}
+
+.oc-error-message {
+  @apply min-w-0 whitespace-pre-wrap break-words text-[11px] leading-4;
+  color: var(--oc-text-secondary);
+}
+
 .oc-error-footer {
-  @apply mt-2 flex flex-wrap items-center gap-2;
+  @apply flex flex-wrap items-center justify-end gap-2;
+}
+
+.oc-error-with-hint .oc-error-footer {
+  @apply col-span-2 justify-start pl-7;
 }
 
 .oc-error-action {
-  @apply inline-flex min-h-7 items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium transition-colors duration-150;
-  border-color: var(--oc-surface-border);
-  background: transparent;
+  @apply inline-flex min-h-6 items-center gap-1.5 rounded border px-2 py-0.5 text-[10px] font-semibold transition-colors duration-150;
+  border-color: color-mix(in srgb, var(--oc-red) 32%, var(--oc-surface-border));
+  background: color-mix(in srgb, var(--oc-red) 8%, transparent);
   color: var(--oc-text);
 }
 
 .oc-error-action:hover {
-  background: color-mix(in srgb, var(--oc-panel-soft) 72%, transparent);
-  border-color: var(--oc-border);
+  background: color-mix(in srgb, var(--oc-red) 16%, transparent);
+  border-color: color-mix(in srgb, var(--oc-red) 52%, var(--oc-surface-border));
 }
 
 .oc-error-action:focus-visible {
@@ -6223,6 +6320,20 @@ body {
 .oc-error-hint {
   @apply text-[11px] leading-snug;
   color: var(--oc-text-secondary);
+}
+
+@media (max-width: 420px) {
+  .oc-error {
+    @apply grid-cols-1 gap-y-1.5;
+  }
+
+  .oc-error-footer {
+    @apply justify-start pl-7;
+  }
+
+  .oc-error-with-hint .oc-error-footer {
+    @apply col-span-1;
+  }
 }
 
 /* Warning card - amber semantic */

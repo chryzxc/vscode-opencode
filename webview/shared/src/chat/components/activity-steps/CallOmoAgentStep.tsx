@@ -10,18 +10,24 @@ import { ActivityStepStatusChip } from "./ActivityStepStatusChip";
 import { StepIndicator } from "@/components/ui/StepIndicator";
 import { Stepper, StepperItem } from "@/components/ui/stepper";
 import { shallowEqual, useAppState } from "../../lib/store";
+import { useAppDispatch } from "../../lib/store";
 import { buildBackgroundTaskPresentation } from "../../lib/backgroundTaskPresentation";
 import { usePersistentModalOpen } from "../../lib/usePersistentModalOpen";
+import { formatCallOmoAgentAsSubagentDetail } from "../../lib/subagents/callOmoFormatter";
+import { SubagentDetailModal } from "../../SubagentDetailModal";
 import {
   FadedCollapseOverlay,
   useFadedContentOverflow,
 } from "@/components/ui/FadedCollapseOverlay";
 
 import type { ActivityDetail } from "../../lib/types";
+import type { SubagentDetail } from "../../lib/subagents/types";
 
 type CallOmoAgentStepProps = {
   callID?: string;
   sessionID?: string;
+  parentSessionId?: string;
+  parentMessageId?: string;
   startedAt?: number;
   endedAt?: number;
   status: "pending" | "done" | "error";
@@ -265,15 +271,19 @@ function CallOmoAgentDetailModal({
 export function CallOmoAgentStep({
   callID,
   sessionID,
+  parentSessionId,
+  parentMessageId,
   startedAt,
   endedAt,
   status,
   source,
   activityDetail,
 }: CallOmoAgentStepProps) {
-  const { messages } = useAppState(
+  const dispatch = useAppDispatch();
+  const { messages, subagentDetailsById } = useAppState(
     (state) => ({
       messages: state.messages,
+      subagentDetailsById: state.subagentDetailsById,
     }),
     shallowEqual,
   );
@@ -310,6 +320,26 @@ export function CallOmoAgentStep({
       }),
     [messages, resolvedBackgroundTaskId],
   );
+  const linkedSubagent = useMemo(() => {
+    const details = Object.values(subagentDetailsById ?? {}) as SubagentDetail[];
+    return details.find((detail) =>
+      (resolvedBackgroundTaskId && detail.backgroundTaskId === resolvedBackgroundTaskId) ||
+      (sessionValue && detail.childSessionId === sessionValue),
+    );
+  }, [subagentDetailsById, resolvedBackgroundTaskId, sessionValue]);
+  const modalDetail = useMemo(
+    () => linkedSubagent || formatCallOmoAgentAsSubagentDetail({
+      callID,
+      parentSessionId,
+      parentMessageId,
+      childSessionId: sessionValue,
+      startedAt,
+      endedAt,
+      status,
+      activityDetail,
+    }),
+    [linkedSubagent, callID, parentSessionId, parentMessageId, sessionValue, startedAt, endedAt, status, activityDetail],
+  );
   const [isModalOpen, setIsModalOpen] = usePersistentModalOpen(
     `call-omo-agent:${resolvedBackgroundTaskId || sessionValue || description}`,
   );
@@ -338,11 +368,17 @@ export function CallOmoAgentStep({
         <div className="flex flex-col gap-1 w-full">
           <button
             type="button"
-            onClick={() => setIsModalOpen(true)}
+            onClick={() => {
+              if (linkedSubagent) {
+                dispatch({ type: "SELECT_SUBAGENT", payload: linkedSubagent.id });
+                return;
+              }
+              setIsModalOpen(true);
+            }}
             className="group relative w-full overflow-hidden rounded-lg border border-oc-border-soft bg-oc-bg-soft/60 text-left transition-colors hover:border-oc-border hover:bg-oc-panel-soft/60"
             aria-label="View subagent details"
           >
-            <div ref={previewRef} className="relative max-h-[140px] overflow-hidden p-2">
+            <div className="relative max-h-[140px] overflow-hidden p-2">
               <div className="oc-activity-step-summary flex items-start gap-1.5 whitespace-pre-wrap break-words font-mono text-oc-text-soft">
                 <span className="flex-1">{summaryLine}</span>
               </div>
@@ -352,26 +388,15 @@ export function CallOmoAgentStep({
                 </div>
               )}
             </div>
-            {hasOverflow && <FadedCollapseOverlay />}
           </button>
         </div>
       </div>
-      <CallOmoAgentDetailModal
+      <SubagentDetailModal
         isOpen={isModalOpen}
-        title={modalTitle}
-        detail={activityDetail}
+        title="Invoke Subagent"
+        detail={modalDetail}
+        parentResponseFinished={false}
         onClose={() => setIsModalOpen(false)}
-        parsedMeta={{
-          agent,
-          description,
-          prompt,
-          taskId: resolvedBackgroundTaskId || "Unavailable",
-          sessionId: sessionValue || "Unavailable",
-          status,
-        }}
-        assistantUpdateText={backgroundTaskPresentation.assistantUpdateText}
-        assistantConversationEvents={backgroundTaskPresentation.assistantConversationEvents}
-        backgroundOutput={backgroundTaskPresentation.activityDetail?.output}
       />
     </>
   );

@@ -19,6 +19,8 @@ import type {
   ToolPart,
   UserMessage,
 } from "@opencode-ai/sdk/v2";
+import type { StructuredWalkthrough } from "../shared/structuredOutputSchema";
+import { isWalkthroughNarrativeDistinct } from "../shared/structuredOutputValidator";
 
 // ---------------------------------------------------------------------------
 // Compatibility types mirroring the webview render model (webview/shared/src/chat/lib/types.ts).
@@ -164,6 +166,7 @@ export interface SdkReasoningEvent {
 export interface SdkSubagentDetail {
   id: string;
   name?: string;
+  backgroundTaskId?: string;
   parentSessionId?: string;
   parentMessageId?: string;
   childSessionId?: string;
@@ -184,6 +187,7 @@ export interface SdkRenderedMessage {
   role?: string;
   responseType?: string;
   structuredOutput?: Record<string, unknown>;
+  walkthrough?: StructuredWalkthrough;
   parts?: SdkMessagePart[];
   text?: string;
   content?: string;
@@ -406,6 +410,14 @@ function adaptToolPart(part: ToolPart): SdkMessageStep {
   const output = optionalString(stateRecord.output) ?? optionalString(stateRecord.error);
   const diff = toolDiffProjection(partRecord, stateRecord);
   const toolTime = toRecord(stateRecord.time);
+  const isBackgroundSubagentLaunch = part.tool?.trim().toLowerCase() === "call_omo_agent";
+  const backgroundOutput = optionalString(stateRecord.output) ?? "";
+  const backgroundTaskId = isBackgroundSubagentLaunch
+    ? /(?:^|\n)\s*Task ID:\s*(bg_[a-z0-9_-]+)/i.exec(backgroundOutput)?.[1]
+    : undefined;
+  const childSessionId = isBackgroundSubagentLaunch
+    ? /(?:^|\n)\s*Session ID:\s*(ses_[a-z0-9_-]+)/i.exec(backgroundOutput)?.[1]
+    : undefined;
 
   const step: SdkMessageStep = {
     type: "tool",
@@ -416,7 +428,9 @@ function adaptToolPart(part: ToolPart): SdkMessageStep {
     id: part.id,
     callID: part.callID,
     messageID: part.messageID,
-    sessionID: part.sessionID,
+    // Invocation rows need the child session for modal ownership. All other
+    // activity retains the SDK part's owning session.
+    sessionID: childSessionId ?? part.sessionID,
     status: part.state.status,
     source: "final",
     partType: "tool",
@@ -430,6 +444,8 @@ function adaptToolPart(part: ToolPart): SdkMessageStep {
       file: diff.filePath,
       metadata: toRecord(stateRecord.metadata) ?? undefined,
       diffExcerpt: diff.diffExcerpt,
+      backgroundTaskId,
+      sessionID: childSessionId,
     },
   };
   if (diff.diffStats) step.diffStats = diff.diffStats;
@@ -494,6 +510,65 @@ export function adaptSubtaskPart(part: SubtaskPart, info: Message): SdkSubagentD
     timelineEvents: [],
   };
   return detail;
+}
+
+/**
+ * The native `call_omo_agent` tool does not emit an SDK `subtask` part. Its
+ * completed result is nevertheless a first-class child-session ownership
+ * record, and must be projected during history hydration as well as live
+ * streaming. This keeps reloads from losing the inline subagent card.
+ */
+function adaptBackgroundTaskToolPart(
+  part: ToolPart,
+  info: Message,
+): SdkSubagentDetail | undefined {
+  if (part.tool.trim().toLowerCase() !== "call_omo_agent") {
+    return undefined;
+  }
+  const state = part.state as unknown as UnknownRecord;
+  const input = toRecord(state.input);
+  const output = state.output;
+  const outputRecord = toRecord(output);
+  const outputText =
+    optionalString(output) ||
+    optionalString(outputRecord?.text) ||
+    optionalString(outputRecord?.output) ||
+    "";
+  const backgroundTaskId =
+    optionalString(outputRecord?.taskId) ||
+    optionalString(outputRecord?.taskID) ||
+    /(?:^|\n)\s*Task ID:\s*(bg_[a-z0-9_-]+)/i.exec(outputText)?.[1];
+  const childSessionId =
+    optionalString(outputRecord?.sessionId) ||
+    optionalString(outputRecord?.sessionID) ||
+    /(?:^|\n)\s*Session ID:\s*(ses_[a-z0-9_-]+)/i.exec(outputText)?.[1];
+  if (!backgroundTaskId && !childSessionId) {
+    return undefined;
+  }
+  const name =
+    optionalString(input?.description) ||
+    /(?:^|\n)\s*Description:\s*([^\n]+)/i.exec(outputText)?.[1]?.trim() ||
+    "Background agent";
+  const agentId =
+    optionalString(input?.subagent_type) ||
+    optionalString(input?.agent) ||
+    /(?:^|\n)\s*Agent:\s*([^\n(]+)/i.exec(outputText)?.[1]?.trim();
+
+  return {
+    id: `background:${info.sessionID}:${info.id}:${part.id}`,
+    name,
+    backgroundTaskId,
+    parentSessionId: info.sessionID,
+    parentMessageId: info.id,
+    childSessionId,
+    agentId,
+    status: childSessionId ? "running" : "pending",
+    latestActivity: name,
+    references: [{ messageID: info.id, partID: part.id }],
+    thinkingEvents: [],
+    progressEvents: [],
+    timelineEvents: [],
+  };
 }
 
 function adaptFilePart(part: FilePart): SdkMessagePart {
@@ -590,6 +665,9 @@ export function adaptSdkMessage(sdkMessage: SdkMessageEnvelope): SdkRenderedMess
       if (toRecord(structuredOutput.plan)) {
         message.plan = structuredOutput.plan as Record<string, unknown>;
       }
+      if (toRecord(structuredOutput.walkthrough)) {
+        message.walkthrough = structuredOutput.walkthrough as StructuredWalkthrough;
+      }
       const events = structuredOutput.interactiveEvents;
       if (Array.isArray(events)) {
         message.interactiveEvents = events as SdkInteractiveQuestionEvent[];
@@ -618,9 +696,14 @@ export function adaptSdkMessage(sdkMessage: SdkMessageEnvelope): SdkRenderedMess
         endedAt: reasoningPart.time?.end,
       });
     } else if (part.type === "tool") {
-      const step = adaptToolPart(part as ToolPart);
+      const toolPart = part as ToolPart;
+      const step = adaptToolPart(toolPart);
       message.steps?.push(step);
       message.progressEvents?.push(step);
+      const backgroundSubagent = adaptBackgroundTaskToolPart(toolPart, info);
+      if (backgroundSubagent) {
+        message.subagents?.push(backgroundSubagent);
+      }
     } else if (part.type === "step-start") {
       message.steps?.push(adaptStepStartPart(part as StepStartPart));
     } else if (part.type === "step-finish") {
@@ -697,6 +780,11 @@ export function adaptStructuredOutput(info: AssistantMessage): Record<string, un
       files,
       fileCount: optionalNumber(plan.fileCount) ?? files?.length,
     };
+  }
+
+  const walkthrough = toRecord(structured.walkthrough);
+  if (walkthrough && isWalkthroughNarrativeDistinct(structured)) {
+    result.walkthrough = walkthrough;
   }
 
   const question = toRecord(structured.question);

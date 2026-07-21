@@ -682,10 +682,10 @@ export class CompactionManager {
     }
   }
 
-  async handleSdkCompactionStreamEvent(
+  handleSdkCompactionStreamEvent(
     event: unknown,
     sessionService: any,
-  ): Promise<boolean> {
+  ): boolean {
     const rec = this.asRecord(event);
     if (!rec) {
       return false;
@@ -731,6 +731,14 @@ export class CompactionManager {
       return true;
     }
 
+    // Refreshing a compacted transcript requires SDK I/O and message
+    // processing. It must not hold the SSE callback open: doing so delays
+    // every event that follows this terminal compaction signal.
+    void this.refreshCompactedSession(sessionId, sessionService);
+    return true;
+  }
+
+  private async refreshCompactedSession(sessionId: string, sessionService: any): Promise<void> {
     try {
       const refreshedRawMessages = await sessionService.getMessages(sessionId);
       const refreshedMessages = Array.isArray(refreshedRawMessages)
@@ -773,7 +781,6 @@ export class CompactionManager {
       });
     }
 
-    return true;
   }
 
   /**

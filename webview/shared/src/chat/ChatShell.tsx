@@ -1,5 +1,5 @@
 import { Fragment, memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Archive, X } from "lucide-react";
+import { Archive, X } from "lucide-react";
 
 import { AppProvider, shallowEqual, useAppDispatch, useAppState } from "./lib/store";
 import { perfProbe } from "./lib/streamingPerfProbe";
@@ -60,6 +60,8 @@ import {
   ResponseMessage,
   SdkEventDebugPanel,
   EmptyState,
+  ErrorBanner,
+  SessionUnavailableState,
   FileChangesSection,
   PermissionCard,
   SystemMessage,
@@ -1910,7 +1912,10 @@ type VirtualizedConversationWindow = {
   shouldVirtualize: boolean;
 };
 
-const AUTO_FOLLOW_THRESHOLD_PX = 96;
+// Follow mode is deliberately a bottom lock, not a "nearby" lock. A tiny
+// tolerance accounts for sub-pixel rounding, but a reader who has moved even
+// slightly above the latest activity must keep their place.
+const AUTO_FOLLOW_THRESHOLD_PX = 2;
 const VIRTUALIZED_TRANSCRIPT_MIN_ENTRIES = 250;
 const VIRTUALIZED_TRANSCRIPT_OVERSCAN_PX = 1400;
 const VIRTUALIZED_TRANSCRIPT_FALLBACK_VIEWPORT_PX = 800;
@@ -2299,6 +2304,26 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
     observer?.observe(node);
   }, []);
 
+  // React detaches and reattaches callback refs when their function identity
+  // changes. These refs can synchronously update measuredHeightsVersion, so an
+  // inline `(node) => ...` ref creates a render -> detach -> cache delete ->
+  // remeasure -> state update loop. Keep one callback per transcript entry for
+  // the lifetime of this transcript instead.
+  const measuredEntryRefCallbacksRef = useRef<
+    Map<string, (node: HTMLDivElement | null) => void>
+  >(new Map());
+  const getMeasuredEntryRef = useCallback(
+    (entryKey: string) => {
+      let callback = measuredEntryRefCallbacksRef.current.get(entryKey);
+      if (!callback) {
+        callback = (node) => attachMeasuredEntryNode(entryKey, node);
+        measuredEntryRefCallbacksRef.current.set(entryKey, callback);
+      }
+      return callback;
+    },
+    [attachMeasuredEntryNode],
+  );
+
   const {
     entryBlockKeys,
     isFirstInBlockByIndex,
@@ -2548,7 +2573,7 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
           return (
             <div
               key={entry.key}
-              ref={(node) => attachMeasuredEntryNode(entry.key, node)}
+              ref={getMeasuredEntryRef(entry.key)}
             >
               {dividerHere ? <CompactionDivider at={lastCompactedAt} /> : null}
               <div
@@ -2569,7 +2594,7 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
           return (
             <div
               key={entry.key}
-              ref={(node) => attachMeasuredEntryNode(entry.key, node)}
+              ref={getMeasuredEntryRef(entry.key)}
             >
               {dividerHere ? <CompactionDivider at={lastCompactedAt} /> : null}
               <div
@@ -2601,7 +2626,7 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
           return changeSummary?.files?.length ? (
             <div
               key={entry.key}
-              ref={(node) => attachMeasuredEntryNode(entry.key, node)}
+              ref={getMeasuredEntryRef(entry.key)}
             >
               {dividerHere ? <CompactionDivider at={lastCompactedAt} /> : null}
               <div className="oc-message-enter mb-4">
@@ -2634,7 +2659,7 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
         return (
           <div
             key={entry.key}
-            ref={(node) => attachMeasuredEntryNode(entry.key, node)}
+            ref={getMeasuredEntryRef(entry.key)}
           >
             {dividerHere ? <CompactionDivider at={lastCompactedAt} /> : null}
           </div>
@@ -2651,9 +2676,7 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
 });
 
 function CompactErrorItem({ entry, dividerHere, lastCompactedAt }: { entry: any; dividerHere: boolean; lastCompactedAt: number }) {
-  const [isExpanded, setIsExpanded] = useState(false);
   const errorMessage = entry.error?.message || "Unknown error";
-  const isExpandable = errorMessage.length > 150 || errorMessage.includes("\n");
 
   return (
     <div>
@@ -2664,48 +2687,7 @@ function CompactErrorItem({ entry, dividerHere, lastCompactedAt }: { entry: any;
           containIntrinsicSize: "auto 50px",
         }}
       >
-        <div className="mb-2">
-          <div
-            className="w-full rounded-[10px] border px-3 py-2.5 text-left transition-colors"
-            style={{
-              background: "color-mix(in srgb, var(--vscode-errorForeground) 8%, transparent)",
-              borderColor: "color-mix(in srgb, var(--vscode-errorForeground) 15%, transparent)",
-            }}
-          >
-            <div className="flex min-w-0 items-start gap-3">
-              <div
-                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full mt-0.5"
-                style={{
-                  background: "color-mix(in srgb, var(--vscode-errorForeground) 15%, transparent)",
-                  color: "var(--vscode-errorForeground)",
-                }}
-              >
-                <AlertTriangle className="h-3.5 w-3.5" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <div
-                  className="text-[13px] leading-relaxed font-medium cursor-pointer"
-                  style={{ color: "var(--vscode-errorForeground)", wordBreak: "break-word" }}
-                  onClick={() => isExpandable && setIsExpanded(!isExpanded)}
-                >
-                  <div className={isExpanded ? "" : "line-clamp-2"}>
-                    {errorMessage}
-                  </div>
-                </div>
-                {isExpandable && (
-                  <button
-                    type="button"
-                    onClick={() => setIsExpanded(!isExpanded)}
-                    className="mt-1.5 text-[11px] font-semibold opacity-80 hover:opacity-100 transition-opacity"
-                    style={{ color: "var(--vscode-errorForeground)" }}
-                  >
-                    {isExpanded ? "Show less" : "Show more"}
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
+        <ErrorBanner message={errorMessage} />
       </div>
     </div>
   );
@@ -2752,6 +2734,13 @@ function ChatContent() {
   );
   const dispatch = useAppDispatch();
 
+  useEffect(() => {
+    const active = Boolean(state.streaming?.isActive || state.isProcessing);
+    perfProbe.setStreamingActive(active, state.currentSessionId);
+  }, [state.currentSessionId, state.isProcessing, state.streaming?.isActive]);
+
+  useEffect(() => () => perfProbe.setStreamingActive(false), []);
+
   // Perf probe: record render+commit duration for ChatContent. No deps so it
   // fires after every commit. Zero work when probe disabled.
   useEffect(() => {
@@ -2762,6 +2751,7 @@ function ChatContent() {
   const stateRef = useRef(state);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesScrollRef = useRef<HTMLDivElement>(null);
+  const messageContentRef = useRef<HTMLDivElement>(null);
   const [streamViewport, setStreamViewport] = useState<StreamViewportState>({
     isFollowing: true,
     unseenUpdateCount: 0,
@@ -2799,6 +2789,39 @@ function ChatContent() {
   // visible hitching. A small throttle preserves "stick to bottom" behavior without
   // overdriving layout/reflow during heavy token streams.
   const lastFollowAutoScrollAtRef = useRef(0);
+  const pendingFollowAutoScrollRafRef = useRef<number | null>(null);
+  const pendingFollowAutoScrollTimeoutRef = useRef<number | null>(null);
+
+  const scheduleFollowAutoScroll = useCallback(() => {
+    if (
+      !streamViewportRef.current.isFollowing ||
+      pendingFollowAutoScrollRafRef.current !== null ||
+      pendingFollowAutoScrollTimeoutRef.current !== null
+    ) {
+      return;
+    }
+
+    pendingFollowAutoScrollRafRef.current = requestAnimationFrame(() => {
+      pendingFollowAutoScrollRafRef.current = null;
+      if (!streamViewportRef.current.isFollowing) return;
+
+      const elapsed = performance.now() - lastFollowAutoScrollAtRef.current;
+      if (elapsed < 33) {
+        pendingFollowAutoScrollTimeoutRef.current = window.setTimeout(() => {
+          pendingFollowAutoScrollTimeoutRef.current = null;
+          scheduleFollowAutoScroll();
+        }, 33 - elapsed);
+        return;
+      }
+
+      const root = messagesScrollRef.current;
+      if (!root) return;
+      lastFollowAutoScrollAtRef.current = performance.now();
+      // This runs after layout, so it does not force a synchronous reflow while
+      // streaming or mounting a richer activity component.
+      root.scrollTop = root.scrollHeight;
+    });
+  }, []);
 
   const resolveAgentColor = useCallback((agentId?: string) => {
     if (!agentId) return "var(--oc-accent)";
@@ -2993,10 +3016,6 @@ function ChatContent() {
     if (!root) return;
 
     let rafId: number | null = null;
-    // A wheel/trackpad gesture can move less than the near-bottom threshold.
-    // Remember the intent briefly so the viewport observer cannot immediately
-    // turn follow mode back on and pull the user to the latest event.
-    let manualScrollIntentUntil = 0;
     // Cache scrollHeight from rAF callbacks so the hot scroll path never
     // reads layout-triggering properties synchronously. During streaming,
     // reading root.scrollHeight in onScroll forces the browser to flush
@@ -3008,8 +3027,7 @@ function ChatContent() {
     // payload object and reads DOM properties; gate that work here so the
     // common scroll event stays a near-no-op.
     let lastScrollInputLogAt = 0;
-    const pauseFollow = (source: "scroll" | "wheel" | "touch") => {
-      manualScrollIntentUntil = Date.now() + 180;
+    const pauseFollow = () => {
       if (!streamViewportRef.current.isFollowing) {
         return;
       }
@@ -3022,7 +3040,7 @@ function ChatContent() {
         prev.isFollowing ? { ...prev, isFollowing: false } : prev,
       );
       logger.streamPerformance("scroll-intent", {
-        source,
+        source: "scroll",
         streamingActive: Boolean(stateRef.current.streaming?.isActive),
       });
     };
@@ -3056,11 +3074,7 @@ function ChatContent() {
         setStreamViewport((prev) =>
           prev.isFollowing ? { ...prev, isFollowing: false } : prev,
         );
-      } else if (
-        !wasFollowing &&
-        isAtBottom &&
-        Date.now() >= manualScrollIntentUntil
-      ) {
+      } else if (!wasFollowing && isAtBottom) {
         streamViewportRef.current = {
           ...streamViewportRef.current,
           isFollowing: true,
@@ -3091,19 +3105,13 @@ function ChatContent() {
         distanceFromBottom > AUTO_FOLLOW_THRESHOLD_PX &&
         streamViewportRef.current.isFollowing
       ) {
-        pauseFollow("scroll");
+        pauseFollow();
       }
       if (rafId !== null) {
         return;
       }
       rafId = requestAnimationFrame(updateViewportState);
     };
-    const onWheel = (event: WheelEvent) => {
-      if (event.deltaY !== 0) {
-        pauseFollow("wheel");
-      }
-    };
-    const onTouchStart = () => pauseFollow("touch");
     updateViewportState();
 
     let resizeObserver: ResizeObserver | null = null;
@@ -3118,12 +3126,8 @@ function ChatContent() {
     }
 
     root.addEventListener("scroll", onScroll, { passive: true });
-    root.addEventListener("wheel", onWheel, { passive: true });
-    root.addEventListener("touchstart", onTouchStart, { passive: true });
     return () => {
       root.removeEventListener("scroll", onScroll);
-      root.removeEventListener("wheel", onWheel);
-      root.removeEventListener("touchstart", onTouchStart);
       resizeObserver?.disconnect();
       if (rafId !== null) {
         cancelAnimationFrame(rafId);
@@ -3131,33 +3135,50 @@ function ChatContent() {
     };
   }, []);
 
+  // Activity cards can mount or grow after their initial render (for example
+  // when a subagent detail, diff, or markdown block appears). ResizeObserver
+  // catches growth; the child-list observer catches node mounts that do not
+  // report a size change. Both feed the same coalesced scheduler and avoid
+  // character-data/attribute observation on the streaming hot path.
+  useEffect(() => {
+    const content = messageContentRef.current;
+    if (!content) return;
+
+    const resizeObserver =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(scheduleFollowAutoScroll);
+    resizeObserver?.observe(content);
+
+    const mutationObserver =
+      typeof MutationObserver === "undefined"
+        ? null
+        : new MutationObserver(scheduleFollowAutoScroll);
+    mutationObserver?.observe(content, { childList: true, subtree: true });
+
+    return () => {
+      resizeObserver?.disconnect();
+      mutationObserver?.disconnect();
+    };
+  }, [scheduleFollowAutoScroll]);
+
+  useEffect(() => {
+    return () => {
+      if (pendingFollowAutoScrollRafRef.current !== null) {
+        cancelAnimationFrame(pendingFollowAutoScrollRafRef.current);
+      }
+      if (pendingFollowAutoScrollTimeoutRef.current !== null) {
+        window.clearTimeout(pendingFollowAutoScrollTimeoutRef.current);
+      }
+    };
+  }, []);
+
   useEffect(() => {
     if (streamViewportRef.current.isFollowing) {
-      const root = messagesScrollRef.current;
-      if (root) {
-        const now = Date.now();
-        // Keep follow-mode pinned, but at a controlled cadence. This replaced a
-        // MutationObserver-per-change strategy that was too eager during streaming.
-        if (now - lastFollowAutoScrollAtRef.current >= 33) {
-          lastFollowAutoScrollAtRef.current = now;
-          // Defer the scrollHeight read + scrollTop write to the next animation
-          // frame. Inside rAF the browser has already flushed pending DOM
-          // mutations and run layout, so reading scrollHeight does NOT force a
-          // synchronous layout reflow. The prior synchronous
-          // `root.scrollTop = root.scrollHeight` on every stream batch (this
-          // effect fires per state.streaming identity change, ~20-30+×/sec)
-          // forced the browser to flush pending DOM mutations on each batch and
-          // saturated the main thread, which was the dominant cause of the
-          // streaming lag/freezes users reported. Smooth scrolling resumes once
-          // streaming ends because this effect stops firing.
-          requestAnimationFrame(() => {
-            if (!streamViewportRef.current.isFollowing) return;
-            const el = messagesScrollRef.current;
-            if (!el) return;
-            el.scrollTop = el.scrollHeight;
-          });
-        }
-      }
+      // Keep follow-mode pinned at a controlled cadence. This is shared with
+      // ResizeObserver-driven component growth so one render cannot schedule
+      // duplicate layout reads or scroll writes.
+      scheduleFollowAutoScroll();
       if (streamViewportRef.current.unseenUpdateCount > 0) {
         setStreamViewport((prev) =>
           prev.unseenUpdateCount === 0
@@ -3186,7 +3207,7 @@ function ChatContent() {
           : { ...prev, unseenUpdateCount: delta },
       );
     }
-  }, [renderMessages, state.streaming]);
+  }, [renderMessages, scheduleFollowAutoScroll, state.streaming]);
 
   // Safety net: Clear loading state if it takes too long (10 seconds)
   // Note: END_SESSION_LOADING is normally dispatched in messageHandler after chatHistory loads
@@ -3751,6 +3772,7 @@ function ChatContent() {
               ? state.liveToastNotificationsBySessionId?.[state.currentSessionId]
               : undefined
           }
+          placement="top"
         />
 
         {/* Mobile-only extended panel summary and collapsible details */}
@@ -3759,7 +3781,7 @@ function ChatContent() {
         {/* Message list */}
         <div
           ref={messagesScrollRef}
-          className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-4 py-2.5 sm:px-5"
+          className="oc-chat-scroll flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-4 py-2.5 sm:px-5"
           style={{ background: "var(--oc-chat-bg)" }}
         >
           {isSwitchingSession ? (
@@ -3767,15 +3789,22 @@ function ChatContent() {
               <SessionLoadingSpinner />
             </div>
           ) : (
-            <>
+            <div ref={messageContentRef}>
               {!hasAnyRenderableConversation &&
               !state.streaming &&
-              !isAiResponding ? (
+              !isAiResponding &&
+              !state.sessionLoadError ? (
                 <EmptyState
                   serverStatus={state.serverStatus}
                   receivedInitState={state.receivedInitState}
                   currentSessionId={state.currentSessionId}
                 />
+              ) : null}
+
+              {!hasAnyRenderableConversation &&
+              !state.streaming &&
+              state.sessionLoadError ? (
+                <SessionUnavailableState error={state.sessionLoadError} />
               ) : null}
 
               {hasCompactedSegment && isCompressed ? (
@@ -3885,10 +3914,31 @@ function ChatContent() {
             </div>
           ) : null}
 
-          <div ref={messagesEndRef} />
-        </>
+              <div
+                ref={messagesEndRef}
+                className="oc-chat-scroll-anchor"
+                aria-hidden="true"
+              />
+            </div>
           )}
         </div>
+
+        {/* Session retry/error status belongs with the composer: it remains in
+            view while the user decides whether to wait or send a new prompt.
+            General tui.show notifications continue to use the top banner. */}
+        {!isSwitchingSession && (
+          <div className="shrink-0" data-chat-composer-status-slot>
+            <LiveEventBanner
+              sessionId={state.currentSessionId}
+              liveNotifications={
+                state.currentSessionId
+                  ? state.liveToastNotificationsBySessionId?.[state.currentSessionId]
+                  : undefined
+              }
+              placement="composer"
+            />
+          </div>
+        )}
 
         {/* Input area (queue panel is embedded inside InputWrapper) */}
         {!isSwitchingSession && <InputWrapper />}

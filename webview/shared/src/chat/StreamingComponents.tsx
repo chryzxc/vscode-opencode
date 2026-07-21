@@ -10,8 +10,11 @@ import {
 
 
 import type { AppState, StreamingState, StreamingStep } from './lib/types';
+import { shouldShowStreamingCard } from './lib/streamingCardVisibility';
 import vscode from './lib/vscode';
 import { ResponseMessage, FileIcon } from './MessageComponents';
+
+export { shouldShowStreamingCard } from './lib/streamingCardVisibility';
 
 export function ProgressStep({ step }: { step: StreamingStep }) {
   const isPending = step.status === 'pending';
@@ -147,77 +150,6 @@ type StreamingCardProps = {
   todoItems?: AppState["todoItems"];
 };
 
-type ShouldShowStreamingCardInput = {
-  streaming: StreamingState | null;
-  interactiveEvents?: AppState["interactiveEvents"];
-  assistantTurnMessageId?: AppState["assistantTurnMessageId"];
-  transcriptAssistantMessageIds?: string[];
-  hasTranscriptAssistantForCurrentTurn?: boolean;
-  subagentsByParentMessageId?: AppState["subagentsByParentMessageId"];
-};
-
-export function shouldShowStreamingCard({
-  streaming,
-  interactiveEvents,
-  assistantTurnMessageId,
-  transcriptAssistantMessageIds,
-  hasTranscriptAssistantForCurrentTurn,
-  subagentsByParentMessageId,
-}: ShouldShowStreamingCardInput): boolean {
-  if (!streaming) return false;
-  // Delta chunks deliberately do not enter the centralized transcript. Keep
-  // the live card mounted for the active turn so its renderable text reaches
-  // the user immediately; the centralized card takes over after completion.
-  // A matching transcript message is the exception: rendering both sources
-  // during the handoff duplicates the same thoughts and response body.
-  if (hasTranscriptAssistantForCurrentTurn && !streaming.isActive) return false;
-
-  const candidateIds = new Set(
-    [streaming.messageId, assistantTurnMessageId]
-      .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-      .map((value) => value.trim()),
-  );
-
-  const hasMatchingAssistantTurnInTranscript =
-    candidateIds.size > 0 &&
-    Array.isArray(transcriptAssistantMessageIds) &&
-    transcriptAssistantMessageIds.some((messageId) => candidateIds.has(messageId));
-
-  if (hasMatchingAssistantTurnInTranscript) return false;
-
-  const hasRenderableText =
-    streaming.hasRenderableContent === true &&
-    streaming.content.trim().length > 0;
-  if (hasRenderableText) return true;
-  if (streaming.reasoning.trim().length > 0) return true;
-  if (
-    Array.isArray(streaming.reasoningEvents) &&
-    streaming.reasoningEvents.length > 0
-  ) {
-    return true;
-  }
-  if (streaming.edits.length > 0) return true;
-  if (
-    Array.isArray(streaming.interactiveEvents) &&
-    streaming.interactiveEvents.length > 0
-  ) {
-    return true;
-  }
-  if (Array.isArray(interactiveEvents) && interactiveEvents.length > 0) {
-    return true;
-  }
-  if (streaming.liveSessionStatus) return true;
-  if (streaming.steps.length > 0 || streaming.progressEvents.length > 0) return true;
-  if (streaming.messageId) {
-    const liveSubagents = subagentsByParentMessageId?.[streaming.messageId];
-    if (Array.isArray(liveSubagents) && liveSubagents.length > 0) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
 export const StreamingCard = memo(function StreamingCard({
   isContiguous,
   streaming,
@@ -257,17 +189,17 @@ export const StreamingCard = memo(function StreamingCard({
 
   return (
     <ResponseMessage
-      // Render safe text directly from the live stream. Centralized payloads
-      // omit deltas, so waiting for their finalized snapshot makes a response
-      // appear all at once after an otherwise empty loading period.
-      message={undefined}
-      streaming={streaming}
-      isContiguous={isContiguous}
-      interactiveEvents={interactiveEvents}
-      currentSessionId={currentSessionId}
-      subagentsByParentMessageId={subagentsByParentMessageId}
-      subagentDetailsById={subagentDetailsById}
-      todoItems={todoItems}
+          // Render safe text directly from the live stream. Centralized payloads
+          // omit deltas, so waiting for their finalized snapshot makes a response
+          // appear all at once after an otherwise empty loading period.
+          message={undefined}
+          streaming={streaming}
+          isContiguous={isContiguous}
+          interactiveEvents={interactiveEvents}
+          currentSessionId={currentSessionId}
+          subagentsByParentMessageId={subagentsByParentMessageId}
+          subagentDetailsById={subagentDetailsById}
+          todoItems={todoItems}
     />
   );
 });

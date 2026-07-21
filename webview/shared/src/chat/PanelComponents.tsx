@@ -53,6 +53,7 @@ import { PENDING_CURRENT_SESSION_KEY } from "./lib/pendingUserMessages";
 import vscode from "./lib/vscode";
 import type {
   InteractiveEvent,
+  InteractiveQuickActionsEvent,
   Message,
   SlashCommand,
   StreamingState,
@@ -69,6 +70,8 @@ import {
 } from "./lib/sessionProcessing";
 
 import { FileIcon } from "./MessageComponents";
+
+const EMPTY_DISMISSED_INTERACTIVE_EVENT_KEYS = new Set<string>();
 
 function messageTokenStats(message: Message): {
   input: number;
@@ -328,6 +331,13 @@ function getInteractiveEventDismissalKeys(event: InteractiveEvent): string[] {
     keys.add(`id:${id}`);
   }
 
+  // Permission requests need per-request dismissal only. A generic fallback
+  // such as `quick_actions:allow read` would suppress every later read
+  // permission after the user rejected or aborted just one of them.
+  if (event.type === "quick_actions" && event.permissionID) {
+    return [...keys];
+  }
+
   const prompt =
     event.type === "question" || event.type === "confirm"
       ? event.question
@@ -348,7 +358,12 @@ function filterDismissedInteractiveEvents(
   events: InteractiveEvent[],
   dismissedInteractiveEventKeys: Set<string>,
 ): InteractiveEvent[] {
-  if (!Array.isArray(events) || events.length === 0 || dismissedInteractiveEventKeys.size === 0) {
+  if (
+    !Array.isArray(events) ||
+    events.length === 0 ||
+    !(dismissedInteractiveEventKeys instanceof Set) ||
+    dismissedInteractiveEventKeys.size === 0
+  ) {
     return events;
   }
 
@@ -1920,6 +1935,62 @@ export const QueueContainer = memo(function QueueContainer() {
     </div>
   );
 });
+
+/** Dedicated permission surface; generic questions use the composer popover below. */
+function PermissionAskedPopover({
+  event,
+  onReply,
+  onAbort,
+}: {
+  event: InteractiveQuickActionsEvent;
+  onReply: (response: string) => void;
+  onAbort: () => void;
+}) {
+  const permissionPaths = event.permissionPatterns ?? [];
+  return (
+    <div className="mb-2 px-1 py-1">
+      <div className="mb-1.5 flex items-center justify-between gap-2 border-b border-oc-border-soft pb-1">
+        <div className="text-[11px] font-semibold uppercase tracking-wider oc-text-secondary">
+          {event.title}
+        </div>
+        <button
+          type="button"
+          className="oc-quick-input-icon-btn rounded p-1 transition-colors"
+          title="Abort current response"
+          onClick={onAbort}
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      <div className="mb-2 text-[11px] oc-text-secondary">
+        OpenCode requests {event.permissionName || "permission"} access to:
+      </div>
+      {permissionPaths.length > 0 ? (
+        <div className="mb-2 flex flex-wrap gap-x-3 gap-y-1">
+          {permissionPaths.map((path) => (
+            <div key={path} className="flex min-w-0 items-center gap-1.5 text-[11px] text-oc-text-soft">
+              <FileIcon filePath={path} className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate font-mono">{path}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      <div className="flex flex-wrap gap-2">
+        {event.actions.map((action, index) => (
+          <button
+            key={`${event.id}-${action.id || action.value || index}`}
+            type="button"
+            className="oc-quick-input-option rounded-md border px-2.5 py-1 text-[11px] font-medium transition-all"
+            onClick={() => onReply(action.value || action.label)}
+          >
+            {action.label ? action.label.charAt(0).toUpperCase() + action.label.slice(1) : action.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export const InputWrapper = memo(function InputWrapper() {
   const {
     inputValue,
@@ -1977,7 +2048,10 @@ export const InputWrapper = memo(function InputWrapper() {
       commandsLoaded: state.commandsLoaded,
       attachments: state.attachments,
       interactiveEvents: state.interactiveEvents,
-      dismissedInteractiveEventKeys: state.dismissedInteractiveEventKeys,
+      dismissedInteractiveEventKeys:
+        state.dismissedInteractiveEventKeys instanceof Set
+          ? state.dismissedInteractiveEventKeys
+          : EMPTY_DISMISSED_INTERACTIVE_EVENT_KEYS,
       contextUsagePct: state.contextUsagePct,
       assistantTurnPending: state.assistantTurnPending,
     }),
@@ -2223,13 +2297,16 @@ export const InputWrapper = memo(function InputWrapper() {
   const displayInteractiveEvents = useMemo(() => {
     const candidates = composerInteractiveEvents.filter(isQuickInputInteractiveEvent);
     const seen = new Set<string>();
-    return candidates.filter((event) => {
+    const visible = candidates.filter((event) => {
       const eventAny = event as any;
-      const key = `${event.type}::${(eventAny.question || eventAny.title || eventAny.message || "").trim().toLowerCase().replace(/\s+/g, " ")}`;
+      const key = event.type === "quick_actions" && event.permissionID
+        ? `permission::${event.permissionID}`
+        : `${event.type}::${(eventAny.question || eventAny.title || eventAny.message || "").trim().toLowerCase().replace(/\s+/g, " ")}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
     });
+    return visible;
   }, [composerInteractiveEvents]);
   const interactiveEventCount = displayInteractiveEvents.length;
   const interactiveEventResetKey = displayInteractiveEvents
@@ -2272,6 +2349,9 @@ export const InputWrapper = memo(function InputWrapper() {
   const activeInteractiveEvent =
     displayInteractiveEvents[currentInteractiveIndex];
   const event = activeInteractiveEvent;
+  const isPermissionPopover =
+    event?.type === "quick_actions" &&
+    (typeof event.permissionID === "string" || event.permissionPreview === true);
   const showInteractivePopover = displayInteractiveEvents.length > 0;
   const currentInteractiveAnswered = Boolean(
     event?.id &&
@@ -2712,6 +2792,10 @@ export const InputWrapper = memo(function InputWrapper() {
           event?.type === "question" ? event.requestID : undefined,
         questionIndex:
           event?.type === "question" ? event.questionIndex : undefined,
+        permissionID:
+          event?.type === "quick_actions" ? event.permissionID : undefined,
+        sessionID:
+          event?.type === "quick_actions" ? event.sessionID : undefined,
       };
     }).sort((a, b) => {
       const idxA = typeof a.questionIndex === "number" ? a.questionIndex : 0;
@@ -2766,6 +2850,23 @@ export const InputWrapper = memo(function InputWrapper() {
     // Don't show processing state immediately - let extension confirm when actually processing
     // This prevents UI from showing "stuck" loading state when request is delayed
     // dispatch({ type: "SET_PROCESSING", payload: true });
+
+    const permissionReplies = batch.filter(
+      (response) =>
+        response.permissionID &&
+        (response.text === "once" || response.text === "always" || response.text === "reject"),
+    );
+    if (permissionReplies.length > 0) {
+      permissionReplies.forEach((response) => {
+        vscode.postMessage({
+          type: "permissionReply",
+          sessionId: response.sessionID || currentSessionId,
+          permissionID: response.permissionID,
+          response: response.text,
+        });
+      });
+      return;
+    }
 
     // Route question answers through questionReply and non-question events
     // (confirm, quick_actions, message) through the normal sendMessage path.
@@ -2862,9 +2963,20 @@ export const InputWrapper = memo(function InputWrapper() {
       <div
         className="oc-input-area"
       >
-         {event && (
-           <div className="mb-2 rounded-lg border border-oc-border-soft bg-[var(--oc-panel-soft)] px-3 py-2">
-             <div className="mb-2 border-b border-oc-border-soft pb-1.5">
+         {event && isPermissionPopover ? (
+           <PermissionAskedPopover
+             event={event}
+             onReply={(response) => submitInteractiveResponse(response, event.id, event.type)}
+             onAbort={() => {
+               dismissInteractivePopover(event);
+               abortActiveResponse();
+             }}
+           />
+         ) : null}
+
+         {event && !isPermissionPopover && (
+           <div className="mb-2 px-1 py-1">
+             <div className={`${isPermissionPopover ? "mb-1.5 pb-1" : "mb-2 pb-1.5"} border-b border-oc-border-soft`}>
                <div className="flex items-start justify-between gap-2">
                  <div className="flex min-w-0 flex-1 flex-col gap-1">
                    <div className="flex items-center gap-2">
@@ -2936,7 +3048,7 @@ export const InputWrapper = memo(function InputWrapper() {
 
             <div className="relative">
               {(showContextMessage || showPromptInBody) && (
-                <div className="mb-3 text-[12px] text-[var(--oc-text-soft)]">
+                <div className={`${isPermissionPopover ? "mb-2" : "mb-3"} text-[12px] text-[var(--oc-text-soft)]`}>
                   {showContextMessage ? (
                     <div className="mb-2 rounded bg-[var(--oc-panel)] border border-[var(--oc-border-soft)] px-2.5 py-2 text-[11px] oc-text-secondary leading-relaxed">
                       <MarkdownRenderer content={eventContextMessage} />
@@ -3114,7 +3226,7 @@ export const InputWrapper = memo(function InputWrapper() {
                         <button
                           key={`${event.id}-a-${action.id || action.value || index}`}
                           type="button"
-                          className="oc-quick-input-option rounded-md border px-2.5 py-1.5 text-[11px] font-medium transition-all"
+                          className={`oc-quick-input-option rounded-md border text-[11px] font-medium transition-all ${isPermissionPopover ? "px-2.5 py-1" : "px-2.5 py-1.5"}`}
                           title={action.description || action.label}
                           onClick={() =>
                             submitInteractiveResponse(
@@ -3150,6 +3262,7 @@ export const InputWrapper = memo(function InputWrapper() {
                 </>
               )}
 
+              {!isPermissionPopover && (
               <div className="mt-3 rounded-lg border border-oc-border-soft bg-[linear-gradient(180deg,rgba(255,255,255,0.03),rgba(255,255,255,0.01))] px-3 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
@@ -3165,6 +3278,7 @@ export const InputWrapper = memo(function InputWrapper() {
                   </div>
                 </div>
               </div>
+              )}
             </div>
           </div>
         )}
