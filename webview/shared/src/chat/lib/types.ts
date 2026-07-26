@@ -378,7 +378,7 @@ export interface MessageInfo {
   parentID?: string;
   agent?: string;
   role?: string;
-  model?: { modelID: string; providerID: string };
+  model?: { modelID: string; providerID: string; providerName?: string };
   modelID?: string;
   providerID?: string;
   variant?: string;
@@ -790,7 +790,7 @@ export interface Message {
   // These fields are also in info, but older persisted messages may have them at top level
   id?: string;
   agent?: string;
-  model?: { modelID: string; providerID: string; name?: string };
+  model?: { modelID: string; providerID: string; providerName?: string; name?: string };
   modelID?: string;
   providerID?: string;
   variant?: string;

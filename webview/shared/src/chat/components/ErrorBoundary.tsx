@@ -1,4 +1,5 @@
 import { Component, ErrorInfo, ReactNode } from "react";
+import vscode from "../lib/vscode";
 
 interface Props {
   children?: ReactNode;
@@ -23,6 +24,16 @@ export class ErrorBoundary extends Component<Props, State> {
 
   public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     console.error("Uncaught error:", error, errorInfo);
+    // Keep the host-side error record small enough to survive a failing
+    // webview, while retaining the stack needed to diagnose the crash.
+    vscode.postMessage({
+      type: "webviewError",
+      message: error.message.slice(0, 2_000),
+      stack: [error.stack, errorInfo.componentStack]
+        .filter((value): value is string => typeof value === "string")
+        .join("\n")
+        .slice(0, 8_000),
+    });
   }
 
   public render() {

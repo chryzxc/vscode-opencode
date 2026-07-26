@@ -1284,7 +1284,40 @@ body {
 
 .oc-details-sheet .oc-skills-panel .oc-panel-section,
 .oc-right-panel .oc-skills-panel .oc-panel-section {
+  /* Expanded records must keep their header and details in normal flow. The
+   * surrounding list is a constrained flex column, so allowing records to
+   * shrink makes the fixed-height header overflow into the next skill. */
+  flex: 0 0 auto;
   border-bottom: 0;
+}
+
+.oc-details-sheet .oc-skills-panel .oc-skill-details,
+.oc-right-panel .oc-skills-panel .oc-skill-details {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Keep row disclosure controls readable against the muted inspector surface.
+ * The shared ghost-button hover color can otherwise be overridden by the
+ * compact panel's low-contrast text utility. */
+.oc-details-sheet .oc-detail-row-toggle,
+.oc-right-panel .oc-detail-row-toggle {
+  color: var(--oc-text-secondary);
+  opacity: 0.85;
+}
+
+.oc-details-sheet .oc-detail-row-toggle:hover,
+.oc-details-sheet .oc-detail-row-toggle:focus-visible,
+.oc-right-panel .oc-detail-row-toggle:hover,
+.oc-right-panel .oc-detail-row-toggle:focus-visible {
+  color: var(--oc-accent) !important;
+  opacity: 1;
+  background: color-mix(in srgb, var(--oc-accent) 12%, transparent) !important;
+}
+
+.oc-details-sheet .oc-detail-row-toggle svg,
+.oc-right-panel .oc-detail-row-toggle svg {
+  stroke: currentColor;
 }
 
 .oc-details-sheet .oc-skills-panel .oc-panel-section:hover,
@@ -6160,6 +6193,50 @@ body {
 
 .oc-metrics-rail-secondary {
   opacity: 0.9;
+}
+
+.oc-metric-item {
+  position: relative;
+  outline: none;
+}
+
+.oc-metric-item:focus-visible {
+  color: var(--vscode-editor-foreground, var(--oc-text));
+  outline: 1px solid color-mix(in srgb, var(--oc-accent) 55%, transparent);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
+.oc-metric-item::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 7px);
+  z-index: 200;
+  width: max-content;
+  max-width: min(84vw, 320px);
+  padding: 5px 8px;
+  border: 1px solid var(--vscode-widget-border, var(--oc-border));
+  border-radius: 5px;
+  background: var(--vscode-editorHoverWidget-background, var(--oc-panel));
+  color: var(--vscode-editorHoverWidget-foreground, var(--vscode-editor-foreground, var(--oc-text)));
+  box-shadow: 0 4px 12px color-mix(in srgb, black 28%, transparent);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.35;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transform: translate(-50%, -2px);
+  transition: opacity 80ms ease, transform 80ms ease, visibility 80ms ease;
+}
+
+.oc-metric-item:hover::after,
+.oc-metric-item:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0);
 }
 
 .oc-token-chip {

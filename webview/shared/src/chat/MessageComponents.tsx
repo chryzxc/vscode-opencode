@@ -1939,34 +1939,72 @@ function WalkthroughCard({
   );
 }
 
-function modelLabel(message?: Message): string {
+function resolveProviderName(
+  providerID: string | undefined,
+  providerName: string | undefined,
+  availableModels: Model[] = [],
+): string | undefined {
+  if (providerName?.trim()) return providerName.trim();
+  if (!providerID) return undefined;
+  return (
+    availableModels.find((model) => model.providerID === providerID)?.providerName ||
+    providerID
+  );
+}
+
+function formatModelLabel(
+  modelID?: string,
+  providerID?: string,
+  modelName?: string,
+  providerName?: string,
+  availableModels: Model[] = [],
+): string | undefined {
+  const model = modelName?.trim() || modelID?.trim();
+  const provider = resolveProviderName(providerID, providerName, availableModels);
+  if (model && provider) return `${provider} / ${model}`;
+  return model || provider;
+}
+
+function modelLabel(message?: Message, availableModels: Model[] = []): string {
   if (!message) return "assistant";
   // Check nested info structure first (from streaming)
   const modelObj = message.info?.model;
   if (modelObj && typeof modelObj === "object") {
     const name = (modelObj as Record<string, unknown>).name;
     const modelID = (modelObj as Record<string, unknown>).modelID;
-    if (typeof name === "string" && name) return name;
-    if (typeof modelID === "string" && modelID) return modelID;
+    const label = formatModelLabel(
+      typeof modelID === "string" ? modelID : undefined,
+      modelObj.providerID,
+      typeof name === "string" ? name : undefined,
+      modelObj.providerName,
+      availableModels,
+    );
+    if (label) return label;
   }
   // Check top-level model object (from persisted messages)
   if (typeof message.model === "object" && message.model !== null) {
     const name = (message.model as Record<string, unknown>).name;
     const modelID = (message.model as Record<string, unknown>).modelID;
-    if (typeof name === "string" && name) return name;
-    if (typeof modelID === "string" && modelID) return modelID;
+    const label = formatModelLabel(
+      typeof modelID === "string" ? modelID : undefined,
+      message.model.providerID,
+      typeof name === "string" ? name : undefined,
+      message.model.providerName,
+      availableModels,
+    );
+    if (label) return label;
   }
   // Check nested info structure
   let model = message.info?.modelID;
   let provider = message.info?.providerID;
-  if (model && provider) return `${provider}/${model}`;
+  const nestedLabel = formatModelLabel(model, provider, undefined, undefined, availableModels);
+  if (nestedLabel) return nestedLabel;
   // Check top-level properties (from persisted messages)
   model ??= (message as Record<string, unknown>).modelID as string | undefined;
   provider ??= (message as Record<string, unknown>).providerID as
     | string
     | undefined;
-  if (model && provider) return `${provider}/${model}`;
-  return model ?? provider ?? "assistant";
+  return formatModelLabel(model, provider, undefined, undefined, availableModels) ?? "assistant";
 }
 
 // LEGACY BRIDGE: temporary helper kept only while we are migrating the
@@ -3614,10 +3652,11 @@ function mergeProgressItemRecord(existing: ProgressItem, incoming: ProgressItem)
     endedAt: incoming.endedAt ?? existing.endedAt,
     diffStats: incoming.diffStats ?? existing.diffStats,
     activityDetail: mergeActivityDetail(existing.activityDetail, incoming.activityDetail),
+    // A lifecycle update enriches the same visible activity row; it must not
+    // move that row to the update's later tape position. Keeping its first
+    // SDK position lets intervening assistant text remain between steps.
     streamSeq:
-      typeof incoming.streamSeq === "number" && typeof existing.streamSeq === "number"
-        ? Math.max(existing.streamSeq, incoming.streamSeq)
-        : incoming.streamSeq ?? existing.streamSeq,
+      existing.streamSeq ?? incoming.streamSeq,
   };
 }
 
@@ -3994,11 +4033,9 @@ function commentaryItemsFromRawEventPayloads(
     );
     const mergeKey = partID
       ? `part:${partID}`
-      : messageID
-        ? `msg:${messageID}`
-        : id
-          ? `id:${id}`
-          : `text:${normalizeComparableText(text)}`;
+      : id
+        ? `id:${id}`
+        : `text:${messageID || "unknown"}:${normalizeComparableText(text)}`;
 
     const nextItem: CommentaryItem = {
       id,
@@ -4674,6 +4711,26 @@ function buildExplicitFileChipLabel(part: MessagePart): string | undefined {
   return baseLabel.endsWith(lineSuffix) ? baseLabel : `${baseLabel}${lineSuffix}`;
 }
 
+function decodeTextDataUrl(dataUrl?: string): string | undefined {
+  if (typeof dataUrl !== "string" || !dataUrl.toLowerCase().startsWith("data:text/")) return undefined;
+  const commaIndex = dataUrl.indexOf(",");
+  if (commaIndex < 0) return undefined;
+  const metadata = dataUrl.slice(0, commaIndex).toLowerCase();
+  const payload = dataUrl.slice(commaIndex + 1);
+  try {
+    if (metadata.includes(";base64")) {
+      const binary = atob(payload);
+      const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+      return new TextDecoder().decode(bytes);
+    }
+    return decodeURIComponent(payload);
+  } catch {
+    return undefined;
+  }
+}
+
+type UserFileChip = { label: string; path?: string; textContent?: string };
+
 function buildExplicitFileChip(part: MessagePart): { label: string; path?: string } | undefined {
   const label = buildExplicitFileChipLabel(part);
   if (!label) return undefined;
@@ -4694,6 +4751,29 @@ function normalizedUserMessageText(message?: Message): string {
   const withoutGenericFenceEcho =
     stripGenericHydratedAttachmentFence(withoutAttachmentEcho);
   return splitInjectedSystemPromptFromUserText(withoutGenericFenceEcho).userText;
+}
+
+function isLikelyUserPromptEcho(responseText: unknown, userPromptText: unknown): boolean {
+  const response = normalizeComparableActivityText(responseText);
+  const prompt = normalizeComparableActivityText(userPromptText);
+  if (!response || !prompt) {
+    return false;
+  }
+  if (response === prompt) {
+    return true;
+  }
+
+  // Some SDK text events only mirror the user turn and differ by punctuation
+  // or a small transport prefix. Do not suppress a genuine answer that merely
+  // quotes one phrase from the prompt: containment must cover nearly all of
+  // both values and have enough text to be meaningful.
+  const shorterLength = Math.min(response.length, prompt.length);
+  const longerLength = Math.max(response.length, prompt.length);
+  return (
+    shorterLength >= 24 &&
+    shorterLength / longerLength >= 0.9 &&
+    (response.includes(prompt) || prompt.includes(response))
+  );
 }
 
 function splitInjectedSystemPromptFromUserText(raw: string): {
@@ -5492,7 +5572,10 @@ function timelineDisplayEventReactKey(event: DisplayEvent): string {
     return `reasoning:${event.partID || event.key}`;
   }
   if (event.kind === "commentary") {
-    return `commentary:${event.partID || event.messageID || event.key}`;
+    // A message can contain several distinct text parts. messageID alone is
+    // not a React identity and caused all but one Assistant Response card to
+    // disappear when a part ID was absent from a live envelope.
+    return `commentary:${event.partID || event.key}`;
   }
   return firstNonEmptyString(
     activityPatchIdentity(event),
@@ -5582,10 +5665,11 @@ function mergeStickyDisplayEvent(
     endedAt: incoming.endedAt ?? existing.endedAt,
     isImportant: Boolean(existing.isImportant || incoming.isImportant),
     updateCount: existing.updateCount + 1,
+    // Preserve the position where this activity first appeared. Completion or
+    // patch updates often arrive after an assistant text part and must not
+    // pull that text card ahead of the activity.
     streamSeq:
-      typeof incoming.streamSeq === "number" && typeof existing.streamSeq === "number"
-        ? Math.max(existing.streamSeq, incoming.streamSeq)
-        : incoming.streamSeq ?? existing.streamSeq,
+      existing.streamSeq ?? incoming.streamSeq,
   };
 }
 
@@ -5670,10 +5754,12 @@ function mergeStickyDisplayEventsForTurn(
     const identity =
       event.kind === "activity"
         ? activityDisplayEventIdentity(event)
-        : firstNonEmptyString(
-            event.partID ? `part:${event.partID}` : undefined,
-            event.messageID ? `msg:${event.messageID}:${event.kind}` : undefined,
-          );
+        : event.kind === "commentary"
+          ? (event.partID ? `part:${event.partID}` : undefined)
+          : firstNonEmptyString(
+              event.partID ? `part:${event.partID}` : undefined,
+              event.messageID ? `msg:${event.messageID}:${event.kind}` : undefined,
+            );
     if (identity) {
       identityIndex.set(identity, index);
     }
@@ -5705,10 +5791,12 @@ function mergeStickyDisplayEventsForTurn(
     const identity =
       event.kind === "activity"
         ? activityDisplayEventIdentity(event)
-        : firstNonEmptyString(
-            event.partID ? `part:${event.partID}` : undefined,
-            event.messageID ? `msg:${event.messageID}:${event.kind}` : undefined,
-          );
+        : event.kind === "commentary"
+          ? (event.partID ? `part:${event.partID}` : undefined)
+          : firstNonEmptyString(
+              event.partID ? `part:${event.partID}` : undefined,
+              event.messageID ? `msg:${event.messageID}:${event.kind}` : undefined,
+            );
     const fingerprint = displayEventFingerprint(event);
     const todoChecklistIdentity = todoWriteChecklistIdentity(event);
     const snapshotIdentity = activitySnapshotIdentity(event);
@@ -5779,25 +5867,10 @@ function mergeStickyDisplayEventsForTurn(
 }
 
 function orderDisplayEventsChronologically(events: DisplayEvent[]): DisplayEvent[] {
-  if (events.length < 2) {
-    return events;
-  }
-
-  // Sticky merging retains rows across partial stream frames. A new row can
-  // therefore be appended after a later snapshot even when its stream sequence
-  // is earlier. Order once at that merge boundary, using insertion order only
-  // as a stable tie-breaker for same-millisecond events.
-  return events
-    .map((event, index) => ({
-      event,
-      index,
-      sequence:
-        typeof event.streamSeq === "number"
-          ? event.streamSeq
-          : Number.MAX_SAFE_INTEGER,
-    }))
-    .sort((left, right) => left.sequence - right.sequence || left.index - right.index)
-    .map(({ event }) => event);
+  // The SDK stream is already ordered. Sticky merging retains existing rows
+  // and appends newly observed activity, which is the live timeline order.
+  // Local per-snapshot indexes must not be used to re-sort those rows.
+  return events;
 }
 
 /**
@@ -6554,6 +6627,7 @@ function buildDisplayEvents(
   messageScopeIds?: Set<string>,
   currentMessageId?: string | null,
   parentResponseFinished = false,
+  rawEventCount = 0,
 ): DisplayEvent[] {
   const stripTrailingEllipsis = (value?: string) =>
     (value || "").replace(/\s*(?:\.{3}|…)\s*$/u, "").trim();
@@ -6736,11 +6810,34 @@ function buildDisplayEvents(
     };
   });
 
-  normalizedEntries.sort((a, b) => a.seq - b.seq);
+  // These item types are extracted into separate lanes, but their streamSeq
+  // values are positions in one SDK tape. Walk that tape directly to restore
+  // its authoritative order without applying a UI-level sort. Entries outside
+  // the tape (hydrated snapshots/placeholders) stay after the live tape.
+  const entriesBySdkSequence = new Map<number, RawRenderEntry[]>();
+  const trailingEntries: RawRenderEntry[] = [];
+  for (const entry of normalizedEntries) {
+    if (
+      Number.isInteger(entry.seq) &&
+      entry.seq >= 0 &&
+      entry.seq < rawEventCount
+    ) {
+      const entriesAtSequence = entriesBySdkSequence.get(entry.seq) ?? [];
+      entriesAtSequence.push(entry);
+      entriesBySdkSequence.set(entry.seq, entriesAtSequence);
+    } else {
+      trailingEntries.push(entry);
+    }
+  }
+  const sdkOrderedEntries: RawRenderEntry[] = [];
+  for (let streamSeq = 0; streamSeq < rawEventCount; streamSeq += 1) {
+    sdkOrderedEntries.push(...(entriesBySdkSequence.get(streamSeq) ?? []));
+  }
+  sdkOrderedEntries.push(...trailingEntries);
 
   const rawEvents: DisplayEvent[] = [];
 
-  for (const entry of normalizedEntries) {
+  for (const entry of sdkOrderedEntries) {
     if (entry.kind === "reasoning") {
       const item = entry.item;
       const text = (item.text || "").trim();
@@ -7356,12 +7453,17 @@ export const UserMessage = memo(function UserMessage({ message, isQueued = false
   const injectedSystemText = splitContent.systemText;
   const attachedFileChips = (message?.parts ?? [])
     .filter((part) => isExplicitFileAttachmentPart(part) && !isImageAttachmentPart(part))
-    .map((part) => buildExplicitFileChip(part))
-    .filter((value): value is { label: string; path?: string } => !!value);
+    .map((part) => {
+      const chip = buildExplicitFileChip(part);
+      return chip
+        ? { ...chip, textContent: !chip.path ? decodeTextDataUrl(part.url) : undefined }
+        : undefined;
+    })
+    .filter((value): value is UserFileChip => !!value);
   const fileMentionTargets = Array.from(
     new Map(
       attachedFileChips
-        .filter((chip): chip is { label: string; path: string } => !!chip.path)
+        .filter((chip): chip is UserFileChip & { path: string } => !!chip.path)
         .map((chip) => [chip.label, { filename: chip.label, path: chip.path }]),
     ).values(),
   );
@@ -7504,14 +7606,27 @@ export const UserMessage = memo(function UserMessage({ message, isQueued = false
               {fileChips.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-1">
                   {fileChips.map((label, index) => (
-                    <div
+                    <button
                       key={`file-chip-${index}:${label.label}`}
-                      className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-oc-border bg-oc-panel-soft px-2.5 py-1 text-[10px] font-medium text-oc-text-soft"
-                      title={label.path || label.label}
+                      type="button"
+                      className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-oc-border bg-oc-panel-soft px-2.5 py-1 text-[10px] font-medium text-oc-text-soft transition-colors hover:bg-oc-bg-soft"
+                      title={label.textContent !== undefined ? `Open ${label.label} in a text tab` : label.path || label.label}
+                      onClick={() => {
+                        if (label.textContent !== undefined) {
+                          vscode.postMessage({
+                            type: "openText",
+                            content: label.textContent,
+                            filename: label.label,
+                            languageId: label.label.split(".").pop(),
+                          });
+                          return;
+                        }
+                        vscode.postMessage({ type: "openFile", file: label.path || label.label });
+                      }}
                     >
                       <FileIcon filePath={label.path || label.label} className="h-3.5 w-3.5 shrink-0" />
                       <span className="truncate">{label.label}</span>
-                    </div>
+                    </button>
                   ))}
                 </div>
               )}
@@ -8305,6 +8420,7 @@ function ResponseMessageInner({
     streaming: currentStreaming,
     streamingBySessionId,
     selectedSubagentId,
+    availableModels,
   } = useAppState(
     (state) => ({
       assistantTurnPending: state.assistantTurnPending,
@@ -8315,6 +8431,7 @@ function ResponseMessageInner({
       streaming: state.streaming,
       streamingBySessionId: state.streamingBySessionId,
       selectedSubagentId: state.selectedSubagentId,
+      availableModels: state.availableModels,
     }),
     shallowEqual,
   );
@@ -8966,11 +9083,36 @@ const centralizedRawResponse = message?.rawResponse;
       ),
     [progressItems, liveProgressItems, isStreamingActive],
   );
+  const visibleTurnUserPromptText = useMemo(() => {
+    if (!Array.isArray(messages)) {
+      return "";
+    }
+
+    // The block key is the current user-turn ID when the card is hydrated.
+    // On a message-less live card it is not available yet, so use the newest
+    // visible user bubble instead.
+    const promptMessage =
+      (blockGroupKey
+        ? messages.find(
+            (candidate) =>
+              firstNonEmptyString(candidate.id, candidate.info?.id) === blockGroupKey &&
+              firstNonEmptyString(candidate.role, candidate.info?.role)?.toLowerCase() === "user",
+          )
+        : undefined) ??
+      [...messages]
+        .reverse()
+        .find(
+          (candidate) =>
+            firstNonEmptyString(candidate.role, candidate.info?.role)?.toLowerCase() === "user",
+        );
+    return normalizedUserMessageText(promptMessage);
+  }, [blockGroupKey, messages]);
   const commentaryItems = useMemo(
-    () => {
-      return commentaryItemsFromRawEventPayloads(normalizedCentralizedRawSdkEventPayloads);
-    },
-    [normalizedCentralizedRawSdkEventPayloads],
+    () =>
+      commentaryItemsFromRawEventPayloads(normalizedCentralizedRawSdkEventPayloads).filter(
+        (item) => !isLikelyUserPromptEcho(item.text, visibleTurnUserPromptText),
+      ),
+    [normalizedCentralizedRawSdkEventPayloads, visibleTurnUserPromptText],
   );
 
   const structured = useMemo(
@@ -9014,10 +9156,11 @@ const centralizedRawResponse = message?.rawResponse;
         assistantScopeMessageIds,
         messageId,
         isParentResponseFinished,
+        normalizedCentralizedRawSdkEventPayloads.length,
       );
       return events;
     },
-    [thoughtItems, mergedProgressItems, commentaryItems, fileChanges, assistantScopeMessageIds, messageId, isParentResponseFinished],
+    [thoughtItems, mergedProgressItems, commentaryItems, fileChanges, assistantScopeMessageIds, messageId, isParentResponseFinished, normalizedCentralizedRawSdkEventPayloads.length],
   );
   const activityOrderTraceRef = useRef<string>("");
   useEffect(() => {
@@ -9824,6 +9967,12 @@ const centralizedRawResponse = message?.rawResponse;
     [normalizedCentralizedRawSdkEventPayloads],
   );
 
+  const shouldInterleaveStreamingAssistantCommentary =
+    isStreamingActive &&
+    timelineDisplayEvents.some((event) => event.kind === "activity") &&
+    displayEvents.some(
+      (event) => event.kind === "commentary" && event.label === "Assistant Response",
+    );
   const timelineDisplayEventGroups = useMemo(() => {
     const groups: Array<
       | { type: "activity"; events: DisplayEvent[] }
@@ -9860,7 +10009,11 @@ const centralizedRawResponse = message?.rawResponse;
       // above the timeline. Keep it out of the timeline groups so the same
       // final answer cannot appear twice when the centralized tape contains
       // both the response body and its mirrored commentary chunk.
-      if (event.kind === "commentary" && event.label === "Assistant Response") {
+      if (
+        event.kind === "commentary" &&
+        event.label === "Assistant Response" &&
+        !shouldInterleaveStreamingAssistantCommentary
+      ) {
         continue;
       }
       orderedEntries.push({
@@ -9887,17 +10040,20 @@ const centralizedRawResponse = message?.rawResponse;
       });
     });
 
-    orderedEntries.sort((left, right) => {
-      if (left.seq !== right.seq) {
-        return left.seq - right.seq;
+    const orderedEntriesByStream = [...orderedEntries].sort((left, right) => {
+      const sequenceDelta = left.seq - right.seq;
+      if (sequenceDelta !== 0) {
+        return sequenceDelta;
       }
+      // Activity is the source row for a question response when both entries
+      // share a sequence. Keep it first so the output is read chronologically.
       if (left.type === right.type) {
         return 0;
       }
       return left.type === "event" ? -1 : 1;
     });
 
-    for (const entry of orderedEntries) {
+    for (const entry of orderedEntriesByStream) {
       if (entry.type === "question-output") {
         if (currentActivity.length > 0) {
           groups.push({ type: "activity", events: currentActivity });
@@ -9935,7 +10091,13 @@ const centralizedRawResponse = message?.rawResponse;
       groups.push({ type: "activity", events: currentActivity });
     }
     return groups;
-  }, [assistantScopeMessageIds, messageId, responseBodyRawSdkEventPayloads, timelineDisplayEvents]);
+  }, [
+    assistantScopeMessageIds,
+    messageId,
+    responseBodyRawSdkEventPayloads,
+    shouldInterleaveStreamingAssistantCommentary,
+    timelineDisplayEvents,
+  ]);
   const questionPreludeGroups = useMemo(
     () =>
       timelineDisplayEventGroups.filter((group) => {
@@ -10364,23 +10526,35 @@ const centralizedRawResponse = message?.rawResponse;
   }, [agentName]);
   const modelName = useMemo(() => {
     if (turnMetadata.providerID && turnMetadata.modelID) {
-      return `${turnMetadata.providerID}/${turnMetadata.modelID}`;
+      return formatModelLabel(
+        turnMetadata.modelID,
+        turnMetadata.providerID,
+        undefined,
+        undefined,
+        availableModels,
+      );
     }
-    if (turnMetadata.providerID) {
-      return turnMetadata.providerID;
-    }
-    if (turnMetadata.modelID) {
-      return turnMetadata.modelID;
+    if (turnMetadata.providerID || turnMetadata.modelID) {
+      return formatModelLabel(
+        turnMetadata.modelID,
+        turnMetadata.providerID,
+        undefined,
+        undefined,
+        availableModels,
+      );
     }
     if (streaming?.isActive) {
-      if (streaming.model?.name) return streaming.model.name;
-      if (streaming.providerID && streaming.modelID)
-        return `${streaming.providerID}/${streaming.modelID}`;
-      if (streaming.providerID) return streaming.providerID;
-      if (streaming.modelID) return streaming.modelID;
+      const streamingLabel = formatModelLabel(
+        streaming.modelID || streaming.model?.modelID,
+        streaming.providerID || streaming.model?.providerID,
+        streaming.model?.name,
+        streaming.model?.providerName,
+        availableModels,
+      );
+      if (streamingLabel) return streamingLabel;
     }
-    return modelLabel(message ?? ({} as Message));
-  }, [message, streaming, turnMetadata.modelID, turnMetadata.providerID]);
+    return modelLabel(message ?? ({} as Message), availableModels);
+  }, [availableModels, message, streaming, turnMetadata.modelID, turnMetadata.providerID]);
   const thinkingVariant =
     turnMetadata.variant || getThinkingVariant(message, streaming);
   const showMessageThinking = useMemo(
@@ -10777,7 +10951,7 @@ const responseBodyChunks = useMemo(() => {
     hasStickyTimelineActivity ||
     (isLiveStream && hasLiveTimelineActivity);
 const hasVisibleResponseSectionContent =
-    showResponseBody ||
+    (showResponseBody && !shouldInterleaveStreamingAssistantCommentary) ||
     (shouldShowPlanCard && !!plan);
   // Response visibility belongs to the response card itself. Activity/block
   // collapse may summarize work around the card, but must never truncate the
@@ -11010,37 +11184,37 @@ const hasVisibleResponseSectionContent =
                 {hasMetrics && (
                   <div className="oc-metrics-rail flex flex-wrap items-center gap-2 px-1 py-0.5 text-[10px] text-oc-text-secondary/60 hover:text-oc-text-secondary transition-colors" role="list" aria-label="Response metrics">
                     {inputTok > 0 && (
-                      <div className="flex items-center gap-1" title={`Prompt: ${inputTok.toLocaleString()} tokens`}>
+                      <div className="oc-metric-item flex items-center gap-1" data-tooltip={`Prompt: ${inputTok.toLocaleString()} tokens`} aria-label={`Prompt: ${inputTok.toLocaleString()} tokens`} tabIndex={0} role="listitem">
                         <ArrowUp className="h-2.5 w-2.5 opacity-70" />
                         <span className="tabular-nums">{inputTok.toLocaleString()}</span>
                       </div>
                     )}
                     {outputTok > 0 && (
-                      <div className="flex items-center gap-1" title={`Response: ${outputTok.toLocaleString()} tokens`}>
+                      <div className="oc-metric-item flex items-center gap-1" data-tooltip={`Response: ${outputTok.toLocaleString()} tokens`} aria-label={`Response: ${outputTok.toLocaleString()} tokens`} tabIndex={0} role="listitem">
                         <ArrowDown className="h-2.5 w-2.5 opacity-70" />
                         <span className="tabular-nums">{outputTok.toLocaleString()}</span>
                       </div>
                     )}
                     {reasoningTok > 0 && (
-                      <div className="flex items-center gap-1" title={`Reasoning: ${reasoningTok.toLocaleString()} tokens`}>
+                      <div className="oc-metric-item flex items-center gap-1" data-tooltip={`Reasoning: ${reasoningTok.toLocaleString()} tokens`} aria-label={`Reasoning: ${reasoningTok.toLocaleString()} tokens`} tabIndex={0} role="listitem">
                         <Brain className="h-2.5 w-2.5 opacity-70" />
                         <span className="tabular-nums">{reasoningTok.toLocaleString()}</span>
                       </div>
                     )}
                     {cacheRead > 0 && (
-                      <div className="flex items-center gap-1" title={`Cache Read: ${cacheRead.toLocaleString()} tokens`}>
+                      <div className="oc-metric-item flex items-center gap-1" data-tooltip={`Cache Read: ${cacheRead.toLocaleString()} tokens`} aria-label={`Cache Read: ${cacheRead.toLocaleString()} tokens`} tabIndex={0} role="listitem">
                         <Database className="h-2.5 w-2.5 opacity-70" />
                         <span className="tabular-nums">{cacheRead.toLocaleString()}</span>
                       </div>
                     )}
                     {cacheWrite > 0 && (
-                      <div className="flex items-center gap-1" title={`Cache Write: ${cacheWrite.toLocaleString()} tokens`}>
+                      <div className="oc-metric-item flex items-center gap-1" data-tooltip={`Cache Write: ${cacheWrite.toLocaleString()} tokens`} aria-label={`Cache Write: ${cacheWrite.toLocaleString()} tokens`} tabIndex={0} role="listitem">
                         <Database className="h-2.5 w-2.5 opacity-40" />
                         <span className="tabular-nums">{cacheWrite.toLocaleString()}</span>
                       </div>
                     )}
                     {typeof duration === "number" && (
-                      <div className="flex items-center gap-1" title={`Duration: ${formatDuration(duration * 1000)}`}>
+                      <div className="oc-metric-item flex items-center gap-1" data-tooltip={`Duration: ${formatDuration(duration * 1000)}`} aria-label={`Duration: ${formatDuration(duration * 1000)}`} tabIndex={0} role="listitem">
                         <Clock className="h-2.5 w-2.5 opacity-70" />
                         <span className="tabular-nums">{formatDuration(duration * 1000)}</span>
                       </div>
@@ -11792,7 +11966,7 @@ const hasVisibleResponseSectionContent =
                   data-assistant-section="response"
                   className={responseSectionClass}
             >
-              {showResponseBody && (
+              {showResponseBody && !shouldInterleaveStreamingAssistantCommentary && (
                 <div
                   ref={responsePreviewRef}
                   className={cn(

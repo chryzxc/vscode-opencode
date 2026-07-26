@@ -11,7 +11,7 @@ type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 class WebviewLogger {
   private logLevel: LogLevel = 'warn';
   private sessionId: string | null = null;
-  private showLogger: boolean = true;
+  private showLogger: boolean = false;
   private showBrowserConsoleOverride: boolean | null = null;
   private readonly lastPerformanceLogAt = new Map<string, number>();
 

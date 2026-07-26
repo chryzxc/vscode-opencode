@@ -3,6 +3,7 @@ import { marked } from 'marked';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/github-dark.css'; // Default base, we'll custom style it further
 import { copyToClipboard } from '../chat/lib/clipboard';
+import vscode from '../chat/lib/vscode';
 import {
   cleanFileIconKey,
   getFileIconFallbackKind,

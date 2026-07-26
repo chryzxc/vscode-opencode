@@ -227,6 +227,11 @@ export function toastNotificationFromPayload(
   const wrappedSyncData = asRecord(asRecord(wrappedPayload?.syncEvent)?.data);
   const title = toastTitleFromProperties(properties, payload);
   const message = toastMessageFromProperties(properties, payload);
+  // A toast without user-visible data is just an empty shell. Do not enqueue
+  // lifecycle/debug frames that happen to use a toast event type.
+  if (!message) {
+    return null;
+  }
   const variant = normalizeVariant(
     properties?.variant ??
       properties?.severity ??

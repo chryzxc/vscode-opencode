@@ -7,6 +7,10 @@ const EMPTY_SNAPSHOT: SdkDebugSnapshot = Object.freeze({
   rehydratedSdkMessages: Object.freeze([]),
   liveEvents: Object.freeze([]),
 });
+// Raw SDK events can arrive many times per second. This panel is diagnostic
+// only, so keeping an unbounded event trail can exhaust the webview heap and
+// terminate the panel during a long stream.
+const MAX_LIVE_EVENTS_PER_SESSION = 200;
 const sdkMessagesBySessionId = new Map<string, readonly unknown[]>();
 const liveEventsBySessionId = new Map<string, unknown[]>();
 const snapshotsBySessionId = new Map<string, SdkDebugSnapshot>();
@@ -58,6 +62,9 @@ export function appendLiveSdkDebugEvents(
   }
   const retained = liveEventsBySessionId.get(sessionId) ?? [];
   retained.push(...renderRelevantEvents);
+  if (retained.length > MAX_LIVE_EVENTS_PER_SESSION) {
+    retained.splice(0, retained.length - MAX_LIVE_EVENTS_PER_SESSION);
+  }
   liveEventsBySessionId.set(sessionId, retained);
   // This store is deliberately outside the chat reducer, so diagnostic live
   // events can update at SDK cadence without rebuilding the conversation.

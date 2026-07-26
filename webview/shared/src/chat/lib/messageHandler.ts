@@ -11773,12 +11773,6 @@ function remapSubagentsToFinalMessageId(
 }
 
 export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: () => AppState) {
-  // Temporary bounded transport probe. This must not depend on the SDK debug
-  // setting: the current incident is specifically that the webview appears not
-  // to receive live stream frames at all.
-  logger.warn("[LIVE-STREAM-TRACE][WEBVIEW] handler-created", {
-    sdkDebugEnabled: config.debug.showSdkEventDebug,
-  });
   let latestStreamingSnapshot: StreamingState | null = null;
   let terminalErrorReached = false;
   let activeSubagentParentMessageIds = new Set<string>();

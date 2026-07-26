@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   AlertCircle,
@@ -849,6 +849,7 @@ export const ActiveTaskPanel = memo(function ActiveTaskPanel() {
       seen.add(key);
       return true;
     });
+
   }, [streaming?.progressEvents, streaming?.steps]);
 
   // Latest reasoning snippet shown when the AI is thinking but no steps have arrived yet.
@@ -2074,6 +2075,7 @@ export const InputWrapper = memo(function InputWrapper() {
     Boolean(streaming?.isActive),
     assistantTurnPending,
   );
+  const [isEscapeArmed, setIsEscapeArmed] = useState(false);
 
   const prevInputLengthRef = useRef(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -2923,11 +2925,63 @@ export const InputWrapper = memo(function InputWrapper() {
     setCustomValue("");
   };
 
-  const stopRequest = () =>
-    vscode.postMessage({
-      type: "stopRequest",
-      ...(currentSessionId ? { sessionId: currentSessionId } : {}),
-    });
+  const stopRequest = useCallback(
+    () =>
+      vscode.postMessage({
+        type: "stopRequest",
+        ...(currentSessionId ? { sessionId: currentSessionId } : {}),
+      }),
+    [currentSessionId],
+  );
+
+  const escapePressTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastEscapePressAtRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const handleEscapeShortcut = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || !hasLiveAssistantTurn || isSteering) {
+        return;
+      }
+
+      const now = Date.now();
+      const lastPressAt = lastEscapePressAtRef.current;
+      const isDoublePress = lastPressAt !== null && now - lastPressAt <= 500;
+
+      if (isDoublePress) {
+        event.preventDefault();
+        lastEscapePressAtRef.current = null;
+        setIsEscapeArmed(false);
+        if (escapePressTimeoutRef.current) {
+          clearTimeout(escapePressTimeoutRef.current);
+          escapePressTimeoutRef.current = null;
+        }
+        stopRequest();
+        return;
+      }
+
+      lastEscapePressAtRef.current = now;
+      setIsEscapeArmed(true);
+      if (escapePressTimeoutRef.current) {
+        clearTimeout(escapePressTimeoutRef.current);
+      }
+      escapePressTimeoutRef.current = setTimeout(() => {
+        lastEscapePressAtRef.current = null;
+        escapePressTimeoutRef.current = null;
+        setIsEscapeArmed(false);
+      }, 500);
+    };
+
+    window.addEventListener("keydown", handleEscapeShortcut);
+    return () => {
+      window.removeEventListener("keydown", handleEscapeShortcut);
+      if (escapePressTimeoutRef.current) {
+        clearTimeout(escapePressTimeoutRef.current);
+        escapePressTimeoutRef.current = null;
+      }
+      lastEscapePressAtRef.current = null;
+      setIsEscapeArmed(false);
+    };
+  }, [hasLiveAssistantTurn, isSteering, stopRequest]);
 
   const abortActiveResponse = () =>
     vscode.postMessage({
@@ -3637,9 +3691,13 @@ export const InputWrapper = memo(function InputWrapper() {
                   onClick={stopRequest}
                   disabled={isSteering}
                   aria-label="Stop"
-                  title="Stop"
+                  title="Stop (press Escape twice)"
                 >
-                  <Square className="h-3 w-3" />
+                  {isEscapeArmed ? (
+                    <span className="text-[9px] font-bold leading-none">ESC</span>
+                  ) : (
+                    <Square className="h-3 w-3" />
+                  )}
                 </Button>
               ) : null}
               {!hasLiveAssistantTurn || inputValue.trim().length > 0 ? (
@@ -4610,7 +4668,7 @@ export const SkillsPanel = memo(function SkillsPanel() {
               return (
                 <div
                   key={skill.name}
-                  className="oc-panel-section bg-oc-panel-soft p-0"
+                  className="oc-panel-section oc-skill-record bg-oc-panel-soft p-0"
                 >
                   <div className="oc-details-list-row flex items-center gap-2 p-2">
                     <span className="flex-1 truncate font-medium text-xs font-medium text-[var(--oc-text-soft)]">
@@ -4636,7 +4694,7 @@ export const SkillsPanel = memo(function SkillsPanel() {
                         }
                         aria-expanded={isExpanded}
                         onClick={() => toggleSkill(skill.name)}
-                        className="h-4 w-4 shrink-0 text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
+                        className="oc-detail-row-toggle h-4 w-4 shrink-0 text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
                       >
                         {isExpanded ? (
                           <ChevronDown className="h-3 w-3" />
@@ -4648,7 +4706,7 @@ export const SkillsPanel = memo(function SkillsPanel() {
                   </div>
 
                   {isExpanded && hasDetail && (
-                    <div className="border-t border-oc-border px-2 pb-2 pt-1 space-y-0.5">
+                    <div className="oc-skill-details border-t border-oc-border px-2 pb-2 pt-1 space-y-0.5">
                       {skill.description && (
                         <div className="text-[10px] text-[var(--oc-text-soft)] opacity-70 leading-relaxed">
                           {skill.description}
@@ -4815,7 +4873,7 @@ export const AgentsPanel = memo(function AgentsPanel() {
                         }
                         aria-expanded={isExpanded}
                         onClick={() => toggleAgent(agent.id)}
-                        className="h-4 w-4 shrink-0 text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
+                        className="oc-detail-row-toggle h-4 w-4 shrink-0 text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
                       >
                         {isExpanded ? (
                           <ChevronDown className="h-3 w-3" />
