@@ -416,13 +416,30 @@ export class ChatViewProvider
     // immediately; the payload-size boundary below remains to protect IPC from
     // one oversized tool result.
     const startedAt = performance.now();
-    this.view?.webview.postMessage({
-      type: "streamEvent",
-      event,
-      sessionId,
-      immediate,
-    });
-    this.logStreamPerformance("provider-webview-event", startedAt, 1);
+    try {
+      const delivery = this.view?.webview.postMessage({
+        type: "streamEvent",
+        event,
+        sessionId,
+        immediate,
+      });
+      // VS Code can reject an in-flight post when the webview is disposed or
+      // reloaded. Always observe that rejection: an unobserved Thenable here
+      // can become an extension-host unhandled rejection during streaming.
+      void Promise.resolve(delivery).catch((error) => {
+        this.logger.error("Failed to deliver stream event to webview", {
+          sessionId,
+          immediate,
+        }, error instanceof Error ? error : new Error(String(error)));
+      });
+    } catch (error) {
+      this.logger.error("Failed to queue stream event for webview", {
+        sessionId,
+        immediate,
+      }, error instanceof Error ? error : new Error(String(error)));
+    } finally {
+      this.logStreamPerformance("provider-webview-event", startedAt, 1);
+    }
   }
 
   private truncateStreamToolTextForWebview(value: unknown): unknown {
@@ -2083,7 +2100,7 @@ export class ChatViewProvider
         currentSessionId: this.currentSessionId,
         processingSessionIds: this.getEffectiveProcessingSessionIds(),
         compatibilityWarnings: this.getCompatibilityWarnings(),
-        showLogger: vscode.workspace.getConfiguration("opencode.logging").get<boolean>("showLogger", true),
+        showLogger: vscode.workspace.getConfiguration("opencode.logging").get<boolean>("showLogger", false),
         todoItems: [],
       });
       this.logger.warn("[FORK_TRACE][HOST] initState posted", {
@@ -2950,16 +2967,6 @@ export class ChatViewProvider
       return;
     }
 
-    this.logger.info("[ACTIVITY STEP][EDIT] Raw SDK event data", {
-      eventType: eventRec?.type,
-      partType,
-      toolName: part?.tool,
-      filePath: part?.filePath || (part?.state as any)?.input?.file || (part?.state as any)?.input?.path,
-      diffStats: part?.diffStats,
-      activityDetail,
-      fileChanges: editFileChanges,
-      rawPartKeys: Object.keys(part),
-    });
   }
 
   /**
@@ -3200,6 +3207,19 @@ export class ChatViewProvider
           }
           break;
         }
+        case "webviewError": {
+          const message = typeof message.message === "string"
+            ? message.message.slice(0, 2_000)
+            : "Webview runtime error";
+          const stack = typeof message.stack === "string"
+            ? message.stack.slice(0, 8_000)
+            : undefined;
+          this.logger.error("Chat webview crashed", {
+            message,
+            stack,
+          });
+          break;
+        }
         case "ready": {
           this.logger.debug(`${LoggingCategories.UI_INTERACTION} Webview ready`, {
             viewType: 'chat',
@@ -3227,7 +3247,7 @@ export class ChatViewProvider
               workspaceRoot: this.getWorkspaceDirectory(),
               currentSessionId: this.currentSessionId,
               processingSessionIds: this.getEffectiveProcessingSessionIds(),
-              showLogger: vscode.workspace.getConfiguration("opencode.logging").get<boolean>("showLogger", true),
+              showLogger: vscode.workspace.getConfiguration("opencode.logging").get<boolean>("showLogger", false),
               todoItems: [],
             });
             this.hasInitializedWebview = true;
@@ -3284,7 +3304,7 @@ export class ChatViewProvider
               currentSessionId: this.currentSessionId,
               processingSessionIds: this.getEffectiveProcessingSessionIds(),
               compatibilityWarnings: this.getCompatibilityWarnings(),
-              showLogger: vscode.workspace.getConfiguration("opencode.logging").get<boolean>("showLogger", true),
+              showLogger: vscode.workspace.getConfiguration("opencode.logging").get<boolean>("showLogger", false),
             });
             void this.refreshSdkTodosForSession(this.currentSessionId);
 
@@ -3849,6 +3869,14 @@ export class ChatViewProvider
         }
         case "openFile": {
           await this.handleOpenFile(message.file);
+          break;
+        }
+        case "openText": {
+          await this.handleOpenText(
+            this.firstNonEmptyString(message.content),
+            this.firstNonEmptyString(message.filename),
+            this.firstNonEmptyString(message.languageId),
+          );
           break;
         }
         case "reviewChanges": {
@@ -4502,37 +4530,6 @@ export class ChatViewProvider
       if (this.isMirroredTextDelta(event, streamEventSessionId)) {
         return;
       }
-      // This is deliberately a small, per-frame trace rather than a payload
-      // dump. It lets us identify the first boundary where a live activity
-      // event disappears without adding the large allocations that caused the
-      // earlier streaming stalls. Token deltas and heartbeats are excluded.
-      const shouldTraceLiveStreamFrame =
-        !isHighFrequencyDelta && eventType !== "server.heartbeat";
-      if (shouldTraceLiveStreamFrame) {
-        const partText = typeof part?.text === "string" ? part.text : undefined;
-        const partContent = typeof part?.content === "string" ? part.content : undefined;
-        const partDelta = typeof part?.delta === "string" ? part.delta : undefined;
-        this.logger.info("[LIVE-STREAM-TRACE][HOST] received", {
-          eventId: typeof eventRec?.id === "string" ? eventRec.id : undefined,
-          eventType,
-          source: typeof eventRec?.source === "string" ? eventRec.source : undefined,
-          sdkSessionId: streamEventSessionId,
-          activeStreamSessionId: this.activeStreamSessionId,
-          currentSessionId: this.currentSessionId,
-          partType: typeof part?.type === "string" ? part.type : undefined,
-          partId: typeof part?.id === "string" ? part.id : undefined,
-          partMessageId:
-            typeof part?.messageID === "string"
-              ? part.messageID
-              : typeof part?.messageId === "string"
-                ? part.messageId
-                : undefined,
-          partKeys: Object.keys(part).slice(0, 16),
-          partTextLength: partText?.length ?? 0,
-          partContentLength: partContent?.length ?? 0,
-          partDeltaLength: partDelta?.length ?? 0,
-        });
-      }
       // Lifecycle/tool events keep their detailed logs. Token deltas use the
       // render path only; logging them adds allocation without diagnostic value.
       const shouldLogVerboseStreamDetail =
@@ -4586,14 +4583,6 @@ export class ChatViewProvider
       // This remains source-agnostic: `/global/event` is retained whenever it
       // is the only copy that arrives.
       if (this.isDuplicateStreamEvent(event, eventSessionId)) {
-        if (shouldTraceLiveStreamFrame) {
-          this.logger.info("[LIVE-STREAM-TRACE][HOST] suppressed-transport-duplicate", {
-            eventId: typeof eventRec?.id === "string" ? eventRec.id : undefined,
-            eventType,
-            source: typeof eventRec?.source === "string" ? eventRec.source : undefined,
-            sdkSessionId: eventSessionId,
-          });
-        }
         return;
       }
       if (eventType === "question.asked") {
@@ -4664,15 +4653,6 @@ export class ChatViewProvider
           eventSessionId !== subagentParentSessionId,
       );
       if (isSubagentOwnedEvent) {
-        if (shouldTraceLiveStreamFrame) {
-          this.logger.info("[LIVE-STREAM-TRACE][HOST] suppressed-subagent", {
-            eventId: typeof eventRec?.id === "string" ? eventRec.id : undefined,
-            eventType,
-            childSessionId: eventSessionId,
-            parentSessionId: subagentParentSessionId,
-            partType: typeof part?.type === "string" ? part.type : undefined,
-          });
-        }
         return;
       }
 
@@ -4938,18 +4918,6 @@ export class ChatViewProvider
         shouldFlushWebviewImmediately,
         isInitialTurnEvent,
       );
-      if (shouldTraceLiveStreamFrame) {
-        this.logger.info("[LIVE-STREAM-TRACE][HOST] forwarded", {
-          eventId: typeof eventRec?.id === "string" ? eventRec.id : undefined,
-          eventType,
-          sdkSessionId: eventSessionId,
-          envelopeSessionId: resolvedSessionId,
-          partType: typeof part?.type === "string" ? part.type : undefined,
-          partId: typeof part?.id === "string" ? part.id : undefined,
-          immediate: isInitialTurnEvent,
-          terminal: isTerminalState,
-        });
-      }
       if (
         eventType === "question.asked" ||
         eventType === "permission.asked" ||
@@ -9555,7 +9523,7 @@ export class ChatViewProvider
       currentSessionId: this.currentSessionId,
       processingSessionIds: this.getEffectiveProcessingSessionIds(),
       compatibilityWarnings: this.getCompatibilityWarnings(),
-      showLogger: vscode.workspace.getConfiguration("opencode.logging").get<boolean>("showLogger", true),
+      showLogger: vscode.workspace.getConfiguration("opencode.logging").get<boolean>("showLogger", false),
       todoItems: [],
     });
     void this.refreshSdkTodosForSession(this.currentSessionId);
@@ -11039,6 +11007,21 @@ export class ChatViewProvider
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : JSON.stringify(error);
       vscode.window.showErrorMessage(`Failed to open file: ${msg}`);
+    }
+  }
+
+  /** Opens in-memory text, such as a pasted snippet, in a regular editor tab. */
+  private async handleOpenText(content: string, filename?: string, languageId?: string) {
+    try {
+      if (!content) return;
+      const document = await vscode.workspace.openTextDocument({
+        content,
+        language: languageId && /^[a-z0-9+#-]+$/i.test(languageId) ? languageId : undefined,
+      });
+      await vscode.window.showTextDocument(document, { preview: false });
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : JSON.stringify(error);
+      vscode.window.showErrorMessage(`Failed to open ${filename || "text attachment"}: ${msg}`);
     }
   }
 

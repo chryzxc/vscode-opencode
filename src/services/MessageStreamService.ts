@@ -102,7 +102,8 @@ export interface StreamEvent {
  * };
  * ```
  */
-export type StreamCallback = (event: StreamEvent, rawEvent?: unknown) => void;
+export type StreamCallback =
+  (event: StreamEvent, rawEvent?: unknown) => void | Promise<void>;
 
 /**
  * Manages real-time Server-Sent Events streaming from the OpenCode server.
@@ -680,23 +681,12 @@ export class MessageStreamService {
 
       try {
         const rawEventSnapshot = this.cloneRawEvent(rawEvent);
-        const rawRecord = this.asRecord(rawEventSnapshot);
         const rawEventTypeHints = this.extractEventTypeHints(rawEventSnapshot);
-        const rawEventType = rawEventTypeHints[0] ?? "unknown";
-        const rawLooksLikeHeartbeat = this.isHeartbeatEvent(rawEventType);
-        if (!rawLooksLikeHeartbeat) {
-          this.logger.info("[LIVE-STREAM-TRACE][SSE] raw-received", {
-            source,
-            rawEventTypeHints,
-            rawKeys: rawRecord ? Object.keys(rawRecord).slice(0, 12) : [],
-          });
-        }
         const normalizedEvent = this.normalizeIncomingEvent(rawEventSnapshot);
         if (!normalizedEvent) {
           this.logger.warn("[LIVE-STREAM-TRACE][SSE] normalization-rejected", {
             source,
             rawEventTypeHints,
-            rawKeys: rawRecord ? Object.keys(rawRecord).slice(0, 12) : [],
           });
           continue;
         }
@@ -739,20 +729,6 @@ export class MessageStreamService {
           (!isHighFrequencyDelta || !tracedDeltaSample);
         if (isHighFrequencyDelta) {
           tracedDeltaSample = true;
-        }
-        if (shouldTraceNormalizedEvent) {
-          this.logger.info("[LIVE-STREAM-TRACE][SSE] normalized", {
-            source,
-            eventId:
-              typeof (normalizedEvent as Record<string, unknown>).id === "string"
-                ? (normalizedEvent as Record<string, unknown>).id
-                : undefined,
-            eventType: normalizedEvent.type,
-            sessionId,
-            messageId,
-            partType,
-            isDelta: isHighFrequencyDelta,
-          });
         }
         if (!this.isHeartbeatEvent(normalizedEvent.type) && verboseDebug) {
           this.logger.debug("[CHAT-STREAMING][KEY1] Stream event received from server", {
@@ -839,19 +815,6 @@ export class MessageStreamService {
           });
         }
 
-        if (shouldTraceNormalizedEvent) {
-          this.logger.info("[LIVE-STREAM-TRACE][SSE] callback-notified", {
-            source,
-            eventId:
-              typeof (eventWithSource as Record<string, unknown>).id === "string"
-                ? (eventWithSource as Record<string, unknown>).id
-                : undefined,
-            eventType: eventWithSource.type,
-            sessionId,
-            partType,
-            subscriberCount: this.callbacks.size,
-          });
-        }
 
         this.notifyCallbacks(eventWithSource, rawEventSnapshot);
       } catch (error) {
@@ -1294,12 +1257,17 @@ export class MessageStreamService {
     }
 
     this.callbacks.forEach((callback) => {
-      try {
-        callback(event, rawEvent);
-      } catch (error) {
-        // Log but don't throw - one bad callback shouldn't break everything
-        this.logger.error("Callback error in subscriber", {}, error as Error);
-      }
+      // The primary provider's callback is async. Invoke it through a promise
+      // boundary so both synchronous throws and rejected async callbacks are
+      // contained here instead of becoming unhandled extension-host rejections.
+      void Promise.resolve()
+        .then(() => callback(event, rawEvent))
+        .catch((error: unknown) => {
+          // Log but don't throw - one bad callback shouldn't break everything.
+          const callbackError =
+            error instanceof Error ? error : new Error(String(error));
+          this.logger.error("Callback error in subscriber", {}, callbackError);
+        });
     });
   }
 

@@ -162,7 +162,10 @@ export class SessionHandler {
       // solely a display projection; no centralized event tape or local message
       // cache is read as a fallback.
       const sdkMessages = await this.sessionSnapshotLoader.loadMessagesOnly(sessionId);
-      const messages = adaptSdkMessages(sdkMessages);
+      const messages = await this.enrichSubagentsFromSdkChildren(
+        sessionId,
+        adaptSdkMessages(sdkMessages),
+      );
 
       await this.modelAndAgentManager.applySessionSettings(sessionId);
 
@@ -217,6 +220,30 @@ export class SessionHandler {
         }
       }
 
+      // Native `call_omo_agent` invocations are represented as tool parts by
+      // the SDK (rather than `subtask` parts). The adapter already projects
+      // those into `message.subagents`; hydrate their child transcripts here
+      // as well so rehydrated cards have the same activity data as live cards.
+      for (const parentMessage of enrichedMessages) {
+        const parentMessageId = this.getMessageId(parentMessage);
+        for (const detail of Array.isArray(parentMessage?.subagents)
+          ? parentMessage.subagents
+          : []) {
+          const childSessionId = this.optionalString(
+            detail?.childSessionId ?? detail?.sessionID,
+          );
+          if (!childSessionId) continue;
+          const childSession = childrenById.get(childSessionId);
+          detail.parentSessionId = sessionId;
+          detail.parentMessageId = detail.parentMessageId ?? parentMessageId;
+          detail.childSessionId = childSessionId;
+          if (childSession) {
+            detail.status = this.deriveChildSessionStatus(childSession);
+          }
+          await this.hydrateChildSubagentActivity(detail);
+        }
+      }
+
       for (const sdkMessage of snapshot.messages ?? []) {
         const parts = Array.isArray(sdkMessage?.parts) ? sdkMessage.parts : [];
         for (const part of parts) {
@@ -248,6 +275,7 @@ export class SessionHandler {
             part,
             childSession,
           });
+          await this.hydrateChildSubagentActivity(detail);
           this.upsertSubagentDetail(parentMessage, detail);
         }
       }
@@ -256,6 +284,84 @@ export class SessionHandler {
     } catch (error) {
       this.logger.warn("SDK subagent enrichment failed", { sessionId, error: String(error) });
       return messages;
+    }
+  }
+
+  private async hydrateChildSubagentActivity(detail: any): Promise<void> {
+    const childSessionId = this.optionalString(detail?.childSessionId);
+    if (!childSessionId) {
+      return;
+    }
+
+    try {
+      const childMessages = adaptSdkMessages(
+        await this.sessionSnapshotLoader.loadMessagesOnly(childSessionId),
+      ) as any[];
+      const thinkingEvents: any[] = [];
+      const progressEvents: any[] = [];
+      const conversationEvents: any[] = [];
+
+      for (const message of childMessages) {
+        const info = message?.info ?? {};
+        const messageID = this.optionalString(message?.id ?? info.id);
+        const createdAt = this.optionalNumber(
+          info?.time?.created ?? message?.created,
+        ) ?? Date.now();
+
+        for (const event of Array.isArray(message?.reasoningEvents)
+          ? message.reasoningEvents
+          : []) {
+          if (!this.optionalString(event?.text)) continue;
+          thinkingEvents.push({
+            id: event.id ?? `${messageID ?? "message"}:reasoning:${thinkingEvents.length}`,
+            text: event.text,
+            messageID: event.messageID ?? messageID,
+            partID: event.partID,
+            createdAt: event.createdAt ?? createdAt,
+          });
+        }
+
+        const steps = Array.isArray(message?.steps)
+          ? message.steps
+          : Array.isArray(message?.progressEvents)
+            ? message.progressEvents
+            : [];
+        for (const step of steps) {
+          const title = this.optionalString(step?.title);
+          if (!title) continue;
+          progressEvents.push({
+            id: step.id ?? `${messageID ?? "message"}:step:${progressEvents.length}`,
+            title,
+            meta: this.optionalString(step?.meta),
+            status: this.optionalString(step?.status),
+            messageID: step.messageID ?? messageID,
+            partID: step.partID,
+            createdAt: this.optionalNumber(step?.createdAt) ?? createdAt,
+          });
+        }
+
+        const text = this.optionalString(message?.content ?? message?.text);
+        if (text && String(info?.role ?? message?.role).toLowerCase() === "assistant") {
+          conversationEvents.push({
+            id: `${messageID ?? "message"}:message:${conversationEvents.length}`,
+            role: "assistant",
+            kind: "message",
+            text,
+            messageID,
+            createdAt,
+          });
+        }
+      }
+
+      detail.thinkingEvents = thinkingEvents;
+      detail.progressEvents = progressEvents;
+      detail.conversationEvents = conversationEvents;
+      detail.timelineEvents = [];
+    } catch (error) {
+      this.logger.warn("SDK child activity hydration failed", {
+        childSessionId,
+        error: String(error),
+      });
     }
   }
 

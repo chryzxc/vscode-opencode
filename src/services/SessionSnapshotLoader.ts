@@ -155,17 +155,6 @@ export class SessionSnapshotLoader {
     }
     const messages = response.data;
 
-    // Temporary SDK inspection mode: keep this as the unmodified `data` array
-    // returned by OpenCode. Do not run it through the event-tape normalizer or
-    // write it to workspaceState. This is intentionally verbose so the
-    // Extension Host log can show exactly what OpenCode returned.
-    log.info("[SDK-DEBUG] session.messages RAW data", {
-      sessionId: sessionID,
-      status: response.response.status,
-      directory,
-      messages,
-    });
-
     return messages;
   }
 

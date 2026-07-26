@@ -701,9 +701,22 @@ export class QuotaService extends EventEmitter {
         );
         const isTokenLimit = type === "TOKENS_LIMIT";
 
-        // Z.ai exposes a 5-hour token bucket plus a separate monthly web search limit.
-        const label = isTokenLimit
-          ? "5 hrs token limit"
+        // Z.ai uses the same TOKENS_LIMIT type for both the rolling 5-hour
+        // bucket and the subscription's weekly bucket. The reset timestamp is
+        // the discriminator available in the quota response.
+        const resetAfterMs =
+          typeof limit?.nextResetTime === "number"
+            ? limit.nextResetTime - Date.now()
+            : 0;
+        const isWeeklyTokenLimit =
+          isZai && isTokenLimit && resetAfterMs > 24 * 60 * 60 * 1000;
+
+        // Z.ai exposes 5-hour and weekly token buckets plus a separate
+        // monthly web search limit.
+        const label = isWeeklyTokenLimit
+          ? "Weekly token limit"
+          : isTokenLimit
+            ? "5 hrs token limit"
           : isZai
             ? "Monthly web search limit"
             : "Monthly limit";
