@@ -1979,9 +1979,7 @@ export class ChatViewProvider
       const requestedSession = await this.sessionService.switchSession(sessionId);
       if (abandonIfStale("switchSession")) return;
       const parentSessionId = this.firstNonEmptyString(
-        requestedSession.parentSessionId,
         requestedSession.parentID,
-        requestedSession.parentId,
       );
       if (parentSessionId && parentSessionId !== sessionId) {
         // A child is only ever rendered in SubagentDetailModal. Resolve an
@@ -3208,14 +3206,14 @@ export class ChatViewProvider
           break;
         }
         case "webviewError": {
-          const message = typeof message.message === "string"
+          const errorMessage = typeof message.message === "string"
             ? message.message.slice(0, 2_000)
             : "Webview runtime error";
           const stack = typeof message.stack === "string"
             ? message.stack.slice(0, 8_000)
             : undefined;
           this.logger.error("Chat webview crashed", {
-            message,
+            message: errorMessage,
             stack,
           });
           break;
@@ -3872,11 +3870,14 @@ export class ChatViewProvider
           break;
         }
         case "openText": {
-          await this.handleOpenText(
-            this.firstNonEmptyString(message.content),
-            this.firstNonEmptyString(message.filename),
-            this.firstNonEmptyString(message.languageId),
-          );
+          const content = this.firstNonEmptyString(message.content);
+          if (content) {
+            await this.handleOpenText(
+              content,
+              this.firstNonEmptyString(message.filename),
+              this.firstNonEmptyString(message.languageId),
+            );
+          }
           break;
         }
         case "reviewChanges": {
@@ -5236,7 +5237,7 @@ export class ChatViewProvider
             const partTools = parts
               .map((part) => this.asRecord(part))
               .filter((part): part is Record<string, unknown> => Boolean(part))
-              .filter((part) => this.firstNonEmptyString(part.type).toLowerCase() === "tool")
+              .filter((part) => this.firstNonEmptyString(part.type)?.toLowerCase() === "tool")
               .map((part) => ({
                 partId: this.firstNonEmptyString(part.id, part.partID, part.partId) || null,
                 callId: this.firstNonEmptyString(part.callID, part.callId) || null,

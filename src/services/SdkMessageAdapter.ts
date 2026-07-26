@@ -99,6 +99,8 @@ export interface SdkMessageStep {
       added?: number;
       deleted?: number;
     };
+    backgroundTaskId?: string;
+    sessionID?: string;
   };
 }
 
