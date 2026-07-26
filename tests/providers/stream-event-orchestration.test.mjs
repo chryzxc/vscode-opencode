@@ -98,6 +98,24 @@ test('stream events are enriched before webview forwarding', () => {
   );
 });
 
+test('only mirrored text tokens are deduplicated before forwarding', () => {
+  assert.match(
+    streamSubscribeBody,
+    /if \(this\.isMirroredTextDelta\(event, streamEventSessionId\)\) \{\s*return;/,
+    'identical mirrored text deltas should not reach the streaming reducer twice',
+  );
+  assert.match(
+    chatViewProviderSource,
+    /partType !== "text"[\s\S]*?field !== "text"[\s\S]*?return false;/s,
+    'tool, activity, and lifecycle frames must remain outside the mirror-token guard',
+  );
+  assert.match(
+    chatViewProviderSource,
+    /previous\.source !== source[\s\S]*?MIRRORED_TEXT_DELTA_WINDOW_MS/s,
+    'the guard must suppress only a matching token from the other SSE source',
+  );
+});
+
 test('interactive stream payloads are detected via blocking question checks', () => {
   assert.match(
     chatViewProviderSource,

@@ -168,8 +168,8 @@ test("empty same-session SDK hydration preserves the locked stop snapshot", () =
   );
   assert.match(
     messageHandlerSource,
-    /CLEAR_LIVE_EVENT_STREAM_DEBUG[\s\S]*Hydration renders the SDK/,
-    "live debug events should clear only after the empty-snapshot guard",
+    /hasAuthoritativeSdkSnapshot && hydratedTurnIsTerminal[\s\S]*?clearLiveSdkDebugEvents\(historySessionId \?\? undefined\)[\s\S]*Hydration renders the SDK/,
+    "only a terminal authoritative hydration may clear that session's live debug events",
   );
 });
 
@@ -243,6 +243,44 @@ test("streamEvent handler preserves activity updates for inactive streaming sess
   );
 });
 
+test("assistant-phase identity updates never clear an already rendered live snapshot", () => {
+  const storeSource = readSource(
+    [joinFromRoot("webview", "shared", "src", "chat", "lib", "store.ts")],
+    "store.ts",
+  );
+  const pendingReducer = storeSource.match(
+    /case "SET_ASSISTANT_TURN_PENDING":([\s\S]*?)case "SET_SESSIONS_LIST":/,
+  )?.[1] ?? "";
+
+  assert.match(
+    pendingReducer,
+    /must never clear the visible streaming snapshot/,
+    "assistant-phase transitions must document that they preserve rendered live content",
+  );
+  assert.doesNotMatch(
+    pendingReducer,
+    /streaming:\s*null/,
+    "assistant-phase transitions must not remove the streaming snapshot; terminal/session lifecycle owns removal",
+  );
+});
+
+test("a completed activity step never finalizes the assistant stream", () => {
+  const stepFinishBlock = messageHandlerSource.match(
+    /if \(partType === 'step-finish'[\s\S]*?(?=\n\s*if \(partType === 'tool'\))/,
+  )?.[0] ?? "";
+
+  assert.match(
+    stepFinishBlock,
+    /A completed activity step is not a completed assistant turn/,
+    "step-finish must be documented as ordinary timeline progress",
+  );
+  assert.doesNotMatch(
+    stepFinishBlock,
+    /completeStreamingTurnFromTerminalEvent|FINISH_STREAMING|SET_PROCESSING[\s\S]*payload:\s*false/,
+    "step-finish must not clear the live response; explicit completion events own finalization",
+  );
+});
+
 test("duplicate stream start events should not reset populated assistant streaming state", () => {
   assert.match(
     messageHandlerSource,
@@ -282,11 +320,19 @@ test("store preserves insertion order when flushed assistant question and echoed
   );
 });
 
-test("compaction completion preserves visible assistant streaming before clearing transient state", () => {
+test("compaction completion does not clear an active assistant stream", () => {
   assert.match(
     messageHandlerSource,
-    /case "compactionStatus"[\s\S]*if \(normalizedStatus !== "running"\) \{[\s\S]*flushVisibleStreamingSnapshotToMessages\(dispatch, getState\)[\s\S]*SET_STREAMING[\s\S]*payload: null/s,
-    "compaction completion should not discard a visible assistant streaming snapshot",
+    /case "compactionStatus"[\s\S]*const hasActiveAssistantStream =[\s\S]*isProcessingInCurrentSession\([\s\S]*if \(!hasActiveAssistantStream\) \{[\s\S]*SET_STREAMING[\s\S]*payload: null/s,
+    "compaction completion must preserve an active live assistant stream and only clear an orphaned one",
+  );
+});
+
+test("a stale terminal SDK history snapshot cannot clear a newer local live turn", () => {
+  assert.match(
+    messageHandlerSource,
+    /const hasNewerLocalAssistantTurn = Boolean\([\s\S]*historySessionStreaming\?\.isActive[\s\S]*assistantTurnPending[\s\S]*isProcessingInCurrentSession\([\s\S]*const hydratedTurnIsTerminal =\s*hydratedHistoryIsTerminal && !hasNewerLocalAssistantTurn/s,
+    "history hydration must not treat a previous completed reply as terminal while the next assistant turn is live",
   );
 });
 

@@ -62,4 +62,17 @@ describe("buildAssistantBlockPresentation", () => {
     assert.equal(result.isLastTextInBlockByIndex.get(1), false);
     assert.equal(result.isLastTextInBlockByIndex.get(2), false);
   });
+
+  it("marks identical activity-only snapshots in one parent block as duplicates", () => {
+    const result = buildAssistantBlockPresentation([
+      { role: "user", userBlockKey: "user-1" },
+      { role: "assistant", activitySnapshotKey: "read:OnboardingFlow" },
+      { role: "assistant", activitySnapshotKey: "read:OnboardingFlow" },
+      { role: "assistant", activitySnapshotKey: "read:GameScreen" },
+    ]);
+
+    assert.equal(result.isDuplicateActivityByIndex.get(1), false);
+    assert.equal(result.isDuplicateActivityByIndex.get(2), true);
+    assert.equal(result.isDuplicateActivityByIndex.get(3), false);
+  });
 });

@@ -1,7 +1,7 @@
 {
   "name": "opencode-vscode-chryzxc",
-  "displayName": "OpenCode Workbench — VS Code UI",
-  "description": "A VS Code client for the OpenCode coding agent, powered by the OpenCode SDK, with streaming chat, plans, subagents, sessions, diff review, and quota monitoring.",
+  "displayName": "OpenCode — VS Code UI",
+  "description": "OpenCode for VS Code: an AI coding agent client with streaming chat, implementation plans, subagents, diff review, sessions, and quota monitoring.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -43,33 +43,39 @@
   },
   "keywords": [
     "opencode",
-    "open code",
-    "opencode ai",
-    "opencode cli",
-    "opencode gui",
     "opencode vscode",
     "opencode extension",
+    "opencode ai",
+    "opencode cli",
+    "opencode agent",
+    "opencode coding agent",
+    "open code",
     "ai coding agent",
     "ai code assistant",
-    "coding assistant",
+    "coding agent",
+    "ai pair programmer",
+    "code assistant",
     "agentic coding",
-    "ai chat",
-    "code context",
+    "vscode ai",
+    "vscode chat",
+    "local ai",
+    "open source ai",
+    "coding workflow",
     "code review",
     "diff review",
     "implementation plan",
     "plan mode",
     "subagents",
-    "session history",
+    "multi agent",
     "mcp",
+    "model context protocol",
+    "session management",
     "quota monitoring",
-    "openai",
-    "github copilot",
-    "gemini"
+    "openai"
   ],
   "categories": [
-    "AI",
-    "Chat"
+    "Machine Learning",
+    "Other"
   ],
   "activationEvents": [
     "onStartupFinished"
@@ -240,7 +246,7 @@
         },
         "opencode.logging.showLogger": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "description": "Show debug/diagnostic logging output. When disabled, only errors are shown in the console and browser logs. Setting this to false also disables webview-side debug logging."
         },
         "opencode.autoCompact": {
@@ -313,7 +319,7 @@
     "typescript": "^5.3.2"
   },
   "dependencies": {
-    "@opencode-ai/sdk": "1.15.13",
+    "@opencode-ai/sdk": "1.18.4",
     "ajv": "^8.18.0",
     "ajv-formats": "^3.0.1",
     "axios": "^1.13.6",

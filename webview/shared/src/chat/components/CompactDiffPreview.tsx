@@ -171,16 +171,6 @@ export function CompactDiffPreview({
             )}
           </span>
 
-          {filePath && (
-            <span
-              className={cn(
-                "text-[11px] font-medium text-oc-accent hover:underline cursor-pointer",
-                "transition-colors"
-              )}
-            >
-              View diff
-            </span>
-          )}
         </div>
       )}
     </div>

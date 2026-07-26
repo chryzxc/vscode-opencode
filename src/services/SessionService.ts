@@ -49,6 +49,29 @@ function isInternalSession(session: Session | null | undefined): boolean {
   return INTERNAL_SESSION_TITLE_PREFIXES.some((prefix) => title.startsWith(prefix));
 }
 
+/**
+ * Match the session picker: child/subagent sessions remain available to their
+ * parent detail UI, but must never become the root chat restored on startup.
+ * The SDK can sort a freshly-active child ahead of its parent, so choosing the
+ * raw first item here opened a transcript absent from the session list.
+ */
+function topLevelSessionsForChat(sessions: Session[]): Session[] {
+  const sessionIds = new Set(
+    sessions
+      .map((session) => session.id?.trim())
+      .filter((id): id is string => Boolean(id)),
+  );
+  return sessions.filter((session) => {
+    const record = session as Session & Record<string, unknown>;
+    const parentSessionId = [
+      record.parentSessionId,
+      record.parentID,
+      record.parentId,
+    ].find((value): value is string => typeof value === "string" && value.trim().length > 0)?.trim();
+    return !parentSessionId || parentSessionId === session.id || !sessionIds.has(parentSessionId);
+  });
+}
+
 function isDataUrl(value: string): boolean {
   return /^data:[^;]+;base64,/i.test(value);
 }
@@ -1323,7 +1346,7 @@ export class SessionService {
       response.data.filter((session) => !isInternalSession(session)),
     ).sessions;
     this.sessionHistory = normalized;
-    const newestSdkSession = normalized[0];
+    const newestSdkSession = topLevelSessionsForChat(normalized)[0];
     if (newestSdkSession) {
       this.currentSession = newestSdkSession;
       log.sessionEvent("load", newestSdkSession.id, {

@@ -62,6 +62,7 @@ describe("shouldShowStreamingCard live event ownership", () => {
     const visible = shouldShowStreamingCard({
       streaming: streamingState({
         isActive: false,
+        hasAssistantFinishSignal: true,
         reasoningEvents: [
           {
             text: "Finished reasoning",
@@ -75,6 +76,39 @@ describe("shouldShowStreamingCard live event ownership", () => {
     });
 
     assert.strictEqual(visible, false);
+  });
+
+  it("keeps an inactive live activity card visible until the transcript has response content", () => {
+    const visible = shouldShowStreamingCard({
+      streaming: streamingState({
+        isActive: false,
+        progressEvents: [
+          {
+            id: "step-finish",
+            title: "Finishing step",
+            status: "done",
+          },
+        ],
+      }),
+      transcriptAssistantMessageIds: ["msg-live"],
+      hasTranscriptAssistantForCurrentTurn: false,
+    });
+
+    assert.strictEqual(visible, true);
+  });
+
+  it("keeps a completed response phase visible while the assistant turn has not finished", () => {
+    const visible = shouldShowStreamingCard({
+      streaming: streamingState({
+        isActive: false,
+        content: "First response message",
+        hasRenderableContent: true,
+      }),
+      transcriptAssistantMessageIds: ["msg-live"],
+      hasTranscriptAssistantForCurrentTurn: true,
+    });
+
+    assert.strictEqual(visible, true);
   });
 
   it("does not mount an empty active card before the first live event", () => {

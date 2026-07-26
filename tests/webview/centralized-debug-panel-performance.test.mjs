@@ -41,6 +41,16 @@ test("SDK debug configuration keeps the debug component mounted", () => {
   );
 });
 
+test("SDK debug panel stays in the fixed top area beside live tui notifications", () => {
+  const liveBannerIndex = shellSource.indexOf('placement="top"');
+  const debugPanelIndex = shellSource.indexOf('data-sdk-event-debug-top');
+  const messageListIndex = shellSource.indexOf('{/* Message list */}');
+
+  assert.ok(liveBannerIndex >= 0, "top tui.show banner must exist");
+  assert.ok(debugPanelIndex > liveBannerIndex, "SDK debug panel must follow the top live banner");
+  assert.ok(debugPanelIndex < messageListIndex, "SDK debug panel must remain outside the scrollable message list");
+});
+
 test("enabled SDK debugging does not stringify the full tape during render", () => {
   assert.match(messageSource, /useSyncExternalStore\(/);
   assert.match(messageSource, /getSdkDebugSnapshot\(sessionId\)/);
@@ -50,13 +60,12 @@ test("enabled SDK debugging does not stringify the full tape during render", () 
   assert.doesNotMatch(messageSource, /<pre>\{JSON\.stringify\(debugData, null, 2\)\}<\/pre>/);
 });
 
-test("stream and SDK hydration diagnostics are bounded and never serialized eagerly", () => {
+test("stream and SDK hydration diagnostics are complete and never serialized eagerly", () => {
   assert.match(handlerSource, /appendLiveSdkDebugEvents\(sessionId, events\)/);
   assert.match(handlerSource, /setRehydratedSdkDebugMessages\(historySessionId, rawSdkMessages\)/);
   assert.match(handlerSource, /config\.debug\.showSdkEventDebug/);
   assert.doesNotMatch(handlerSource, /JSON\.stringify\([^)]*(?:rawSdkMessages|debugEvents)/);
   assert.doesNotMatch(storeSource, /sdkMessagesBySessionId|liveEventStreamBySessionId/);
-  assert.match(debugStoreSource, /MAX_REHYDRATED_SDK_MESSAGES = 50/);
-  assert.match(debugStoreSource, /MAX_LIVE_EVENTS = 100/);
-  assert.match(debugStoreSource, /NOTIFY_INTERVAL_MS = 100/);
+  assert.doesNotMatch(debugStoreSource, /MAX_REHYDRATED_SDK_MESSAGES|MAX_LIVE_EVENTS/);
+  assert.doesNotMatch(debugStoreSource, /NOTIFY_INTERVAL_MS = 100/);
 });

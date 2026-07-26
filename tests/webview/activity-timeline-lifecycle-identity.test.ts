@@ -27,7 +27,7 @@ test("one read call keeps one identity while SDK lifecycle data is enriched", ()
     filePath: "/workspace/src/config/common.config.ts",
   });
 
-  assert.equal(pending, "call:call_read_common_config");
+  assert.equal(pending, "part:part_read_common_config");
   assert.equal(running, pending);
   assert.equal(completed, pending);
 });
@@ -43,7 +43,7 @@ test("one TodoWrite call keeps one identity across pending, running, and complet
     }),
   );
 
-  assert.deepEqual(identities, ["call:call_todo", "call:call_todo", "call:call_todo"]);
+  assert.deepEqual(identities, ["part:part_todo", "part:part_todo", "part:part_todo"]);
   assert.notEqual(
     stableActivityIdentity({ callID: "call_other", tool: "read" }),
     identities[0],

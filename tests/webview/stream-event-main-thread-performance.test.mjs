@@ -40,25 +40,21 @@ const diagnosticsLoggerSource = readSource(
   "DiagnosticsLogger.ts",
 );
 
-test("reasoning deltas bypass full accumulated-buffer normalization", () => {
+test("live reasoning deltas do not retain an accumulated buffer", () => {
   assert.match(
     storeSource,
-    /if \(delta\) \{\s*return \{\s*reasoning: appendStreamingReasoning\(current, incoming\)/s,
+    /const suppressLiveReasoningText =[\s\S]*?state\.streaming\.isActive === true[\s\S]*?action\.payload\.append === true/s,
   );
   assert.match(
     storeSource,
-    /mergeStreamingReasoning\(\s*state\.streaming\.reasoning,[\s\S]*?action\.payload\.delta/s,
+    /suppressLiveReasoningText\s*\? \{ reasoning: state\.streaming\.reasoning \}/,
   );
 });
 
-test("live duplicate-token checks use a bounded response suffix", () => {
-  assert.match(
-    handlerSource,
-    /comparableTokens\(candidateContent\.slice\(-2048\)\)/,
-  );
+test("live response text is never rerouted into reasoning by duplicate-token heuristics", () => {
   assert.doesNotMatch(
     handlerSource,
-    /const candidateTokens = comparableTokens\(candidateContent\);/,
+    /candidateTokens = comparableTokens\(candidateContent\.slice\(-2048\)\)[\s\S]*?UPDATE_STREAMING_REASONING/s,
   );
 });
 
@@ -81,7 +77,7 @@ test("extension-host stream delivery posts every event without batching or coale
   );
 });
 
-test("extension host suppresses duplicate SDK transport copies by event identity", () => {
+test("extension host suppresses a replayed direct transport event without preferring either source", () => {
   assert.match(
     providerSource,
     /private isDuplicateStreamEvent\(event: unknown, sessionId\?: string\)/,
@@ -94,7 +90,7 @@ test("extension host suppresses duplicate SDK transport copies by event identity
   assert.match(
     providerSource,
     /if \(this\.isDuplicateStreamEvent\(event, eventSessionId\)\)[\s\S]*?return;/,
-    "deduplication must occur before subagent and webview live rendering",
+    "the second transport copy is suppressed by SDK event identity, regardless of whether /event, /global/event, or sync arrived first",
   );
 });
 
@@ -119,14 +115,14 @@ test("the first event of a new assistant turn remains marked as immediate", () =
   assert.doesNotMatch(handlerSource, /startTransition\(/);
 });
 
-test("enabled SDK diagnostics retain a bounded external live-event window", () => {
+test("enabled SDK diagnostics retain the complete external live-event trail", () => {
   assert.match(handlerSource, /appendLiveSdkDebugEvents\(sessionId, events\)/);
   assert.match(
     handlerSource,
     /appendLiveEventsToDebugPanel\(debugEvents\)/,
   );
   assert.doesNotMatch(storeSource, /LIVE_EVENT_STREAM_DEBUG/);
-  assert.match(debugStoreSource, /MAX_LIVE_EVENTS = 100/);
+  assert.doesNotMatch(debugStoreSource, /MAX_LIVE_EVENTS/);
   assert.doesNotMatch(debugStoreSource, /NOTIFY_INTERVAL_MS|setTimeout\(publish/);
   assert.match(debugStoreSource, /publish\(\);/);
 });

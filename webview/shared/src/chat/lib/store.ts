@@ -25,6 +25,7 @@ import {
   sanitizeCentralizedDebugPayload,
   shouldIncludeCentralizedDebugPayload,
 } from "./generated/centralizedDebugPayloadFilter";
+import { canonicalActivityActionIdentity } from "./activityIdentity";
 import type { CentralizedToastNotification } from "./toastEvents";
 import {
   createSubagentEntityStore,
@@ -691,6 +692,96 @@ function activityArrayItemKeyLocal(item: unknown, index: number): string {
   return `index:${index}`;
 }
 
+const activitySnapshotKeyCacheLocal = new WeakMap<object, string>();
+
+function mergePartialActivityRecordLocal(
+  existing: Record<string, unknown> | null,
+  incoming: Record<string, unknown> | null,
+): Record<string, unknown> | undefined {
+  if (!existing && !incoming) return undefined;
+  const merged: Record<string, unknown> = {};
+  for (const source of [existing, incoming]) {
+    if (!source) continue;
+    for (const [key, value] of Object.entries(source)) {
+      if (value !== undefined) merged[key] = value;
+    }
+  }
+  return merged;
+}
+
+function mergeLiveActivityDetailLocal(
+  existing: unknown,
+  incoming: unknown,
+): unknown {
+  const existingDetail = asRecordLocal(existing);
+  const incomingDetail = asRecordLocal(incoming);
+  if (!existingDetail) return incoming;
+  if (!incomingDetail) return existing;
+
+  return {
+    ...existingDetail,
+    ...incomingDetail,
+    input: mergePartialActivityRecordLocal(
+      asRecordLocal(existingDetail.input),
+      asRecordLocal(incomingDetail.input),
+    ),
+    metadata: mergePartialActivityRecordLocal(
+      asRecordLocal(existingDetail.metadata),
+      asRecordLocal(incomingDetail.metadata),
+    ),
+  };
+}
+
+function activitySnapshotKeyLocal(item: unknown): string {
+  const record = asRecordLocal(item);
+  if (!record) return "";
+  const cached = activitySnapshotKeyCacheLocal.get(record);
+  if (cached !== undefined) return cached;
+  const detail = asRecordLocal(record.activityDetail);
+  const tool = asStringLocal(detail?.tool, record.tool, record.type, record.partType)
+    .trim()
+    .toLowerCase();
+  const input = detail?.input ?? record.input;
+  const snapshotKey = canonicalActivityActionIdentity(tool, input);
+  activitySnapshotKeyCacheLocal.set(record, snapshotKey);
+  return snapshotKey;
+}
+
+/**
+ * Hot reducer path for one incoming live activity. Unlike hydration merges,
+ * live SSE events are already ordered, so avoid sorting and re-fingerprinting
+ * the whole timeline for every event. Cached semantic keys still collapse
+ * mirrored SDK snapshots that use different call IDs.
+ */
+function mergeLiveActivityItemLocal<T>(items: T[], incoming: T): T[] {
+  const incomingKey = activityArrayItemKeyLocal(incoming, 0);
+  const incomingSnapshotKey = activitySnapshotKeyLocal(incoming);
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const existing = items[index];
+    const sameStableKey = activityArrayItemKeyLocal(existing, 0) === incomingKey;
+    const sameSnapshot =
+      Boolean(incomingSnapshotKey) &&
+      activitySnapshotKeyLocal(existing) === incomingSnapshotKey;
+    if (!sameStableKey && !sameSnapshot) continue;
+
+    if (asRecordLocal(existing) && asRecordLocal(incoming)) {
+      const existingRecord = existing as Record<string, unknown>;
+      const incomingRecord = incoming as Record<string, unknown>;
+      const merged = {
+        ...existingRecord,
+        ...incomingRecord,
+        activityDetail: mergeLiveActivityDetailLocal(
+          existingRecord.activityDetail,
+          incomingRecord.activityDetail,
+        ),
+      } as T;
+      return [...items.slice(0, index), merged, ...items.slice(index + 1)];
+    }
+    return [...items.slice(0, index), incoming, ...items.slice(index + 1)];
+  }
+  return [...items, incoming];
+}
+
 export function mergeActivityArraysLocal<T>(
   existing: T[] | undefined,
   incoming: T[] | undefined,
@@ -706,6 +797,7 @@ export function mergeActivityArraysLocal<T>(
 
   const merged: T[] = [];
   const indexByKey = new Map<string, number>();
+  const indexByActivitySnapshot = new Map<string, number>();
 
   const appendDefinedEntries = (
     target: Array<{ item: T; source: "existing" | "incoming"; originalIndex: number }>,
@@ -761,9 +853,15 @@ export function mergeActivityArraysLocal<T>(
     }
     const { item } = entry;
     const key = activityArrayItemKeyLocal(item, 0);
-    const existingIndex = indexByKey.get(key);
+    const snapshotKey = activitySnapshotKeyLocal(item);
+    const existingIndex =
+      indexByKey.get(key) ??
+      (snapshotKey ? indexByActivitySnapshot.get(snapshotKey) : undefined);
     if (typeof existingIndex !== "number") {
       indexByKey.set(key, merged.length);
+      if (snapshotKey) {
+        indexByActivitySnapshot.set(snapshotKey, merged.length);
+      }
       merged.push(item);
       return;
     }
@@ -773,6 +871,9 @@ export function mergeActivityArraysLocal<T>(
         ...(previous as Record<string, unknown>),
         ...(item as Record<string, unknown>),
       } as T;
+      if (snapshotKey) {
+        indexByActivitySnapshot.set(snapshotKey, existingIndex);
+      }
     } else {
       merged[existingIndex] = item;
     }
@@ -951,6 +1052,8 @@ function mergeStreamingSnapshotLocal(
       existing.contentStartSeq ??
       normalizedIncoming.contentStartSeq ??
       (normalizedIncoming.content.trim().length > 0 ? Date.now() : undefined),
+    contentPartStartIndex:
+      normalizedIncoming.contentPartStartIndex ?? existing.contentPartStartIndex,
     plan: normalizedIncoming.plan ?? existing.plan,
     structuredOutput: normalizedIncoming.structuredOutput ?? existing.structuredOutput,
     liveSessionStatus:
@@ -1878,7 +1981,18 @@ function dedupeAdjacentCanonicalTurns(messages: Message[]): Message[] {
       const beforePrev = collapsed[collapsed.length - 3];
       const beforeBeforePrev = collapsed[collapsed.length - 4];
 
+      // A repeated transcript turn is specifically user → assistant followed
+      // by the same user → assistant pair. Do not infer a turn from matching
+      // empty assistant text: SDK hydration legitimately emits consecutive
+      // activity-only assistant envelopes (read/edit/todo), all of which have
+      // an empty text fingerprint and must remain separate timeline steps.
+      const isUserAssistantTurnPair =
+        getMessageRoleForCanonical(beforeBeforePrev) === "user" &&
+        getMessageRoleForCanonical(beforePrev) === "assistant" &&
+        getMessageRoleForCanonical(prev) === "user" &&
+        getMessageRoleForCanonical(last) === "assistant";
       const isRepeatedTurn =
+        isUserAssistantTurnPair &&
         canonicalMessageTurnFingerprint(last) === canonicalMessageTurnFingerprint(beforePrev) &&
         canonicalMessageTurnFingerprint(prev) === canonicalMessageTurnFingerprint(beforeBeforePrev);
 
@@ -2281,6 +2395,44 @@ export function canonicalizeMessagesForRender(
   // deduplication above removes true duplicates; never coalesce the remaining
   // assistant messages here or their activity is moved into the final card.
   return dedupedTurns;
+}
+
+/**
+ * A live `session.error` may have no companion `session.messages()` entry.
+ * Keep that SDK-backed terminal record through a later history refresh, which
+ * otherwise replaces the local message list and makes the visible error vanish.
+ */
+function isSdkBackedSessionErrorMessage(message: Message): boolean {
+  if (!asStringLocal(message.error).trim()) {
+    return false;
+  }
+  const rawEvents = Array.isArray(message.rawSdkEventPayloads)
+    ? message.rawSdkEventPayloads
+    : [];
+  return rawEvents.some((rawEvent) => {
+    const record = asRecordLocal(rawEvent);
+    const eventType = asStringLocal(record?.type, record?.event).trim().toLowerCase();
+    return eventType === "session.error" || eventType === "error";
+  });
+}
+
+function retainSdkBackedSessionErrors(
+  existingMessages: Message[],
+  incomingMessages: Message[],
+): Message[] {
+  const incomingIds = new Set(
+    incomingMessages
+      .map((message) => asStringLocal(message.id, asRecordLocal(message.info)?.id).trim())
+      .filter(Boolean),
+  );
+  const retained = existingMessages.filter((message) => {
+    if (!isSdkBackedSessionErrorMessage(message)) {
+      return false;
+    }
+    const id = asStringLocal(message.id, asRecordLocal(message.info)?.id).trim();
+    return !id || !incomingIds.has(id);
+  });
+  return retained.length > 0 ? [...incomingMessages, ...retained] : incomingMessages;
 }
 
 const MAX_STREAMING_REASONING_EVENTS = 300;
@@ -2888,7 +3040,11 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, availableAgents: action.payload };
     case "SET_MESSAGES": {
       const dismissedInteractiveEventKeys = getDismissedInteractiveEventKeys(state);
-      const canonicalMessages = canonicalizeMessagesForRender(action.payload, {
+      const messagesWithRetainedSessionErrors = retainSdkBackedSessionErrors(
+        state.messages,
+        action.payload,
+      );
+      const canonicalMessages = canonicalizeMessagesForRender(messagesWithRetainedSessionErrors, {
         preserveEvtAssistantMessages:
           !!state.streaming?.isActive || state.assistantTurnPending,
       });
@@ -3078,37 +3234,15 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case "SET_STEERING":
       return { ...state, isSteering: action.payload };
     case "SET_ASSISTANT_TURN_PENDING":
-      // A new assistant turn must never inherit the previous turn's message id.
-      // If the streaming pipeline has not discovered the new message id yet, we
-      // clear the old one so the UI cannot temporarily bind the new card to the
-      // prior turn's activity timeline.
+      // OpenCode can advance one user request through multiple assistant SDK
+      // envelopes. This action only updates the assistant-phase identity; it
+      // must never clear the visible streaming snapshot. Clearing here erases
+      // already-rendered activity/response content between a terminal phase
+      // marker and the next live assistant phase. Explicit terminal hydration,
+      // a user stop, or a session switch own stream removal instead.
       const nextAssistantTurnMessageId = action.payload.pending
         ? action.payload.messageId ?? null
         : null;
-      const isNewAssistantTurn =
-        action.payload.pending &&
-        (nextAssistantTurnMessageId === null ||
-          nextAssistantTurnMessageId !== state.assistantTurnMessageId);
-      const shouldClearStaleStreamingSnapshot =
-        isNewAssistantTurn &&
-        !!state.streaming &&
-        state.streaming.isActive === false &&
-        (!!state.streaming.messageId ||
-          asStringLocal(state.streaming.content).trim().length > 0) &&
-        state.streaming.messageId !== nextAssistantTurnMessageId;
-      if (shouldClearStaleStreamingSnapshot) {
-        return {
-          ...state,
-          assistantTurnPending: action.payload.pending,
-          assistantTurnMessageId: nextAssistantTurnMessageId,
-          streaming: null,
-          streamingBySessionId: cacheStreamingForSession(
-            state.streamingBySessionId,
-            state.currentSessionId,
-            null,
-          ),
-        };
-      }
       return {
         ...state,
         assistantTurnPending: action.payload.pending,
@@ -3264,6 +3398,11 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           : existingSessionStreaming;
 
       if (!activeStreaming) {
+        // An idle/completed status is metadata. It must not create a blank,
+        // inactive streaming card between two SDK assistant phases.
+        if (!keepsAssistantTurnLive) {
+          return state;
+        }
         if (!status) {
           return state;
         }
@@ -3315,16 +3454,21 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       }
       const existing = state.streaming.rawSdkEventPayloads ?? [];
       const next = appendAndDedupeCentralizedDebugPayload(existing, action.payload) as unknown[];
-      // Preserve raw SDK events only for the current live overlay. This bounded
-      // snapshot is discarded when the authoritative SDK history refresh arrives.
-      if (next.length >= 200) {
+      if (next === existing) {
         return state;
       }
+      // Preserve the most recent stable SDK snapshots for the current live
+      // overlay. Never stop accepting them at the cap: doing so made later
+      // activity types invisible live even though the exact same events were
+      // present after SDK hydration. Delta/reasoning frames are filtered before
+      // this reducer, so this bounded rolling window avoids token-driven churn.
+      const rawSdkEventPayloads =
+        next.length > 200 ? next.slice(next.length - 200) : next;
       return {
         ...state,
         streaming: {
           ...state.streaming,
-          rawSdkEventPayloads: next,
+          rawSdkEventPayloads,
         },
       };
     }
@@ -3332,9 +3476,64 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       if (!state.streaming) {
         return state;
       }
+      const incomingPartID = action.payload.renderable
+        ? action.payload.partID?.trim() || undefined
+        : undefined;
+      const previousPartID = state.streaming.lastRenderableTextPartID;
+      const sameRenderablePart = Boolean(
+        incomingPartID && incomingPartID === previousPartID,
+      );
+      const startsNewRenderablePart = Boolean(
+        incomingPartID && incomingPartID !== previousPartID,
+      );
+      const activePartStartIndex = state.streaming.contentPartStartIndex ?? 0;
+      // A full text snapshot is authoritative for its own part. Replace only
+      // that part's provisional token fragment, retaining earlier assistant
+      // messages in the same response card.
       const content = action.payload.append
         ? `${state.streaming.content}${action.payload.content}`
-        : action.payload.content;
+        : sameRenderablePart
+          ? `${state.streaming.content.slice(0, activePartStartIndex)}${action.payload.content}`
+          : action.payload.content;
+      const contentPartStartIndex = startsNewRenderablePart
+        ? action.payload.append
+          ? state.streaming.content.length
+          : 0
+        : state.streaming.contentPartStartIndex;
+      const existingResponseChunks = Array.isArray(state.streaming.responseChunks)
+        ? state.streaming.responseChunks
+        : state.streaming.content.trim().length > 0
+          ? [{
+              text: state.streaming.content,
+              partID: previousPartID,
+              streamSeq: state.streaming.contentStartSeq ?? Date.now(),
+            }]
+          : [];
+      const responseChunks = action.payload.renderable
+        ? sameRenderablePart
+          ? existingResponseChunks.map((chunk) =>
+              chunk.partID === incomingPartID
+                ? {
+                    ...chunk,
+                    text: action.payload.append
+                      ? `${chunk.text}${action.payload.content}`
+                      : action.payload.content,
+                  }
+                : chunk,
+            )
+          : startsNewRenderablePart
+            ? [
+                ...existingResponseChunks,
+                {
+                  text: action.payload.append
+                    ? action.payload.content.replace(/^\s*\n\s*\n/, "")
+                    : action.payload.content,
+                  partID: incomingPartID,
+                  streamSeq: Date.now(),
+                },
+              ]
+            : existingResponseChunks
+        : existingResponseChunks;
       // Record the first moment non-empty content arrives so the timeline can order it correctly
       const contentStartSeq =
         state.streaming.contentStartSeq !== undefined
@@ -3359,7 +3558,9 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       if (
         content === state.streaming.content &&
         contentStartSeq === state.streaming.contentStartSeq &&
-        hasRenderableContent === state.streaming.hasRenderableContent
+        hasRenderableContent === state.streaming.hasRenderableContent &&
+        contentPartStartIndex === state.streaming.contentPartStartIndex
+        && responseChunks === state.streaming.responseChunks
       ) {
         return state;
       }
@@ -3386,7 +3587,15 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         ...state.streaming,
         content,
         contentStartSeq,
+        contentPartStartIndex,
+        responseChunks,
         hasRenderableContent,
+        // A real response-text part closes the current reasoning phase. This
+        // keeps the lightweight Thinking placeholder tied to the latest live
+        // event rather than leaving it below subsequent assistant text.
+        inReasoningPart: content.trim().length > 0 ? false : state.streaming.inReasoningPart,
+        activeReasoningPartID:
+          content.trim().length > 0 ? undefined : state.streaming.activeReasoningPartID,
         lastRenderableTextPartID:
           action.payload.renderable && action.payload.partID
             ? action.payload.partID
@@ -3418,17 +3627,30 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       ).slice(-32);
       const clearsVisiblePrelude =
         state.streaming.lastRenderableTextPartID === action.payload.partID;
+      const retainedContent = clearsVisiblePrelude
+        ? state.streaming.content.slice(0, state.streaming.contentPartStartIndex ?? 0)
+        : state.streaming.content;
+      const responseChunks = clearsVisiblePrelude
+        ? state.streaming.responseChunks?.filter(
+            (chunk) => chunk.partID !== action.payload.partID,
+          )
+        : state.streaming.responseChunks;
       const streaming = {
         ...state.streaming,
         suppressedTextPartIDs,
+        responseChunks,
         ...(clearsVisiblePrelude
           ? {
-              content: "",
-              contentStartSeq: undefined,
+              content: retainedContent,
+              contentStartSeq: retainedContent.trim().length > 0
+                ? state.streaming.contentStartSeq
+                : undefined,
+              contentPartStartIndex: undefined,
               // The loading/response-card decision consumes this flag. Reset
               // it together with content so an empty, leaked response shell
               // cannot survive after the text prelude is retracted.
-              hasRenderableContent: false,
+              hasRenderableContent: retainedContent.trim().length > 0,
+              lastRenderableTextPartID: undefined,
             }
           : {}),
       };
@@ -3446,12 +3668,22 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       if (!state.streaming) {
         return state;
       }
-      const merged = mergeStreamingReasoning(
-        state.streaming.reasoning,
-        action.payload.reasoning,
-        action.payload.append,
-        action.payload.delta,
-      );
+      // Live reasoning can arrive as hundreds of tiny deltas (and, on a
+      // mirrored SSE connection, occasionally the same sequence twice).
+      // Keep only the lightweight in-reasoning flag while a turn is active;
+      // the authoritative reasoning text is rendered from the SDK snapshot
+      // once the turn completes. This avoids retaining and re-rendering an
+      // ever-growing token buffer during streaming.
+      const suppressLiveReasoningText =
+        state.streaming.isActive === true && action.payload.append === true;
+      const merged = suppressLiveReasoningText
+        ? { reasoning: state.streaming.reasoning }
+        : mergeStreamingReasoning(
+          state.streaming.reasoning,
+          action.payload.reasoning,
+          action.payload.append,
+          action.payload.delta,
+        );
       const reasoning = merged.reasoning;
       const chunk = merged.eventChunk?.trim() ?? "";
       let reasoningEvents = state.streaming.reasoningEvents;
@@ -3521,7 +3753,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           );
         }
       }
-      if (action.payload.reasoning && logger.wouldLog('info')) {
+      if (!suppressLiveReasoningText && action.payload.reasoning && logger.wouldLog('info')) {
         logger.info('[STORE:UPDATE_STREAMING_REASONING]', {
           append: action.payload.append,
           incoming: String(action.payload.reasoning).slice(0, 200),
@@ -3539,11 +3771,20 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       const inThoughtBlock =
         action.payload.inThoughtBlock ?? state.streaming.inThoughtBlock;
       const inReasoningPart =
-        action.payload.inReasoningPart ?? state.streaming.inReasoningPart;
+        action.payload.inReasoningPart ??
+        (action.payload.reasoning.trim().length > 0
+          ? true
+          : state.streaming.inReasoningPart);
       const activeReasoningPartID =
         action.payload.inReasoningPart === false
           ? undefined
           : action.payload.partID ?? state.streaming.activeReasoningPartID;
+      const reasoningPartID = action.payload.partID?.trim();
+      const existingReasoningPartIDs = state.streaming.reasoningPartIDs ?? [];
+      const reasoningPartIDs =
+        reasoningPartID && !existingReasoningPartIDs.includes(reasoningPartID)
+          ? [...existingReasoningPartIDs, reasoningPartID].slice(-32)
+          : state.streaming.reasoningPartIDs;
       // Reasoning updates are one of the hottest paths during streaming.
       // Returning the current state on true no-op updates reduces commit pressure
       // while preserving all behavior for real reasoning/flag changes.
@@ -3552,7 +3793,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         reasoningEvents === state.streaming.reasoningEvents &&
         inThoughtBlock === state.streaming.inThoughtBlock &&
         inReasoningPart === state.streaming.inReasoningPart &&
-        activeReasoningPartID === state.streaming.activeReasoningPartID
+        activeReasoningPartID === state.streaming.activeReasoningPartID &&
+        reasoningPartIDs === state.streaming.reasoningPartIDs
       ) {
         return state;
       }
@@ -3563,6 +3805,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         inThoughtBlock,
         inReasoningPart,
         activeReasoningPartID,
+        reasoningPartIDs,
       };
       return {
         ...state,
@@ -3578,7 +3821,30 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       if (!state.streaming) {
         return state;
       }
-      const stampedStep = { ...action.payload, streamSeq: Date.now() };
+      // `Date.now()` alone is not an ordering key: several SSE events can be
+      // reduced in the same millisecond. Keep an explicit monotonically
+      // increasing arrival sequence so the activity timeline can replay the
+      // order in which live events reached this reducer.
+      const existingSequence = Math.max(
+        -1,
+        ...(Array.isArray(state.streaming.steps)
+          ? state.streaming.steps.map((step) => step.streamSeq ?? -1)
+          : []),
+        ...(Array.isArray(state.streaming.progressEvents)
+          ? state.streaming.progressEvents.map((step) => step.streamSeq ?? -1)
+          : []),
+      );
+      const nextLocalSequence = Math.max(Date.now(), existingSequence + 1);
+      const stampedStep = {
+        ...action.payload,
+        streamSeq:
+          typeof action.payload.streamSeq === "number"
+            ? action.payload.streamSeq
+            : nextLocalSequence,
+      };
+      const stepIsReasoning = /(?:reasoning|thinking|thought)/iu.test(
+        `${String(stampedStep.type ?? "")} ${String(stampedStep.partType ?? "")}`,
+      );
       const hasTerminalStepSignal =
         state.streaming.hasTerminalStepSignal ||
         stampedStep.partType === "step-finish" ||
@@ -3586,15 +3852,17 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       const streaming = {
         ...state.streaming,
         hasTerminalStepSignal,
-        steps: appendWithCap(
-          state.streaming.steps,
-          stampedStep,
-          MAX_STREAMING_STEPS,
-        ),
-        progressEvents: appendWithCap(
+        // Tool/activity steps follow reasoning in the same assistant turn.
+        // Make the visible Thinking row reflect the latest phase without
+        // retaining the high-frequency reasoning-token buffer.
+        inReasoningPart: stepIsReasoning,
+        activeReasoningPartID: stepIsReasoning
+          ? state.streaming.activeReasoningPartID
+          : undefined,
+        steps: mergeLiveActivityItemLocal(state.streaming.steps, stampedStep),
+        progressEvents: mergeLiveActivityItemLocal(
           state.streaming.progressEvents,
           { ...stampedStep },
-          MAX_STREAMING_PROGRESS_EVENTS,
         ),
       };
       return {
@@ -3634,10 +3902,9 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         ...state.streaming,
         hasTerminalStepSignal,
         steps,
-        progressEvents: appendWithCap(
+        progressEvents: mergeLiveActivityItemLocal(
           state.streaming.progressEvents,
           { ...steps[idx] },
-          MAX_STREAMING_PROGRESS_EVENTS,
         ),
       };
       return {

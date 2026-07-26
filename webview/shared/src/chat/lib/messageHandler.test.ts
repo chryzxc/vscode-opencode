@@ -1,8 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import type { AppState, Message } from './types';
 import {
   createMessageHandler,
+  extractEventMessageId,
   normalizeMessage,
   dedupeSystemMessages,
   shouldPreferCachedSwitchMessages,
@@ -20,6 +22,39 @@ import {
   getFinalAssistantResponseTextFromRawSdkEventPayloads,
 } from './rawResponse';
 import { appReducer, initialState } from './store';
+
+describe('extractEventMessageId', () => {
+  it('uses a tool part messageID instead of its evt transport-frame ID', () => {
+    assert.equal(
+      extractEventMessageId({
+        id: 'evt_transport_frame',
+        type: 'message.part.updated',
+        properties: {
+          part: {
+            id: 'prt_tool_1',
+            messageID: 'msg_assistant_1',
+            type: 'tool',
+          },
+        },
+      }),
+      'msg_assistant_1',
+    );
+  });
+
+  it('does not treat an evt transport-frame ID as an assistant message ID', () => {
+    assert.equal(
+      extractEventMessageId({ id: 'evt_transport_frame', type: 'message.part.updated' }),
+      null,
+    );
+  });
+
+  it('does not treat a session envelope ID as an assistant message ID', () => {
+    assert.equal(
+      extractEventMessageId({ id: 'ses_stream_session', type: 'session.updated' }),
+      null,
+    );
+  });
+});
 
 describe('normalizeMessage - responseType handling', () => {
   it('ignores undefined interactive events from an untrusted payload', () => {
@@ -319,6 +354,93 @@ describe('createMessageHandler - terminal turn identity', () => {
       'the populated response phase must be materialized before the live stream is re-keyed',
     );
   });
+
+  it('re-keys a roleless assistant phase instead of leaving later parts on the prior turn', () => {
+    let state = {
+      ...initialState,
+      currentSessionId: 'ses-roleless-phase',
+      isProcessing: true,
+      assistantTurnPending: true,
+      assistantTurnMessageId: 'msg-phase-1',
+      streaming: {
+        messageId: 'msg-phase-1',
+        content: '',
+        hasRenderableContent: true,
+        reasoning: '',
+        reasoningEvents: [],
+        steps: [],
+        progressEvents: [],
+        edits: [],
+        isActive: false,
+      },
+    } as AppState;
+    const dispatch = (action: Parameters<typeof appReducer>[1]) => {
+      state = appReducer(state, action);
+    };
+    const handler = createMessageHandler(dispatch, () => state);
+
+    handler({
+      data: {
+        type: 'streamEvent',
+        sessionId: 'ses-roleless-phase',
+        event: {
+          type: 'message.updated',
+          properties: { info: { id: 'msg-phase-2' } },
+        },
+      },
+    } as MessageEvent);
+
+    assert.equal(state.streaming?.messageId, 'msg-phase-2');
+    assert.equal(state.streaming?.isActive, true);
+  });
+
+  it('recovers an activity part that arrives before the assistant-phase rekey commits', () => {
+    let state = {
+      ...initialState,
+      currentSessionId: 'ses-phase-part-rekey',
+      isProcessing: true,
+      assistantTurnPending: true,
+      assistantTurnMessageId: 'msg-phase-2',
+      streaming: {
+        messageId: 'msg-phase-1',
+        content: '',
+        hasRenderableContent: false,
+        reasoning: '',
+        reasoningEvents: [],
+        steps: [],
+        progressEvents: [],
+        edits: [],
+        isActive: false,
+      },
+    } as AppState;
+    const dispatch = (action: Parameters<typeof appReducer>[1]) => {
+      state = appReducer(state, action);
+    };
+    const handler = createMessageHandler(dispatch, () => state);
+
+    handler({
+      data: {
+        type: 'streamEvent',
+        sessionId: 'ses-phase-part-rekey',
+        event: {
+          type: 'message.part.updated',
+          properties: {
+            part: {
+              id: 'prt-phase-2-step',
+              messageID: 'msg-phase-2',
+              sessionID: 'ses-phase-part-rekey',
+              type: 'step-start',
+              title: 'Reading files',
+            },
+          },
+        },
+      },
+    } as MessageEvent);
+
+    assert.equal(state.streaming?.messageId, 'msg-phase-2');
+    assert.equal(state.streaming?.isActive, true);
+    assert.equal(state.streaming?.steps.length, 1);
+  });
 });
 
 describe('createMessageHandler - chatHistory hydration guards', () => {
@@ -575,6 +697,120 @@ describe('createMessageHandler - SDK context usage', () => {
 });
 
 describe('createMessageHandler - live tool activity identity', () => {
+  it('renders a completed assistant text part from the global stream before hydration', () => {
+    let state: AppState = {
+      ...initialState,
+      currentSessionId: 'ses-live-text',
+      isProcessing: true,
+      assistantTurnPending: true,
+      assistantTurnMessageId: 'msg-live-text',
+      streaming: {
+        messageId: 'msg-live-text',
+        content: '',
+        reasoning: '',
+        reasoningEvents: [],
+        steps: [],
+        progressEvents: [],
+        edits: [],
+        isActive: true,
+      },
+    } as AppState;
+    const dispatch = (action: Parameters<typeof appReducer>[1]) => {
+      state = appReducer(state, action);
+    };
+    const handler = createMessageHandler(dispatch, () => state);
+
+    handler({
+      data: {
+        type: 'streamEvent',
+        sessionId: 'ses-live-text',
+        event: {
+          id: 'evt-live-completed-text',
+          type: 'message.part.updated',
+          properties: {
+            sessionID: 'ses-live-text',
+            part: {
+              id: 'prt-live-text',
+              messageID: 'msg-live-text',
+              sessionID: 'ses-live-text',
+              type: 'text',
+              text: 'Good question. Let me investigate the current data fetching architecture.',
+              time: { start: 1, end: 2 },
+            },
+          },
+        },
+      },
+    } as MessageEvent);
+
+    assert.equal(
+      state.streaming?.content,
+      'Good question. Let me investigate the current data fetching architecture.',
+    );
+    assert.equal(state.streaming?.hasRenderableContent, true);
+  });
+
+  it('keeps the live response while OpenCode advances to another assistant envelope in the same turn', () => {
+    let state: AppState = {
+      ...initialState,
+      currentSessionId: 'ses-phase-text',
+      isProcessing: true,
+      assistantTurnPending: true,
+      assistantTurnMessageId: 'msg-phase-one',
+      streaming: {
+        messageId: 'msg-phase-one',
+        content: 'First visible response. ',
+        hasRenderableContent: true,
+        reasoning: '',
+        reasoningEvents: [],
+        steps: [],
+        progressEvents: [],
+        edits: [],
+        isActive: true,
+      },
+    } as AppState;
+    const dispatch = (action: Parameters<typeof appReducer>[1]) => {
+      state = appReducer(state, action);
+    };
+    const handler = createMessageHandler(dispatch, () => state);
+
+    handler({
+      data: {
+        type: 'streamEvent',
+        sessionId: 'ses-phase-text',
+        event: {
+          type: 'message.updated',
+          properties: {
+            info: { id: 'msg-phase-two', role: 'assistant', parentID: 'msg-user-turn' },
+          },
+        },
+      },
+    } as MessageEvent);
+    handler({
+      data: {
+        type: 'streamEvent',
+        sessionId: 'ses-phase-text',
+        event: {
+          type: 'message.part.updated',
+          properties: {
+            part: {
+              id: 'prt-phase-two-text',
+              messageID: 'msg-phase-two',
+              type: 'text',
+              text: 'Second visible response.',
+            },
+          },
+        },
+      },
+    } as MessageEvent);
+
+    assert.equal(state.streaming?.messageId, 'msg-phase-two');
+    assert.equal(
+      state.streaming?.content,
+      'First visible response. Second visible response.',
+    );
+    assert.equal(state.streaming?.hasRenderableContent, true);
+  });
+
   it('keeps tool snapshots with distinct wrapper event ids on their assistant message', () => {
     let state: AppState = {
       ...initialState,
@@ -934,7 +1170,7 @@ describe('createMessageHandler - adapted live text deltas', () => {
     assert.strictEqual(state.streaming?.hasRenderableContent, true);
   });
 
-  it('retracts a text prelude when the same assistant turn starts a tool', () => {
+  it('keeps normal assistant text visible when the same assistant turn starts a tool', () => {
     let state: AppState = {
       ...initialState,
       currentSessionId: 'ses-tool-prelude',
@@ -993,8 +1229,8 @@ describe('createMessageHandler - adapted live text deltas', () => {
         },
       },
     } as never);
-    assert.strictEqual(state.streaming?.content, '');
-    assert.strictEqual(state.streaming?.hasRenderableContent, false);
+    assert.strictEqual(state.streaming?.content, 'Now');
+    assert.strictEqual(state.streaming?.hasRenderableContent, true);
 
     handler({
       data: {
@@ -1015,10 +1251,65 @@ describe('createMessageHandler - adapted live text deltas', () => {
         },
       },
     } as never);
-    assert.strictEqual(state.streaming?.content, '');
+    assert.strictEqual(state.streaming?.content, 'Now let me inspect the files.');
   });
 
-  it('locks tool-prelude suppression across a batched lifecycle without hiding the later answer', () => {
+  it('does not suppress a direct-event text part merely because a tool follows it', () => {
+    const state: AppState = {
+      ...initialState,
+      currentSessionId: 'ses-stale-tool-prelude',
+      isProcessing: true,
+    };
+    const queuedActions: Parameters<typeof appReducer>[1][] = [];
+    // Individual native messages can arrive in the same JS turn. Model
+    // useReducer's deferred commit: the tool must still identify the prior
+    // text part even though getState has not observed it yet.
+    const dispatch = (action: Parameters<typeof appReducer>[1]) => {
+      queuedActions.push(action);
+    };
+    const handler = createMessageHandler(dispatch, () => state);
+    const messageID = 'msg-stale-tool-prelude';
+    const preludePartID = 'prt-stale-tool-prelude';
+    const streamEvent = (part: Record<string, unknown>, extras: Record<string, unknown> = {}) => ({
+      data: {
+        type: 'streamEvent',
+        sessionId: 'ses-stale-tool-prelude',
+        event: {
+          type: 'message.part.updated',
+          properties: {
+            sessionID: 'ses-stale-tool-prelude',
+            messageID,
+            partID: part.id,
+            part,
+            ...extras,
+          },
+        },
+      },
+    });
+
+    handler(streamEvent({
+      id: preludePartID,
+      type: 'text',
+      messageID,
+      text: 'Same',
+      delta: 'Same',
+    }, { field: 'text', delta: 'Same' }) as never);
+    handler(streamEvent({
+      id: 'prt-stale-tool-call',
+      type: 'tool',
+      tool: 'bash',
+      callID: 'call-stale-tool-prelude',
+      messageID,
+      state: { status: 'pending', input: {} },
+    }) as never);
+
+    assert.ok(!queuedActions.some((action) =>
+      action.type === 'SUPPRESS_STREAMING_TEXT_PART' &&
+      action.payload.partID === preludePartID,
+    ));
+  });
+
+  it('keeps normal text renderable across a batched tool lifecycle', () => {
     let state: AppState = {
       ...initialState,
       currentSessionId: 'ses-batched-tool-prelude',
@@ -1066,8 +1357,8 @@ describe('createMessageHandler - adapted live text deltas', () => {
             messageID,
             state: { status: 'pending', input: {} },
           }),
-          // The server's completed snapshot is still the prelude part. It
-          // must not recreate the response card after its tool transition.
+          // The server can repeat the same text part after tool activity.
+          // It remains valid assistant text and must stay visible.
           event({
             id: preludePartID,
             type: 'text',
@@ -1093,7 +1384,7 @@ describe('createMessageHandler - adapted live text deltas', () => {
       },
     } as never);
 
-    assert.deepEqual(state.streaming?.suppressedTextPartIDs, [preludePartID]);
+    assert.deepEqual(state.streaming?.suppressedTextPartIDs ?? [], []);
     assert.strictEqual(
       state.streaming?.content,
       'The login flow is connected end to end.',
@@ -1694,6 +1985,75 @@ describe('normalizeMessage - structuredOutput handling', () => {
       getFinalAssistantResponseTextFromRawSdkEventPayloads(rawSdkEventPayloads),
       '',
       'reasoning or step-finish text should not be promoted into the assistant response body',
+    );
+  });
+
+  it('does not promote delta-bearing text parts into the assistant response body', () => {
+    const rawSdkEventPayloads = [
+      {
+        type: 'message.part.updated',
+        properties: {
+          sessionID: 'ses-test',
+          messageID: 'msg-delta-only',
+          partID: 'prt-delta-only',
+          field: 'text',
+          delta: 'investigate',
+          part: {
+            id: 'prt-delta-only',
+            sessionID: 'ses-test',
+            messageID: 'msg-delta-only',
+            type: 'text',
+            text: 'investigate',
+            delta: 'investigate',
+          },
+        },
+      },
+      {
+        type: 'message.part.updated',
+        properties: {
+          sessionID: 'ses-test',
+          messageID: 'msg-delta-only',
+          partID: 'prt-delta-only',
+          field: 'text',
+          delta: 'setup',
+          part: {
+            id: 'prt-delta-only',
+            sessionID: 'ses-test',
+            messageID: 'msg-delta-only',
+            type: 'text',
+            text: 'setup',
+            delta: 'setup',
+          },
+        },
+      },
+    ];
+
+    assert.deepStrictEqual(
+      getCentralizedAssistantContentChunksFromRawSdkEventPayloads(rawSdkEventPayloads),
+      [],
+    );
+  });
+
+  it('routes a text-field delta through reasoning until its non-delta text snapshot arrives', () => {
+    const source = readFileSync(
+      new URL('./messageHandler.ts', import.meta.url),
+      'utf8',
+    );
+
+    assert.match(
+      source,
+      /const isReasoning =[\s\S]*?isRawDeltaTextField/s,
+      'text-field deltas must enter the reasoning lane',
+    );
+    assert.match(
+      source,
+      /const isDeltaForActiveReasoningPart = Boolean\([\s\S]*?rawUpdatedDelta\.trim\(\)\.length > 0/s,
+      'a non-delta snapshot must be allowed to leave the active reasoning lane',
+    );
+    assert.match(
+      source,
+      /if \(isReasoning && reasoningPartID && !isRawDeltaTextField\)/,
+      'a generic text delta must not suppress the later non-delta response snapshot for its part',
     );
   });
 

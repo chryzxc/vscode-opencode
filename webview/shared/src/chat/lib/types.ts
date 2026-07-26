@@ -249,6 +249,13 @@ export interface ReasoningEvent {
   delta?: boolean;
 }
 
+/** One user-visible assistant text part in a live OpenCode turn. */
+export interface StreamingResponseChunk {
+  text: string;
+  partID?: string;
+  streamSeq: number;
+}
+
 export interface StreamingState {
   messageId: string | null;
   content: string;
@@ -266,6 +273,10 @@ export interface StreamingState {
   usage?: { total: number; duration?: number };
   /** Date.now() timestamp recorded when the first non-empty content chunk arrives. */
   contentStartSeq?: number;
+  /** Character offset where the latest renderable text part begins. */
+  contentPartStartIndex?: number;
+  /** Separate renderable text parts; never collapse distinct SDK part IDs. */
+  responseChunks?: StreamingResponseChunk[];
   /** Metadata about the model/agent being used for this streaming response */
   agent?: string;
   model?: { modelID: string; providerID: string; name?: string };
@@ -332,6 +343,13 @@ export interface StreamingState {
   inReasoningPart?: boolean;
   /** SDK part currently owning text deltas while reasoning is active. */
   activeReasoningPartID?: string;
+  /**
+   * Bounded structural ownership for reasoning parts in the current live turn.
+   * Some SDKs introduce a reasoning part, then send its token frames as
+   * `type: "text"`. This survives a message-handler recreation so those
+   * frames cannot become assistant-card content.
+   */
+  reasoningPartIDs?: string[];
   /**
    * STREAMING INVARIANT — tool-prelude text must never remain in the response
    * card. A provider can emit a `text` delta immediately before a `tool` part

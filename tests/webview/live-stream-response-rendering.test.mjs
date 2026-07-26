@@ -15,6 +15,10 @@ const handlerSource = readSource(
   [joinFromRoot("webview", "shared", "src", "chat", "lib", "messageHandler.ts")],
   "messageHandler.ts",
 );
+const storeSource = readSource(
+  [joinFromRoot("webview", "shared", "src", "chat", "lib", "store.ts")],
+  "store.ts",
+);
 const streamingCardSource = readSource(
   [joinFromRoot("webview", "shared", "src", "chat", "lib", "streamingCardVisibility.ts")],
   "streaming card visibility",
@@ -28,18 +32,61 @@ test("renderable stream text paints immediately and centralized transcript takes
   );
   assert.match(
     streamingCardSource,
-    /hasTranscriptAssistantForCurrentTurn && !streaming\.isActive/,
-    "an assistant transcript placeholder must not hide the active live stream",
+    /hasMatchingAssistantTurnInTranscript && !streaming\.isActive/,
+    "only the matching transcript turn may hide a completed live stream",
   );
   assert.match(
     shellSource,
     /hasLiveAssistantTurn[\s\S]*?!isAiResponseBlockFinished/,
     "the loading ticker must stay visible throughout the live assistant turn alongside Stop, regardless of streaming content arrival",
   );
+  assert.match(
+    shellSource,
+    /const showExtendedLoading\s*=\s*!state\.isCompacting\s*&&\s*\(hasLiveAssistantTurn \|\| showAiResponseLoading\);/,
+    "the ticker must remain hidden while compaction owns the live-response surface",
+  );
   assert.doesNotMatch(
     shellSource,
     /hasRenderableStreamingContent/,
     "stream content must not gate the loading ticker — hasRenderableStreamingContent was removed in favor of hasLiveAssistantTurn",
+  );
+});
+
+test("active compaction owns the live-response surface without stopping stream processing", () => {
+  assert.match(
+    shellSource,
+    /\{!state\.isCompacting \? \(/,
+    "the live activity card must not render while compaction is in progress",
+  );
+  assert.match(
+    shellSource,
+    /suppressLiveAssistantPresentation=\{state\.isCompacting\}/,
+    "an assistant block already created by the live stream must receive the same compaction gate",
+  );
+  assert.match(
+    shellSource,
+    /const isSuppressedLiveBlock\s*=\s*suppressLiveAssistantPresentation[\s\S]*?messageNode = isSuppressedLiveBlock \? null/s,
+    "compaction must hide the in-transcript live assistant block, not just the separate streaming card",
+  );
+  assert.match(
+    shellSource,
+    /state\.isCompacting \? <CompactionInProgressNotice \/> : null/,
+    "compaction must present a dedicated, visible maintenance status",
+  );
+  assert.match(
+    shellSource,
+    /function CompactionInProgressNotice\(\)[\s\S]*?role="status"[\s\S]*?Live activity resumes automatically\./,
+    "the maintenance state should explain the temporary timeline pause accessibly",
+  );
+  assert.match(
+    shellSource,
+    /suppressLiveAssistantPresentation=\{state\.isCompacting\}/,
+    "the transcript must receive the same compaction presentation gate",
+  );
+  assert.match(
+    shellSource,
+    /const isSuppressedLiveBlock\s*=\s*suppressLiveAssistantPresentation[\s\S]*?messageNode = isSuppressedLiveBlock \? null/s,
+    "a live assistant response already represented in the transcript must also stay hidden during compaction",
   );
 });
 
@@ -65,8 +112,34 @@ test("raw text delta envelopes update the live response before final hydration",
   );
   assert.match(
     handlerSource,
-    /!isRawDeltaTextField[\s\S]*?!isRawDeltaReasoningField[\s\S]*?isDeltaOnlyUpdatedTextSnapshot/,
-    "adapted text deltas must not be misclassified as reasoning snapshots",
+    /const isDeltaForKnownReasoningPart =[\s\S]*?const isDeltaForActiveReasoningPart =[\s\S]*?const isReasoning =/,
+    "reasoning routing must use the typed part or established part identity, not the shape of ordinary text token snapshots",
+  );
+});
+
+test("a text-labeled delta stays in reasoning when its SDK part was already typed as reasoning", () => {
+  assert.match(
+    handlerSource,
+    /knownReasoningPartIDs\?\.has\(reasoningPartID\)[\s\S]*?currentStreamingState\?\.reasoningPartIDs\?\.includes\(reasoningPartID\)/s,
+    "reasoning ownership must be retained on StreamingState instead of relying only on one handler instance",
+  );
+  assert.match(
+    handlerSource,
+    /case 'contentDelta':[\s\S]*?const isKnownReasoningPart = Boolean\([\s\S]*?streamingState\?\.reasoningPartIDs\?\.includes\(reasoningPartID\)[\s\S]*?isKnownReasoningPart/s,
+    "legacy contentDelta envelopes must also respect established reasoning part ownership",
+  );
+  assert.match(
+    storeSource,
+    /existingReasoningPartIDs[\s\S]*?reasoningPartIDs[\s\S]*?\.slice\(-32\)/s,
+    "the retained reasoning IDs must be bounded for a long live stream",
+  );
+});
+
+test("assistant phase changes retain the already visible live response", () => {
+  assert.match(
+    handlerSource,
+    /if \(shouldStartFreshAssistantTurn\) \{[\s\S]*?\.\.\.currentStreamingSnapshot,[\s\S]*?messageId,[\s\S]*?isActive: true,/s,
+    "a later SDK assistant envelope must retain the active response snapshot instead of blanking it",
   );
 });
 
@@ -106,6 +179,19 @@ test("sync-wrapped assistant parts can bootstrap the live response", () => {
   );
 });
 
+test("stable live SDK events use the same activity projection source as hydration", () => {
+  assert.match(
+    handlerSource,
+    /getCentralizedDebugPayloadDisposition\(payload\) === "persist"[\s\S]*?type: "APPEND_SDK_EVENT_PAYLOAD"/s,
+    "every stable accepted SDK event must enter the active live tape so new activity part types render before rehydration",
+  );
+  assert.match(
+    storeSource,
+    /next\.length > 200 \? next\.slice\(next\.length - 200\) : next/s,
+    "the bounded live tape must roll forward rather than stop accepting later activity events",
+  );
+});
+
 test("continuous stream batches remain urgent enough to paint", () => {
   assert.match(handlerSource, /case "streamEventBatch":[\s\S]*?processBatchEvents\(\);/);
   assert.doesNotMatch(
@@ -125,5 +211,39 @@ test("an active transcript placeholder does not suppress live event rendering", 
     streamingCardSource,
     /hasMatchingAssistantTurnInTranscript\s*&&\s*!streaming\.isActive/,
     "matching transcript IDs may suppress the live card only after streaming completes",
+  );
+});
+
+test("a terminal assistant block stays locked despite late streaming events", () => {
+  assert.match(
+    shellSource,
+    /const hasNewLiveTurnBeforeAssistantIdentity\s*=[\s\S]*?Boolean\(state\.streaming\?\.isActive\)[\s\S]*?state\.assistantTurnPending[\s\S]*?visiblePendingUserMessages\.length > 0;/s,
+    "a newly active turn must unlock the previous assistant block before its message identity arrives",
+  );
+  assert.match(
+    shellSource,
+    /hasTerminalAssistantBlock[\s\S]*?!hasStartedNewAssistantTurn[\s\S]*?!hasNewLiveTurnBeforeAssistantIdentity/s,
+    "a completed assistant block remains terminal unless a distinct current turn is active",
+  );
+});
+
+test("stream admission reconstructs the terminal lock from hydrated assistant history", () => {
+  assert.match(
+    handlerSource,
+    /const hasRenderedTerminalAssistantBlock = \(state: AppState\): boolean => \{[\s\S]*?finish === "stop"/s,
+    "a completed SDK message must provide a terminal latch even after handler recreation",
+  );
+  assert.match(
+    handlerSource,
+    /isActiveSessionTerminalTranscript[\s\S]*?rejected-terminal-transcript[\s\S]*?FINISH_STREAMING/s,
+    "late events after a completed response must be rejected before they can reactivate loading",
+  );
+});
+
+test("the message-less streaming card rerenders for each active SSE update", () => {
+  assert.match(
+    messageSource,
+    /const prevWasStreaming = prevProps\.message[\s\S]*?Boolean\(prevProps\.streaming\?\.isActive\)[\s\S]*?const nextIsStreaming = nextProps\.message[\s\S]*?Boolean\(nextProps\.streaming\?\.isActive\)/,
+    "React.memo must recognize the dedicated message-less streaming card as live",
   );
 });

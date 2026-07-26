@@ -1,4 +1,4 @@
-# OpenCode Workbench — VS Code UI
+# OpenCode — VS Code UI
 
 [![VS Code Marketplace installs](https://img.shields.io/visual-studio-marketplace/i/chryzxc.opencode-vscode-chryzxc?label=VS%20Code%20installs)](https://marketplace.visualstudio.com/items?itemName=chryzxc.opencode-vscode-chryzxc)
 [![VS Code Marketplace rating](https://img.shields.io/visual-studio-marketplace/r/chryzxc.opencode-vscode-chryzxc)](https://marketplace.visualstudio.com/items?itemName=chryzxc.opencode-vscode-chryzxc&ssr=false#review-details)
@@ -6,7 +6,7 @@
 
 An independent VS Code client for the OpenCode coding agent, powered by [`@opencode-ai/sdk`](https://www.npmjs.com/package/@opencode-ai/sdk). Chat with your codebase, build implementation plans, track subagents, review changes, and monitor model quotas without leaving the editor.
 
-![OpenCode Workbench conversation view](./assets/conversation-1.png)
+![OpenCode conversation view](./assets/conversation-1.png)
 
 - Review implementation plans with annotations before execution
 - Follow live subagent activity, tool calls, todos, and session progress

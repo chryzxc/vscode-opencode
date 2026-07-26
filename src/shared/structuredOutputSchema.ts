@@ -126,7 +126,7 @@ export const structuredOutputSchema: StructuredOutputSchema = {
         additionalProperties: false,
         properties: {
           title: { type: "string", description: "Walkthrough title" },
-          file: { type: "string", description: "Markdown filepath for the walkthrough artifact." },
+          file: { type: "string", description: "Markdown filepath for the walkthrough artifact. Use a workspace-relative path, preferably .opencode/artifacts/walkthroughs/<descriptive-name>-walkthrough.md. Never use /tmp, /var/folders, a system temp directory, or another path outside the workspace." },
           content: { type: "string", minLength: 1, description: "Markdown artifact generated from the ordered steps. Use this exact shape: ## Summary, then ## Walkthrough with a numbered entry for every walkthrough.steps item. Each entry states what happened, the evidence or files involved when relevant, and its outcome. End with ## Verification and ## Limitations. Do not repeat the title as an H1, copy text or plan.content, or describe future work as completed." },
           summary: { type: "string", minLength: 1, description: "Concise retrospective outcome describing what was actually completed, distinct from the assistant response and plan summary." },
           steps: {

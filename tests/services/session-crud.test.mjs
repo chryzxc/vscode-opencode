@@ -31,7 +31,7 @@ test('session service implements SDK-authoritative core CRUD operations', () => 
   const getCurrentBody = extractFunctionBody(sessionServiceSource, 'async getCurrentSession(): Promise<Session>');
   assert.match(getCurrentBody, /if\s*\(this\.currentSession\)\s*\{[\s\S]*return\s+this\.currentSession;/, 'getCurrentSession should return existing active session when available');
   assert.match(getCurrentBody, /client\.session\.list\(\)/, 'startup selection must query the OpenCode SDK');
-  assert.match(getCurrentBody, /const newestSdkSession = normalized\[0\];/, 'startup should select an existing SDK session first');
+  assert.match(getCurrentBody, /const newestSdkSession = topLevelSessionsForChat\(normalized\)\[0\];/, 'startup should select the newest session visible in the session picker, never a child/subagent session');
   assert.match(getCurrentBody, /return\s+this\.createNewSession\(\);/, 'a new session may be created only after a successful empty SDK list');
   assert.doesNotMatch(getCurrentBody, /catch[\s\S]*?createNewSession/, 'an SDK list failure must not create a replacement session');
 

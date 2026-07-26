@@ -82,6 +82,7 @@ export type ServerStatus = "idle" | "starting" | "running" | "error";
 const SERVER_OUTPUT_LOG_BUDGET_CHARS = 16_384;
 const SERVER_OUTPUT_RECENT_BUFFER_CHARS = 8_192;
 const MANAGED_PORT_STATE_KEY = "opencode.server.lastManagedPort";
+const MANAGED_SERVER_PID_STATE_KEY = "opencode.server.lastManagedPid";
 const LOOPBACK_HOST = "127.0.0.1";
 const NON_FATAL_SERVER_STDERR_PATTERNS = [
   /MaxListenersExceededWarning/i,
@@ -216,6 +217,7 @@ export class OpencodeServerManager {
       log.info("Stopping OpenCode server");
       this.terminateProcessTree(this.serverProcess);
       this.serverProcess = null;
+      void this.persistManagedServerPid(undefined);
     }
 
     this.client = null;
@@ -378,6 +380,103 @@ export class OpencodeServerManager {
         error,
       });
     }
+  }
+
+  /**
+   * A dynamic port alone cannot identify the server process after an extension
+   * host reload. Persist the PID too, so the next host can retire only the
+   * server this extension launched instead of accumulating one per reload.
+   */
+  private getPersistedManagedServerPid(): number | undefined {
+    const pid = this.context.globalState.get<number>(
+      MANAGED_SERVER_PID_STATE_KEY,
+    );
+    return typeof pid === "number" && Number.isInteger(pid) && pid > 0
+      ? pid
+      : undefined;
+  }
+
+  private async persistManagedServerPid(pid: number | undefined): Promise<void> {
+    try {
+      await this.context.globalState.update(MANAGED_SERVER_PID_STATE_KEY, pid);
+    } catch (error) {
+      log.debug("Failed to persist managed server PID", { pid, error });
+    }
+  }
+
+  private isManagedOpencodeServerProcess(pid: number): boolean {
+    if (process.platform === "win32") {
+      // The PID was written by this extension. Windows uses taskkill for the
+      // actual termination below, where command-line inspection is not
+      // consistently available without a shell-specific command.
+      return true;
+    }
+
+    try {
+      const command = cp.execFileSync("ps", ["-p", String(pid), "-o", "command="], {
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+      return /(?:^|\/)opencode(?:\s|$).*\sserve(?:\s|$)/.test(command);
+    } catch {
+      return false;
+    }
+  }
+
+  private findManagedServerPidByPort(port: number): number | undefined {
+    if (process.platform === "win32" || port <= 0) {
+      return undefined;
+    }
+
+    try {
+      const output = cp.execFileSync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"], {
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      const pid = Number.parseInt(output.trim().split(/\s+/)[0] ?? "", 10);
+      return Number.isInteger(pid) && pid > 0 && this.isManagedOpencodeServerProcess(pid)
+        ? pid
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async retirePersistedManagedServer(): Promise<void> {
+    const pid = this.getPersistedManagedServerPid()
+      ?? this.findManagedServerPidByPort(this.getPersistedManagedPort());
+    if (!pid || this.serverProcess?.pid === pid) {
+      return;
+    }
+
+    if (!this.isManagedOpencodeServerProcess(pid)) {
+      // It either exited already or its PID was reused by another process.
+      await this.persistManagedServerPid(undefined);
+      return;
+    }
+
+    log.info("Retiring server left by a previous extension host", { pid });
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch (error) {
+      log.warn("Failed to terminate previous managed server", { pid, error });
+      return;
+    }
+
+    // A stubborn, verified managed server must not coexist with its
+    // replacement, otherwise every reload leaks another server.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    if (this.isManagedOpencodeServerProcess(pid)) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch (error) {
+        log.warn("Failed to force-stop previous managed server", { pid, error });
+        return;
+      }
+    }
+
+    await this.persistManagedServerPid(undefined);
+    await this.persistManagedPort(0);
   }
 
   private terminateProcessTree(serverProcess: cp.ChildProcess): void {
@@ -564,6 +663,11 @@ export class OpencodeServerManager {
         });
       }
     }
+
+    // This server was launched by a previous extension host. Retire it before
+    // considering its dynamic port, otherwise the new host cannot own its
+    // lifecycle and reloads accumulate servers indefinitely.
+    await this.retirePersistedManagedServer();
 
     // If previous extension host instance crashed, reconnect to the
     // previously managed dynamic port before spawning another server.
@@ -782,6 +886,7 @@ export class OpencodeServerManager {
         spawnOptions,
       );
       this.serverProcess = spawnedProcess;
+      void this.persistManagedServerPid(spawnedProcess.pid);
 
       // Step 5: Monitor stdout for server ready indicator
       // The server prints "Server running" or "listening" when ready
@@ -1244,6 +1349,7 @@ export class OpencodeServerManager {
       log.info("Stopping OpenCode server");
       this.terminateProcessTree(this.serverProcess);
       this.serverProcess = null;
+      void this.persistManagedServerPid(undefined);
     }
 
     // Clear client reference and reset status

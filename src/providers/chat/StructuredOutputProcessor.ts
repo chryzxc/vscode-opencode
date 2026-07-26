@@ -8,6 +8,7 @@
  */
 
 import * as vscode from "vscode";
+import * as path from "path";
 import type { OutputFormatJsonSchema } from "@opencode-ai/sdk/v2";
 import type {
   StructuredAssistantOutput,
@@ -49,6 +50,36 @@ export class StructuredOutputProcessor {
     preferredPath?: string,
   ): Promise<string | undefined> {
     return this.planManager.persistPlan(content, preferredPath);
+  }
+
+  /** Keep model-provided walkthrough artifacts inside the active workspace. */
+  private normalizeWalkthroughFile(file: string, title?: string): string {
+    const trimmed = file.trim();
+    if (!path.isAbsolute(trimmed)) {
+      return trimmed;
+    }
+
+    const workspace = vscode.workspace.workspaceFolders?.find(
+      (folder) => folder.uri.scheme === "file" &&
+        (trimmed === folder.uri.fsPath || trimmed.startsWith(`${folder.uri.fsPath}${path.sep}`)),
+    );
+    if (workspace) {
+      return path.relative(workspace.uri.fsPath, trimmed).replace(/\\/g, "/");
+    }
+
+    const basename = path.basename(trimmed).replace(/[^a-zA-Z0-9._-]/g, "-");
+    const titleSlug = (title || "walkthrough")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "walkthrough";
+    const filename = basename.endsWith(".md")
+      ? basename
+      : `${titleSlug}-walkthrough.md`;
+    this.logger.warn("Remapped walkthrough artifact outside the workspace", {
+      originalFile: trimmed,
+      remappedFile: `.opencode/artifacts/walkthroughs/${filename}`,
+    });
+    return `.opencode/artifacts/walkthroughs/${filename}`;
   }
 
   /**
@@ -1814,16 +1845,29 @@ export class StructuredOutputProcessor {
       if (structuredWalkthrough) {
         const walkthroughFile = this.firstNonEmptyString(structuredWalkthrough.file);
         const walkthroughContent = this.firstNonEmptyString(structuredWalkthrough.content);
-        if (walkthroughFile && walkthroughContent) {
+        const normalizedWalkthroughFile = walkthroughFile
+          ? this.normalizeWalkthroughFile(
+              walkthroughFile,
+              this.firstNonEmptyString(structuredWalkthrough.title),
+            )
+          : undefined;
+        const normalizedWalkthrough = normalizedWalkthroughFile
+          ? { ...structuredWalkthrough, file: normalizedWalkthroughFile }
+          : structuredWalkthrough;
+        if (normalizedWalkthroughFile && walkthroughContent) {
           try {
-            await this.persistPlan(walkthroughContent, walkthroughFile);
+            await this.persistPlan(walkthroughContent, normalizedWalkthroughFile);
           } catch (err) {
             this.logger.error("Failed to persist structured walkthrough", {}, err as Error);
           }
         }
         message = {
           ...message,
-          walkthrough: structured.walkthrough,
+          walkthrough: normalizedWalkthrough,
+          structuredOutput: {
+            ...structured,
+            walkthrough: normalizedWalkthrough,
+          },
         };
       }
       const structuredPlanRecord = this.asRecord(structured.plan);

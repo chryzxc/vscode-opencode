@@ -281,6 +281,20 @@ test('send flow keeps structured-output and direct-send branches intact', () => 
   assert.doesNotMatch(body, /describe\(/, 'handleSendMessage should remain source-introspection only, not a runtime test');
 });
 
+test('opaque prompt-endpoint errors defer to the detailed session.error stream event', () => {
+  const body = extractFunctionBody(source, '  private async handleSendMessage(');
+  assert.match(
+    source,
+    /private isOpaqueServerErrorFallback\(message: string\): boolean[\s\S]*?unexpected server error[\s\S]*?check server logs for details/s,
+    'provider should recognize the non-actionable prompt endpoint fallback',
+  );
+  assert.match(
+    body,
+    /if \(this\.isOpaqueServerErrorFallback\(userFacingErrorMessage\)\)[\s\S]*?awaiting detailed session\.error stream event[\s\S]*?return;/s,
+    'generic fallback must not preempt the actionable SDK session.error card',
+  );
+});
+
 test('file context URLs use absoluteUri.toString() for valid file URLs', () => {
   // Verify that file contexts use proper absolute file URLs instead of invalid template literals
   assert.match(source, /url: absoluteUri\.toString\(\)/, 'file context URLs should use absoluteUri.toString() for valid file URLs');

@@ -2,6 +2,7 @@ import * as React from "react"
 import { Copy } from "lucide-react"
 import { cn } from "../../utils"
 import logger from "../../chat/lib/logger"
+import { copyToClipboard } from "../../chat/lib/clipboard"
 
 export interface BashPreviewProps {
   command: string
@@ -34,7 +35,7 @@ export const BashPreview = React.forwardRef<
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation()
     try {
-      await navigator.clipboard.writeText(command)
+      await copyToClipboard(command)
       setCopied(true)
     } catch (error) {
       logger.error('[BashPreview] Failed to copy command to clipboard', {

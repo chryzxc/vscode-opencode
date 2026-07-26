@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState, forwardRef, memo } from 'r
 import { marked } from 'marked';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/github-dark.css'; // Default base, we'll custom style it further
-import vscode from '../chat/lib/vscode';
+import { copyToClipboard } from '../chat/lib/clipboard';
 import {
   cleanFileIconKey,
   getFileIconFallbackKind,
@@ -102,13 +102,7 @@ function makeCopySvg(): string {
 
 async function copyMarkdownCode(text: string): Promise<void> {
   if (!text) return;
-
-  try {
-    await navigator.clipboard.writeText(text);
-    return;
-  } catch {
-    vscode.postMessage({ type: 'copyToClipboard', text });
-  }
+  await copyToClipboard(text);
 }
 
 /**
@@ -380,25 +374,27 @@ function injectCodeBlockCopyButtons(container: HTMLElement): void {
     button.title = 'Copy code';
     button.innerHTML = `${makeCopySvg()}<span class="markdown-copy-button-label">Copy</span>`;
 
-    button.addEventListener('click', async (event) => {
+    button.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
 
-      await copyMarkdownCode(codeText);
+      void (async () => {
+        await copyMarkdownCode(codeText);
 
-      const label = button.querySelector('.markdown-copy-button-label');
-      if (!label) {
-        return;
-      }
+        const label = button.querySelector('.markdown-copy-button-label');
+        if (!label) return;
 
-      const originalText = label.textContent || 'Copy';
-      button.dataset.copied = 'true';
-      label.textContent = 'Copied';
+        const originalText = label.textContent || 'Copy';
+        button.dataset.copied = 'true';
+        label.textContent = 'Copied';
 
-      window.setTimeout(() => {
-        button.dataset.copied = 'false';
-        label.textContent = originalText;
-      }, 1200);
+        window.setTimeout(() => {
+          button.dataset.copied = 'false';
+          label.textContent = originalText;
+        }, 1200);
+      })().catch(() => {
+        // Clipboard failures are expected in unfocused VS Code webviews.
+      });
     });
 
     pre.insertBefore(button, pre.firstChild);

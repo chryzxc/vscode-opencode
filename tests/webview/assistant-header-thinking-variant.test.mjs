@@ -18,7 +18,7 @@ const chatShellSource = readSource(
   "ChatShell.tsx",
 );
 
-test("assistant header renders thinking variant beside agent/model metadata", () => {
+test("assistant header renders thinking variant beside available agent/model metadata", () => {
   assert.match(
     messageComponentsSource,
     /thinking|variant|level/,
@@ -26,8 +26,8 @@ test("assistant header renders thinking variant beside agent/model metadata", ()
   );
   assert.match(
     messageComponentsSource,
-    /const assistantHeaderAgentLabel = firstNonEmptyString\(agentName\)\?\.trim\(\) \|\| "assistant";/,
-    "assistant response header should keep a visible fallback agent label instead of disappearing when metadata is partially missing",
+    /const assistantHeaderAgentLabel = firstNonEmptyString\(agentName\)\?\.trim\(\);/,
+    "assistant response header should omit the agent label when metadata is missing",
   );
   assert.match(
     messageComponentsSource,
@@ -37,7 +37,7 @@ test("assistant header renders thinking variant beside agent/model metadata", ()
   assert.match(
     messageComponentsSource,
     /if \(assistantHeaderAgentLabel\) \{[\s\S]*key: "agent",[\s\S]*text: assistantHeaderAgentLabel,/s,
-    "assistant response header should always emit a visible leading agent segment using the fallback-aware label",
+    "assistant response header should emit the agent segment when an agent name is available",
   );
   assert.match(
     messageComponentsSource,

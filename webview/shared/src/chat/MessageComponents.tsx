@@ -66,7 +66,12 @@ import { CallOmoAgentStep } from "./components/activity-steps/CallOmoAgentStep";
 import { BackgroundOutputStep } from "./components/activity-steps/BackgroundOutputStep";
 import { DiffPreviewStep } from "./components/activity-steps/DiffPreviewStep";
 import { ActivityTimelineItem } from "./components/activity-steps/ActivityTimelineItem";
-import { stableActivityIdentity } from "./lib/activityIdentity";
+import {
+  activityTextFingerprint,
+  canonicalActivityActionIdentity,
+  stableActivityIdentity,
+} from "./lib/activityIdentity";
+import { centralizedDebugPayloadFingerprint } from "./lib/generated/centralizedDebugPayloadFilter";
 import { SearchActivityPreview } from "./components/activity-steps/SearchActivityPreview";
 import { ActivityDiffExcerpt } from "./components/ActivityDiffExcerpt";
 import { ImagePreviewModal } from "./ImagePreviewModal";
@@ -122,6 +127,7 @@ import type { DisplayError } from "../../../../src/providers/chat/types";
 import { shallowEqual, useAppDispatch, useAppState } from "./lib/store";
 import { jumpToMessage } from "./lib/messageJump";
 import vscode from "./lib/vscode";
+import { copyToClipboard } from "./lib/clipboard";
 import {
   getSubagentDisplayActivity,
   getSubagentDisplayDurationMs,
@@ -408,6 +414,7 @@ function isStructuredOutputFailureMessage(value?: unknown): boolean {
   const normalized = normalizeErrorLikeValue(value).trim().toLowerCase();
   if (!normalized) return false;
   return (
+    normalized.includes("model did not produce structured output") ||
     normalized.includes("structured output error") ||
     normalized.includes("empty structured payload") ||
     normalized.includes("valid structured response") ||
@@ -1395,19 +1402,29 @@ function buildAssistantScopeMessageIds(options: {
   assistantTurnMessageId?: string | null;
   assistantTurnRootMessageId?: string | null;
   assistantTurnAnchorMessageId?: string | null;
+  additionalMessageIds?: readonly string[];
+  includeLiveTurnIds?: boolean;
 }): Set<string> {
   const messageCandidates = collectMessageIdentityCandidates(options.message);
-  if (messageCandidates.size > 0) {
-    return messageCandidates;
+  const ids = new Set<string>(messageCandidates);
+  // A single user turn can move through several assistant SDK message IDs
+  // (tool-calls -> next assistant phase -> final text). When this card is the
+  // active turn, retain its root IDs and add the current live phase so newly
+  // rendered activity cannot disappear during that phase transition.
+  if (
+    messageCandidates.size > 0 &&
+    !options.includeLiveTurnIds &&
+    (options.additionalMessageIds?.length ?? 0) === 0
+  ) {
+    return ids;
   }
-
-  const ids = new Set<string>();
   for (const candidate of [
     options.assistantMessageId,
     options.streamingMessageId,
     options.assistantTurnMessageId,
     options.assistantTurnRootMessageId,
     options.assistantTurnAnchorMessageId,
+    ...(options.additionalMessageIds ?? []),
   ]) {
     if (typeof candidate === "string" && candidate.trim().length > 0) {
       ids.add(candidate.trim());
@@ -2844,6 +2861,20 @@ function thoughtItemsFromStreamingReasoningEvents(
     }
   >();
 
+  const mergeReasoningPartText = (current: string, incoming: string): string => {
+    if (!current) return incoming;
+    if (!incoming) return current;
+
+    // The stream reducer normally retains one evolving entry per part. During
+    // hydration, however, the same part can briefly be present more than once
+    // as a cumulative snapshot. Concatenating those snapshots repeats an
+    // entire thought in the UI. Prefer the complete snapshot and append only
+    // text that is genuinely new to the part.
+    if (current === incoming || current.includes(incoming)) return current;
+    if (incoming.includes(current)) return incoming;
+    return `${current}\n\n${incoming}`;
+  };
+
   reasoningEvents.forEach((event, index) => {
     const text = asString(event?.text).trim();
     const isLatestChunk = index === reasoningEvents.length - 1;
@@ -2866,7 +2897,7 @@ function thoughtItemsFromStreamingReasoningEvents(
     const groupKey = partID || `${createdAt}:${index}`;
     const existing = grouped.get(groupKey);
     const nextText = existing
-      ? `${existing.text}${existing.text && resolvedText ? "\n\n" : ""}${resolvedText}`
+      ? mergeReasoningPartText(existing.text, resolvedText)
       : resolvedText;
 
     grouped.set(groupKey, {
@@ -2979,17 +3010,30 @@ function mergeProgressItemsForTimeline(
   streamingItems: ProgressItem[],
   preferStreaming = false,
 ): ProgressItem[] {
-  if (finalizedItems.length === 0) {
-    return streamingItems;
-  }
-  if (streamingItems.length === 0) {
-    return finalizedItems;
-  }
-
-  const merged: ProgressItem[] = [...finalizedItems];
+  // `steps`, `progressEvents`, and the centralized tape can all carry the
+  // same activity in the first live frame. Never return one source unchanged:
+  // every source must pass through these semantic keys before it can render.
+  const merged: ProgressItem[] = [];
   const indexByKey = new Map<string, number>();
 
   const addKey = (item: ProgressItem, index: number) => {
+    const semanticKey = progressItemIdentityKey(item);
+    const actionKey = canonicalActivityActionIdentity(
+      item.activityDetail?.tool,
+      item.activityDetail?.input,
+    );
+    if (semanticKey) {
+      indexByKey.set(`semantic:${semanticKey}`, index);
+    }
+    // SDK mirrors can occasionally have different part/call IDs. Keep the
+    // action fingerprint as an additional key, but never let mutable output
+    // fields define identity.
+    if (actionKey) {
+      indexByKey.set(`action:${actionKey}`, index);
+    }
+    if (item.mergeKey) {
+      indexByKey.set(item.mergeKey, index);
+    }
     if (item.callID) {
       indexByKey.set(`call:${item.callID}`, index);
     } else if (item.id) {
@@ -2999,40 +3043,101 @@ function mergeProgressItemsForTimeline(
       // not a tool identity, so use it only when no call/part ID exists.
       indexByKey.set(`msg:${item.messageID}`, index);
     }
-    indexByKey.set(`title:${normalizeComparableText(item.title)}`, index);
+    // Generic titles such as "Running read..." identify neither a tool call
+    // nor an action. Only use a title when the SDK gave us no semantic, call,
+    // part, or message identity at all; otherwise it can replace a rendered
+    // Read with an unrelated later Read and make the first row disappear.
+    if (!semanticKey && !item.callID && !item.id && !item.messageID) {
+      indexByKey.set(`title:${normalizeComparableText(item.title)}`, index);
+    }
   };
 
-  finalizedItems.forEach((item, index) => addKey(item, index));
-
-  for (const item of streamingItems) {
+  const ingest = (item: ProgressItem, incomingPreferred: boolean) => {
+    const semanticKey = progressItemIdentityKey(item);
+    const actionKey = canonicalActivityActionIdentity(
+      item.activityDetail?.tool,
+      item.activityDetail?.input,
+    );
+    const canUseTitleFallback = !semanticKey && !item.callID && !item.id && !item.messageID;
+    // A tool's input evolves while its call is running (especially File_edit,
+    // where old/new strings and patch metadata arrive in separate snapshots).
+    // Match the SDK lifecycle ID first so those snapshots enrich one row. The
+    // semantic action key remains the fallback for the /event + /global/event
+    // mirrors that legitimately carry different transport IDs.
     const keys = [
+      item.mergeKey,
       item.callID ? `call:${item.callID}` : "",
       !item.callID && item.id ? `id:${item.id}` : "",
       !item.callID && !item.id && item.messageID ? `msg:${item.messageID}` : "",
-      `title:${normalizeComparableText(item.title)}`,
+      semanticKey ? `semantic:${semanticKey}` : "",
+      actionKey ? `action:${actionKey}` : "",
+      canUseTitleFallback ? `title:${normalizeComparableText(item.title)}` : "",
     ].filter(Boolean);
 
     const matchingKey = keys.find((key) => indexByKey.has(key));
     if (typeof matchingKey === "string") {
-      if (preferStreaming) {
-        const existingIndex = indexByKey.get(matchingKey);
-        if (typeof existingIndex === "number") {
-          merged[existingIndex] = {
-            ...merged[existingIndex],
-            ...item,
-            source: item.source || merged[existingIndex].source,
-          };
-        }
+      const existingIndex = indexByKey.get(matchingKey);
+      if (typeof existingIndex === "number") {
+        const existing = merged[existingIndex];
+        merged[existingIndex] = incomingPreferred
+          ? mergeProgressItemRecord(existing, item)
+          : mergeProgressItemRecord(item, existing);
+        addKey(merged[existingIndex], existingIndex);
       }
-      continue;
+      return;
     }
 
     const nextIndex = merged.length;
-    keys.forEach((key) => indexByKey.set(key, nextIndex));
     merged.push(item);
-  }
+    addKey(item, nextIndex);
+  };
+
+  finalizedItems.forEach((item) => ingest(item, true));
+  streamingItems.forEach((item) => ingest(item, preferStreaming));
 
   return merged;
+}
+
+/**
+ * OpenCode represents a Read range in two equivalent SDK shapes. Streaming
+ * tool input commonly has `offset` / `limit`; hydrated snapshots can instead
+ * place `lineStart` / `lineEnd` under `state.metadata.display`. Normalize the
+ * latter into the input contract once so both rendering paths show the same
+ * line label without parsing source text.
+ */
+function normalizeReadRangeInput(
+  tool: string | undefined,
+  input: Record<string, unknown> | null,
+  metadata: Record<string, unknown> | null,
+): Record<string, unknown> | undefined {
+  if (!input) return undefined;
+  if (tool?.trim().toLowerCase() !== "read") return input;
+
+  const display = asRecord(metadata?.display);
+  const inputOffset = Number(input.offset);
+  const inputLimit = Number(input.limit);
+  const displayStart = Number(display?.lineStart);
+  const displayEnd = Number(display?.lineEnd);
+  const offset = Number.isInteger(inputOffset) && inputOffset >= 1
+    ? inputOffset
+    : Number.isInteger(displayStart) && displayStart >= 1
+      ? displayStart
+      : undefined;
+  const limit = Number.isInteger(inputLimit) && inputLimit >= 1
+    ? inputLimit
+    : offset !== undefined && Number.isInteger(displayEnd) && displayEnd >= offset
+      ? displayEnd - offset + 1
+      : undefined;
+
+  if (offset === undefined && limit === undefined) return input;
+
+  const normalized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (value !== undefined) normalized[key] = value;
+  }
+  if (offset !== undefined) normalized.offset = offset;
+  if (limit !== undefined) normalized.limit = limit;
+  return normalized;
 }
 
 function progressItemsFromRawEventPayloads(
@@ -3046,7 +3151,6 @@ function progressItemsFromRawEventPayloads(
   const diagnostics = {
     total: rawSdkEventPayloads.length,
     noRecord: 0,
-    fileWatcher: 0,
     structuredThinkingSkipped: 0,
     noPart: 0,
     reasoningSkipped: 0,
@@ -3071,78 +3175,6 @@ function progressItemsFromRawEventPayloads(
     }
     pushedSamples.push(summarizeCentralizedEventForTimelineDiagnostics(event, index));
   };
-  const buildSyntheticFileActivityStep = (
-    event: Record<string, unknown>,
-    eventType: string,
-    eventProperties: Record<string, unknown> | null,
-    messageID: string | undefined,
-    index: number,
-  ): MessageStep | StreamingStep | undefined => {
-    const file = firstNonEmptyString(
-      asString(eventProperties?.file),
-      asString(event.file),
-    );
-    const watcherEvent = firstNonEmptyString(
-      asString(eventProperties?.event),
-      asString(event.event),
-    )?.toLowerCase();
-    const id = firstNonEmptyString(
-      asString(event.id),
-      asString(event.eventId),
-    );
-    const sessionID = firstNonEmptyString(
-      asString(event.sessionID),
-      asString(event.sessionId),
-    );
-
-    let title = "";
-    if (eventType === "file.edited") {
-      title = "edit";
-    } else if (eventType === "file.watcher.updated") {
-      title = watcherEvent || "file watcher updated";
-    }
-
-    if (!file && !watcherEvent && !id) {
-      return undefined;
-    }
-
-    return {
-      id: id || `${eventType}-${index}`,
-      sessionID,
-      title,
-      type: "tool",
-      status: "done",
-      source: "raw_debug",
-      partType: eventType,
-      internal: false,
-      filePath: file || undefined,
-      messageID: messageID || undefined,
-      streamSeq: index,
-      activityDetail: {
-        summary: file || watcherEvent || title,
-        input: eventProperties
-          ? {
-              file: eventProperties.file,
-              event: eventProperties.event,
-            }
-          : file
-            ? { file }
-            : undefined,
-        output: undefined,
-        file: file || undefined,
-        metadata: watcherEvent
-          ? {
-              event: watcherEvent,
-              sourceEventType: eventType,
-            }
-          : {
-              sourceEventType: eventType,
-            },
-        sessionID,
-      },
-    };
-  };
-
   for (let index = 0; index < rawSdkEventPayloads.length; index += 1) {
     const event = asRecord(rawSdkEventPayloads[index]);
     if (!event) {
@@ -3160,26 +3192,12 @@ function progressItemsFromRawEventPayloads(
       asString(event.messageId),
     );
 
-    // Some centralized events are not part updates at all. We still want to
-    // surface them in the activity timeline when they represent meaningful
-    // work that happened during the assistant turn, instead of dropping them
-    // on the floor simply because they do not have a `part` envelope.
+    // File watcher notifications describe filesystem side effects, not agent
+    // activity. They often repeat for one edit and must stay out of both the
+    // live and rehydrated timeline. Actual agent file edits are represented by
+    // their tool/patch parts below.
     if (eventType === "file.edited" || eventType === "file.watcher.updated") {
-      const syntheticFileActivity = buildSyntheticFileActivityStep(
-        event,
-        eventType,
-        eventProperties,
-        messageID,
-        index,
-      );
-      if (!syntheticFileActivity) {
-        continue;
-      }
-
-      rawSteps.push(syntheticFileActivity);
-      diagnostics.fileWatcher += 1;
-      diagnostics.pushed += 1;
-      rememberPushed(event, index);
+      rememberSkipped("filesystem_notification", event, index);
       continue;
     }
 
@@ -3266,6 +3284,7 @@ function progressItemsFromRawEventPayloads(
       asString(part.name),
       asString(part.type),
     )?.toLowerCase();
+    const normalizedInput = normalizeReadRangeInput(tool, input, metadata);
     const partType = firstNonEmptyString(
       asString(part.type),
       asString(part.partType),
@@ -3353,6 +3372,13 @@ function progressItemsFromRawEventPayloads(
         compactMetadata[key] = value;
       }
     }
+    const readDisplay = tool === "read" ? asRecord(metadata?.display) : null;
+    if (Number.isInteger(Number(readDisplay?.lineStart))) {
+      compactMetadata.lineStart = Number(readDisplay?.lineStart);
+    }
+    if (Number.isInteger(Number(readDisplay?.lineEnd))) {
+      compactMetadata.lineEnd = Number(readDisplay?.lineEnd);
+    }
 
     const isQuestionTool = isQuestionToolName(tool);
     const questionPresentation = completedQuestionToolPresentation(tool, status, output);
@@ -3408,7 +3434,7 @@ function progressItemsFromRawEventPayloads(
           asString(state?.command),
         ) || undefined,
         file: filePath,
-        input: input ?? undefined,
+        input: normalizedInput,
         output: output || undefined,
         // Store the display title (e.g., relative path) from state.title for read steps
         title: asString(part.title) || undefined,
@@ -3529,6 +3555,14 @@ function progressItemIdentityKey(item: {
     return stableIdentity;
   }
 
+  const actionIdentity = canonicalActivityActionIdentity(
+    item.activityDetail?.tool,
+    item.activityDetail?.input,
+  );
+  if (actionIdentity) {
+    return actionIdentity;
+  }
+
   const detailSummary = firstNonEmptyString(
     asString(item.activityDetail?.summary),
     asString(item.activityDetail?.output),
@@ -3559,37 +3593,32 @@ function mergeProgressItemRecord(existing: ProgressItem, incoming: ProgressItem)
       typeof existing.streamSeq === "number" &&
       incoming.streamSeq >= existing.streamSeq);
 
-  const merged: ProgressItem = {
-    ...existing,
-    ...incoming,
+  // SDK stream envelopes are patches, not complete replacements. Keep each
+  // field's ownership explicit so an omitted field in a later mirror cannot
+  // silently erase something the user already saw.
+  return {
+    key: existing.key || incoming.key,
+    mergeKey: existing.mergeKey || incoming.mergeKey,
+    id: incoming.id ?? existing.id,
+    callID: incoming.callID ?? existing.callID,
+    messageID: incoming.messageID ?? existing.messageID,
+    sessionID: incoming.sessionID ?? existing.sessionID,
+    title: incoming.title || existing.title,
     status: shouldPromoteStatus ? incoming.status : existing.status,
+    source: incoming.source ?? existing.source,
+    partType: incoming.partType ?? existing.partType,
     internal: Boolean(existing.internal || incoming.internal),
-  };
-
-  if (!merged.id && incoming.id) merged.id = incoming.id;
-  if (!merged.callID && incoming.callID) merged.callID = incoming.callID;
-  if (!merged.messageID && incoming.messageID) merged.messageID = incoming.messageID;
-  if (!merged.sessionID && incoming.sessionID) merged.sessionID = incoming.sessionID;
-  if (!merged.startedAt && incoming.startedAt) merged.startedAt = incoming.startedAt;
-  if (!merged.endedAt && incoming.endedAt) merged.endedAt = incoming.endedAt;
-  if (!merged.source && incoming.source) merged.source = incoming.source;
-  if (!merged.partType && incoming.partType) merged.partType = incoming.partType;
-  if (!merged.meta && incoming.meta) merged.meta = incoming.meta;
-  if (!merged.filePath && incoming.filePath) merged.filePath = incoming.filePath;
-  if (!merged.activityDetail && incoming.activityDetail) {
-    merged.activityDetail = incoming.activityDetail;
-  }
-  if (incoming.diffStats) {
-    merged.diffStats = incoming.diffStats;
-  }
-  if (typeof incoming.streamSeq === "number") {
-    merged.streamSeq =
-      typeof existing.streamSeq === "number"
+    meta: incoming.meta ?? existing.meta,
+    filePath: incoming.filePath ?? existing.filePath,
+    startedAt: incoming.startedAt ?? existing.startedAt,
+    endedAt: incoming.endedAt ?? existing.endedAt,
+    diffStats: incoming.diffStats ?? existing.diffStats,
+    activityDetail: mergeActivityDetail(existing.activityDetail, incoming.activityDetail),
+    streamSeq:
+      typeof incoming.streamSeq === "number" && typeof existing.streamSeq === "number"
         ? Math.max(existing.streamSeq, incoming.streamSeq)
-        : incoming.streamSeq;
-  }
-
-  return merged;
+        : incoming.streamSeq ?? existing.streamSeq,
+  };
 }
 
 function progressItemsFromSteps(
@@ -3765,6 +3794,7 @@ function progressItemsFromRawResponseParts(
     const stateRec = asRecord(partRec.state);
     const inputRec = asRecord(stateRec?.input);
     const metadataRec = asRecord(stateRec?.metadata);
+    const normalizedInputRec = normalizeReadRangeInput(toolName, inputRec, metadataRec);
     const filePath = firstNonEmptyString(
       asString(inputRec?.filePath),
       asString(inputRec?.path),
@@ -3815,6 +3845,13 @@ function progressItemsFromRawResponseParts(
         compactMetadata[key] = value;
       }
     }
+    const readDisplay = toolName === "read" ? asRecord(metadataRec?.display) : null;
+    if (Number.isInteger(Number(readDisplay?.lineStart))) {
+      compactMetadata.lineStart = Number(readDisplay?.lineStart);
+    }
+    if (Number.isInteger(Number(readDisplay?.lineEnd))) {
+      compactMetadata.lineEnd = Number(readDisplay?.lineEnd);
+    }
 
     items.push({
       key: `raw-${callID ?? id ?? partRec.messageID ?? index}`,
@@ -3831,7 +3868,7 @@ function progressItemsFromRawResponseParts(
             summary: filePath || preview || rawTitle,
             tool: toolName,
             file: filePath,
-            input: inputRec ?? undefined,
+            input: normalizedInputRec,
             output: output || undefined,
             // Store the display title (e.g., relative path) from state.title for read steps
             title: firstNonEmptyString(asString(stateRec?.title), asString(partRec.title)) || undefined,
@@ -3854,7 +3891,7 @@ function progressItemsFromRawResponseParts(
         summary: filePath || preview || rawTitle,
         tool: toolName,
         file: filePath,
-        input: inputRec ?? undefined,
+        input: normalizedInputRec,
         output: output || undefined,
         // Store the display title (e.g., relative path) from state.title for read steps
         title: firstNonEmptyString(asString(stateRec?.title), asString(partRec.title)) || undefined,
@@ -3923,6 +3960,10 @@ function commentaryItemsFromRawEventPayloads(
     const aiResponseLike = isAiResponseEvent(event);
     const sourcePart = syncPart ?? payloadSyncPart ?? part;
     if (!sourcePart) continue;
+    // Delta-bearing text is owned by the live Thinking state. Treating it as
+    // commentary renders reasoning tokens as a response card (for example,
+    // `investigate` + `setup` becoming `investigatesetup`).
+    if (isDeltaCentralizedEventPayload(event)) continue;
     if (!aiResponseLike) continue;
 
     const stateRec = asRecord(sourcePart.state);
@@ -4962,6 +5003,44 @@ type DisplayEvent = {
  */
 export type SharedActivityEvent = DisplayEvent;
 
+/**
+ * OpenCode's Read input uses a one-based source offset and a line count. Keep
+ * it visible in the compact timeline row so repeated reads of one file remain
+ * understandable without expanding source output into the live stream.
+ */
+function formatReadLineRange(
+  input: unknown,
+  metadata?: Record<string, string | number | boolean>,
+): string | undefined {
+  const record = asRecord(input);
+  const offset = Number(record?.offset ?? metadata?.lineStart);
+  const limit = Number(record?.limit);
+  const lineEnd = Number(metadata?.lineEnd);
+  if (!Number.isInteger(offset) || offset < 1) return undefined;
+
+  const resolvedLimit = Number.isInteger(limit) && limit >= 1
+    ? limit
+    : Number.isInteger(lineEnd) && lineEnd >= offset
+      ? lineEnd - offset + 1
+      : undefined;
+  if (!resolvedLimit) return `Line ${offset}`;
+
+  const end = offset + resolvedLimit - 1;
+  return end === offset ? `Line ${offset}` : `Lines ${offset}\u2013${end}`;
+}
+
+/** A compact, input-backed discriminator for File_edit rows without a diff hunk. */
+function formatEditChangeSize(input: unknown): string | undefined {
+  const record = asRecord(input);
+  if (!record) return undefined;
+  const oldText = asString(record.oldString);
+  const newText = asString(record.newString);
+  if (!oldText && !newText) return undefined;
+
+  const lineCount = (text: string) => text ? text.split(/\r?\n/u).length : 0;
+  return `Changed ${lineCount(oldText)} \u2192 ${lineCount(newText)} lines`;
+}
+
 export function SharedActivityStep({
   event,
   messageContent = "",
@@ -4973,7 +5052,13 @@ export function SharedActivityStep({
   const labelLower = labelText.trim().toLowerCase();
   const isGlobSearch = labelLower === "glob";
   const isReadActivity = labelLower === "read";
-  const isEditLike = ["edit", "modify", "patch", "write", "apply_patch"].includes(labelLower);
+  const readLineRange = isReadActivity
+    ? formatReadLineRange(event.activityDetail?.input, event.activityDetail?.metadata)
+    : undefined;
+  const isEditLike = ["edit", "file_edit", "modify", "patch", "write", "apply_patch"].includes(labelLower);
+  const editChangeSize = isEditLike
+    ? formatEditChangeSize(event.activityDetail?.input)
+    : undefined;
   const filePath = event.filePath || (event.activityDetail?.input as Record<string, unknown> | undefined)?.filePath as string | undefined;
   const description = (event.activityDetail?.metadata?.description as string | undefined) || (event.activityDetail?.input?.description as string | undefined);
   const globPattern = isGlobSearch && typeof event.activityDetail?.input?.pattern === "string"
@@ -5004,6 +5089,16 @@ export function SharedActivityStep({
               </button>
             ) : null}
           </div>
+          {readLineRange ? (
+            <span className="oc-activity-step-meta pl-0.5 font-mono text-[11px] text-oc-text-soft">
+              {readLineRange}
+            </span>
+          ) : null}
+          {editChangeSize ? (
+            <span className="oc-activity-step-meta pl-0.5 font-mono text-[11px] text-oc-text-soft">
+              {editChangeSize}
+            </span>
+          ) : null}
           {!isReadActivity ? (
             <div className="flex flex-col gap-1 w-full">
               {labelLower === "bash" || isGlobSearch ? (
@@ -5147,6 +5242,9 @@ function displayEventSourcePriority(source?: DisplayEvent["source"]): number {
  * @returns A stable identity string, or empty string if no stable identity can be generated
  */
 function activityDisplayEventIdentity(event: DisplayEvent): string {
+  // A streamed row's React key contains its transient array position
+  // (`stream-7`, `stream-8`, ...). It is not an SDK identity and must never
+  // outrank the semantic action/patch identities used for mirrored snapshots.
   const stableIdentity = stableActivityIdentity({
     callID: event.callID,
     partID: event.partID,
@@ -5154,7 +5252,6 @@ function activityDisplayEventIdentity(event: DisplayEvent): string {
     tool: event.activityDetail?.tool,
     label: event.label,
     filePath: event.filePath,
-    key: event.key,
     partType: event.partType,
   });
   if (stableIdentity) {
@@ -5163,6 +5260,175 @@ function activityDisplayEventIdentity(event: DisplayEvent): string {
 
   // No stable identity available
   return "";
+}
+
+/**
+ * TodoWrite emits a new completed SDK call whenever it advances the same
+ * checklist. Those calls have distinct transport identities, but a response
+ * card should show the latest state of that checklist once—not every prior
+ * 0/3, 1/3, and 2/3 snapshot. The item content and priority define a checklist;
+ * each item's mutable status is deliberately excluded from the identity.
+ */
+function todoWriteChecklistIdentity(event: DisplayEvent): string {
+  const tool = (event.activityDetail?.tool ?? event.label ?? "").trim().toLowerCase();
+  if (event.kind !== "activity" || tool !== "todowrite") {
+    return "";
+  }
+
+  let todos: unknown[] | undefined;
+  const output = event.activityDetail?.output;
+  if (output) {
+    try {
+      const parsed = JSON.parse(output) as unknown;
+      if (Array.isArray(parsed)) {
+        todos = parsed;
+      } else {
+        const parsedRecord = asRecord(parsed);
+        if (Array.isArray(parsedRecord?.todos)) {
+          todos = parsedRecord.todos;
+        }
+      }
+    } catch {
+      // A partial tool payload can carry non-JSON output while the structured
+      // input is still complete; use that input below.
+    }
+  }
+  if (!todos && Array.isArray(event.activityDetail?.input?.todos)) {
+    todos = event.activityDetail.input.todos;
+  }
+  if (!todos || todos.length === 0) {
+    return "";
+  }
+
+  const normalizedTodos = todos.map((todo) => {
+    const record = asRecord(todo);
+    return [
+      asString(record?.content).trim(),
+      asString(record?.priority).trim(),
+    ];
+  });
+  return `todowrite:${JSON.stringify(normalizedTodos)}`;
+}
+
+/**
+ * Some providers replay the same completed tool snapshot through separate SDK
+ * calls. Call and part IDs differ, but the reader sees the exact same action.
+ * Keep ID-based lifecycle merging, then use this semantic identity to collapse
+ * only snapshots with the same tool action. Tool output is deliberately not
+ * included: it evolves from sparse live state to completed state and is not
+ * an identifier for the action.
+ */
+function activitySnapshotIdentity(event: DisplayEvent): string {
+  if (event.kind !== "activity") return "";
+  if (isEditLikeActivity(event)) return "";
+  const detail = event.activityDetail;
+  const tool = firstNonEmptyString(detail?.tool, event.label, event.partType);
+  const actionIdentity = canonicalActivityActionIdentity(tool, detail?.input);
+  if (actionIdentity) return actionIdentity;
+
+  // Some mirrored lifecycle snapshots omit `state.input` entirely. Fall back
+  // only to the exact compact action text that the timeline renders; this
+  // catches the same Bash/Grep/Read row across `/event` and `/global/event`
+  // without using mutable tool output as identity.
+  const fallbackAction = firstNonEmptyString(
+    asString(detail?.command),
+    asString((detail?.input as Record<string, unknown> | undefined)?.command),
+    event.filePath,
+    detail?.file,
+    event.summary,
+    detail?.summary,
+    detail?.title,
+  );
+  if (!tool || !fallbackAction) return "";
+  return `visible-action:${normalizeComparableText(tool)}:${activityTextFingerprint(fallbackAction)}`;
+}
+
+function isEditLikeActivity(event: DisplayEvent): boolean {
+  const detail = event.activityDetail;
+  const tool = firstNonEmptyString(detail?.tool, event.label, event.partType)
+    ?.trim()
+    .toLowerCase() ?? "";
+  return (
+    event.partType?.toLowerCase() === "patch" ||
+    Boolean(detail?.diffExcerpt) ||
+    /(?:edit|write|patch|modify|replace)/u.test(tool)
+  );
+}
+
+const activityPatchIdentityCache = new WeakMap<object, string>();
+
+function activityPatchContentFingerprint(patch: string): string {
+  // SDK representations of one edit differ in their diff headers and paths:
+  // the tool result can contain a full unified diff while a patch part only
+  // carries the changed lines. Compare the meaningful changed lines instead.
+  const changedLines = patch
+    .split(/\r?\n/u)
+    .filter((line) => /^(?:\+|-)\s?/u.test(line) && !/^(?:\+\+\+|---)/u.test(line))
+    .map((line) => line.trimEnd());
+  return activityTextFingerprint(changedLines.length > 0 ? changedLines.join("\n") : patch);
+}
+
+function activityPatchFileKey(file: string | undefined): string {
+  const normalized = normalizeComparableText(file).replace(/\\/gu, "/");
+  const lastSeparator = normalized.lastIndexOf("/");
+  return lastSeparator >= 0 ? normalized.slice(lastSeparator + 1) : normalized;
+}
+
+function activityPatchFileIdentity(event: DisplayEvent): string {
+  if (!isEditLikeActivity(event)) return "";
+  const detail = event.activityDetail;
+  const input = asRecord(detail?.input);
+  const metadata = asRecord(detail?.metadata);
+  const fileDiff = asRecord(metadata?.filediff);
+  const file = firstNonEmptyString(
+    event.filePath,
+    detail?.file,
+    asString(fileDiff?.file),
+    asString(input?.filePath),
+    asString(input?.file),
+  );
+  return file ? `patch-file:${activityPatchFileKey(file)}` : "";
+}
+
+function activityPatchIdentity(event: DisplayEvent): string {
+  if (event.kind !== "activity") return "";
+  const cached = activityPatchIdentityCache.get(event);
+  if (cached !== undefined) return cached;
+  if (!isEditLikeActivity(event)) {
+    activityPatchIdentityCache.set(event, "");
+    return "";
+  }
+  const detail = event.activityDetail;
+  const input = asRecord(detail?.input);
+  const metadata = asRecord(detail?.metadata);
+  const fileDiff = asRecord(metadata?.filediff);
+  const excerptLines = Array.isArray(detail?.diffExcerpt?.lines)
+    ? detail.diffExcerpt.lines.filter((line): line is string => typeof line === "string")
+    : [];
+  const patch = firstNonEmptyString(
+    asString(fileDiff?.patch),
+    asString(metadata?.diff),
+    asString(input?.patchText),
+    asString(input?.patch),
+    asString(input?.diff),
+    excerptLines.join("\n"),
+    input && (asString(input.oldString) || asString(input.newString))
+      ? `-${asString(input.oldString)}\n+${asString(input.newString)}`
+      : undefined,
+  );
+  const fileOnlyIdentity = activityPatchFileIdentity(event);
+  const file = fileOnlyIdentity.replace(/^patch-file:/u, "");
+  if (!patch) {
+    // Patch/tool mirrors sometimes reach the timeline with only the target
+    // file. They have separate transport IDs but no visible payload that
+    // represents a second edit. Coalesce precisely that indistinguishable
+    // fallback; a real patch below still gets a content-based identity.
+    activityPatchIdentityCache.set(event, fileOnlyIdentity);
+    return fileOnlyIdentity;
+  }
+  const identity = `patch:${file}:${activityPatchContentFingerprint(patch)}`;
+  activityPatchIdentityCache.set(event, identity);
+  return identity;
 }
 
 function displayEventFingerprint(event: DisplayEvent): string {
@@ -5216,6 +5482,37 @@ function displayEventFingerprint(event: DisplayEvent): string {
   ].join("|");
 }
 
+/**
+ * React keys must reflect an SDK/semantic identity, never a stream array index.
+ * The live projection is rebuilt for each event; using its transient keys makes
+ * Stepper remount, which visibly restarts the check icon and activity preview.
+ */
+function timelineDisplayEventReactKey(event: DisplayEvent): string {
+  if (event.kind === "reasoning") {
+    return `reasoning:${event.partID || event.key}`;
+  }
+  if (event.kind === "commentary") {
+    return `commentary:${event.partID || event.messageID || event.key}`;
+  }
+  return firstNonEmptyString(
+    activityPatchIdentity(event),
+    todoWriteChecklistIdentity(event),
+    activitySnapshotIdentity(event),
+    activityDisplayEventIdentity(event),
+    event.key,
+  ) || event.key;
+}
+
+function timelineDisplayGroupReactKey(
+  events: DisplayEvent[],
+  fallbackIndex: number,
+): string {
+  const first = events[0];
+  return first
+    ? `stepper:${timelineDisplayEventReactKey(first)}`
+    : `stepper:empty:${fallbackIndex}`;
+}
+
 function diffStatsEqual(
   left?: { added: number; deleted: number },
   right?: { added: number; deleted: number },
@@ -5256,22 +5553,100 @@ function mergeStickyDisplayEvent(
   // turn, a later live-event snapshot may enrich it but must never remove the
   // fields that choose its visible component (especially edit/diff payloads).
   // OpenCode emits the same tool lifecycle through normal and `sync`-wrapped
-  // events; the later event is often intentionally sparse. Spreading that
-  // sparse shape over the existing row used to make an already-rendered file
-  // edit disappear while the stream was still active.
+  // events; the later event is often intentionally sparse. This is an
+  // explicit patch merge, never a broad object spread, so omissions cannot
+  // erase an already-rendered field.
   return {
-    ...existing,
-    ...incoming,
+    key: existing.key || incoming.key,
+    kind: existing.kind,
+    label: incoming.label || existing.label,
     summary: incoming.summary || existing.summary,
     description: incoming.description ?? existing.description,
     detail: incoming.detail ?? existing.detail,
+    status: mergeDisplayEventStatus(existing.status, incoming.status),
+    source:
+      displayEventSourcePriority(incoming.source) >= displayEventSourcePriority(existing.source)
+        ? incoming.source ?? existing.source
+        : existing.source,
+    partType: incoming.partType ?? existing.partType,
+    internal: Boolean(existing.internal || incoming.internal),
     filePath: incoming.filePath ?? existing.filePath,
+    callID: incoming.callID ?? existing.callID,
+    messageID: incoming.messageID ?? existing.messageID,
+    partID: incoming.partID ?? existing.partID,
+    sessionID: incoming.sessionID ?? existing.sessionID,
     viewDiffFile: incoming.viewDiffFile ?? existing.viewDiffFile,
     diffStats: incoming.diffStats ?? existing.diffStats,
-    activityDetail: incoming.activityDetail ?? existing.activityDetail,
+    activityDetail: mergeActivityDetail(existing.activityDetail, incoming.activityDetail),
     startedAt: incoming.startedAt ?? existing.startedAt,
     endedAt: incoming.endedAt ?? existing.endedAt,
+    isImportant: Boolean(existing.isImportant || incoming.isImportant),
     updateCount: existing.updateCount + 1,
+    streamSeq:
+      typeof incoming.streamSeq === "number" && typeof existing.streamSeq === "number"
+        ? Math.max(existing.streamSeq, incoming.streamSeq)
+        : incoming.streamSeq ?? existing.streamSeq,
+  };
+}
+
+function mergeDisplayEventStatus(
+  existing: DisplayEvent["status"],
+  incoming: DisplayEvent["status"],
+): DisplayEvent["status"] {
+  const isTerminal = (status: DisplayEvent["status"]) =>
+    status === "done" || status === "error" || status === "cancelled";
+  if (isTerminal(existing) && !isTerminal(incoming)) return existing;
+  return incoming;
+}
+
+/**
+ * Merge partial SDK records without treating omitted keys as deletion. The SDK
+ * sends one action across several envelopes, so `{}` means "no fields in this
+ * envelope", not "clear all previous fields".
+ */
+function mergePartialSdkRecord(
+  existing?: Record<string, unknown>,
+  incoming?: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const merged: Record<string, unknown> = {};
+  for (const source of [existing, incoming]) {
+    if (!source) continue;
+    for (const [key, value] of Object.entries(source)) {
+      if (value !== undefined) {
+        merged[key] = value;
+      }
+    }
+  }
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
+function mergeActivityDetail(
+  existing?: ActivityDetail,
+  incoming?: ActivityDetail,
+): ActivityDetail | undefined {
+  if (!existing) return incoming;
+  if (!incoming) return existing;
+  const existingMetadata = asRecord(existing.metadata);
+  const incomingMetadata = asRecord(incoming.metadata);
+  const existingInput = asRecord(existing.input);
+  const incomingInput = asRecord(incoming.input);
+  return {
+    kind: incoming.kind ?? existing.kind,
+    summary: incoming.summary ?? existing.summary,
+    input: mergePartialSdkRecord(existingInput, incomingInput),
+    output: incoming.output ?? existing.output,
+    command: incoming.command ?? existing.command,
+    file: incoming.file ?? existing.file,
+    files: incoming.files ?? existing.files,
+    backgroundTaskId: incoming.backgroundTaskId ?? existing.backgroundTaskId,
+    backgroundOutput: incoming.backgroundOutput ?? existing.backgroundOutput,
+    tool: incoming.tool ?? existing.tool,
+    query: incoming.query ?? existing.query,
+    isDirectory: incoming.isDirectory ?? existing.isDirectory,
+    title: incoming.title ?? existing.title,
+    diffExcerpt: incoming.diffExcerpt ?? existing.diffExcerpt,
+    metadata: mergePartialSdkRecord(existingMetadata, incomingMetadata) as ActivityDetail["metadata"],
+    sessionID: incoming.sessionID ?? existing.sessionID,
   };
 }
 
@@ -5279,16 +5654,17 @@ function mergeStickyDisplayEventsForTurn(
   previousEvents: DisplayEvent[],
   nextEvents: DisplayEvent[],
 ): DisplayEvent[] {
-  if (previousEvents.length === 0) {
-    return nextEvents;
-  }
-  if (nextEvents.length === 0) {
-    return previousEvents;
-  }
-
-  const merged: DisplayEvent[] = [...previousEvents];
+  // Always run every incoming row through the same identity indexes. The
+  // initial live frame can already contain mirrored SDK snapshots, and an
+  // early return here would render those duplicates permanently.
+  const merged: DisplayEvent[] = [];
   const identityIndex = new Map<string, number>();
   const fingerprintIndex = new Map<string, number>();
+  const todoChecklistIndex = new Map<string, number>();
+  const activitySnapshotIndex = new Map<string, number>();
+  const activityPatchIndex = new Map<string, number>();
+  const activityPatchFileIndex = new Map<string, number>();
+  const sparseActivityPatchFileIndex = new Map<string, number>();
 
   const remember = (event: DisplayEvent, index: number) => {
     const identity =
@@ -5302,11 +5678,30 @@ function mergeStickyDisplayEventsForTurn(
       identityIndex.set(identity, index);
     }
     fingerprintIndex.set(displayEventFingerprint(event), index);
+    const todoChecklistIdentity = todoWriteChecklistIdentity(event);
+    if (todoChecklistIdentity) {
+      todoChecklistIndex.set(todoChecklistIdentity, index);
+    }
+    const snapshotIdentity = activitySnapshotIdentity(event);
+    if (snapshotIdentity) {
+      activitySnapshotIndex.set(snapshotIdentity, index);
+    }
+    const patchIdentity = activityPatchIdentity(event);
+    if (patchIdentity) {
+      activityPatchIndex.set(patchIdentity, index);
+    }
+    const patchFileIdentity = activityPatchFileIdentity(event);
+    if (patchFileIdentity) {
+      activityPatchFileIndex.set(patchFileIdentity, index);
+      if (patchIdentity === patchFileIdentity) {
+        sparseActivityPatchFileIndex.set(patchFileIdentity, index);
+      } else {
+        sparseActivityPatchFileIndex.delete(patchFileIdentity);
+      }
+    }
   };
 
-  previousEvents.forEach((event, index) => remember(event, index));
-
-  for (const event of nextEvents) {
+  const ingest = (event: DisplayEvent) => {
     const identity =
       event.kind === "activity"
         ? activityDisplayEventIdentity(event)
@@ -5315,10 +5710,27 @@ function mergeStickyDisplayEventsForTurn(
             event.messageID ? `msg:${event.messageID}:${event.kind}` : undefined,
           );
     const fingerprint = displayEventFingerprint(event);
+    const todoChecklistIdentity = todoWriteChecklistIdentity(event);
+    const snapshotIdentity = activitySnapshotIdentity(event);
+    const patchIdentity = activityPatchIdentity(event);
+    const patchFileIdentity = activityPatchFileIdentity(event);
+    const isSparsePatchSnapshot =
+      patchIdentity.length > 0 && patchIdentity === patchFileIdentity;
 
     const matchingIndex =
       (identity && identityIndex.get(identity)) ??
-      fingerprintIndex.get(fingerprint);
+      fingerprintIndex.get(fingerprint) ??
+      (todoChecklistIdentity ? todoChecklistIndex.get(todoChecklistIdentity) : undefined) ??
+      (snapshotIdentity ? activitySnapshotIndex.get(snapshotIdentity) : undefined) ??
+      (patchIdentity ? activityPatchIndex.get(patchIdentity) : undefined) ??
+      // A single edit can be reported once with its patch and once as a sparse
+      // file-only lifecycle mirror. Bridge only that pair. Two content-bearing
+      // patches of the same file still use their distinct content identities.
+      (patchFileIdentity
+        ? isSparsePatchSnapshot
+          ? activityPatchFileIndex.get(patchFileIdentity)
+          : sparseActivityPatchFileIndex.get(patchFileIdentity)
+        : undefined);
 
     if (typeof matchingIndex === "number") {
       const existing = merged[matchingIndex];
@@ -5332,22 +5744,68 @@ function mergeStickyDisplayEventsForTurn(
         incomingPriority > existingPriority ||
         needsReplacement
       ) {
+        // The merged row can gain a semantic action/patch identity that the
+        // sparse first snapshot did not have. Re-index it immediately so the
+        // next mirrored event joins this row instead of becoming a duplicate.
         merged[matchingIndex] = mergeStickyDisplayEvent(existing, event);
+        remember(merged[matchingIndex], matchingIndex);
       }
-      continue;
+      return;
     }
 
     const nextIndex = merged.length;
     merged.push(event);
-    if (identity) {
-      identityIndex.set(identity, nextIndex);
-    }
-    fingerprintIndex.set(fingerprint, nextIndex);
+    remember(event, nextIndex);
+  };
+
+  // A sticky snapshot is retained across React renders. It may already hold
+  // duplicates from an earlier partial stream frame, so it must go through the
+  // same identity merge as fresh events. Seeding the indexes around a copied
+  // `previousEvents` array preserved those rows forever and is the direct
+  // cause of repeated File_edit cards.
+  for (const event of previousEvents) {
+    ingest(event);
+  }
+  for (const event of nextEvents) {
+    ingest(event);
   }
 
-  return merged;
+  // A live reasoning part can arrive with a new transient identity in every
+  // envelope. `nextEvents` is collapsed before this merge, but the sticky
+  // projection retains prior envelopes, so collapse once more after all live
+  // frames have been combined. This keeps one Thinking row for a continuous
+  // reasoning phase while an intervening activity still starts a new phase.
+  return collapseConsecutiveReasoningDisplayEvents(merged);
 }
 
+function orderDisplayEventsChronologically(events: DisplayEvent[]): DisplayEvent[] {
+  if (events.length < 2) {
+    return events;
+  }
+
+  // Sticky merging retains rows across partial stream frames. A new row can
+  // therefore be appended after a later snapshot even when its stream sequence
+  // is earlier. Order once at that merge boundary, using insertion order only
+  // as a stable tie-breaker for same-millisecond events.
+  return events
+    .map((event, index) => ({
+      event,
+      index,
+      sequence:
+        typeof event.streamSeq === "number"
+          ? event.streamSeq
+          : Number.MAX_SAFE_INTEGER,
+    }))
+    .sort((left, right) => left.sequence - right.sequence || left.index - right.index)
+    .map(({ event }) => event);
+}
+
+/**
+ * Final render guard for activity rows. Earlier reducers retain transport
+ * detail for recovery, but the UI contract is one row per semantic action.
+ * This guard runs after every source has been merged, including the first
+ * streaming frame, so an identical Read cannot paint twice.
+ */
 function sourceFromThoughtKey(
   key: string,
 ): "stream" | "final" | "raw_debug" | undefined {
@@ -5781,7 +6239,7 @@ function FadeSwapText({
   return (
     <span
       className={cn(
-        "transition-all will-change-[opacity,transform]",
+        "oc-ai-status-ticker-text transition-[opacity,transform] will-change-[opacity,transform]",
         isFadingOut ? "opacity-0 translate-y-0.5" : "opacity-100 translate-y-0",
         className,
       )}
@@ -5811,12 +6269,52 @@ const AI_LOADING_TEXT = [
   "Convincing the compiler to cooperate...",
   "Reversing the polarity...",
 ] as const;
-const AI_LOADING_TEXT_SWITCH_INTERVAL_MS = 4200;
+// Keep the status moving often enough to read as a live indicator. The
+// transition itself is CSS-only; this timer only chooses the next complete
+// status string and never performs a character-by-character update.
+const AI_LOADING_TEXT_SWITCH_INTERVAL_MS = 2800;
 
 export function AIStatusTicker({ className }: { className?: string }) {
   const [messageIndex, setMessageIndex] = useState(() =>
     Math.floor(Math.random() * AI_LOADING_TEXT.length),
   );
+  const tickerIdRef = useRef(`ticker-${Math.random().toString(36).slice(2, 8)}`);
+
+  // Diagnostic-only animation probe. When the ticker appears to pause, this
+  // distinguishes a React remount from a browser main-thread frame stall.
+  // It is intentionally disabled outside the existing SDK debug mode and
+  // reports at most once per second, never once per stream event.
+  useEffect(() => {
+    if (!config.debug.showSdkEventDebug) {
+      return;
+    }
+
+    const tickerId = tickerIdRef.current;
+    let frameId = 0;
+    let previousFrameAt = performance.now();
+    let lastReportedAt = -Infinity;
+    logger.warn("[AI-TICKER-TRACE] mounted", { tickerId });
+
+    const observeFrame = (now: number) => {
+      const frameGapMs = now - previousFrameAt;
+      previousFrameAt = now;
+      if (frameGapMs >= 48 && now - lastReportedAt >= 1_000) {
+        lastReportedAt = now;
+        logger.warn("[AI-TICKER-TRACE] dropped-animation-frame", {
+          tickerId,
+          frameGapMs: Number(frameGapMs.toFixed(1)),
+          visibilityState: document.visibilityState,
+        });
+      }
+      frameId = requestAnimationFrame(observeFrame);
+    };
+
+    frameId = requestAnimationFrame(observeFrame);
+    return () => {
+      cancelAnimationFrame(frameId);
+      logger.warn("[AI-TICKER-TRACE] unmounted", { tickerId });
+    };
+  }, []);
 
   useEffect(() => {
     if (AI_LOADING_TEXT.length <= 1) {
@@ -5835,18 +6333,33 @@ export function AIStatusTicker({ className }: { className?: string }) {
     return () => window.clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    if (config.debug.showSdkEventDebug) {
+      logger.warn("[AI-TICKER-TRACE] text-selected", {
+        tickerId: tickerIdRef.current,
+        messageIndex,
+      });
+    }
+  }, [messageIndex]);
+
   return (
     <div
       className={cn(
-        "inline-flex items-center font-medium text-[11px]",
+        "oc-ai-status-ticker inline-flex items-center font-medium text-[11px]",
         className,
       )}
     >
       <FadeSwapText
         text={AI_LOADING_TEXT[messageIndex]}
-        className="italic opacity-85 tracking-wide oc-glowing-text"
-        durationMs={220}
-        useTypewriter={true}
+        // The fade is compositor-friendly. Avoid the old animated clipped
+        // gradient here: repainting text every frame made this isolated status
+        // label visibly stall while the rest of the chat remained responsive.
+        className="italic opacity-85 tracking-wide"
+        durationMs={280}
+        // Loading visibility can toggle while a live event is processed. Do
+        // not restart a character-by-character animation on every remount:
+        // it makes a fully rendered status appear to shrink back to one letter.
+        useTypewriter={false}
       />
     </div>
   );
@@ -5934,6 +6447,103 @@ function parseTimelineStepTitle(rawTitle: string): {
   }
 
   return { label: "event", summary: stripTrailingEllipsis(title) };
+}
+
+/**
+ * A provider can split one continuous reasoning phase into several part IDs.
+ * In the timeline those are consecutive Thinking rows, not separate user
+ * actions. Fold only adjacent reasoning rows, retaining their full text and
+ * the first row's key so an expanded live Thought does not collapse again.
+ */
+function isHiddenLifecycleReasoningSeparator(event: DisplayEvent): boolean {
+  if (event.kind !== "activity" || event.internal !== true) return false;
+  const label = event.label.trim().toLowerCase();
+  const summary = event.summary.trim().toLowerCase();
+  const partType = (event.partType || "").trim().toLowerCase();
+  return (
+    partType === "step-start" ||
+    partType === "step-finish" ||
+    label === "step-start" ||
+    label === "step-finish" ||
+    label === "starting step" ||
+    label === "finishing step" ||
+    (label === "step" && (summary === "start" || summary === "finish")) ||
+    (label === "start" && summary === "start") ||
+    (label === "finish" && summary === "finish")
+  );
+}
+
+function collapseConsecutiveReasoningDisplayEvents(
+  events: DisplayEvent[],
+): DisplayEvent[] {
+  const collapsed: DisplayEvent[] = [];
+  for (const event of events) {
+    const isPendingPlaceholder =
+      event.kind === "reasoning" &&
+      event.summary.trim() === "Thinking..." &&
+      (event.status === "pending" || event.status === "running");
+    if (isPendingPlaceholder) {
+      // A delta has no durable reasoning payload by design. It only says the
+      // current assistant turn is thinking. The SDK can advance an assistant
+      // phase to a new message ID between deltas, so neither adjacency nor the
+      // transient message ID is a valid phase boundary here: keep exactly one
+      // live placeholder in the active timeline.
+      const existingPlaceholderIndex = collapsed.findIndex(
+        (candidate) =>
+          candidate.kind === "reasoning" &&
+          candidate.summary.trim() === "Thinking..." &&
+          (candidate.status === "pending" || candidate.status === "running"),
+      );
+      if (existingPlaceholderIndex >= 0) {
+        const existingPlaceholder = collapsed[existingPlaceholderIndex];
+        collapsed[existingPlaceholderIndex] = {
+          ...existingPlaceholder,
+          status: "pending",
+          endedAt: undefined,
+          updateCount: existingPlaceholder.updateCount + event.updateCount,
+        };
+        continue;
+      }
+    }
+    // Transport-only lifecycle records are retained for diagnostics but hidden
+    // from the UI. They must not turn one continuous reasoning stream into a
+    // stack of visible Thinking rows.
+    let previousIndex = collapsed.length - 1;
+    while (
+      previousIndex >= 0 &&
+      isHiddenLifecycleReasoningSeparator(collapsed[previousIndex])
+    ) {
+      previousIndex -= 1;
+    }
+    const previous = collapsed[previousIndex];
+    if (event.kind !== "reasoning" || previous?.kind !== "reasoning") {
+      collapsed.push(event);
+      continue;
+    }
+
+    const previousText = previous.summary.trim();
+    const incomingText = event.summary.trim();
+    const mergedSummary =
+      !previousText || previousText === "Thinking..."
+        ? incomingText
+        : !incomingText || incomingText === "Thinking..." || previousText.includes(incomingText)
+          ? previousText
+          : incomingText.includes(previousText)
+            ? incomingText
+            : `${previousText}\n\n${incomingText}`;
+    collapsed[previousIndex] = {
+      ...previous,
+      summary: mergedSummary || "Thinking...",
+      status:
+        previous.status === "pending" || previous.status === "running" ||
+        event.status === "pending" || event.status === "running"
+          ? "pending"
+          : event.status || previous.status,
+      endedAt: event.endedAt ?? previous.endedAt,
+      updateCount: previous.updateCount + event.updateCount,
+    };
+  }
+  return collapsed;
 }
 
 function buildDisplayEvents(
@@ -6190,6 +6800,13 @@ function buildDisplayEvents(
     if (!isMessageInScope(event.messageID)) {
       continue;
     }
+    // Patch-derived File_edit rows duplicate the SDK's actual Edit tool row
+    // and are emitted repeatedly as the patch snapshot evolves. They carry no
+    // separate user-facing action, so exclude this derived representation in
+    // the one shared timeline projection used by live and hydrated messages.
+    if (event.activityDetail?.kind === "file_edit") {
+      continue;
+    }
     const rawTitle = event.title || "";
     const parsed = parseTimelineStepTitle(rawTitle);
     const cleanedRawTitle = stripTrailingEllipsis(rawTitle);
@@ -6396,10 +7013,59 @@ function buildDisplayEvents(
     });
   }
 
+  const consecutiveReasoningCollapsed = collapseConsecutiveReasoningDisplayEvents(rawEvents);
   const deduped: DisplayEvent[] = [];
   const dedupedIndexByFingerprint = new Map<string, number>();
   const dedupedIndexByIdentity = new Map<string, number>();
-  for (const event of rawEvents) {
+  const dedupedIndexByTodoChecklist = new Map<string, number>();
+  const dedupedIndexByActivitySnapshot = new Map<string, number>();
+  const dedupedIndexByPatch = new Map<string, number>();
+  for (const event of consecutiveReasoningCollapsed) {
+    const todoChecklistIdentity = todoWriteChecklistIdentity(event);
+    const snapshotIdentity = activitySnapshotIdentity(event);
+    const patchIdentity = activityPatchIdentity(event);
+    const existingTodoChecklistIndex = todoChecklistIdentity
+      ? dedupedIndexByTodoChecklist.get(todoChecklistIdentity)
+      : undefined;
+    if (typeof existingTodoChecklistIndex === "number") {
+      const existing = deduped[existingTodoChecklistIndex];
+      // TodoWrite snapshots represent successive state for one checklist.
+      // Merge forward so the completed list replaces the earlier 0/3 payload
+      // even when both snapshots share the same hydrated source priority.
+      deduped[existingTodoChecklistIndex] = mergeStickyDisplayEvent(existing, event);
+      continue;
+    }
+    const existingPatchIndex = patchIdentity
+      ? dedupedIndexByPatch.get(patchIdentity)
+      : undefined;
+    if (typeof existingPatchIndex === "number") {
+      const existing = deduped[existingPatchIndex];
+      const incomingPriority = displayEventSourcePriority(event.source);
+      const existingPriority = displayEventSourcePriority(existing.source);
+      deduped[existingPatchIndex] = mergeStickyDisplayEvent(
+        incomingPriority > existingPriority ? existing : event,
+        incomingPriority > existingPriority ? event : existing,
+      );
+      continue;
+    }
+    const existingSnapshotIndex = snapshotIdentity
+      ? dedupedIndexByActivitySnapshot.get(snapshotIdentity)
+      : undefined;
+    if (typeof existingSnapshotIndex === "number") {
+      const existing = deduped[existingSnapshotIndex];
+      const existingPriority = displayEventSourcePriority(existing.source);
+      const incomingPriority = displayEventSourcePriority(event.source);
+      if (incomingPriority > existingPriority) {
+        deduped[existingSnapshotIndex] = {
+          ...existing,
+          ...event,
+          updateCount: existing.updateCount + 1,
+        };
+      } else {
+        existing.updateCount += 1;
+      }
+      continue;
+    }
     const stableIdentity =
       event.kind === "activity"
         ? activityDisplayEventIdentity(event)
@@ -6446,6 +7112,15 @@ function buildDisplayEvents(
     }
 
     dedupedIndexByFingerprint.set(fingerprint, deduped.length);
+    if (todoChecklistIdentity) {
+      dedupedIndexByTodoChecklist.set(todoChecklistIdentity, deduped.length);
+    }
+    if (snapshotIdentity) {
+      dedupedIndexByActivitySnapshot.set(snapshotIdentity, deduped.length);
+    }
+    if (patchIdentity) {
+      dedupedIndexByPatch.set(patchIdentity, deduped.length);
+    }
     deduped.push({ ...event });
   }
 
@@ -6740,12 +7415,11 @@ export const UserMessage = memo(function UserMessage({ message, isQueued = false
     if (!textToCopy) return;
 
     try {
-      await navigator.clipboard.writeText(textToCopy);
+      await copyToClipboard(textToCopy);
       setCopied(true);
       setTimeout(() => setCopied(false), 1200);
       return;
     } catch {
-      vscode.postMessage({ type: "copyToClipboard", text: textToCopy });
       setCopied(true);
       setTimeout(() => setCopied(false), 1200);
     }
@@ -6930,7 +7604,7 @@ export const UserMessage = memo(function UserMessage({ message, isQueued = false
 function getAgentName(
   message: Message | undefined,
   streaming: StreamingState | undefined,
-): string {
+): string | undefined {
   if (message?.info?.agent && typeof message.info.agent === "string") {
     return message.info.agent;
   }
@@ -6946,7 +7620,7 @@ function getAgentName(
     return streaming.agent;
   }
 
-  return "assistant";
+  return undefined;
 }
 
 type CentralizedTokenInfo = {
@@ -7646,14 +8320,18 @@ function ResponseMessageInner({
   );
 
   // NEW: Use custom hooks for simplified subagent data access
+  // Keep the transcript activity scope separate from subagent-card ownership.
+  // The streaming card has no persisted message, and assigning its stream id
+  // to `messageId` makes the main activity renderer filter out live events.
   const messageId = message?.id || message?.info?.id;
-  const formattedSubagents = useSubagentsForParentMessage(messageId);
+  const subagentParentMessageId = messageId || (!message ? streaming?.messageId : undefined);
+  const formattedSubagents = useSubagentsForParentMessage(subagentParentMessageId);
   // The final visible card is the one stable place for a response block's
   // shared UI. Keep each subagent's actual parentMessageId intact, then gather
   // those message-owned entries onto that final card for presentation.
   const inlineSubagentParentMessageIds = useMemo(() => {
-    if (!messageId || !isLastInBlock || !blockGroupKey || !messages) {
-      return messageId ? [messageId] : [];
+    if (!subagentParentMessageId || !isLastInBlock || !blockGroupKey || !messages) {
+      return subagentParentMessageId ? [subagentParentMessageId] : [];
     }
     return messages
       .filter((candidate) =>
@@ -7662,7 +8340,20 @@ function ResponseMessageInner({
       )
       .map((candidate) => firstNonEmptyString(candidate.id, candidate.info?.id))
       .filter((id): id is string => Boolean(id));
-  }, [blockGroupKey, isLastInBlock, messageId, messages]);
+  }, [blockGroupKey, isLastInBlock, messages, subagentParentMessageId]);
+  // A live response can advance from the tool-call message to a later text
+  // message before the child update arrives. In that narrow window the card
+  // has no exact message-key match even though its current session owns the
+  // subagent. Use this only as a live-card fallback; hydrated cards stay
+  // strictly message-owned to avoid showing historical subagents elsewhere.
+  const liveSessionSubagents = useMemo(() => {
+    if (message || !currentSessionId) {
+      return [] as SubagentSummary[];
+    }
+    return Object.values(subagentsByParentMessageId ?? {})
+      .flat()
+      .filter((subagent) => subagent?.parentSessionId === currentSessionId);
+  }, [currentSessionId, message, subagentsByParentMessageId]);
 
   const [showSubagents, setShowSubagents] = useState(true);
   const [showAllSubagents, setShowAllSubagents] = useState(false);
@@ -7676,6 +8367,33 @@ function ResponseMessageInner({
   const activityTimelineMessage = message;
   const activityTimelineStreaming =
     streaming ?? (currentSessionId ? streamingBySessionId?.[currentSessionId] : undefined);
+  // A collapsed response card is the visible summary for one user turn. That
+  // turn can contain several assistant SDK messages (tools, then prose). Keep
+  // their authoritative parts together here, but only on the one visible card.
+  // Expanded cards stay individually scoped, which prevents duplicated rows.
+  const shouldAggregateCollapsedBlockActivity = Boolean(
+    isLastInBlock &&
+      isBlockExpanded !== true &&
+      blockGroupKey &&
+      Array.isArray(messages),
+  );
+  const collapsedBlockAssistantMessages = useMemo(
+    () =>
+      shouldAggregateCollapsedBlockActivity
+        ? (messages ?? []).filter((candidate) =>
+            firstNonEmptyString(candidate.role, candidate.info?.role)?.toLowerCase() === "assistant" &&
+            firstNonEmptyString(candidate.info?.parentID, candidate.info?.parentId) === blockGroupKey,
+          )
+        : [],
+    [blockGroupKey, messages, shouldAggregateCollapsedBlockActivity],
+  );
+  const collapsedBlockAssistantMessageIds = useMemo(
+    () =>
+      collapsedBlockAssistantMessages
+        .map((candidate) => firstNonEmptyString(candidate.id, candidate.info?.id))
+        .filter((id): id is string => Boolean(id)),
+    [collapsedBlockAssistantMessages],
+  );
   const assistantMessageId =
     message?.info?.id ||
     message?.id ||
@@ -7764,6 +8482,41 @@ const centralizedRawResponse = message?.rawResponse;
     assistantTurnRootMessageId,
     latestSyncWrappedAssistantMessageId,
   ) || null;
+  const liveAssistantTurnParentMessageId = useMemo(() => {
+    const liveAssistantIds = new Set(
+      [assistantTurnMessageId, activityTimelineStreaming?.messageId, assistantMessageId]
+        .filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+        .map((id) => id.trim()),
+    );
+    if (liveAssistantIds.size === 0) {
+      return null;
+    }
+
+    for (let index = sessionScopedRawSdkEventPayloads.length - 1; index >= 0; index -= 1) {
+      const event = sessionScopedRawSdkEventPayloads[index];
+      const info = getCentralizedEventInfo(event);
+      const eventMessageId = firstNonEmptyString(
+        asString(info?.id),
+        extractSemanticEventMessageId(event),
+      );
+      if (!eventMessageId || !liveAssistantIds.has(eventMessageId)) {
+        continue;
+      }
+      const parentId = firstNonEmptyString(
+        asString(info?.parentID),
+        asString(info?.parentId),
+      );
+      if (parentId) {
+        return parentId;
+      }
+    }
+    return null;
+  }, [
+    activityTimelineStreaming?.messageId,
+    assistantMessageId,
+    assistantTurnMessageId,
+    sessionScopedRawSdkEventPayloads,
+  ]);
   const assistantScopeMessageIds = useMemo(() => {
     return buildAssistantScopeMessageIds({
       message,
@@ -7772,6 +8525,8 @@ const centralizedRawResponse = message?.rawResponse;
       assistantTurnMessageId,
       assistantTurnRootMessageId,
       assistantTurnAnchorMessageId,
+      additionalMessageIds: collapsedBlockAssistantMessageIds,
+      includeLiveTurnIds: isCurrentCardLiveAssistantTurn,
     });
   }, [
     message,
@@ -7780,6 +8535,8 @@ const centralizedRawResponse = message?.rawResponse;
     assistantTurnMessageId,
     assistantTurnRootMessageId,
     assistantTurnAnchorMessageId,
+    collapsedBlockAssistantMessageIds,
+    isCurrentCardLiveAssistantTurn,
   ]);
   const messageAttachedRawSdkEventPayloads = useMemo(
     () => (Array.isArray(message?.rawSdkEventPayloads) ? message.rawSdkEventPayloads : []),
@@ -7912,35 +8669,57 @@ const centralizedRawResponse = message?.rawResponse;
     assistantMessageId,
     assistantScopeMessageIds,
   ]);
+  // A single user turn may create several assistant SDK envelopes (reasoning,
+  // tools, then response). Key sticky timeline state to the shared block when
+  // available so moving from one envelope to the next cannot clear activity
+  // already painted for that turn.
   const activityTimelineTurnMessageId = firstNonEmptyString(
-    assistantMessageId,
+    blockGroupKey,
+    // A tool-driven assistant response advances through multiple SDK assistant
+    // message IDs under one user parent. The live card has no ChatShell block
+    // key, so use that parent as its stable turn key; otherwise each phase
+    // replaces the visible timeline with only its latest tool rows.
+    liveAssistantTurnParentMessageId,
     assistantTurnAnchorMessageId,
     assistantTurnMessageId,
+    assistantMessageId,
     activityTimelineStreaming?.messageId,
   ) || null;
   const stickyCentralizedRawSdkEventPayloadsRef = useRef<{
     messageId: string | null;
+    sessionId: string | null;
     payloads: unknown[];
-  }>({ messageId: null, payloads: [] });
+    isLive: boolean;
+  }>({ messageId: null, sessionId: null, payloads: [], isLive: false });
   if (
     stickyCentralizedRawSdkEventPayloadsRef.current.messageId !==
     activityTimelineTurnMessageId
   ) {
-    // Preserve rendered centralized activity only within the same assistant
-    // turn. The source tape arrives in both normal event form and syncEvent
-    // wrapper form, so the scoped payload selection above may briefly be empty
-    // during hydration. Reusing the same-turn payloads prevents flicker, but
-    // carrying them into a different `activityTimelineTurnMessageId` leaks the
-    // previous turn's reasoning/response into the next assistant card.
+    // Assistant envelope IDs are not a stream boundary. The event/session
+    // admission path already rejects foreign sessions, so retain the accepted
+    // tape across every same-session phase and activity group. Reset only when
+    // the selected session itself changes.
+    const sessionChanged = Boolean(
+      stickyCentralizedRawSdkEventPayloadsRef.current.sessionId &&
+        centralizedSessionId &&
+        stickyCentralizedRawSdkEventPayloadsRef.current.sessionId !== centralizedSessionId,
+    );
     stickyCentralizedRawSdkEventPayloadsRef.current = {
       messageId: activityTimelineTurnMessageId,
-      payloads: [],
+      sessionId: centralizedSessionId,
+      payloads: sessionChanged ? [] : stickyCentralizedRawSdkEventPayloadsRef.current.payloads,
+      isLive: isLiveAssistantTurn,
     };
+  } else {
+    stickyCentralizedRawSdkEventPayloadsRef.current.isLive = isLiveAssistantTurn;
+    stickyCentralizedRawSdkEventPayloadsRef.current.sessionId = centralizedSessionId;
   }
   if (centralizedRawSdkEventPayloads.length > 0) {
     stickyCentralizedRawSdkEventPayloadsRef.current = {
       messageId: activityTimelineTurnMessageId,
+      sessionId: centralizedSessionId,
       payloads: centralizedRawSdkEventPayloads,
+      isLive: isLiveAssistantTurn,
     };
   }
   const effectiveCentralizedRawSdkEventPayloads =
@@ -7955,19 +8734,29 @@ const centralizedRawResponse = message?.rawResponse;
     }
 
     const streamingMessageId = asString(activityTimelineStreaming.messageId).trim();
-    if (!assistantMessageId) {
-      return activityTimelineStreaming;
-    }
-    if (!streamingMessageId) {
-      // Keep legacy or incomplete streaming snapshots only when we cannot
-      // identify the owning message yet. Once a message ID is present, the
-      // stream must match the current assistant turn to avoid leaking the
-      // previous turn’s live steps into the new card.
+    if (!message || isCurrentCardLiveAssistantTurn) {
+      // A hydrated assistant message can expose an equivalent ID through a
+      // different field (`id`, `info.id`, or the active-turn anchor).  The
+      // turn-aware identity check above considers all of those candidates.
+      // Comparing only the preferred assistantMessageId here made the live
+      // overlay disappear until the next hydration snapshot arrived.
       return activityTimelineStreaming;
     }
 
-    return streamingMessageId === assistantMessageId ? activityTimelineStreaming : undefined;
-  }, [activityTimelineStreaming, assistantMessageId]);
+    if (!streamingMessageId && currentMessageIdentityCandidates.size === 0) {
+      // Legacy assistant cards without an identity cannot be scoped more
+      // precisely. Preserve the existing fallback only for that case.
+      return activityTimelineStreaming;
+    }
+
+    // A stream for another assistant turn must never appear in this card.
+    return undefined;
+  }, [
+    activityTimelineStreaming,
+    currentMessageIdentityCandidates.size,
+    isCurrentCardLiveAssistantTurn,
+    message,
+  ]);
   const turnMetadata = useMemo(
     () =>
       getAssistantTurnMetadataFromCentralizedEvents(
@@ -7983,6 +8772,32 @@ const centralizedRawResponse = message?.rawResponse;
     [effectiveCentralizedRawSdkEventPayloads],
   );
   const cardMessage = activityTimelineMessage;
+  const hydratedActivityParts = useMemo(
+    () =>
+      collapsedBlockAssistantMessages.length > 0
+        ? collapsedBlockAssistantMessages.flatMap((candidate) =>
+            Array.isArray(candidate.parts) ? candidate.parts : [],
+          )
+        : cardMessage?.parts ?? [],
+    [cardMessage?.parts, collapsedBlockAssistantMessages],
+  );
+  const hydratedActivitySteps = useMemo(
+    () =>
+      collapsedBlockAssistantMessages.length > 0
+        ? collapsedBlockAssistantMessages.flatMap((candidate) => [
+            ...(Array.isArray(candidate.progressEvents) ? candidate.progressEvents : []),
+            ...(Array.isArray(candidate.steps) ? candidate.steps : []),
+          ])
+        : [
+            ...(cardMessage?.progressEvents ?? []),
+            ...(cardMessage?.steps ?? []),
+          ],
+    [
+      cardMessage?.progressEvents,
+      cardMessage?.steps,
+      collapsedBlockAssistantMessages,
+    ],
+  );
   const rawContentChunks = useMemo(
     () =>
       getCentralizedAssistantContentChunksFromRawSdkEventPayloads(
@@ -8057,12 +8872,38 @@ const centralizedRawResponse = message?.rawResponse;
     [cardMessage?.reasoningEvents],
   );
   const liveThoughtItems = useMemo(
-    () =>
-      thoughtItemsFromStreamingReasoningEvents(
+    () => {
+      const items = thoughtItemsFromStreamingReasoningEvents(
         scopedActivityTimelineStreaming?.reasoningEvents,
         scopedActivityTimelineStreaming?.isActive === true,
-      ),
-    [scopedActivityTimelineStreaming?.reasoningEvents, scopedActivityTimelineStreaming?.isActive],
+      );
+      // Live delta text is deliberately not retained in React state. Keep a
+      // single, cheap status row until the SDK supplies the completed part.
+      if (
+        items.length === 0 &&
+        scopedActivityTimelineStreaming?.isActive === true &&
+        scopedActivityTimelineStreaming.inReasoningPart === true
+      ) {
+        return [{
+          key: "live-reasoning-placeholder",
+          text: "Thinking...",
+          messageID: scopedActivityTimelineStreaming.messageId ?? undefined,
+          source: "stream" as const,
+          status: "pending" as const,
+          // Delta text is intentionally not retained in state. This row stands
+          // for the newest stream event, so it belongs after any activity that
+          // rendered before the delta instead of defaulting to timeline index 0.
+          streamSeq: Number.MAX_SAFE_INTEGER,
+        }];
+      }
+      return items;
+    },
+    [
+      scopedActivityTimelineStreaming?.reasoningEvents,
+      scopedActivityTimelineStreaming?.isActive,
+      scopedActivityTimelineStreaming?.inReasoningPart,
+      scopedActivityTimelineStreaming?.messageId,
+    ],
   );
   const thoughtItems = useMemo(
     () => mergeThoughtItemsForTimeline(
@@ -8075,24 +8916,29 @@ const centralizedRawResponse = message?.rawResponse;
   const progressItems = useMemo(
     () => {
       const fromRaw = progressItemsFromCentralizedData(normalizedCentralizedRawSdkEventPayloads);
-      if (fromRaw.length > 0) {
-        return fromRaw;
-      }
       const fromSnapshotParts = progressItemsFromRawResponseParts({
-        parts: cardMessage?.parts,
+        parts: hydratedActivityParts,
       });
-      if (fromSnapshotParts.length > 0) {
-        return fromSnapshotParts;
-      }
-      return progressItemsFromSteps(
-        [...(cardMessage?.progressEvents ?? []), ...(cardMessage?.steps ?? [])],
+      const fromSnapshotSteps = progressItemsFromSteps(
+        hydratedActivitySteps,
         "sdk-snapshot",
+      );
+      // These are complementary representations of the same turn, not
+      // mutually-exclusive fallbacks. A live/raw tape commonly contains only
+      // some tool parts while the SDK message snapshot carries the rest. Run
+      // both through the canonical merge in every frame; returning their raw
+      // concatenation during a stream creates duplicate and stale rows.
+      // `fromRaw` is first, so current live state remains authoritative until
+      // the corresponding hydrated snapshot catches up.
+      return mergeProgressItemsForTimeline(
+        fromRaw,
+        [...fromSnapshotParts, ...fromSnapshotSteps],
       );
     },
     [
-      cardMessage?.parts,
-      cardMessage?.progressEvents,
-      cardMessage?.steps,
+      hydratedActivityParts,
+      hydratedActivitySteps,
+      isLiveAssistantTurn,
       normalizedCentralizedRawSdkEventPayloads,
     ],
   );
@@ -8112,7 +8958,12 @@ const centralizedRawResponse = message?.rawResponse;
     [scopedActivityTimelineStreaming?.progressEvents, scopedActivityTimelineStreaming?.steps],
   );
   const mergedProgressItems = useMemo(
-    () => mergeProgressItemsForTimeline(progressItems, liveProgressItems, isStreamingActive),
+    () =>
+      mergeProgressItemsForTimeline(
+        progressItems,
+        liveProgressItems,
+        isStreamingActive,
+      ),
     [progressItems, liveProgressItems, isStreamingActive],
   );
   const commentaryItems = useMemo(
@@ -8168,6 +9019,39 @@ const centralizedRawResponse = message?.rawResponse;
     },
     [thoughtItems, mergedProgressItems, commentaryItems, fileChanges, assistantScopeMessageIds, messageId, isParentResponseFinished],
   );
+  const activityOrderTraceRef = useRef<string>("");
+  useEffect(() => {
+    if (!config.debug.showSdkEventDebug) {
+      return;
+    }
+    const activity = displayEvents
+      .filter((event) => event.kind === "activity")
+      .map((event) => ({
+        identity: activityDisplayEventIdentity(event),
+        label: event.label,
+        sequence: event.streamSeq ?? null,
+        source: event.source ?? null,
+      }));
+    const numericSequences = activity
+      .map((event) => event.sequence)
+      .filter((sequence): sequence is number => typeof sequence === "number");
+    const isOutOfOrder = numericSequences.some(
+      (sequence, index) => index > 0 && sequence < numericSequences[index - 1],
+    );
+    if (!isOutOfOrder) {
+      return;
+    }
+    const signature = JSON.stringify({ messageId, activity });
+    if (signature === activityOrderTraceRef.current) {
+      return;
+    }
+    activityOrderTraceRef.current = signature;
+    logger.warn("[ACTIVITY-ORDER-TRACE] non-monotonic-render-order", {
+      sessionId: centralizedSessionId,
+      messageId,
+      activity,
+    });
+  }, [centralizedSessionId, displayEvents, messageId]);
   // Centralized debug is the long-term source of truth for this assistant turn.
   // Keep it raw and complete so future UI rendering can consume the same data
   // without depending on derived display-only transforms.
@@ -8397,37 +9281,449 @@ const centralizedRawResponse = message?.rawResponse;
   );
   const stickyTimelineDisplayEventsRef = useRef<{
     messageId: string | null;
+    sessionId: string | null;
     events: DisplayEvent[];
-  }>({ messageId: null, events: [] });
+    isLive: boolean;
+  }>({ messageId: null, sessionId: null, events: [], isLive: false });
   if (
     stickyTimelineDisplayEventsRef.current.messageId !==
     activityTimelineTurnMessageId
   ) {
-    // Preserve already-rendered activity rows for the current assistant turn
-    // even if a later hydrated snapshot only contains a partial subset of the
-    // events. A turn change still hard-resets the latch so rows do not bleed
-    // into the next assistant response.
+    const sessionChanged = Boolean(
+      stickyTimelineDisplayEventsRef.current.sessionId &&
+        centralizedSessionId &&
+        stickyTimelineDisplayEventsRef.current.sessionId !== centralizedSessionId,
+    );
+    if (
+      config.debug.showSdkEventDebug &&
+      isStreamingActive &&
+      stickyTimelineDisplayEventsRef.current.events.length > 0
+    ) {
+      logger.warn(
+        `[ACTIVITY-TIMELINE-TRACE] ${
+          sessionChanged ? "sticky-session-reset" : "sticky-turn-phase-carried"
+        }`,
+        {
+        previousTurnId: stickyTimelineDisplayEventsRef.current.messageId,
+        nextTurnId: activityTimelineTurnMessageId,
+        isCurrentCardLiveAssistantTurn,
+        blockGroupKey: blockGroupKey ?? null,
+        assistantTurnAnchorMessageId,
+        assistantTurnMessageId,
+        assistantMessageId,
+        retainedRowCount: stickyTimelineDisplayEventsRef.current.events.length,
+        retainedRows: stickyTimelineDisplayEventsRef.current.events
+          .filter((event) => event.kind === "activity")
+          .map((event) => ({
+            identity:
+              activityDisplayEventIdentity(event) ||
+              activitySnapshotIdentity(event) ||
+              displayEventFingerprint(event),
+            label: event.label,
+            status: event.status,
+            source: event.source,
+            callID: event.callID,
+            partID: event.partID,
+            messageID: event.messageID,
+            filePath: event.filePath,
+            tool: event.activityDetail?.tool,
+          })),
+        sessionId: currentSessionId,
+          sessionChanged,
+          source: "webview",
+        },
+      );
+    }
+    // Preserve accepted rows for the whole session. A step group, assistant
+    // message ID, or transient inactive status must never delete UI that has
+    // already rendered; session-scoped event admission prevents cross-session
+    // leakage before rows reach this projection.
     stickyTimelineDisplayEventsRef.current = {
       messageId: activityTimelineTurnMessageId,
-      events: [],
+      sessionId: centralizedSessionId,
+      events: sessionChanged ? [] : stickyTimelineDisplayEventsRef.current.events,
+      isLive: isLiveAssistantTurn,
     };
+  } else {
+    stickyTimelineDisplayEventsRef.current.isLive = isLiveAssistantTurn;
+    stickyTimelineDisplayEventsRef.current.sessionId = centralizedSessionId;
   }
   if (visibleDisplayEvents.length > 0) {
     stickyTimelineDisplayEventsRef.current = {
       messageId: activityTimelineTurnMessageId,
-      events: mergeStickyDisplayEventsForTurn(
-        stickyTimelineDisplayEventsRef.current.events,
-        visibleDisplayEvents,
+      sessionId: centralizedSessionId,
+      events: orderDisplayEventsChronologically(
+        mergeStickyDisplayEventsForTurn(
+          stickyTimelineDisplayEventsRef.current.events,
+          visibleDisplayEvents,
+        ),
       ),
+      isLive: isLiveAssistantTurn,
     };
   }
+  // The raw live projection is intentionally allowed to be partial: OpenCode
+  // advances one user turn through multiple assistant envelopes, and each
+  // envelope can contain only its current activity group. Rendering that raw
+  // array directly made already-painted rows vanish whenever the next
+  // step-start/step-finish group arrived. The turn-scoped sticky merge is the
+  // single presentation source for both live and hydrated frames; it retains
+  // prior rows and coalesces mirrors through the semantic identities above.
   const timelineDisplayEvents =
-    visibleDisplayEvents.length > 0
+    stickyTimelineDisplayEventsRef.current.messageId === activityTimelineTurnMessageId
       ? stickyTimelineDisplayEventsRef.current.events
-      : stickyTimelineDisplayEventsRef.current.messageId ===
-          activityTimelineTurnMessageId
-        ? stickyTimelineDisplayEventsRef.current.events
-        : visibleDisplayEvents;
+      : visibleDisplayEvents;
+
+  // Evidence-only guard for the regression where a row paints during a live
+  // turn and is then removed by a later projection. The sticky merge above is
+  // meant to make that impossible; when it happens, log every pipeline stage
+  // once so the next trace identifies the layer that lost the row.
+  const renderedActivityTraceRef = useRef<{
+    turnId: string | null;
+    events: Map<string, Record<string, unknown>>;
+  }>({ turnId: null, events: new Map() });
+  const duplicateActivityTraceRef = useRef<string>("");
+  useEffect(() => {
+    if (!config.debug.showSdkEventDebug) {
+      return;
+    }
+
+    const summarizeDisplayActivity = (event: DisplayEvent): Record<string, unknown> => {
+      const input = asRecord(event.activityDetail?.input);
+      const semanticIdentity =
+        activityPatchIdentity(event) ||
+        todoWriteChecklistIdentity(event) ||
+        activitySnapshotIdentity(event);
+      return {
+      identity:
+        semanticIdentity ||
+        activityDisplayEventIdentity(event) ||
+        displayEventFingerprint(event),
+      key: event.key,
+      label: event.label,
+      status: event.status,
+      source: event.source,
+      messageID: event.messageID,
+      partID: event.partID,
+      callID: event.callID,
+      tool: event.activityDetail?.tool,
+      filePath: event.filePath ?? asString(input?.filePath),
+      offset: input?.offset,
+      limit: input?.limit,
+      oldStringLength: asString(input?.oldString).length || undefined,
+      newStringLength: asString(input?.newString).length || undefined,
+      patchIdentity: activityPatchIdentity(event) || undefined,
+      semanticIdentity,
+      summary: event.summary.slice(0, 220),
+      };
+    };
+    const mapActivities = (events: DisplayEvent[]) =>
+      new Map(
+        events
+          .filter((event) => event.kind === "activity")
+          .map((event) => {
+            const summary = summarizeDisplayActivity(event);
+            return [String(summary.identity), summary] as const;
+          }),
+      );
+    const displayActivity = mapActivities(displayEvents);
+    const stickyActivity = mapActivities(stickyTimelineDisplayEventsRef.current.events);
+    const currentEvents = mapActivities(timelineDisplayEvents);
+
+    // Diagnostics only: group rows by the exact data the user can see. This
+    // intentionally does not perform dedupe; it tells us which reducer stage
+    // allowed a visually identical Read/File_edit through, and whether the
+    // SDK payloads actually differed in call, part, or tool input.
+    const visibleActivityKey = (event: DisplayEvent): string => {
+      const input = asRecord(event.activityDetail?.input);
+      const tool = normalizeComparableText(
+        firstNonEmptyString(event.activityDetail?.tool, event.label, event.partType),
+      );
+      const file = normalizeComparableText(
+        firstNonEmptyString(
+          event.filePath,
+          event.activityDetail?.file,
+          asString(input?.filePath),
+          asString(input?.file),
+          asString(input?.path),
+        ),
+      );
+      if (tool === "read" || tool === "read_file") {
+        return `visible-read:${file}:${asString(input?.offset)}:${asString(input?.limit)}`;
+      }
+      if (isEditLikeActivity(event)) {
+        return `visible-edit:${file}:${activityPatchIdentity(event)}`;
+      }
+      return `visible:${tool}:${file}:${normalizeComparableText(event.summary)}`;
+    };
+    const duplicateGroups = (events: DisplayEvent[]) => {
+      const groups = new Map<string, DisplayEvent[]>();
+      for (const event of events) {
+        if (event.kind !== "activity") continue;
+        const key = visibleActivityKey(event);
+        groups.set(key, [...(groups.get(key) ?? []), event]);
+      }
+      return [...groups.entries()]
+        .filter(([, eventsForKey]) => eventsForKey.length > 1)
+        .map(([key, eventsForKey]) => ({
+          key,
+          rows: eventsForKey.map((event) => summarizeDisplayActivity(event)),
+        }));
+    };
+    const duplicateStages = {
+      rawProgress: duplicateGroups(
+        progressItems.map((item) => ({
+          key: item.key,
+          kind: "activity" as const,
+          label: item.title,
+          summary: item.meta ?? item.title,
+          status: item.status,
+          source: item.source,
+          partType: item.partType,
+          filePath: item.filePath,
+          callID: item.callID,
+          messageID: item.messageID,
+          partID: item.id,
+          activityDetail: item.activityDetail,
+          updateCount: 1,
+        })),
+      ),
+      mergedProgress: duplicateGroups(
+        mergedProgressItems.map((item) => ({
+          key: item.key,
+          kind: "activity" as const,
+          label: item.title,
+          summary: item.meta ?? item.title,
+          status: item.status,
+          source: item.source,
+          partType: item.partType,
+          filePath: item.filePath,
+          callID: item.callID,
+          messageID: item.messageID,
+          partID: item.id,
+          activityDetail: item.activityDetail,
+          updateCount: 1,
+        })),
+      ),
+      display: duplicateGroups(displayEvents),
+      sticky: duplicateGroups(stickyTimelineDisplayEventsRef.current.events),
+      rendered: duplicateGroups(timelineDisplayEvents),
+    };
+    const hasDuplicateActivities = Object.values(duplicateStages).some(
+      (groups) => groups.length > 0,
+    );
+    const duplicateSignature = hasDuplicateActivities
+      ? JSON.stringify(duplicateStages)
+      : "";
+    if (hasDuplicateActivities && duplicateSignature !== duplicateActivityTraceRef.current) {
+      duplicateActivityTraceRef.current = duplicateSignature;
+      logger.warn("[ACTIVITY-TIMELINE-TRACE] duplicate-visible-activity", {
+        turnId: activityTimelineTurnMessageId,
+        sessionId: currentSessionId,
+        duplicateStages,
+        source: "webview",
+      });
+    }
+
+    const previous = renderedActivityTraceRef.current;
+    if (previous.turnId === activityTimelineTurnMessageId) {
+      const removed = [...previous.events.entries()]
+        .filter(([identity]) => !currentEvents.has(identity))
+        .map(([, summary]) => summary);
+      // A broken assistant-phase handoff can incorrectly flip streaming to
+      // inactive immediately before the timeline loses rows. Keep logging for
+      // the live assistant card in that state; otherwise the diagnostic hides
+      // the exact removal the user is reporting.
+      if (removed.length > 0 && (isStreamingActive || isCurrentCardLiveAssistantTurn)) {
+        const lossLayers = removed.map((summary) => {
+          const identity = String(summary.identity);
+          return {
+            identity,
+            missingFromDisplay: !displayActivity.has(identity),
+            missingFromSticky: !stickyActivity.has(identity),
+            missingFromFinalRender: !currentEvents.has(identity),
+          };
+        });
+        const summarizeProgress = (items: ProgressItem[]) =>
+          items.map((item) => ({
+            identity: item.mergeKey || item.callID || item.id || item.key,
+            title: item.title,
+            status: item.status,
+            source: item.source,
+            callID: item.callID,
+            messageID: item.messageID,
+            tool: item.activityDetail?.tool,
+          }));
+        logger.warn("[ACTIVITY-TIMELINE-TRACE] rendered-step-removed", {
+          turnId: activityTimelineTurnMessageId,
+          removed,
+          rawProgress: summarizeProgress(progressItems),
+          liveProgress: summarizeProgress(liveProgressItems),
+          mergedProgress: summarizeProgress(mergedProgressItems),
+          displayActivity: [...displayActivity.values()],
+          stickyActivity: [...stickyActivity.values()],
+          finalRenderedActivity: [...currentEvents.values()],
+          lossLayers,
+          isStreamingActive,
+          isCurrentCardLiveAssistantTurn,
+          isLiveAssistantTurn,
+          removalContext: isStreamingActive
+            ? "active-stream"
+            : "live-card-after-stream-inactive",
+        });
+      }
+    }
+    renderedActivityTraceRef.current = {
+      turnId: activityTimelineTurnMessageId,
+      events: currentEvents,
+    };
+  }, [
+    activityTimelineTurnMessageId,
+    displayEvents,
+    isCurrentCardLiveAssistantTurn,
+    isLiveAssistantTurn,
+    isStreamingActive,
+    liveProgressItems,
+    mergedProgressItems,
+    progressItems,
+    currentSessionId,
+    timelineDisplayEvents,
+  ]);
+
+  // Hydration parity trace: `edit` is a real SDK tool part, while `file_edit`
+  // is only the patch-derived duplicate representation. When an authoritative
+  // Edit part does not make the rendered timeline, report the exact stage that
+  // dropped it instead of treating a separate diff preview as success.
+  const hydratedEditProjectionTraceRef = useRef("");
+  const hydratedStepProjectionTraceRef = useRef("");
+  useEffect(() => {
+    if (!config.debug.showSdkEventDebug || isStreamingActive) {
+      return;
+    }
+
+    const sourceSteps = hydratedActivityParts
+      .map((part) => asRecord(part))
+      .filter((part): part is Record<string, unknown> => Boolean(part))
+      .filter((part) => asString(part.type).trim().toLowerCase() === "tool")
+      .map((part) => {
+        const state = asRecord(part.state);
+        return {
+          partID: asString(part.id) || null,
+          callID: asString(part.callID) || asString(part.callId) || null,
+          messageID: asString(part.messageID) || asString(part.messageId) || null,
+          tool: asString(part.tool) || asString(part.name) || null,
+          status: asString(state?.status) || null,
+        };
+      });
+    const stage = (items: Array<ProgressItem | DisplayEvent>) =>
+      items
+        .filter((item) => item.kind === "activity" || "activityDetail" in item)
+        .map((item) => ({
+          partID: "id" in item ? item.id ?? null : item.partID ?? null,
+          callID: item.callID ?? null,
+          messageID: item.messageID ?? null,
+          tool: item.activityDetail?.tool ?? null,
+          label: "title" in item ? item.title : item.label,
+          status: item.status,
+        }));
+    const payload = {
+      sessionId: currentSessionId,
+      turnId: activityTimelineTurnMessageId,
+      blockGroupKey: blockGroupKey ?? null,
+      isLastInBlock: isLastInBlock ?? null,
+      isBlockExpanded: isBlockExpanded ?? null,
+      collapsedBlockAssistantMessageIds,
+      sourceSteps,
+      progressSteps: stage(mergedProgressItems),
+      displaySteps: stage(displayEvents),
+      renderedSteps: stage(timelineDisplayEvents),
+      source: "webview",
+    };
+    const signature = JSON.stringify(payload);
+    if (signature === hydratedStepProjectionTraceRef.current) {
+      return;
+    }
+    hydratedStepProjectionTraceRef.current = signature;
+    logger.warn("[HYDRATION-STEP-TRACE][RENDER] projection", payload);
+  }, [
+    activityTimelineTurnMessageId,
+    blockGroupKey,
+    collapsedBlockAssistantMessageIds,
+    currentSessionId,
+    displayEvents,
+    hydratedActivityParts,
+    isBlockExpanded,
+    isLastInBlock,
+    isStreamingActive,
+    mergedProgressItems,
+    timelineDisplayEvents,
+  ]);
+  useEffect(() => {
+    if (!config.debug.showSdkEventDebug || isStreamingActive) {
+      return;
+    }
+
+    const sourceEdits = hydratedActivityParts
+      .map((part) => asRecord(part))
+      .filter((part): part is Record<string, unknown> => Boolean(part))
+      .filter((part) => asString(part.tool).trim().toLowerCase() === "edit")
+      .map((part) => {
+        const state = asRecord(part.state);
+        const input = asRecord(state?.input);
+        return {
+          partID: asString(part.id).trim() || undefined,
+          callID: asString(part.callID).trim() || undefined,
+          messageID: asString(part.messageID).trim() || undefined,
+          status: asString(state?.status).trim() || undefined,
+          filePath: asString(input?.filePath).trim() || undefined,
+        };
+      });
+    if (sourceEdits.length === 0) {
+      return;
+    }
+
+    const stage = (items: Array<ProgressItem | DisplayEvent>) =>
+      items
+        .filter((item) => item.activityDetail?.tool?.trim().toLowerCase() === "edit")
+        .map((item) => ({
+          partID: "id" in item ? item.id : item.partID,
+          callID: item.callID,
+          messageID: item.messageID,
+          status: item.status,
+          filePath: item.filePath,
+          source: item.source,
+        }));
+    const payload = {
+      sessionId: currentSessionId,
+      turnId: activityTimelineTurnMessageId,
+      blockGroupKey: blockGroupKey ?? null,
+      isLastInBlock: isLastInBlock ?? null,
+      isBlockExpanded: isBlockExpanded ?? null,
+      collapsedBlockAssistantMessageIds,
+      sourceEdits,
+      progressEdits: stage(mergedProgressItems),
+      displayEdits: stage(displayEvents),
+      renderedEdits: stage(timelineDisplayEvents),
+      source: "webview",
+    };
+    const signature = JSON.stringify(payload);
+    if (signature === hydratedEditProjectionTraceRef.current) {
+      return;
+    }
+    hydratedEditProjectionTraceRef.current = signature;
+    logger.warn("[ACTIVITY-TIMELINE-TRACE] hydrated-edit-projection", payload);
+  }, [
+    activityTimelineTurnMessageId,
+    blockGroupKey,
+    collapsedBlockAssistantMessageIds,
+    currentSessionId,
+    displayEvents,
+    hydratedActivityParts,
+    isBlockExpanded,
+    isLastInBlock,
+    isStreamingActive,
+    mergedProgressItems,
+    timelineDisplayEvents,
+  ]);
         
   // Step lifecycle markers are retained for timeline bookkeeping, but their
   // compact UI is intentionally hidden. They must not leave an empty
@@ -8853,7 +10149,9 @@ const centralizedRawResponse = message?.rawResponse;
       ? inlineSubagentParentMessageIds.flatMap(
           (parentMessageId) => subagentsByParentMessageId?.[parentMessageId] ?? [],
         )
-      : formattedSubagents;
+		: !message && formattedSubagents.length === 0
+			? liveSessionSubagents
+			: formattedSubagents;
 		const filtered = candidates.filter((subagent) => {
 			// Check if in active session
 			if (currentSessionId && subagent.parentSessionId !== currentSessionId) {
@@ -8863,7 +10161,7 @@ const centralizedRawResponse = message?.rawResponse;
 		});
 
 		return Array.from(new Map(filtered.map((subagent) => [subagent.id, subagent])).values());
-	}, [currentSessionId, formattedSubagents, inlineSubagentParentMessageIds, isLastInBlock, subagentsByParentMessageId]);
+	}, [currentSessionId, formattedSubagents, inlineSubagentParentMessageIds, isLastInBlock, liveSessionSubagents, message, subagentsByParentMessageId]);
   // Show it once, on the response card excluded from the collapsed earlier
   // activity. The live card has no persisted block position and owns itself.
   const shouldRenderSubagentsInlineCard = !message || isLastInBlock !== false;
@@ -9060,11 +10358,7 @@ const centralizedRawResponse = message?.rawResponse;
 
   // Use type-safe helpers instead of type assertions
   const agentName = turnMetadata.agent || getAgentName(message, streaming);
-  // The response header is a persistent affordance, not a best-effort bonus.
-  // When upstream metadata is partially missing we still render a visible label
-  // so every AI response block keeps a stable top anchor instead of collapsing
-  // to an empty header row.
-  const assistantHeaderAgentLabel = firstNonEmptyString(agentName)?.trim() || "assistant";
+  const assistantHeaderAgentLabel = firstNonEmptyString(agentName)?.trim();
   const agentColor = useMemo(() => {
     return getStableAgentAccentColor(agentName);
   }, [agentName]);
@@ -9315,7 +10609,12 @@ const responseBodyChunks = useMemo(() => {
       streaming?.hasRenderableContent === true &&
       streaming.content.trim().length > 0
     ) {
-      return [streaming.content];
+      const liveChunks = Array.isArray(streaming.responseChunks)
+        ? streaming.responseChunks
+            .map((chunk) => chunk.text.trim())
+            .filter((chunk) => chunk.length > 0)
+        : [];
+      return liveChunks.length > 0 ? liveChunks : [streaming.content];
     }
     const orderedChunks = orderedAssistantResponseChunksFromCentralizedData(
       responseBodyRawSdkEventPayloads,
@@ -9424,12 +10723,17 @@ const responseBodyChunks = useMemo(() => {
     !!cardMessage?.error &&
     (cardMessage.retryWithoutStructuredOutput === true ||
       isStructuredOutputFailureMessage(cardMessage.error));
+  const structuredOutputWarning =
+    structuredRetryError ||
+    cardMessage?.displayError?.type === "structured_output_failure" ||
+    isStructuredOutputFailureMessage(cardMessage?.displayError?.message);
   const showLegacyErrorBanner =
     !!cardMessage?.error &&
     !messageMatchesDisplayErrorText(cardMessage, cardMessage.error) &&
-    !structuredRetryError &&
+    !structuredOutputWarning &&
     !isAborted;
-  const showDisplayErrorBanner = !!cardMessage?.displayError;
+  const showDisplayErrorBanner =
+    !!cardMessage?.displayError && !structuredOutputWarning;
   const plainTextFallback = cardMessage?.plainTextFallback === true;
   const plainTextFallbackTooltip = plainTextFallback
     ? [
@@ -9517,7 +10821,7 @@ const hasVisibleResponseSectionContent =
     if (!textToCopy) return;
 
     try {
-      await navigator.clipboard.writeText(textToCopy);
+      await copyToClipboard(textToCopy);
       setCopied(true);
       setTimeout(() => setCopied(false), 1200);
       return;
@@ -9928,7 +11232,7 @@ const hasVisibleResponseSectionContent =
 
                   return (
                     <Stepper
-                      key={`stepper-${groupIdx}`}
+                      key={timelineDisplayGroupReactKey(group.events, groupIdx)}
                       className="oc-refined-stepper oc-activity-timeline-compact"
                       ref={groupIdx === nonQuestionTimelineDisplayEventGroups.length - 1 ? progressTimelineRef : undefined}
                       autoScrollToBottom={isStreamingActive && groupIdx === nonQuestionTimelineDisplayEventGroups.length - 1}
@@ -9982,6 +11286,9 @@ const hasVisibleResponseSectionContent =
                         // otherwise-empty detail column leaves a clipped surface and
                         // vertical gap between consecutive Read/Thought rows.
                         const isReadActivity = labelLower === "read";
+                        const readLineRange = isReadActivity
+                          ? formatReadLineRange(event.activityDetail?.input, event.activityDetail?.metadata)
+                          : undefined;
                         const shouldRenderActivityBody = !isReadActivity;
 
                         // Lifecycle markers (step-start / step-finish) are used internally by the 
@@ -10013,7 +11320,7 @@ const hasVisibleResponseSectionContent =
                             (event.summary || "").trim().toLowerCase() === "start";
                           return (
                             <StepperItem
-                              key={event.key}
+                              key={timelineDisplayEventReactKey(event)}
                               isLast={isLast}
                               indicator={indicatorNode}
                               className={cn(
@@ -10035,10 +11342,14 @@ const hasVisibleResponseSectionContent =
                         const isGlobSearch = labelLower === "glob";
                         const isEditLike =
                           labelLower === "edit" ||
+                          labelLower === "file_edit" ||
                           labelLower === "modify" ||
                           labelLower === "patch" ||
                           labelLower === "write" ||
                           labelLower === "apply_patch";
+                        const editChangeSize = isEditLike
+                          ? formatEditChangeSize(event.activityDetail?.input)
+                          : undefined;
                         const showDiffPreviewLocal =
                           isEditLike &&
                           (
@@ -10052,10 +11363,21 @@ const hasVisibleResponseSectionContent =
                           );
 
                         return (
-                          <ActivityTimelineItem id={event.key} isLast={isLast} status={event.status}>
+                          <ActivityTimelineItem
+                            key={timelineDisplayEventReactKey(event)}
+                            id={timelineDisplayEventReactKey(event)}
+                            isLast={isLast}
+                            status={event.status}
+                          >
                             {(() => {
                               if (event.kind === "reasoning") {
                                 const isExpanded = viewState.expandedReasoningSteps.has(event.key);
+                                // A live reasoning part remains pending until its terminal
+                                // SDK snapshot arrives, but its delta text is already useful
+                                // and must remain inspectable during that period.
+                                const hasReasoningContent =
+                                  event.summary.trim().length > 0 &&
+                                  event.summary.trim() !== "Thinking...";
                                 // Compute elapsed thinking time for "Thought for Xs" label.
                                 // Uses whole seconds (no ms) for a clean, human-friendly display.
                                 const thinkingDuration = (() => {
@@ -10085,6 +11407,9 @@ const hasVisibleResponseSectionContent =
                                         isPending && "is-pending",
                                       )}
                                       onClick={() => {
+                                        if (!hasReasoningContent) {
+                                          return;
+                                        }
                                         // Toggle this reasoning step's expansion in local view state
                                         setViewState((prev) => {
                                           const next = new Set(prev.expandedReasoningSteps);
@@ -10097,11 +11422,12 @@ const hasVisibleResponseSectionContent =
                                         });
                                       }}
                                       aria-expanded={isExpanded}
+                                      aria-disabled={!hasReasoningContent}
                                     >
                                       {/* "Thought for Xs" label */}
                                       <span className="oc-reasoning-row-label">{headerLabel}</span>
-                                      {/* Chevron: rotates 90° when expanded */}
-                                      {!isPending && (
+                                      {/* A pending row can already have live delta text. */}
+                                      {hasReasoningContent && (
                                         <span
                                           className={cn(
                                             "oc-reasoning-chevron",
@@ -10114,7 +11440,7 @@ const hasVisibleResponseSectionContent =
                                       )}
                                     </button>
                                     {/* Expanded reasoning content */}
-                                    {isExpanded && event.summary && (
+                                    {isExpanded && hasReasoningContent && (
                                       <div className="oc-reasoning-body">
                                         <MarkdownRenderer
                                           content={event.summary}
@@ -10214,6 +11540,17 @@ const hasVisibleResponseSectionContent =
                                               ) : null;
                                             })()}
                                           </div>
+
+                                          {readLineRange ? (
+                                            <span className="oc-activity-step-meta pl-0.5 font-mono text-[11px] text-oc-text-soft">
+                                              {readLineRange}
+                                            </span>
+                                          ) : null}
+                                          {editChangeSize ? (
+                                            <span className="oc-activity-step-meta pl-0.5 font-mono text-[11px] text-oc-text-soft">
+                                              {editChangeSize}
+                                            </span>
+                                          ) : null}
 
                                           {shouldRenderActivityBody ? (
                                           <div className="flex flex-col gap-1 w-full">
@@ -10382,21 +11719,6 @@ const hasVisibleResponseSectionContent =
                                     </span>
                                   )}
 
-                                {!showDiffPreviewLocal &&
-                                  event.viewDiffFile && (
-                                    <button
-                                      type="button"
-                                      className="shrink-0 rounded border border-oc-border-soft px-2 py-0.5 text-[10px] font-medium oc-text-secondary hover:text-oc-text-soft"
-                                      onClick={() =>
-                                        vscode.postMessage({
-                                          type: "openDiff",
-                                          file: event.viewDiffFile,
-                                        })
-                                      }
-                                    >
-                                      View diff
-                                    </button>
-                                )}
                               </div>
                                 );
                               }
@@ -10465,20 +11787,7 @@ const hasVisibleResponseSectionContent =
             </section>
           )}
 
-          {shouldRenderSubagentsInlineCard && (
-            <SubagentsInlineCard
-              subagents={subagents}
-              subagentDetailsById={subagentDetailsById || {}}
-              showSubagents={showSubagents}
-              setShowSubagents={setShowSubagents}
-              showAllSubagents={showAllSubagents}
-              setShowAllSubagents={setShowAllSubagents}
-              openSubagentModal={openSubagentModal}
-              parentResponseFinished={isParentResponseFinished}
-            />
-          )}
-
-              {showResponseSection && hasVisibleResponseSectionContent && (
+          {showResponseSection && hasVisibleResponseSectionContent && (
                 <section
                   data-assistant-section="response"
                   className={responseSectionClass}
@@ -10575,6 +11884,19 @@ const hasVisibleResponseSectionContent =
             </section>
           )}
 
+          {shouldRenderSubagentsInlineCard && (
+            <SubagentsInlineCard
+              subagents={subagents}
+              subagentDetailsById={subagentDetailsById || {}}
+              showSubagents={showSubagents}
+              setShowSubagents={setShowSubagents}
+              showAllSubagents={showAllSubagents}
+              setShowAllSubagents={setShowAllSubagents}
+              openSubagentModal={openSubagentModal}
+              parentResponseFinished={isParentResponseFinished}
+            />
+          )}
+
           {/* Block-level pill for the last card in a multi-card block.
               When expanded: shows a single Collapse link at the very end to fold the whole block. */}
           {isLastInBlock && blockSize > 1 && !isBlockStreaming && isBlockExpanded && (
@@ -10634,6 +11956,17 @@ const hasVisibleResponseSectionContent =
           // For the main text response (messages with copyable content),
           // we render the copy button and the timestamp outside the response bubble.
           <div className="mt-1 flex items-center justify-start gap-1.5">
+            {structuredOutputWarning && (
+              <span
+                className="oc-refined-file-link-with-tooltip inline-flex h-7 w-5 items-center justify-center"
+                aria-label="Structured output unavailable; showing the plain-text response"
+              >
+                <AlertTriangle className="oc-warning-icon-color h-3.5 w-3.5" />
+                <span className="oc-refined-file-link-tooltip" role="tooltip">
+                  The model did not produce structured output. The response above is still available as plain text.
+                </span>
+              </span>
+            )}
             <button
               type="button"
               className={cn("oc-bubble-copy-btn h-7 w-7", copied && "is-copied")}
@@ -11274,8 +12607,16 @@ function areResponseMessagePropsEqual(
   // every stream batch forces EVERY mounted ResponseMessage to rerender.
   const prevMessageId = prevProps.message?.id ?? prevProps.message?.info?.id;
   const nextMessageId = nextProps.message?.id ?? nextProps.message?.info?.id;
-  const prevWasStreaming = isStreamingForThisCard(prevProps.streaming, prevMessageId);
-  const nextIsStreaming = isStreamingForThisCard(nextProps.streaming, nextMessageId);
+  // The dedicated StreamingCard intentionally has no persisted message yet.
+  // Treat that card as live by its streaming state, otherwise React.memo can
+  // swallow every subsequent SSE update because there is no message id to
+  // match against.
+  const prevWasStreaming = prevProps.message
+    ? isStreamingForThisCard(prevProps.streaming, prevMessageId)
+    : Boolean(prevProps.streaming?.isActive);
+  const nextIsStreaming = nextProps.message
+    ? isStreamingForThisCard(nextProps.streaming, nextMessageId)
+    : Boolean(nextProps.streaming?.isActive);
   if (prevWasStreaming || nextIsStreaming) {
     return prevProps.streaming === nextProps.streaming;
   }
@@ -11766,9 +13107,12 @@ const SdkEventDebugPanelContents = memo(function SdkEventDebugPanelContents() {
             onClick={() => {
               // Full serialization is intentionally user-triggered. Performing
               // it during every streaming render was the main-thread freeze.
-              navigator.clipboard.writeText(JSON.stringify(debugData, null, 2));
-              setCopiedDebugPanel(true);
-              setTimeout(() => setCopiedDebugPanel(false), 2000);
+              void copyToClipboard(JSON.stringify(debugData, null, 2)).then(() => {
+                setCopiedDebugPanel(true);
+                setTimeout(() => setCopiedDebugPanel(false), 2000);
+              }).catch(() => {
+                // Clipboard failures are expected in unfocused VS Code webviews.
+              });
             }}
             className="text-oc-text-muted hover:text-oc-text"
           >

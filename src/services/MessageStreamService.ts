@@ -149,6 +149,9 @@ export class MessageStreamService {
   /** AbortController for cancelling fetch requests (clean shutdown) */
   private abortController: AbortController | null = null;
 
+  /** SDK client instance that owns the currently open event streams. */
+  private streamClient: unknown | null = null;
+
   /** Set of active subscriber callbacks (auto-starts/stops connection) */
   private callbacks: Set<StreamCallback> = new Set();
 
@@ -189,6 +192,35 @@ export class MessageStreamService {
 
   private cloneRawEvent<T>(value: T): T {
     return createPlainObjectSnapshotFast(value);
+  }
+
+  /**
+   * Reopen the event streams after OpencodeServerManager replaces its SDK
+   * client (for example after detecting a stale server connection). The old
+   * client's SSE iterators can continue yielding heartbeats while no longer
+   * receiving events produced by the replacement server.
+   *
+   * This intentionally starts the reconnect in the background: startListening
+   * remains alive for the lifetime of its streams and must not block sending a
+   * user prompt.
+   */
+  ensureCurrentServerConnection(): void {
+    const currentClient = this.serverManager.getClient();
+    if (this.callbacks.size === 0 || !currentClient) {
+      return;
+    }
+    if (this.abortController && this.streamClient === currentClient) {
+      return;
+    }
+
+    this.logger.warn("[LIVE-STREAM-TRACE][SSE] reconnecting-for-client-replacement", {
+      hadStreamClient: Boolean(this.streamClient),
+      hasActiveStream: Boolean(this.abortController),
+      subscriberCount: this.callbacks.size,
+    });
+    void this.startListening().catch((error) => {
+      this.logger.error("Failed to reconnect stream after client replacement", {}, error as Error);
+    });
   }
 
   private isLikelyStreamTransportFailure(error: unknown): boolean {
@@ -366,6 +398,7 @@ export class MessageStreamService {
 
     try {
       const client = await this.serverManager.ensureRunning();
+      this.streamClient = client;
       const workspaceDirectory =
         vscode.workspace.workspaceFolders?.[0]?.uri.scheme === "file"
           ? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
@@ -616,6 +649,7 @@ export class MessageStreamService {
       this.abortController.abort();
       this.abortController = null;
     }
+    this.streamClient = null;
   }
 
   private async consumeEventStream(
@@ -626,6 +660,9 @@ export class MessageStreamService {
     startTime: number,
   ): Promise<void> {
     let firstChunkLogged = false;
+    // One token sample per SSE connection is enough to prove that deltas reach
+    // this boundary. Logging every token would itself recreate stream lag.
+    let tracedDeltaSample = false;
     const verboseDebug = this.shouldVerboseStreamDebug();
 
     for await (const rawEvent of stream) {
@@ -643,15 +680,23 @@ export class MessageStreamService {
 
       try {
         const rawEventSnapshot = this.cloneRawEvent(rawEvent);
+        const rawRecord = this.asRecord(rawEventSnapshot);
+        const rawEventTypeHints = this.extractEventTypeHints(rawEventSnapshot);
+        const rawEventType = rawEventTypeHints[0] ?? "unknown";
+        const rawLooksLikeHeartbeat = this.isHeartbeatEvent(rawEventType);
+        if (!rawLooksLikeHeartbeat) {
+          this.logger.info("[LIVE-STREAM-TRACE][SSE] raw-received", {
+            source,
+            rawEventTypeHints,
+            rawKeys: rawRecord ? Object.keys(rawRecord).slice(0, 12) : [],
+          });
+        }
         const normalizedEvent = this.normalizeIncomingEvent(rawEventSnapshot);
         if (!normalizedEvent) {
-          const eventTypeHints = this.extractEventTypeHints(rawEvent);
-          this.logger.warn("Skipping unknown event shape", {
+          this.logger.warn("[LIVE-STREAM-TRACE][SSE] normalization-rejected", {
             source,
-            eventTypeHints,
-            rawEvent: verboseDebug
-              ? this.sanitizeForLogging(rawEvent)
-              : undefined,
+            rawEventTypeHints,
+            rawKeys: rawRecord ? Object.keys(rawRecord).slice(0, 12) : [],
           });
           continue;
         }
@@ -685,7 +730,30 @@ export class MessageStreamService {
             (typeof properties.content === "string" && properties.content) ||
             undefined,
         );
-
+        const isHighFrequencyDelta =
+          normalizedEvent.type.startsWith("message.part.") &&
+          typeof part?.delta === "string" &&
+          part.delta.length > 0;
+        const shouldTraceNormalizedEvent =
+          !this.isHeartbeatEvent(normalizedEvent.type) &&
+          (!isHighFrequencyDelta || !tracedDeltaSample);
+        if (isHighFrequencyDelta) {
+          tracedDeltaSample = true;
+        }
+        if (shouldTraceNormalizedEvent) {
+          this.logger.info("[LIVE-STREAM-TRACE][SSE] normalized", {
+            source,
+            eventId:
+              typeof (normalizedEvent as Record<string, unknown>).id === "string"
+                ? (normalizedEvent as Record<string, unknown>).id
+                : undefined,
+            eventType: normalizedEvent.type,
+            sessionId,
+            messageId,
+            partType,
+            isDelta: isHighFrequencyDelta,
+          });
+        }
         if (!this.isHeartbeatEvent(normalizedEvent.type) && verboseDebug) {
           this.logger.debug("[CHAT-STREAMING][KEY1] Stream event received from server", {
             source,
@@ -738,10 +806,10 @@ export class MessageStreamService {
               "string"
               ? ((normalizedEvent as Record<string, unknown>).directory as string)
               : undefined;
-          if (verboseDebug) {
-            this.logger.debug("Ignoring event due to directory mismatch", {
+          if (shouldTraceNormalizedEvent) {
+            this.logger.warn("[LIVE-STREAM-TRACE][SSE] workspace-filtered", {
               source,
-              type: normalizedEvent.type,
+              eventType: normalizedEvent.type,
               eventDirectory,
               workspaceDirectory,
             });
@@ -754,21 +822,12 @@ export class MessageStreamService {
           source,
         } as StreamEvent;
 
-        if (this.isDuplicateEvent(eventWithSource)) {
-          if (!this.isHeartbeatEvent(eventWithSource.type) && verboseDebug) {
-            this.logger.debug("Dropped duplicate event", {
-              source,
-              type: eventWithSource.type,
-            });
-          }
-          continue;
-        }
-
-        // Token-level events are extremely frequent and arrive on both the
-        // scoped and global streams. Keep this diagnostic available for
-        // investigations, but never write it at info level or before dedupe:
-        // doing either can flood the extension-host console and make the UI
-        // feel sluggish while a response is streaming.
+        // Preserve every transport frame. The scoped/global endpoints and
+        // sync envelopes can reuse identities while differing in the semantic
+        // fields needed to mount the live activity card. The normalized UI
+        // reducers dedupe activity by part/message identity after that data is
+        // available; transport-level suppression here is not safe.
+        // Token-level diagnostics remain debug-only to avoid log-driven lag.
         if (!this.isHeartbeatEvent(eventWithSource.type) && verboseDebug) {
           this.logger.debug("[CENTRALIZED-TAPE][STREAM] raw_event_received", {
             source,
@@ -777,6 +836,20 @@ export class MessageStreamService {
             messageId,
             partType,
             preview,
+          });
+        }
+
+        if (shouldTraceNormalizedEvent) {
+          this.logger.info("[LIVE-STREAM-TRACE][SSE] callback-notified", {
+            source,
+            eventId:
+              typeof (eventWithSource as Record<string, unknown>).id === "string"
+                ? (eventWithSource as Record<string, unknown>).id
+                : undefined,
+            eventType: eventWithSource.type,
+            sessionId,
+            partType,
+            subscriberCount: this.callbacks.size,
           });
         }
 

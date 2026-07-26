@@ -12,7 +12,7 @@
  * Fix: messageHandler now:
  *   1. Extracts error.data.message with priority over flat fields
  *   2. Uses signaling detection (completed/finished/done) instead of keywords
- *   3. Dispatches ADD_ERROR_MESSAGE for genuine errors
+ *   3. Materializes genuine errors as the normal inline assistant error card
  *   4. Always resets SET_ASSISTANT_TURN_PENDING to false
  */
 
@@ -79,8 +79,8 @@ test("error reason extracted for signaling detection", () => {
 
   assert.match(
     block,
-    /const errorReason = asString\(payload\.reason\) \|\| asString\(payload\.code\)/,
-    "must extract errorReason from reason or code field",
+    /const errorReason =[\s\S]*?asString\(properties\?\.reason\)[\s\S]*?asString\(properties\?\.code\)[\s\S]*?asString\(payload\.reason\)[\s\S]*?asString\(payload\.code\)/,
+    "must extract reason/code from both wrapped SDK and legacy flat fields",
   );
 });
 
@@ -130,7 +130,7 @@ test("isGenuineError requires non-empty message and excludes signaling events", 
   );
 });
 
-test("genuine errors dispatch ADD_ERROR_MESSAGE for in-conversation surfacing", () => {
+test("genuine errors materialize the inline assistant error card", () => {
   const block = extractSessionErrorBlock(messageHandlerSource);
 
   assert.match(
@@ -140,8 +140,87 @@ test("genuine errors dispatch ADD_ERROR_MESSAGE for in-conversation surfacing", 
   );
   assert.match(
     block,
+    /materializeSessionErrorMessage\([\s\S]*?errorMessage[\s\S]*?payload/,
+    "must materialize a genuine session.error with its raw SDK payload so the centralized transcript can render it",
+  );
+  assert.match(
+    block,
     /dispatch\(\{ type: "ADD_ERROR_MESSAGE", payload: errorMessage \}\)/,
-    "must dispatch ADD_ERROR_MESSAGE for genuine errors so they surface in conversation",
+    "a genuine live session.error must also be surfaced through the durable toast channel",
+  );
+});
+
+test("materialized session errors retain the originating SDK event", () => {
+  const helperStart = messageHandlerSource.indexOf("function materializeSessionErrorMessage");
+  const helperEnd = messageHandlerSource.indexOf("function finalizeStreamingSnapshotSteps", helperStart);
+  const helper = messageHandlerSource.slice(helperStart, helperEnd);
+  assert.match(
+    helper,
+    /rawSdkEventPayloads:\s*rawSdkEventPayload \? \[rawSdkEventPayload\] : \[\]/,
+    "strict centralized rendering must receive the session.error event on the materialized message",
+  );
+});
+
+test("history refresh preserves an SDK-backed live session.error", () => {
+  const storeSource = readSource(
+    [joinFromRoot("webview", "shared", "src", "chat", "lib", "store.ts")],
+    "store.ts",
+  );
+  assert.match(
+    storeSource,
+    /function isSdkBackedSessionErrorMessage[\s\S]*?eventType === "session\.error"[\s\S]*?function retainSdkBackedSessionErrors[\s\S]*?case "SET_MESSAGES":[\s\S]*?retainSdkBackedSessionErrors\(/s,
+    "a history replacement must retain an exact SDK session.error rather than clearing the already-rendered terminal error",
+  );
+});
+
+test("session.error reads the SDK's wrapped properties.error.data.message", () => {
+  const block = extractSessionErrorBlock(messageHandlerSource);
+
+  assert.match(
+    block,
+    /asRecord\(properties\?\.error\) \?\? asRecord\(payload\.error\)/,
+    "must prefer the SDK wrapper field before legacy flat errors",
+  );
+  assert.match(
+    messageHandlerSource,
+    /const isSessionErrorEvent =\s*getCentralizedEventType\(payload\) === "session\.error"/,
+    "outer stream admission must allow terminal session.error frames through",
+  );
+});
+
+test("live session.error bypasses terminal and stopped-session guards", () => {
+  assert.match(
+    messageHandlerSource,
+    /const isTerminalSessionError =[\s\S]*?isActiveSessionTerminalTranscript && !isTerminalSessionError[\s\S]*?\[LIVE-STREAM-TRACE\]\[ERROR\] admitted-after-terminal-card/s,
+    "the terminal-card guard must not discard the SDK error that explains a terminal failure",
+  );
+  assert.match(
+    messageHandlerSource,
+    /isStoppedSession\(eventSessionId, activeSessionId\)[\s\S]*?!isTerminalSessionError/s,
+    "the stopped-session guard must also allow terminal errors to reach the handler",
+  );
+  assert.match(
+    messageHandlerSource,
+    /\[LIVE-STREAM-TRACE\]\[ERROR\] materializing/,
+    "debug mode must confirm when the nested SDK error is materialized for the transcript",
+  );
+});
+
+test("batched and scoped session.error events still reach the toast store", () => {
+  assert.match(
+    messageHandlerSource,
+    /case "streamEventBatch":[\s\S]*?const isTerminalSessionError =[\s\S]*?isStoppedSession\(eventSessionId, activeSessionId\)[\s\S]*?!isTerminalSessionError[\s\S]*?\[LIVE-STREAM-TRACE\]\[ERROR\] batch-admitted/s,
+    "the batched stopped-session gate must admit a terminal session.error",
+  );
+  assert.match(
+    messageHandlerSource,
+    /toast-forwarded-from-scoped-batch[\s\S]*?case "SET_STREAMING"/s,
+    "a session.error from a cached non-selected session must forward ADD_ERROR_MESSAGE to the real store",
+  );
+  assert.match(
+    messageHandlerSource,
+    /toast-forwarded-from-scoped-event[\s\S]*?case "SET_STREAMING"/s,
+    "the single-event scoped stream path must also forward its toast",
   );
 });
 

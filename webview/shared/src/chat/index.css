@@ -258,6 +258,40 @@ body {
   white-space: nowrap;
 }
 
+/* Keep the live-response status ticker on a composited, contained surface.
+   Stream events can update the surrounding transcript many times per second;
+   the ticker itself should only ever animate opacity and transform. */
+.oc-ai-status-ticker {
+  contain: layout paint style;
+  transform: translateZ(0);
+  animation: oc-ai-status-ticker-breathe 1.6s ease-in-out infinite;
+}
+
+@keyframes oc-ai-status-ticker-breathe {
+  0%,
+  100% {
+    opacity: 0.72;
+    transform: translateZ(0) translateY(0);
+  }
+  50% {
+    opacity: 1;
+    transform: translateZ(0) translateY(-1px);
+  }
+}
+
+.oc-ai-status-ticker-text {
+  display: inline-block;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  transition-property: opacity, transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .oc-ai-status-ticker {
+    animation: none;
+  }
+}
+
 #root {
   height: 100vh;
   overflow: hidden;
@@ -6710,6 +6744,120 @@ body {
   outline-offset: 2px;
 }
 
+/* Active compaction is intentionally more prominent than the archived-history
+   divider: it temporarily replaces the live activity timeline. */
+.oc-compaction-progress-wrap {
+  position: sticky;
+  bottom: 0.75rem;
+  z-index: 20;
+  display: flex;
+  justify-content: center;
+  margin: 0.85rem 0;
+  padding: 0 1rem;
+  pointer-events: none;
+}
+
+.oc-compaction-progress {
+  width: min(100%, 38rem);
+  display: flex;
+  align-items: flex-start;
+  gap: 0.7rem;
+  border: 1px solid color-mix(in srgb, var(--oc-accent) 48%, var(--oc-border));
+  border-radius: 0.85rem;
+  padding: 0.72rem 0.8rem;
+  background: color-mix(in srgb, var(--oc-panel) 88%, var(--oc-accent) 12%);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--oc-accent) 9%, transparent) inset,
+    0 8px 24px color-mix(in srgb, black 18%, transparent);
+}
+
+.oc-compaction-progress-icon {
+  width: 1.85rem;
+  height: 1.85rem;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--oc-accent) 54%, var(--oc-border));
+  border-radius: 0.6rem;
+  background: var(--oc-accent-soft);
+  color: var(--oc-accent);
+  animation: oc-compaction-icon-pulse 1.8s ease-in-out infinite;
+}
+
+.oc-compaction-progress-copy {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.24rem;
+}
+
+.oc-compaction-progress-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  color: var(--oc-text);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.015em;
+}
+
+.oc-compaction-progress-state {
+  flex: 0 0 auto;
+  border: 1px solid color-mix(in srgb, var(--oc-accent) 44%, transparent);
+  border-radius: 999px;
+  padding: 0.08rem 0.38rem;
+  color: var(--oc-accent);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.oc-compaction-progress-description {
+  color: color-mix(in srgb, var(--oc-text-soft) 92%, transparent);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.oc-compaction-progress-track {
+  position: relative;
+  height: 3px;
+  overflow: hidden;
+  margin-top: 0.22rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--oc-border) 84%, transparent);
+}
+
+.oc-compaction-progress-track > span {
+  position: absolute;
+  inset: 0 auto 0 -38%;
+  width: 38%;
+  border-radius: inherit;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--oc-accent),
+    transparent
+  );
+  animation: oc-compaction-track-sweep 1.45s ease-in-out infinite;
+}
+
+@keyframes oc-compaction-icon-pulse {
+  50% {
+    transform: scale(1.045);
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--oc-accent) 10%, transparent);
+  }
+}
+
+@keyframes oc-compaction-track-sweep {
+  to {
+    transform: translateX(365%);
+  }
+}
+
 @media (max-width: 720px) {
   .oc-compaction-divider {
     gap: 0.35rem;
@@ -6723,6 +6871,26 @@ body {
 
   .oc-compaction-divider-action {
     display: none;
+  }
+
+  .oc-compaction-progress {
+    gap: 0.58rem;
+    padding: 0.65rem 0.7rem;
+  }
+
+  .oc-compaction-progress-description {
+    font-size: 10px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .oc-compaction-progress-icon,
+  .oc-compaction-progress-track > span {
+    animation: none;
+  }
+
+  .oc-compaction-progress-track > span {
+    left: 31%;
   }
 }
 

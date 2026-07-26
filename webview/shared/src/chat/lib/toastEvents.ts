@@ -275,7 +275,7 @@ export function liveSessionStatusFromPayload(
 ): LiveSessionStatus | null {
   const payload = asRecord(entry);
   const eventType = normalizedLiveEventType(payload);
-  if (!payload || eventType !== "session.status") {
+  if (!payload || (eventType !== "session.status" && eventType !== "session.idle")) {
     if (payload && typeof console !== "undefined" && (asString(payload.type)?.includes("session") || eventType.includes("session"))) {
       console.warn("[LIVE-EVENT][statusParser] rejected event", { eventType, payloadType: payload.type, keys: Object.keys(payload).slice(0, 10) });
     }
@@ -287,7 +287,12 @@ export function liveSessionStatusFromPayload(
 
   const properties = eventProperties(payload);
   const status = asRecord(properties?.status) ?? asRecord(payload.status);
-  const statusType = firstString(status?.type, status?.status)?.toLowerCase();
+  // Some SDK versions send the final lifecycle signal as `session.idle`
+  // without a nested status object. Normalize both shapes to one terminal
+  // status so the stream handler can release its loading latch immediately.
+  const statusType =
+    firstString(status?.type, status?.status)?.toLowerCase() ??
+    (eventType === "session.idle" ? "idle" : undefined);
   if (!statusType) {
     return null;
   }

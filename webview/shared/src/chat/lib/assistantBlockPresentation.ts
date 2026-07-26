@@ -19,6 +19,8 @@ export interface AssistantBlockPresentationEntry {
   hasResponseText?: boolean;
   /** True when an aborted assistant entry must be represented inline. */
   hasInlineAbort?: boolean;
+  /** Exact structured activity snapshot for an activity-only assistant entry. */
+  activitySnapshotKey?: string;
 }
 
 export interface AssistantBlockPresentation {
@@ -32,6 +34,8 @@ export interface AssistantBlockPresentation {
   isLastTextInBlockByIndex: Map<number, boolean>;
   blockSizeByKey: Map<string, number>;
   blockHasInlineAbortByKey: Map<string, boolean>;
+  /** Activity-only SDK fragments that repeat an earlier identical snapshot in the same turn. */
+  isDuplicateActivityByIndex: Map<number, boolean>;
 }
 
 /**
@@ -73,6 +77,8 @@ export function buildAssistantBlockPresentation(
   const isLastTextInBlockByIndex = new Map<number, boolean>();
   const blockSizeByKey = new Map<string, number>();
   const blockHasInlineAbortByKey = new Map<string, boolean>();
+  const isDuplicateActivityByIndex = new Map<number, boolean>();
+  const seenActivitySnapshotsByBlock = new Map<string, Set<string>>();
 
   assistantEntries.forEach(({ index, key }, position) => {
     const previousKey = position > 0 ? assistantEntries[position - 1].key : undefined;
@@ -92,6 +98,13 @@ export function buildAssistantBlockPresentation(
       ),
     );
     blockSizeByKey.set(key, (blockSizeByKey.get(key) ?? 0) + 1);
+    const activitySnapshotKey = entries[index]?.activitySnapshotKey;
+    if (activitySnapshotKey) {
+      const seenSnapshots = seenActivitySnapshotsByBlock.get(key) ?? new Set<string>();
+      isDuplicateActivityByIndex.set(index, seenSnapshots.has(activitySnapshotKey));
+      seenSnapshots.add(activitySnapshotKey);
+      seenActivitySnapshotsByBlock.set(key, seenSnapshots);
+    }
     if (entries[index]?.hasInlineAbort) {
       blockHasInlineAbortByKey.set(key, true);
     }
@@ -104,5 +117,6 @@ export function buildAssistantBlockPresentation(
     isLastTextInBlockByIndex,
     blockSizeByKey,
     blockHasInlineAbortByKey,
+    isDuplicateActivityByIndex,
   };
 }

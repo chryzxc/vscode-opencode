@@ -198,35 +198,35 @@ export function LiveEventBanner({
             role="status"
             aria-live="polite"
           >
-            <div className={cn("flex gap-2.5 px-3", isComposerPlacement ? "items-center py-1.5" : "items-start py-2")}>
-              <div className={cn("flex shrink-0 items-center justify-center", isComposerPlacement ? "h-3.5 w-3.5" : "mt-0.5 h-4 w-4")} style={{ color: styles.accent }} aria-hidden="true">
-                <Icon className={isComposerPlacement ? "h-3.5 w-3.5" : "h-3.5 w-3.5"} />
+            <div className="flex items-start gap-2.5 px-3 py-2">
+              <div className={cn("mt-0.5 flex shrink-0 items-center justify-center", isComposerPlacement ? "h-3.5 w-3.5" : "h-4 w-4")} style={{ color: styles.accent }} aria-hidden="true">
+                <Icon className="h-3.5 w-3.5" />
               </div>
               <div className="min-w-0 flex-1">
-                <div className={cn("flex min-w-0", isComposerPlacement ? "items-center gap-1.5" : "items-baseline gap-2")}>
-                  <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.1em]" style={{ color: styles.accent }}>
-                    {styles.label}
-                  </span>
-                  <span className={cn("truncate font-semibold text-oc-text", isComposerPlacement ? "text-[12px] leading-4" : "text-[13px] leading-4")}>
-                    {activeToast.title}
-                  </span>
-                  {isComposerPlacement && activeToast.message ? (
-                    <span className="min-w-0 flex-1 truncate text-[11px] leading-4 text-oc-text opacity-75" title={activeToast.message}>
-                      {activeToast.message}
+                <div className={cn("flex min-w-0", isComposerPlacement ? "items-start gap-3" : "items-baseline gap-2")}>
+                  <div className={cn("min-w-0", isComposerPlacement ? "flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5" : "flex items-baseline gap-2")}>
+                    <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.1em]" style={{ color: styles.accent }}>
+                      {styles.label}
                     </span>
+                    <span className={cn("font-semibold text-oc-text", isComposerPlacement ? "truncate text-[12px] leading-4" : "text-[13px] leading-4")}>
+                      {activeToast.title}
+                    </span>
+                  </div>
+                  {activeToast.type === "session.status" && activeToast.next ? (
+                    <div className="shrink-0 pt-px text-[11px] font-medium tabular-nums" style={{ color: styles.accent }}>
+                      Retrying in {formatRetryCountdown(activeToast.next, toastNow)}
+                    </div>
                   ) : null}
                 </div>
-                {!isComposerPlacement && activeToast.message ? (
-                  <div className="mt-0.5 whitespace-pre-wrap break-words text-[12px] leading-4 text-oc-text opacity-90">
+                {activeToast.message ? (
+                  <div className={cn(
+                    "whitespace-pre-wrap break-words text-oc-text",
+                    isComposerPlacement ? "mt-1 text-[11px] leading-[1.35] opacity-75" : "mt-0.5 text-[12px] leading-4 opacity-90",
+                  )}>
                     {activeToast.message}
                   </div>
                 ) : null}
               </div>
-              {activeToast.type === "session.status" && activeToast.next ? (
-                <div className={cn("shrink-0 font-medium tabular-nums", isComposerPlacement ? "text-[11px]" : "mt-1 text-[11px]")} style={{ color: styles.accent }}>
-                  Retrying in {formatRetryCountdown(activeToast.next, toastNow)}
-                </div>
-              ) : null}
             </div>
           </div>
         );

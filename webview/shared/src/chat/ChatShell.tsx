@@ -200,6 +200,33 @@ function normalizeComparableText(value: unknown): string {
     .toLowerCase();
 }
 
+function assistantActivitySnapshotKey(message: Message): string | undefined {
+  const parts = Array.isArray(message.parts) ? message.parts : [];
+  // Do not hide a fragment that contains a user-visible answer. This rule is
+  // only for activity-only SDK envelopes such as repeated Read/Todowrite rows.
+  const hasResponseText = parts.some((part) =>
+    part?.type === "text" &&
+    Boolean(firstNonEmptyString(part.text, part.content, part.message)),
+  );
+  if (hasResponseText) {
+    return undefined;
+  }
+
+  const tools = parts
+    .filter((part) => part?.type === "tool")
+    .map((part) => ({
+      tool: normalizeComparableText(part.tool),
+      input: asRecord(asRecord(part.state)?.input) ?? asRecord(part.input) ?? {},
+      output: typeof asRecord(part.state)?.output === "string"
+        ? asRecord(part.state)?.output
+        : "",
+    }));
+  if (tools.length === 0) {
+    return undefined;
+  }
+  return JSON.stringify(tools);
+}
+
 function hasInjectedSystemPromptShape(value: string): boolean {
   const normalized = value.trim().toLowerCase();
   return (
@@ -2006,6 +2033,35 @@ function CompactionDivider({
   );
 }
 
+/**
+ * A compaction is a short maintenance phase, not a second assistant response.
+ * Keep its status distinct from the live activity timeline so users do not see
+ * activity that is about to be replaced by the compacted SDK snapshot.
+ */
+function CompactionInProgressNotice() {
+  return (
+    <div className="oc-compaction-progress-wrap" role="status" aria-live="polite">
+      <div className="oc-compaction-progress">
+        <span className="oc-compaction-progress-icon" aria-hidden="true">
+          <Archive className="h-4 w-4" />
+        </span>
+        <span className="oc-compaction-progress-copy">
+          <span className="oc-compaction-progress-heading">
+            <span>Compacting conversation</span>
+            <span className="oc-compaction-progress-state">In progress</span>
+          </span>
+          <span className="oc-compaction-progress-description">
+            Preparing a smaller working context. Live activity resumes automatically.
+          </span>
+          <span className="oc-compaction-progress-track" aria-hidden="true">
+            <span />
+          </span>
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function getToastSeverity(message: string): "warning" | "error" {
   const normalized = message.trim().toLowerCase();
   return normalized.includes("warning") ? "warning" : "error";
@@ -2026,6 +2082,7 @@ type ConversationTranscriptProps = {
   diffByBlockKey: Map<string, CentralizedSessionDiffEvent>;
   hydratedFileChangesByBlockKey: Set<string>;
   hasLiveAssistantTurn: boolean;
+  suppressLiveAssistantPresentation: boolean;
   assistantTurnMessageId: string | null;
   interactiveEvents: AppState["interactiveEvents"];
   isCompressed: boolean;
@@ -2187,6 +2244,7 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
   diffByBlockKey,
   hydratedFileChangesByBlockKey,
   hasLiveAssistantTurn,
+  suppressLiveAssistantPresentation,
   assistantTurnMessageId,
   interactiveEvents,
   isCompressed,
@@ -2331,6 +2389,7 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
     isLastTextInBlockByIndex,
     blockSizeByKey,
     blockHasInlineAbortByKey,
+    isDuplicateActivityByIndex,
   } = useMemo(
     () => buildAssistantBlockPresentation(
       visibleConversationEntries.map((entry, index) => {
@@ -2350,6 +2409,7 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
           ),
           hasInlineAbort:
             message.aborted === true && message.interruptedPresentation === "inline",
+          activitySnapshotKey: assistantActivitySnapshotKey(message),
         };
       }),
     ),
@@ -2388,13 +2448,19 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
         const isLiveBlock =
           hasLiveAssistantTurn &&
           blockGroupKey === entryBlockKeys[entryBlockKeys.length - 1];
+        const isSuppressedLiveBlock =
+          suppressLiveAssistantPresentation &&
+          blockGroupKey === entryBlockKeys[entryBlockKeys.length - 1];
         // A response block must remain fully expanded while it is streaming.
         // Once the stream ends, the default collapsed state takes over and
         // the completed-turn affordances can appear.
         const isBlockExpanded =
           isLiveBlock || blockExpandedState.get(blockGroupKey) === true;
         const isLastInBlock = isBlockExpanded ? isAbsoluteLastInBlock : isLastTextInBlock;
-        isHiddenByBlock = blockSize > 1 && !isLastInBlock && !isBlockExpanded;
+        isHiddenByBlock =
+          isSuppressedLiveBlock ||
+          (blockSize > 1 && !isLastInBlock && !isBlockExpanded) ||
+          (isDuplicateActivityByIndex.get(index) ?? false);
       }
 
       const measuredHeight = measuredEntryHeightsRef.current.get(entry.key);
@@ -2433,6 +2499,8 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
     blockSizeByKey,
     blockExpandedState,
     hasLiveAssistantTurn,
+    suppressLiveAssistantPresentation,
+    isDuplicateActivityByIndex,
   ]);
 
   const transcriptWindow = useMemo(
@@ -2521,6 +2589,9 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
             const blockSize = blockSizeByKey.get(blockGroupKey) ?? 1;
             const isLiveBlock =
               hasLiveAssistantTurn && blockGroupKey === entryBlockKeys[entryBlockKeys.length - 1];
+            const isSuppressedLiveBlock =
+              suppressLiveAssistantPresentation &&
+              blockGroupKey === entryBlockKeys[entryBlockKeys.length - 1];
             // Do not allow a persisted collapsed state to hide active stream
             // content. Completed blocks return to the default collapsed view.
             const isBlockExpanded =
@@ -2531,10 +2602,13 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
             // card; when expanded, pin it to the first card in the block.
             const isBlockHeaderAnchor =
               blockSize <= 1 || (isBlockExpanded ? isFirstInBlock : isLastInBlock);
-            const isHiddenByBlock = blockSize > 1 && !isLastInBlock && !isBlockExpanded;
+            const isHiddenByBlock =
+              isSuppressedLiveBlock ||
+              (blockSize > 1 && !isLastInBlock && !isBlockExpanded) ||
+              (isDuplicateActivityByIndex.get(entryIndex) ?? false);
             entryHiddenByBlock = isHiddenByBlock;
 
-            messageNode = (
+            messageNode = isSuppressedLiveBlock ? null : (
               <ResponseMessage
                 message={message}
                 isContiguous={isContiguous}
@@ -2847,7 +2921,42 @@ function ChatContent() {
   // extension host. Raw SDK events are retained only by the active streaming
   // overlay and are never replayed or persisted as a second transcript.
   const renderMessages = state.messages;
-  const deferredRenderMessages = useDeferredValue(renderMessages);
+  // Hydration diagnostics: this is the exact state slice handed to the
+  // transcript. It deliberately contains IDs and step counts only—never tool
+  // input/output or response text—so a captured log identifies a lost SDK
+  // envelope without reviving the expensive payload logging that caused
+  // streaming stalls.
+  const hydrationStateTraceRef = useRef<string>("");
+  useEffect(() => {
+    if (!config.debug.showSdkEventDebug) {
+      return;
+    }
+    const assistantMessages = renderMessages
+      .filter((message) =>
+        firstNonEmptyString(message.role, message.info?.role)?.toLowerCase() === "assistant",
+      )
+      .map((message) => ({
+        id: firstNonEmptyString(message.id, message.info?.id) ?? null,
+        parentId: firstNonEmptyString(message.info?.parentID, message.info?.parentId) ?? null,
+        partCount: message.parts?.length ?? 0,
+        stepCount: message.steps?.length ?? 0,
+        progressCount: message.progressEvents?.length ?? 0,
+        stepCalls: (message.steps ?? []).map((step) => ({
+          callId: firstNonEmptyString(step.callID, step.callId) ?? null,
+          type: firstNonEmptyString(step.type, step.partType, step.title) ?? null,
+        })),
+      }));
+    const signature = JSON.stringify(assistantMessages);
+    if (signature === hydrationStateTraceRef.current) {
+      return;
+    }
+    hydrationStateTraceRef.current = signature;
+    logger.warn("[HYDRATION-STEP-TRACE][STATE] transcript-input", {
+      sessionId: state.currentSessionId,
+      messageCount: renderMessages.length,
+      assistantMessages,
+    });
+  }, [renderMessages, state.currentSessionId]);
   // Priority 2 — Defer streaming-dependent props passed to MemoizedConversationTranscript.
   // During event streaming, these values change on every stream batch. Without deferral,
   // they defeat React.memo on the transcript and force full re-renders on the hot path,
@@ -3334,9 +3443,10 @@ function ChatContent() {
     Boolean(activeStreamingMessageId) &&
     Boolean(terminalAssistantMessageId) &&
     activeStreamingMessageId !== terminalAssistantMessageId;
-  // A newly submitted turn can be live before the SDK assigns its assistant
-  // messageId. Do not let the previous assistant turn's finish marker hide
-  // the loading ticker during that handoff.
+  // A new turn can be live before the SDK assigns its assistant message ID.
+  // Do not let the previous assistant's terminal marker hide the ticker during
+  // that handoff. The stream admission guard still rejects late events for a
+  // completed turn before they can re-activate this state.
   const hasNewLiveTurnBeforeAssistantIdentity =
     Boolean(state.streaming?.isActive) ||
     state.assistantTurnPending ||
@@ -3357,9 +3467,11 @@ function ChatContent() {
     !state.isCompacting &&
     !isAiResponseBlockFinished;
 
-  // Stop and the loading ticker must share the same visible live-turn state.
-  // Keep the shell-specific guard as a fallback, but Stop takes priority.
-  const showExtendedLoading = hasLiveAssistantTurn || showAiResponseLoading;
+  // Stop is the direct indication that a live turn can be controlled. Keep
+  // the ticker visible under that exact condition; the terminal guard above
+  // handles stale state once no new turn is live.
+  const showExtendedLoading =
+    !state.isCompacting && (hasLiveAssistantTurn || showAiResponseLoading);
 
   useEffect(() => {
     if (!state.isLoadingSession && !showAiResponseLoading && !showExtendedLoading) {
@@ -3429,6 +3541,87 @@ function ChatContent() {
   const renderedLiveStreaming = liveRenderBlocks.find(
     (block): block is Extract<typeof block, { kind: "streaming" }> => block.kind === "streaming",
   )?.streaming;
+  // This is the final rendering boundary for a live event. Log only when the
+  // projection changes so an event trace can be read as: received -> stored ->
+  // projected -> mounted/suppressed. It avoids logging response bodies and
+  // avoids adding work to individual token updates.
+  const liveRenderTraceRef = useRef<string>("");
+  useEffect(() => {
+    if (!config.debug.showSdkEventDebug) {
+      return;
+    }
+
+    const live = renderedLiveStreaming;
+    const shouldMountStreamingCard =
+      !state.isCompacting;
+    const hasStoredRenderableData = Boolean(
+      presentedStreaming?.hasRenderableContent ||
+        presentedStreaming?.content ||
+        presentedStreaming?.reasoning ||
+        presentedStreaming?.reasoningEvents.length ||
+        presentedStreaming?.steps.length ||
+        presentedStreaming?.progressEvents.length ||
+        presentedStreaming?.edits.length ||
+        presentedStreaming?.interactiveEvents?.length,
+    );
+    const renderOutcome = !presentedStreaming
+      ? "FAILURE_NO_STREAMING_STATE"
+      : !hasStoredRenderableData
+        ? "WAITING_STREAMING_STATE_EMPTY"
+        : !live
+          ? "FAILURE_PROJECTION_MISSING"
+          : !shouldMountStreamingCard
+            ? "SUPPRESSED_BEFORE_UI_MOUNT"
+            : "UI_MOUNTED";
+    const trace = {
+      sessionId: state.currentSessionId || null,
+      streamingExists: Boolean(presentedStreaming),
+      streamingActive: Boolean(presentedStreaming?.isActive),
+      streamingMessageId: presentedStreaming?.messageId || null,
+      assistantTurnMessageId: state.assistantTurnMessageId || null,
+      stored: {
+        hasRenderableContent: Boolean(presentedStreaming?.hasRenderableContent),
+        contentLength: presentedStreaming?.content.length ?? 0,
+        reasoningLength: presentedStreaming?.reasoning.length ?? 0,
+        reasoningEventCount: presentedStreaming?.reasoningEvents.length ?? 0,
+        stepCount: presentedStreaming?.steps.length ?? 0,
+        progressCount: presentedStreaming?.progressEvents.length ?? 0,
+        editCount: presentedStreaming?.edits.length ?? 0,
+      },
+      projection: {
+        liveStreamingBlock: Boolean(live),
+        projectedMessageId: live?.messageId || null,
+        projectedContentLength: live?.content.length ?? 0,
+        projectedStepCount: live?.steps.length ?? 0,
+        projectedProgressCount: live?.progressEvents.length ?? 0,
+      },
+      renderDecision: {
+        outcome: renderOutcome,
+        shouldMountStreamingCard,
+        suppressedByCompaction: state.isCompacting,
+        suppressedByTerminalTranscript: false,
+        hasTranscriptAssistantForCurrentTurn,
+        rehydratedMessageCount: renderMessages.length,
+      },
+    };
+    // Only report boundary transitions. In particular, do not emit a log per
+    // response token just because contentLength changed.
+    const signature = JSON.stringify({
+      sessionId: trace.sessionId,
+      streamingActive: trace.streamingActive,
+      streamingMessageId: trace.streamingMessageId,
+      hasStoredRenderableData,
+      hasContent: trace.stored.contentLength > 0,
+      hasReasoning: trace.stored.reasoningLength > 0 || trace.stored.reasoningEventCount > 0,
+      hasActivity: trace.stored.stepCount > 0 || trace.stored.progressCount > 0,
+      ...trace.renderDecision,
+    });
+    if (signature === liveRenderTraceRef.current) {
+      return;
+    }
+    liveRenderTraceRef.current = signature;
+    logger.warn("[LIVE-STREAM-TRACE][WEBVIEW] render-decision", trace);
+  });
   const conversationEntries = useMemo<ConversationRenderEntry[]>(() => {
     const messageBlocks = rehydratedRenderBlocks.filter(
       (block): block is Extract<typeof block, { kind: "message" }> => block.kind === "message",
@@ -3552,7 +3745,18 @@ function ChatContent() {
 
     return combined;
   }, [baseVisibleConversationEntries, visiblePendingUserMessages]);
-  const deferredVisibleConversationEntries = useDeferredValue(visibleConversationEntries);
+  // The entry list is derived from renderMessages and carries message indexes
+  // used for block grouping. Deferring them independently can briefly pair a
+  // newer list of entries with an older message array, which makes a user
+  // prompt appear on an assistant card or hides a response block until the
+  // second deferred value catches up. Keep the two values atomic.
+  const transcriptSnapshot = useMemo(
+    () => ({ renderMessages, visibleConversationEntries }),
+    [renderMessages, visibleConversationEntries],
+  );
+  const deferredTranscriptSnapshot = useDeferredValue(transcriptSnapshot);
+  const deferredVisibleConversationEntries =
+    deferredTranscriptSnapshot.visibleConversationEntries;
   const transcriptScrollViewport =
     deferredVisibleConversationEntries.length >= VIRTUALIZED_TRANSCRIPT_MIN_ENTRIES
       ? scrollRenderViewport
@@ -3621,6 +3825,23 @@ function ChatContent() {
     return blockKeys;
   }, [visibleConversationEntries]);
   const hasTranscriptAssistantForCurrentTurn = useMemo(() => {
+    const hasRenderableAssistantContent = (message: Message) => {
+      if (
+        [message.content, message.text, message.structuredOutput?.message].some(
+          (value) => typeof value === "string" && value.trim().length > 0,
+        )
+      ) {
+        return true;
+      }
+
+      return Array.isArray(message.parts) && message.parts.some((part) =>
+        part?.synthetic !== true &&
+        [part?.text, part?.content, part?.message].some(
+          (value) => typeof value === "string" && value.trim().length > 0,
+        ),
+      );
+    };
+
     let lastUserEntryIndex = -1;
     for (let index = 0; index < visibleConversationEntries.length; index += 1) {
       const entry = visibleConversationEntries[index];
@@ -3643,7 +3864,7 @@ function ChatContent() {
         continue;
       }
       const role = firstNonEmptyString(entry.message.role, entry.message.info?.role);
-      if (role === "assistant") {
+      if (role === "assistant" && hasRenderableAssistantContent(entry.message)) {
         return true;
       }
     }
@@ -3661,14 +3882,38 @@ function ChatContent() {
   const errorToasts = state.errorMessages;
 
   useEffect(() => {
-    if (errorToasts.length > 0 && config.debug.showBrowserConsole) {
-      console.log("ERROR_FLOW: Error messages in ChatShell", {
-        timestamp: new Date().toISOString(),
-        errorCount: errorToasts.length,
-        errorMessages: errorToasts,
-      });
+    if (errorToasts.length > 0) {
+      if (config.debug.showBrowserConsole) {
+        console.log("ERROR_FLOW: Error messages in ChatShell", {
+          timestamp: new Date().toISOString(),
+          errorCount: errorToasts.length,
+          errorMessages: errorToasts,
+        });
+      }
+      if (config.debug.showSdkEventDebug) {
+        logger.warn("[LIVE-STREAM-TRACE][ERROR] toast-rendered", {
+          count: errorToasts.length,
+          messages: errorToasts,
+          sessionId: state.currentSessionId || null,
+          source: "webview",
+        });
+      }
     }
-  }, [errorToasts]);
+  }, [errorToasts, state.currentSessionId]);
+
+  // Error toasts are transient feedback. The associated SDK-backed error card
+  // remains in the transcript, so dismissing the toast must not erase the
+  // actionable server message. Process the queue one item at a time to avoid
+  // an index-shift timer dismissing a different notification.
+  useEffect(() => {
+    if (errorToasts.length === 0) {
+      return;
+    }
+    const timeoutId = window.setTimeout(() => {
+      dispatch({ type: "REMOVE_ERROR_MESSAGE", payload: 0 });
+    }, 3_000);
+    return () => window.clearTimeout(timeoutId);
+  }, [dispatch, errorToasts]);
 
   const jumpToLatest = () => {
     unseenBaselineMessageCountRef.current = null;
@@ -3709,7 +3954,7 @@ function ChatContent() {
   return (
     <div className="oc-shell relative flex h-screen overflow-hidden bg-oc-bg text-oc-text">
       {errorToasts.length > 0 ? (
-        <div className="pointer-events-none absolute right-3 top-3 z-50 flex w-full max-w-sm flex-col gap-2.5">
+        <div className="pointer-events-none absolute inset-x-3 top-3 z-50 flex max-h-[calc(100dvh-1.5rem)] w-auto max-w-none flex-col gap-2.5 overflow-y-auto overscroll-contain sm:left-auto sm:right-3 sm:w-full sm:max-w-sm">
           {errorToasts.map((message, index) => (
             (() => {
               const severity = getToastSeverity(message);
@@ -3775,6 +4020,14 @@ function ChatContent() {
           placement="top"
         />
 
+        {/* Keep the SDK event inspector in the fixed top area with tui.show.
+            It stays available while the transcript scrolls, so a live-event
+            snapshot can be opened and copied before later text deltas roll it
+            out of the bounded debug window. */}
+        <div className="shrink-0" data-sdk-event-debug-top>
+          <SdkEventDebugPanel />
+        </div>
+
         {/* Mobile-only extended panel summary and collapsible details */}
         <MobileRightSummary />
 
@@ -3836,8 +4089,6 @@ function ChatContent() {
                 />
               ) : null}
 
-          <SdkEventDebugPanel />
-
           <MemoizedConversationTranscript
             blockExpandedState={blockExpandedState}
             compactionDividerIndex={compactionDividerIndex}
@@ -3845,13 +4096,14 @@ function ChatContent() {
             diffByBlockKey={diffByBlockKey}
             hydratedFileChangesByBlockKey={hydratedFileChangesByBlockKey}
             hasLiveAssistantTurn={hasLiveAssistantTurn}
+            suppressLiveAssistantPresentation={state.isCompacting}
             assistantTurnMessageId={state.assistantTurnMessageId}
             interactiveEvents={deferredInteractiveEvents}
             isCompressed={isCompressed}
             isProcessing={state.isProcessing}
             lastCompactedAt={state.lastCompactedAt}
             onSetBlockExpanded={handleSetBlockExpanded}
-            renderMessages={deferredRenderMessages}
+            renderMessages={deferredTranscriptSnapshot.renderMessages}
             resolveAgentColor={resolveAgentColor}
             selectedAgent={state.selectedAgent}
             streamingAgent={deferredStreamingAgent}
@@ -3870,7 +4122,7 @@ function ChatContent() {
               {/* Keep the live wrapper only until the centralized transcript owns the
                   current assistant turn. After that, render a single assistant card
                   from the transcript so activity and response content stay unified. */}
-          {!(hasTranscriptAssistantForCurrentTurn && !presentedStreaming?.isActive) ? (
+          {!state.isCompacting ? (
             <StreamingCard
               streaming={renderedLiveStreaming}
               isContiguous={
@@ -3880,7 +4132,6 @@ function ChatContent() {
               interactiveEvents={state.interactiveEvents}
               assistantTurnMessageId={state.assistantTurnMessageId}
               transcriptAssistantMessageIds={transcriptAssistantMessageIds}
-              hasTranscriptAssistantForCurrentTurn={hasTranscriptAssistantForCurrentTurn}
               currentSessionId={state.currentSessionId}
               subagentsByParentMessageId={state.subagentsByParentMessageId}
               subagentDetailsById={state.subagentDetailsById}
@@ -3893,13 +4144,7 @@ function ChatContent() {
             <ThinkingBubble />
           ) : null}
 
-          {state.isCompacting ? (
-            <div className="sticky bottom-3 z-20 mb-2 flex justify-center px-4 pointer-events-none">
-              <div className="rounded-full border border-oc-accent bg-oc-panel px-3 py-1 text-[11px] font-medium text-oc-accent shadow-sm">
-                Compacting conversation...
-              </div>
-            </div>
-          ) : null}
+          {state.isCompacting ? <CompactionInProgressNotice /> : null}
 
           {!streamViewport.isFollowing &&
           streamViewport.unseenUpdateCount > 0 ? (

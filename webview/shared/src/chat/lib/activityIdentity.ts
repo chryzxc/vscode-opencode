@@ -15,23 +15,111 @@ function normalized(value?: string): string {
   return (value ?? "").trim().toLowerCase();
 }
 
+/** Produces a bounded deterministic fingerprint for activity payload text. */
+export function activityTextFingerprint(value: string): string {
+  let hash = 2166136261;
+  const maximumSampleLength = 8_192;
+  const sample = value.length <= maximumSampleLength
+    ? value
+    : `${value.slice(0, maximumSampleLength / 2)}\n…\n${value.slice(-maximumSampleLength / 2)}`;
+  let previousWasWhitespace = true;
+  for (let index = 0; index < sample.length; index += 1) {
+    const character = sample[index];
+    if (/\s/u.test(character)) {
+      if (previousWasWhitespace) continue;
+      previousWasWhitespace = true;
+      hash ^= 32;
+      hash = Math.imul(hash, 16777619);
+      continue;
+    }
+    previousWasWhitespace = false;
+    hash ^= character.toLowerCase().charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${value.length}:${(hash >>> 0).toString(36)}`;
+}
+
+/** A stable, order-independent fingerprint for SDK tool input objects. */
+export function activityValueFingerprint(value: unknown, depth = 0): string {
+  if (depth > 8) return "depth";
+  if (typeof value === "string") return `text:${activityTextFingerprint(value)}`;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (value == null) return "null";
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => activityValueFingerprint(item, depth + 1)).join(",")}]`;
+  }
+  if (typeof value !== "object") return "unknown";
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${key}:${activityValueFingerprint(record[key], depth + 1)}`)
+    .join(",")}}`;
+}
+
+/**
+ * The one semantic identity for an activity action. Lifecycle output is not
+ * included because it changes while the same SDK action is running.
+ */
+export function canonicalActivityActionIdentity(
+  toolValue: unknown,
+  input: unknown,
+): string {
+  const tool = typeof toolValue === "string" ? normalized(toolValue) : "";
+  if (!tool || input == null) return "";
+  const record =
+    input && typeof input === "object" && !Array.isArray(input)
+      ? (input as Record<string, unknown>)
+      : undefined;
+
+  // `/event` and `/global/event` can describe the same call with slightly
+  // different transport metadata (notably `workdir`). Identity must describe
+  // the action that a reader sees, not every incidental SDK field.
+  const actionInput = (() => {
+    if (!record) return input;
+    if (tool === "bash" || tool === "shell" || tool === "command") {
+      const command = record.command ?? record.CommandLine ?? record.cmd;
+      return command == null ? input : { command };
+    }
+    if (tool === "read" || tool === "read_file") {
+      const file = record.filePath ?? record.file ?? record.path;
+      // A repeated snapshot of the same range is one visible activity even if
+      // a provider gives it another callID. Different ranges of the same file
+      // remain distinct work and are shown with their line range in the UI.
+      const offset = record.offset;
+      const limit = record.limit;
+      return file == null ? input : { file, offset, limit };
+    }
+    if (tool === "grep" || tool === "glob" || tool === "search") {
+      const query = record.pattern ?? record.query ?? record.search;
+      const path = record.path ?? record.filePath ?? record.cwd;
+      return query == null && path == null ? input : { query, path };
+    }
+    return input;
+  })();
+
+  return ["action", tool, activityValueFingerprint(actionInput)].join(":");
+}
+
 /**
  * Returns the stable identity of one SDK activity across pending, running, and
  * completed snapshots.
  *
- * LOCKED STREAMING INVARIANT: a callID or part ID is the complete identity.
+ * LOCKED STREAMING INVARIANT: a part ID or callID is the complete identity.
  * Display fields such as title, tool, file path, and output are lifecycle data
  * and must never split one tool call into additional timeline rows.
  */
 export function stableActivityIdentity(input: ActivityIdentityInput): string {
-  const callID = normalized(input.callID);
-  if (callID) {
-    return `call:${callID}`;
-  }
-
+  // A part ID is owned by one SDK activity and remains stable across the
+  // repeated updated snapshots seen in the live stream. Some providers emit
+  // different call IDs for those snapshots, so the part must take priority.
   const partID = normalized(input.partID || input.id);
   if (partID) {
     return `part:${partID}`;
+  }
+
+  const callID = normalized(input.callID);
+  if (callID) {
+    return `call:${callID}`;
   }
 
   const messageID = normalized(input.messageID);

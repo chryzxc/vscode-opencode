@@ -196,13 +196,13 @@ test("shouldPreferStreamingContent still accepts clean rich content near duplica
   );
 });
 
-test("resolveStreamingContentUpdate returns raw data for non-delta snapshot", () => {
+test("resolveStreamingContentUpdate retains a distinct non-delta assistant message", () => {
   const result = resolveStreamingContentUpdate(
     "old content here",
     "brand new content",
     false,
   );
-  assert.deepEqual(result, { content: "brand new content", append: false });
+  assert.deepEqual(result, { content: "\n\nbrand new content", append: true });
 });
 
 test("resolveStreamingContentUpdate appends raw data for delta", () => {

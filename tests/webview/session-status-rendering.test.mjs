@@ -98,8 +98,13 @@ describe('Live-only session status rendering', () => {
     );
     assert.match(
       toastOverlaySource,
-      /const isComposerPlacement = placement === "composer";[\s\S]*?isComposerPlacement \? "items-center py-1\.5" : "items-start py-2"/s,
-      'composer-bound status notifications should use a compact row instead of the full top-toast layout',
+      /const isComposerPlacement = placement === "composer";[\s\S]*?className="flex items-start gap-2\.5 px-3 py-2"/s,
+      'composer-bound status notifications should use the compact composer status layout',
+    );
+    assert.match(
+      toastOverlaySource,
+      /isComposerPlacement \? "mt-1 text-\[11px\] leading-\[1\.35\] opacity-75" : "mt-0\.5 text-\[12px\] leading-4 opacity-90"/s,
+      'composer-bound status messages should render below the status row with wrapping enabled',
     );
   });
 });
@@ -189,6 +194,14 @@ describe('Live-only event parsing and leak prevention', () => {
     );
   });
 
+  test('terminal idle status releases the current session loading latch', () => {
+    assert.match(
+      messageHandlerSource,
+      /const recordSessionIdleStatus = \(sessionId: string \| null\): void => \{[\s\S]*?stoppedSessionIds\.add\(resolvedSessionId\)[\s\S]*?SET_PROCESSING_SESSIONS[\s\S]*?SET_ASSISTANT_TURN_PENDING[\s\S]*?SET_PROCESSING[\s\S]*?FINISH_STREAMING/s,
+      'the final SDK idle lifecycle event must latch the session closed, remove its processing hint, and finish the live stream without clearing its transcript',
+    );
+  });
+
 
   test('client-only live event batches route tui.show notifications into the toast overlay', () => {
     assert.match(
@@ -239,39 +252,39 @@ describe('Live-only event parsing and leak prevention', () => {
     );
   });
 
-  test('object-shaped idle status terminates the host processing state', () => {
+  test('SDK idle status is terminal and clears host and webview loading state', () => {
     assert.match(
       chatViewProviderSource,
-      /if \(eventType === "session\.status"\) \{[\s\S]*?statusRecord\?\.type[\s\S]*?return status === "idle";/,
-      'OpenCode session.status uses properties.status.type, which must clear the host processing marker',
+      /"session\.idle"[\s\S]*?if \(eventType === "session\.status"\) \{[\s\S]*?status\?\.type[\s\S]*?=== "idle"/s,
+      'the host must treat session.idle and session.status: idle as terminal SDK lifecycle signals',
     );
     assert.match(
-      chatViewProviderSource,
-      /this\.processingSessionIds\.delete\(resolvedSessionId\);[\s\S]*?this\.sendProcessingSessionsUpdate\(\);[\s\S]*?finalizeParentMessage/s,
-      'the processing update must reach the webview before optional subagent finalization completes',
+      messageHandlerSource,
+      /const recordSessionIdleStatus = \(sessionId: string \| null\): void => \{[\s\S]*?idle-status-observed[\s\S]*?SET_PROCESSING_SESSIONS[\s\S]*?FINISH_STREAMING/s,
+      'the webview must remove the idle session from the loading state while preserving rendered activity',
+    );
+    assert.doesNotMatch(
+      messageHandlerSource,
+      /terminalIdleSessionIds|rejected-terminal-idle|markSessionIdle/,
+      'idle frames must not gate later assistant parts or reset the rendered timeline',
     );
   });
 
-  test('idle status latches the completed turn against late stream events', () => {
+  test('live events use their SDK session identity before the host envelope', () => {
     assert.match(
       messageHandlerSource,
-      /const terminalIdleSessionIds = new Set<string>\(\);/,
-      'the webview should remember SDK-confirmed idle sessions until a new user turn',
+      /export function extractCentralizedEventSessionId\(payload: unknown\)/,
+      'the webview needs one complete SDK session resolver for direct and sync event envelopes',
     );
     assert.match(
       messageHandlerSource,
-      /liveRoute\.sessionStatus\?\.statusType === "idle"[\s\S]*?markSessionIdle\(/,
-      'an idle status must immediately clear active processing/streaming state',
+      /asString\(info\?\.sessionID\)[\s\S]*?asString\(syncEvent\?\.aggregateID\)/,
+      'session identity must include message info and sync aggregate fields used by OpenCode live events',
     );
     assert.match(
       messageHandlerSource,
-      /terminalIdleSessionIds\.has\(resolvedBatchSessionId\)[\s\S]*?evtType !== "session\.status"[\s\S]*?continue;/,
-      'late non-status events in a batch must not resurrect the completed turn',
-    );
-    assert.match(
-      messageHandlerSource,
-      /terminalIdleSessionIds\.delete\(resumedSessionId\)/,
-      'a new user message must open the session for its next assistant turn',
+      /extractCentralizedEventSessionId\(payload\) \|\| envelopeSessionId/,
+      'a nested SDK session id must take precedence over a stale forwarded envelope session',
     );
   });
 });

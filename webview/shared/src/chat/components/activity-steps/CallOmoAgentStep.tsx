@@ -22,6 +22,7 @@ import {
 
 import type { ActivityDetail } from "../../lib/types";
 import type { SubagentDetail } from "../../lib/subagents/types";
+import { copyToClipboard } from "../../lib/clipboard";
 
 type CallOmoAgentStepProps = {
   callID?: string;
@@ -116,7 +117,7 @@ function CallOmoAgentDetailModal({
 
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(detailText);
+      await copyToClipboard(detailText);
       setCopied(true);
       setTimeout(() => setCopied(false), 1400);
     } catch {

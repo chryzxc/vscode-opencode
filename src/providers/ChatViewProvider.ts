@@ -352,6 +352,14 @@ export class ChatViewProvider
   private readonly recentStreamEventIdentities = new Map<string, number>();
   private static readonly STREAM_EVENT_DEDUP_WINDOW_MS = 60_000;
   private static readonly MAX_RECENT_STREAM_EVENT_IDENTITIES = 2_000;
+  /**
+   * A text token can be mirrored by `/global/event` and `/event` without a
+   * server event id. This is intentionally separate from activity dedupe:
+   * only an identical token from the other transport source is suppressed.
+   */
+  private readonly recentMirroredTextDeltas = new Map<string, { source: string; at: number }>();
+  private static readonly MIRRORED_TEXT_DELTA_WINDOW_MS = 2_000;
+  private static readonly MAX_RECENT_MIRRORED_TEXT_DELTAS = 4_000;
   private currentTodoItems: unknown[] = [];
   private compatibilityWarningsOverride: CompatibilityResult[] | null = null;
   private getTodoStorageKey(sessionId: string): string {
@@ -1873,6 +1881,7 @@ export class ChatViewProvider
       "message.error",
       "message.aborted",
       "session.completed",
+      "session.idle",
       "session.error",
       "error",
     ]);
@@ -1887,21 +1896,14 @@ export class ChatViewProvider
       ["true", "done", "stop", "complete", "completed", "success", "finished", "finish", "error", "aborted", "abort", "idle"].includes(normalize(value) || "");
 
     if (eventType === "session.status") {
-      const statusPayload =
-        properties.status ??
-        properties.state ??
-        (properties.session as Record<string, unknown> | undefined)?.status ??
-        (properties.info as Record<string, unknown> | undefined)?.status;
-      const statusRecord = statusPayload && typeof statusPayload === "object"
-        ? statusPayload as Record<string, unknown>
-        : undefined;
-      // OpenCode emits `{ status: { type: "idle" } }`. Treat that terminal
-      // signal exactly like a string-form idle status so stale processing
-      // markers cannot keep the loading ticker/Stop control alive.
-      const status = normalize(statusRecord?.type) ||
-        normalize(statusRecord?.status) ||
-        normalize(statusPayload);
-      return status === "idle";
+      // The SDK's `idle` status is the authoritative completion signal for a
+      // session. It can follow a normal answer or a session.error and may be
+      // the only final lifecycle frame. Keeping the host processing set alive
+      // after it arrives leaves the webview's Stop/loading state stuck.
+      const status =
+        (properties.status as Record<string, unknown> | undefined) ||
+        (info.status as Record<string, unknown> | undefined);
+      return normalize(status?.type ?? status?.status) === "idle";
     }
 
     if (eventType !== "message.updated") {
@@ -4497,6 +4499,40 @@ export class ChatViewProvider
         eventType.startsWith("message.part.") &&
         typeof streamDelta === "string",
       );
+      if (this.isMirroredTextDelta(event, streamEventSessionId)) {
+        return;
+      }
+      // This is deliberately a small, per-frame trace rather than a payload
+      // dump. It lets us identify the first boundary where a live activity
+      // event disappears without adding the large allocations that caused the
+      // earlier streaming stalls. Token deltas and heartbeats are excluded.
+      const shouldTraceLiveStreamFrame =
+        !isHighFrequencyDelta && eventType !== "server.heartbeat";
+      if (shouldTraceLiveStreamFrame) {
+        const partText = typeof part?.text === "string" ? part.text : undefined;
+        const partContent = typeof part?.content === "string" ? part.content : undefined;
+        const partDelta = typeof part?.delta === "string" ? part.delta : undefined;
+        this.logger.info("[LIVE-STREAM-TRACE][HOST] received", {
+          eventId: typeof eventRec?.id === "string" ? eventRec.id : undefined,
+          eventType,
+          source: typeof eventRec?.source === "string" ? eventRec.source : undefined,
+          sdkSessionId: streamEventSessionId,
+          activeStreamSessionId: this.activeStreamSessionId,
+          currentSessionId: this.currentSessionId,
+          partType: typeof part?.type === "string" ? part.type : undefined,
+          partId: typeof part?.id === "string" ? part.id : undefined,
+          partMessageId:
+            typeof part?.messageID === "string"
+              ? part.messageID
+              : typeof part?.messageId === "string"
+                ? part.messageId
+                : undefined,
+          partKeys: Object.keys(part).slice(0, 16),
+          partTextLength: partText?.length ?? 0,
+          partContentLength: partContent?.length ?? 0,
+          partDeltaLength: partDelta?.length ?? 0,
+        });
+      }
       // Lifecycle/tool events keep their detailed logs. Token deltas use the
       // render path only; logging them adds allocation without diagnostic value.
       const shouldLogVerboseStreamDetail =
@@ -4545,13 +4581,19 @@ export class ChatViewProvider
       }
 
       const eventSessionId = this.extractEventSessionId(event);
+      // `/event`, `/global/event`, and sync envelopes can replay the same SDK
+      // event ID. Keep the first copy, regardless of transport shape or source.
+      // This remains source-agnostic: `/global/event` is retained whenever it
+      // is the only copy that arrives.
       if (this.isDuplicateStreamEvent(event, eventSessionId)) {
-        this.logger.debug("[CHAT-STREAMING] duplicate SDK event suppressed", {
-          eventId: typeof eventRec?.id === "string" ? eventRec.id : undefined,
-          eventType,
-          sessionId: eventSessionId,
-          source: typeof eventRec?.source === "string" ? eventRec.source : undefined,
-        });
+        if (shouldTraceLiveStreamFrame) {
+          this.logger.info("[LIVE-STREAM-TRACE][HOST] suppressed-transport-duplicate", {
+            eventId: typeof eventRec?.id === "string" ? eventRec.id : undefined,
+            eventType,
+            source: typeof eventRec?.source === "string" ? eventRec.source : undefined,
+            sdkSessionId: eventSessionId,
+          });
+        }
         return;
       }
       if (eventType === "question.asked") {
@@ -4622,6 +4664,15 @@ export class ChatViewProvider
           eventSessionId !== subagentParentSessionId,
       );
       if (isSubagentOwnedEvent) {
+        if (shouldTraceLiveStreamFrame) {
+          this.logger.info("[LIVE-STREAM-TRACE][HOST] suppressed-subagent", {
+            eventId: typeof eventRec?.id === "string" ? eventRec.id : undefined,
+            eventType,
+            childSessionId: eventSessionId,
+            parentSessionId: subagentParentSessionId,
+            partType: typeof part?.type === "string" ? part.type : undefined,
+          });
+        }
         return;
       }
 
@@ -4887,6 +4938,18 @@ export class ChatViewProvider
         shouldFlushWebviewImmediately,
         isInitialTurnEvent,
       );
+      if (shouldTraceLiveStreamFrame) {
+        this.logger.info("[LIVE-STREAM-TRACE][HOST] forwarded", {
+          eventId: typeof eventRec?.id === "string" ? eventRec.id : undefined,
+          eventType,
+          sdkSessionId: eventSessionId,
+          envelopeSessionId: resolvedSessionId,
+          partType: typeof part?.type === "string" ? part.type : undefined,
+          partId: typeof part?.id === "string" ? part.id : undefined,
+          immediate: isInitialTurnEvent,
+          terminal: isTerminalState,
+        });
+      }
       if (
         eventType === "question.asked" ||
         eventType === "permission.asked" ||
@@ -5195,6 +5258,54 @@ export class ChatViewProvider
       // `call_omo_agent` bridge so later child events still update their card.
       this.subagentTracker.seedFromMessages(sdkMessages);
       const messages = adaptSdkMessages(sdkMessages);
+      const summarizeHydratedSteps = (records: unknown[]) =>
+        records
+          .map((record) => this.asRecord(record))
+          .filter((record): record is Record<string, unknown> => Boolean(record))
+          .map((record) => {
+            const info = this.asRecord(record.info);
+            const parts = Array.isArray(record.parts) ? record.parts : [];
+            const partTools = parts
+              .map((part) => this.asRecord(part))
+              .filter((part): part is Record<string, unknown> => Boolean(part))
+              .filter((part) => this.firstNonEmptyString(part.type).toLowerCase() === "tool")
+              .map((part) => ({
+                partId: this.firstNonEmptyString(part.id, part.partID, part.partId) || null,
+                callId: this.firstNonEmptyString(part.callID, part.callId) || null,
+                tool: this.firstNonEmptyString(part.tool, part.name) || null,
+                messageId: this.firstNonEmptyString(part.messageID, part.messageId) || null,
+              }));
+            // Raw SDK envelopes carry tool payloads in `parts`; the webview
+            // adapter deliberately projects them to `steps`/`progressEvents`.
+            // Trace both representations so a hydration regression can show
+            // the actual boundary where a step disappears.
+            const adaptedSteps = Array.isArray(record.steps) ? record.steps : [];
+            const stepTools = adaptedSteps
+              .map((step) => this.asRecord(step))
+              .filter((step): step is Record<string, unknown> => Boolean(step))
+              .map((step) => ({
+                partId: this.firstNonEmptyString(step.id, step.partID, step.partId) || null,
+                callId: this.firstNonEmptyString(step.callID, step.callId) || null,
+                tool: this.firstNonEmptyString(step.type, step.partType, step.title) || null,
+                messageId: this.firstNonEmptyString(step.messageID, step.messageId) || null,
+              }));
+            const tools = partTools.length > 0 ? partTools : stepTools;
+            return {
+              id: this.firstNonEmptyString(record.id, info?.id) || null,
+              parentId: this.firstNonEmptyString(info?.parentID, info?.parentId) || null,
+              role: this.firstNonEmptyString(record.role, info?.role) || null,
+              partCount: parts.length,
+              stepCount: adaptedSteps.length,
+              tools,
+            };
+          })
+          .filter((record) => record.role === "assistant" && record.tools.length > 0);
+
+      this.logger.warn("[HYDRATION-STEP-TRACE][HOST] sdk-to-renderable", {
+        sessionId,
+        sdkAssistantToolMessages: summarizeHydratedSteps(sdkMessages),
+        renderableAssistantToolMessages: summarizeHydratedSteps(messages),
+      });
       const latestAssistantMessage = [...sdkMessages]
         .reverse()
         .find((message) => message.info.role === "assistant");
@@ -5969,6 +6080,64 @@ export class ChatViewProvider
     return typeof previous === "number" && now - previous < ChatViewProvider.STREAM_EVENT_DEDUP_WINDOW_MS;
   }
 
+  private isMirroredTextDelta(event: unknown, sessionId?: string): boolean {
+    const record = this.asRecord(event);
+    if (!record) return false;
+
+    const source = this.firstNonEmptyString(record.source);
+    const properties = this.asRecord(record.properties) ?? {};
+    const part = this.asRecord(properties.part) ?? this.asRecord(record.part) ?? {};
+    const type = this.firstNonEmptyString(record.type, record.event, record.kind);
+    const field = this.firstNonEmptyString(properties.field)?.toLowerCase();
+    const partType = this.firstNonEmptyString(part.type)?.toLowerCase();
+    const partId = this.firstNonEmptyString(part.id, part.partID, part.partId);
+    const messageId = this.firstNonEmptyString(
+      part.messageID,
+      part.messageId,
+      properties.messageID,
+      properties.messageId,
+    );
+    const delta = this.firstNonEmptyString(properties.delta, part.delta);
+
+    // Never dedupe activity/lifecycle frames. This guard exists solely for
+    // byte-for-byte mirrored text tokens that otherwise append twice.
+    if (
+      !source ||
+      !type?.startsWith("message.part.") ||
+      partType !== "text" ||
+      (field !== "text" && field !== "content" && field !== "message") ||
+      !partId ||
+      !messageId ||
+      !delta
+    ) {
+      return false;
+    }
+
+    const key = [sessionId ?? "", type, messageId, partId, field, delta].join("|");
+    const now = Date.now();
+    const previous = this.recentMirroredTextDeltas.get(key);
+    if (
+      previous &&
+      previous.source !== source &&
+      now - previous.at <= ChatViewProvider.MIRRORED_TEXT_DELTA_WINDOW_MS
+    ) {
+      // Remove the pair rather than retaining it: a later legitimate repeat
+      // of the same word must still be allowed to start a new pair.
+      this.recentMirroredTextDeltas.delete(key);
+      return true;
+    }
+
+    this.recentMirroredTextDeltas.set(key, { source, at: now });
+    if (
+      this.recentMirroredTextDeltas.size >
+      ChatViewProvider.MAX_RECENT_MIRRORED_TEXT_DELTAS
+    ) {
+      const oldest = this.recentMirroredTextDeltas.keys().next().value;
+      if (oldest) this.recentMirroredTextDeltas.delete(oldest);
+    }
+    return false;
+  }
+
   private firstNonEmptyString(...values: unknown[]): string | undefined {
     for (const value of values) {
       if (typeof value === "string" && value.trim()) {
@@ -6019,6 +6188,19 @@ export class ChatViewProvider
       normalized === "network error" ||
       normalized === "network request failed" ||
       normalized === "unknown error"
+    );
+  }
+
+  /**
+   * OpenCode's prompt endpoint can reply with this opaque fallback just before
+   * it emits the actionable `session.error` over SSE. Do not let the native
+   * notification/card claim the failure first and hide the SDK detail.
+   */
+  private isOpaqueServerErrorFallback(message: string): boolean {
+    const normalized = message.trim().toLowerCase();
+    return (
+      normalized.includes("unexpected server error") &&
+      normalized.includes("check server logs for details")
     );
   }
 
@@ -7603,6 +7785,11 @@ export class ChatViewProvider
       const serverStartTime = Date.now();
       this.logger.debug("Ensuring server is running", { sessionId: this.currentSessionId });
       const client = await this.serverManager.ensureRunning();
+      // A stale server client may be replaced while the extension remains
+      // open. The prompt correctly uses the replacement, but its old SSE
+      // iterators only receive heartbeats. Rebind streaming before starting
+      // this turn so live activity remains real-time.
+      this.streamService.ensureCurrentServerConnection();
       this.logger.performance("Server ready", Date.now() - serverStartTime);
 
       const sessionStartTime = Date.now();
@@ -8238,6 +8425,17 @@ export class ChatViewProvider
 
         const userFacingErrorMessage =
           this.getUserFacingSendErrorMessage(errorMessage);
+        if (this.isOpaqueServerErrorFallback(userFacingErrorMessage)) {
+          this.logger.info(
+            "Prompt endpoint returned an opaque fallback; awaiting detailed session.error stream event",
+            {
+              sessionId: session.id,
+              status: response.response?.status,
+              errorMessage: userFacingErrorMessage,
+            },
+          );
+          return;
+        }
         this.logger.info("ERROR_FLOW: Sending error event to webview", {
           timestamp: new Date().toISOString(),
           sessionId: session.id,

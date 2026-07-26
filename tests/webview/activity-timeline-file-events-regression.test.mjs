@@ -8,7 +8,7 @@ const messageComponentsSource = readSource(
   "MessageComponents.tsx",
 );
 
-test("activity timeline promotes file.edited events into edit rows", () => {
+test("activity timeline excludes low-level file notifications", () => {
   const body = extractFunctionBody(
     messageComponentsSource,
     "function progressItemsFromRawEventPayloads(",
@@ -17,29 +17,29 @@ test("activity timeline promotes file.edited events into edit rows", () => {
   assert.match(
     body,
     /if \(eventType === "file\.edited" \|\| eventType === "file\.watcher\.updated"\)/,
-    "top-level file system events should be normalized into activity timeline rows",
+    "top-level file notifications must be handled explicitly",
   );
   assert.match(
     body,
-    /if \(eventType === "file\.edited"\) \{\s*title = "edit";/s,
-    "file.edited events should use the existing edit-style activity row label",
+    /rememberSkipped\("filesystem_notification", event, index\);\s*continue;/s,
+    "filesystem notifications must never be projected as timeline activity",
   );
 });
 
-test("activity timeline uses watcher event names as row labels", () => {
+test("activity timeline keeps actual tool activity separate from filesystem notifications", () => {
   const body = extractFunctionBody(
     messageComponentsSource,
     "function progressItemsFromRawEventPayloads(",
   );
 
-  assert.match(
-    body,
-    /title = watcherEvent \|\| "file watcher updated";/,
-    "file.watcher.updated rows should surface the watcher event verb such as add",
-  );
   assert.doesNotMatch(
     body,
-    /tool:\s*"file_watcher"/,
-    "file watcher rows should not force a generic file_watcher label when a more specific verb is available",
+    /buildSyntheticFileActivityStep/,
+    "the raw mapper must not synthesize File.Edited or File.Watcher.Updated rows",
+  );
+  assert.match(
+    body,
+    /if \(partType === "text"\)/,
+    "normal raw-part projection remains in place for meaningful SDK tool activity",
   );
 });

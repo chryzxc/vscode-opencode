@@ -381,7 +381,7 @@ export function getCentralizedDebugPayloadIdentity(payload: unknown): string {
   return [type, sessionId, id].filter(Boolean).join("|");
 }
 
-function centralizedDebugPayloadFingerprint(payload: unknown): string {
+export function centralizedDebugPayloadFingerprint(payload: unknown): string {
   if (payload == null) {
     return "";
   }

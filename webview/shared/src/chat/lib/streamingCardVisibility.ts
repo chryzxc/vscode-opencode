@@ -18,7 +18,6 @@ export function shouldShowStreamingCard({
   subagentsByParentMessageId,
 }: ShouldShowStreamingCardInput): boolean {
   if (!streaming) return false;
-  if (hasTranscriptAssistantForCurrentTurn && !streaming.isActive) return false;
 
   const candidateIds = new Set(
     [streaming.messageId, assistantTurnMessageId]
@@ -34,12 +33,19 @@ export function shouldShowStreamingCard({
     Array.isArray(transcriptAssistantMessageIds) &&
     transcriptAssistantMessageIds.some((messageId) => candidateIds.has(messageId));
 
-  // The transcript can receive an assistant placeholder before the live turn
-  // finishes. It does not own the live reasoning/tool/progress overlay, so
-  // suppressing this card at that point makes all streaming activity vanish.
-  // Deduplicate only after the live stream has completed and hydration owns
-  // the full turn.
-  if (hasMatchingAssistantTurnInTranscript && !streaming.isActive) return false;
+  // OpenCode can interleave several response messages with reasoning and tool
+  // activity in one assistant turn. Transcript text is therefore not a handoff
+  // signal while events are still arriving: hiding the live card drops the
+  // following activity/response phases from the UI. Hand off only after the
+  // explicit assistant-finish lifecycle signal and a rendered transcript
+  // response for this exact turn.
+  if (
+    hasMatchingAssistantTurnInTranscript &&
+    streaming.hasAssistantFinishSignal === true &&
+    hasTranscriptAssistantForCurrentTurn
+  ) {
+    return false;
+  }
 
   const hasRenderableText =
     streaming.hasRenderableContent === true &&

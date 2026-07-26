@@ -60,8 +60,8 @@ test('stream handler suppresses stray global events before a request starts', ()
 
   assert.match(
     streamBody,
-    /if \(!current && !state\.isProcessing && !isExplicitStart && !isAssistantUpdateStart && !canBootstrapFromPart && !hasSystemPatternEvent\) \{\s*return;\s*\}/,
-    'stream handler should avoid creating phantom streaming state from unrelated global events',
+    /if \(!current && !state\.isProcessing && !isExplicitStart && !isAssistantUpdateStart && !canBootstrapFromPart && !hasSystemPatternEvent && !isSessionErrorEvent\) \{\s*return;\s*\}/,
+    'stream handler should avoid creating phantom streaming state from unrelated global events while allowing an explicit session error to surface',
   );
 });
 
@@ -75,6 +75,24 @@ test('upsertStreamingStep deduplicates by id, callID, or title', () => {
     upsertBody,
     /const idx = streaming\.steps\.findIndex\([\s\S]*candidate\.id === step\.id\) \|\|[\s\S]*candidate\.callID === step\.callID\) \|\|[\s\S]*candidate\.title\.trim\(\)\.toLowerCase\(\) === titleKey/s,
     'upsertStreamingStep should deduplicate steps by id, callID, or title depending on options',
+  );
+});
+
+test('legacy stepStart events use the semantic streaming-step upsert', () => {
+  const stepStartBody = extractFunctionBody(
+    messageHandlerSource,
+    "case 'stepStart':",
+  );
+
+  assert.match(
+    stepStartBody,
+    /upsertStreamingStep\(dispatch, getState, step\)/,
+    'legacy stepStart events must share the live semantic dedupe path',
+  );
+  assert.doesNotMatch(
+    stepStartBody,
+    /dispatch\(\{ type: ['"]ADD_STREAMING_STEP['"], payload: step \}\)/,
+    'legacy stepStart must not append a second row for a mirrored transport frame',
   );
 });
 
@@ -144,8 +162,8 @@ test('stream handler reclassifies reasoning-like leaked text chunks into reasoni
   );
   assert.match(
     streamBody,
-    /renderable:\s*isRenderableStreamingPartType\(partType\)/,
-    'message.part.updated should only mark content renderable for trusted text-bearing parts',
+    /const renderable\s*=\s*isRenderableStreamingPartType\(partType\) \|\| isRawDeltaTextField[\s\S]*?renderable,/s,
+    'message.part.updated should mark only trusted text-bearing parts or structurally identified raw text deltas as renderable',
   );
   assert.match(
     streamBody,
@@ -362,6 +380,19 @@ test('parts fallback merges duplicate callID tool rows and preserves enriched me
     partsFallbackBody,
     /mergeCanonicalActivityStep\(/,
     'parts fallback should merge repeated callID snapshots instead of dropping later updates',
+  );
+});
+
+test('hydrated parts fallback preserves SDK state input and display metadata', () => {
+  const partsFallbackBody = extractFunctionBody(
+    messageHandlerSource,
+    'function extractActivityStepsFromParts(',
+  );
+
+  assert.match(
+    partsFallbackBody,
+    /const stateMetadata = asRecord\(stateRec\?\.metadata\) \|\| asRecord\(rec\.metadata\);[\s\S]*?compactMetadata\.lineStart[\s\S]*?compactMetadata\.lineEnd[\s\S]*?asString\(inputRec\?\.filePath\)/s,
+    'hydrated Read/Edit parts must keep state.input.filePath and state.metadata.display line ranges in their canonical timeline step',
   );
 });
 

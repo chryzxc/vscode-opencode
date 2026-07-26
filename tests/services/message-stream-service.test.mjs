@@ -61,7 +61,7 @@ test('MessageStreamService handles abort and auto-reconnect on errors', () => {
   );
 });
 
-test('MessageStreamService keeps high-frequency raw event diagnostics behind debug and dedupe', () => {
+test('MessageStreamService keeps high-frequency raw event diagnostics behind debug without dropping transport frames', () => {
   const consumeBody = extractFunctionBody(
     messageStreamSource,
     '  private async consumeEventStream(',
@@ -77,10 +77,10 @@ test('MessageStreamService keeps high-frequency raw event diagnostics behind deb
     /if \(!this\.isHeartbeatEvent\(eventWithSource\.type\) && verboseDebug\) \{[\s\S]*logger\.debug\("\[CENTRALIZED-TAPE\]\[STREAM\] raw_event_received"/,
     'raw per-event stream diagnostics must require debug logging',
   );
-  assert.match(
+  assert.doesNotMatch(
     consumeBody,
-    /if \(this\.isDuplicateEvent\(eventWithSource\)\)[\s\S]*continue;[\s\S]*raw_event_received/,
-    'raw per-event stream diagnostics must run only after duplicate suppression',
+    /if \(this\.isDuplicateEvent\(eventWithSource\)\)[\s\S]*continue;/,
+    'transport dedupe must not discard a direct or sync-wrapped event before live rendering',
   );
 });
 
@@ -175,6 +175,34 @@ test('MessageStreamService does not scope centralized event subscriptions to the
     messageStreamSource,
     /consumeEventStream\(\s*globalEvents\.stream,\s*"\/global\/event",\s*abortSignal,\s*eventFilterDirectory,/s,
     'the /global/event stream should use the scoped filter only when the subscription is scoped',
+  );
+});
+
+test('MessageStreamService reconnects when ServerManager replaces the SDK client', () => {
+  const reconnectBody = extractFunctionBody(
+    messageStreamSource,
+    'ensureCurrentServerConnection(): void',
+  );
+
+  assert.match(
+    messageStreamSource,
+    /private streamClient: unknown \| null = null;/,
+    'the service should retain the client that owns its active SSE iterators',
+  );
+  assert.match(
+    reconnectBody,
+    /this\.streamClient === currentClient/,
+    'the service should keep a healthy stream bound to the current client',
+  );
+  assert.match(
+    reconnectBody,
+    /void this\.startListening\(\)/,
+    'a replacement client should reopen the event stream without blocking a prompt',
+  );
+  assert.match(
+    chatProviderSource,
+    /const client = await this\.serverManager\.ensureRunning\(\);[\s\S]*?this\.streamService\.ensureCurrentServerConnection\(\);/,
+    'sending a prompt should verify that streaming follows the client selected for that prompt',
   );
 });
 

@@ -262,6 +262,17 @@ describe("toastEvents", () => {
       assert.equal(status.updatedAt, undefined);
     });
 
+    it("normalizes a bare session.idle lifecycle event to terminal idle status", () => {
+      const status = liveSessionStatusFromPayload({
+        type: "session.idle",
+        properties: { sessionID: "session-idle" },
+      });
+
+      assert.equal(status.statusType, "idle");
+      assert.equal(status.sessionId, "session-idle");
+      assert.equal(status.source, "session.idle");
+    });
+
     it("reads wrapped sync-event status data and leaves updatedAt undefined when timestamp is missing", () => {
       const status = liveSessionStatusFromPayload({
         payload: {

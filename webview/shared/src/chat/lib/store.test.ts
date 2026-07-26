@@ -408,7 +408,7 @@ describe('error message reducer state', () => {
 });
 
 describe('streaming reasoning reducer state', () => {
-  it('groups interleaved delta reasoning chunks by part id for live updates', () => {
+  it('does not retain interleaved reasoning deltas during live updates', () => {
     const seededState = appReducer(initialState, {
       type: 'SET_STREAMING',
       payload: {
@@ -457,28 +457,51 @@ describe('streaming reasoning reducer state', () => {
       },
     });
 
-    assert.deepStrictEqual(
-      nextState.streaming?.reasoningEvents.map((event) => ({
-        partID: event.partID,
-        messageID: event.messageID,
-        text: event.text,
-        delta: event.delta,
-      })),
-      [
-        {
-          partID: 'part-1',
-          messageID: 'msg-reasoning',
-          text: 'Theory',
-          delta: true,
-        },
-        {
-          partID: 'part-2',
-          messageID: 'msg-reasoning',
-          text: 'Plan',
-          delta: true,
-        },
-      ],
+    assert.deepStrictEqual(nextState.streaming?.reasoningEvents, []);
+    assert.strictEqual(nextState.streaming?.reasoning, '');
+    assert.strictEqual(
+      nextState.streaming?.inReasoningPart,
+      true,
+      'a live reasoning delta must retain the lightweight phase marker so the timeline can show Thinking…',
     );
+    assert.strictEqual(nextState.streaming?.activeReasoningPartID, 'part-1');
+    assert.deepStrictEqual(
+      nextState.streaming?.reasoningPartIDs,
+      ['part-1', 'part-2'],
+      'reasoning part ownership must survive handler recreation so relabeled text deltas stay out of the response card',
+    );
+  });
+
+  it('closes the live reasoning phase when a later tool activity arrives', () => {
+    const seededState = appReducer(initialState, {
+      type: 'SET_STREAMING',
+      payload: {
+        messageId: 'msg-reasoning',
+        content: '',
+        hasRenderableContent: false,
+        reasoning: '',
+        reasoningEvents: [],
+        steps: [],
+        progressEvents: [],
+        edits: [],
+        isActive: true,
+        inReasoningPart: true,
+        activeReasoningPartID: 'part-reasoning',
+      },
+    });
+
+    const nextState = appReducer(seededState, {
+      type: 'ADD_STREAMING_STEP',
+      payload: {
+        id: 'part-bash',
+        title: 'Bash',
+        type: 'tool',
+        partType: 'tool',
+      },
+    });
+
+    assert.strictEqual(nextState.streaming?.inReasoningPart, false);
+    assert.strictEqual(nextState.streaming?.activeReasoningPartID, undefined);
   });
 });
 
@@ -515,7 +538,7 @@ describe('assistant turn pending lifecycle', () => {
     }));
   });
 
-  it('clears a stale inactive streaming snapshot when a new assistant turn starts', () => {
+  it('preserves an inactive streaming snapshot when OpenCode advances to a new assistant phase', () => {
     const seededState = {
       ...initialState,
       assistantTurnPending: false,
@@ -542,7 +565,8 @@ describe('assistant turn pending lifecycle', () => {
 
     assert.strictEqual(nextState.assistantTurnPending, true);
     assert.strictEqual(nextState.assistantTurnMessageId, 'msg-new-assistant');
-    assert.strictEqual(nextState.streaming, null);
+    assert.equal(nextState.streaming?.messageId, 'msg-old-assistant');
+    assert.equal(nextState.streaming?.content, 'previous assistant response');
   });
 
   it('does not carry the previous assistant message id into a fresh pending turn without an id yet', () => {
@@ -563,7 +587,7 @@ describe('assistant turn pending lifecycle', () => {
     assert.strictEqual(nextState.assistantTurnMessageId, null);
   });
 
-  it('clears previous inactive streaming content when a fresh pending turn has no id yet', () => {
+  it('preserves inactive streaming content until an explicit lifecycle action clears it', () => {
     const seededState = {
       ...initialState,
       currentSessionId: 'ses-1',
@@ -604,8 +628,9 @@ describe('assistant turn pending lifecycle', () => {
 
     assert.strictEqual(nextState.assistantTurnPending, true);
     assert.strictEqual(nextState.assistantTurnMessageId, null);
-    assert.strictEqual(nextState.streaming, null);
-    assert.strictEqual(nextState.streamingBySessionId?.['ses-1'], undefined);
+    assert.equal(nextState.streaming?.messageId, 'msg-old-assistant');
+    assert.equal(nextState.streaming?.content, 'previous assistant response');
+    assert.equal(nextState.streamingBySessionId?.['ses-1']?.messageId, 'msg-old-assistant');
   });
 
   it('does not keep assistant turn pending when switching to a fresh idle session', () => {
@@ -1504,6 +1529,23 @@ describe('canonicalizeMessagesForRender', () => {
     ]);
   });
 
+  it('keeps consecutive activity-only SDK envelopes during rehydration', () => {
+    const messages: Message[] = [
+      { role: 'user', content: 'update the file', id: 'u1', created: 1 },
+      { role: 'assistant', id: 'a-read', created: 2, steps: [{ type: 'tool', title: 'read', callID: 'read_1' }] },
+      { role: 'assistant', id: 'a-edit-1', created: 3, steps: [{ type: 'tool', title: 'edit', callID: 'edit_1' }] },
+      { role: 'assistant', id: 'a-edit-2', created: 4, steps: [{ type: 'tool', title: 'edit', callID: 'edit_2' }] },
+      { role: 'assistant', id: 'a-read-2', created: 5, steps: [{ type: 'tool', title: 'read', callID: 'read_2' }] },
+      { role: 'assistant', id: 'a-final', created: 6, content: 'Done.' },
+    ];
+
+    const result = canonicalizeMessagesForRender(messages);
+
+    assert.deepStrictEqual(result.map((message) => message.id), [
+      'u1', 'a-read', 'a-edit-1', 'a-edit-2', 'a-read-2', 'a-final',
+    ]);
+  });
+
   it('should collapse an immediately repeated user+assistant turn', () => {
     const messages: Message[] = [
       { role: 'user', content: 'hey there', id: 'u1', created: 10 },
@@ -1771,6 +1813,35 @@ describe('mergeActivityArraysLocal', () => {
       assert.strictEqual(result![1].title, 'Updated step 2', 'step-2 should have updated title');
       assert.strictEqual(result![2].id, 'step-3', 'last item should be step-3');
     });
+
+    it('deduplicates mirrored tool snapshots with different SDK call IDs', () => {
+      const existing = [{
+        id: 'part-live',
+        callID: 'call-live',
+        title: 'Read GameHUD.tsx',
+        activityDetail: {
+          tool: 'read',
+          input: { filePath: 'src/GameHUD.tsx', limit: 40 },
+          output: 'export function GameHUD() {}',
+        },
+      }];
+      const incoming = [{
+        id: 'part-hydrated',
+        callID: 'call-hydrated',
+        title: 'Read GameHUD.tsx',
+        activityDetail: {
+          tool: 'read',
+          input: { limit: 40, filePath: 'src/GameHUD.tsx' },
+          output: 'export function GameHUD() {}',
+        },
+      }];
+
+      const result = mergeActivityArraysLocal(existing, incoming);
+
+      assert.ok(result);
+      assert.strictEqual(result!.length, 1, 'mirrored SDK calls must not create a second live activity row');
+      assert.strictEqual(result![0].callID, 'call-hydrated', 'the newest snapshot should enrich the canonical row');
+    });
   });
 
   describe('edge cases and hydration scenarios', () => {
@@ -1905,5 +1976,75 @@ describe('getTimestampForItem', () => {
 
     const item3 = { createdAt: 'not a number', title: 'Test' };
     assert.strictEqual(getTimestampForItem(item3), undefined, 'should ignore non-numeric values');
+  });
+});
+
+describe('live activity ordering', () => {
+  it('assigns a strictly increasing sequence when multiple steps arrive in one millisecond', () => {
+    const originalNow = Date.now;
+    Date.now = () => 1_000;
+    try {
+      const started = appReducer(initialState, {
+        type: 'SET_STREAMING',
+        payload: {
+          messageId: 'msg-order',
+          content: '',
+          hasRenderableContent: false,
+          reasoning: '',
+          reasoningEvents: [],
+          steps: [],
+          progressEvents: [],
+          edits: [],
+          isActive: true,
+        },
+      });
+      const first = appReducer(started, {
+        type: 'ADD_STREAMING_STEP',
+        payload: { id: 'first', title: 'First', status: 'pending' },
+      });
+      const second = appReducer(first, {
+        type: 'ADD_STREAMING_STEP',
+        payload: { id: 'second', title: 'Second', status: 'pending' },
+      });
+
+      assert.deepStrictEqual(
+        second.streaming?.steps.map((step) => step.streamSeq),
+        [1_000, 1_001],
+      );
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+});
+
+describe('live response chunks', () => {
+  it('keeps separate renderable SDK text parts as separate response bodies', () => {
+    const started = appReducer(initialState, {
+      type: 'SET_STREAMING',
+      payload: {
+        messageId: 'msg-chunks',
+        content: '',
+        hasRenderableContent: false,
+        reasoning: '',
+        reasoningEvents: [],
+        steps: [],
+        progressEvents: [],
+        edits: [],
+        isActive: true,
+      },
+    });
+    const first = appReducer(started, {
+      type: 'UPDATE_STREAMING_CONTENT',
+      payload: { content: 'First response.', renderable: true, partID: 'part-1' },
+    });
+    const second = appReducer(first, {
+      type: 'UPDATE_STREAMING_CONTENT',
+      payload: { content: '\n\nSecond response.', append: true, renderable: true, partID: 'part-2' },
+    });
+
+    assert.deepStrictEqual(
+      second.streaming?.responseChunks?.map((chunk) => chunk.text),
+      ['First response.', 'Second response.'],
+    );
   });
 });

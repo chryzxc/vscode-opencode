@@ -16,6 +16,7 @@ import { MarkdownRenderer } from "../../../components/MarkdownRenderer";
 import { ActivityStepStatusChip } from "./ActivityStepStatusChip";
 
 import type { ActivityDetail, SubagentConversationEvent } from "../../lib/types";
+import { copyToClipboard } from "../../lib/clipboard";
 
 type BackgroundOutputStepProps = {
   callID?: string;
@@ -213,7 +214,7 @@ function BackgroundOutputModal({
 
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(detailText);
+      await copyToClipboard(detailText);
     } finally {
       setCopied(true);
       setTimeout(() => setCopied(false), 1400);

@@ -12,6 +12,7 @@ import {
 import { ActivityDiffExcerpt } from "../ActivityDiffExcerpt";
 import { usePersistentModalOpen } from "../../lib/usePersistentModalOpen";
 import { ActivityStepStatusChip } from "./ActivityStepStatusChip";
+import { copyToClipboard } from "../../lib/clipboard";
 
 import type { ActivityDetail } from "../../lib/types";
 
@@ -185,7 +186,7 @@ function DiffPreviewModal({
 
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(detailText);
+      await copyToClipboard(detailText);
       setCopied(true);
       setTimeout(() => setCopied(false), 1200);
     } catch {
