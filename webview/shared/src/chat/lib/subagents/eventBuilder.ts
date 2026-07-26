@@ -89,10 +89,12 @@ export function normalizeSubagentTimelineEventsForPresentation(
   events: SubagentTimelineEvent[]
 ): SubagentTimelineEvent[] {
   if (events.length <= 1) {
-    return events;
+    return events.filter((event): event is SubagentTimelineEvent => Boolean(event));
   }
 
-  const sorted = [...events].sort((a, b) => a.createdAt - b.createdAt);
+  const sorted = events
+    .filter((event): event is SubagentTimelineEvent => Boolean(event))
+    .sort((a, b) => a.createdAt - b.createdAt);
   const deduped: SubagentTimelineEvent[] = [];
 
   for (const event of sorted) {
@@ -104,10 +106,13 @@ export function normalizeSubagentTimelineEventsForPresentation(
       normalizeComparableText(event.label)
     ) {
       // Merge consecutive events of same type - keep latest metadata
-      previous.createdAt = Math.max(previous.createdAt, event.createdAt);
-      previous.messageID = event.messageID || previous.messageID;
-      previous.partID = event.partID || previous.partID;
-      previous.callID = event.callID || previous.callID;
+      deduped[deduped.length - 1] = {
+        ...previous,
+        createdAt: Math.max(previous.createdAt, event.createdAt),
+        messageID: event.messageID || previous.messageID,
+        partID: event.partID || previous.partID,
+        callID: event.callID || previous.callID,
+      };
       continue;
     }
     deduped.push(event);
