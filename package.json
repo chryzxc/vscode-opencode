@@ -1,7 +1,7 @@
 {
   "name": "opencode-vscode-chryzxc",
-  "displayName": "OpenCode — VS Code UI",
-  "description": "OpenCode for VS Code: an AI coding agent client with streaming chat, implementation plans, subagents, diff review, sessions, and quota monitoring.",
+  "displayName": "OpenCode — VS Code Client",
+  "description": "OpenCode client for VS Code with streaming chat, implementation plans, subagents, diff review, sessions, and quota monitoring.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -74,8 +74,8 @@
     "openai"
   ],
   "categories": [
-    "Machine Learning",
-    "Other"
+    "AI",
+    "Chat"
   ],
   "activationEvents": [
     "onStartupFinished"

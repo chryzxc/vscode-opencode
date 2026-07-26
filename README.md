@@ -1,4 +1,4 @@
-# OpenCode — VS Code UI
+# OpenCode — VS Code Client
 
 [![VS Code Marketplace installs](https://img.shields.io/visual-studio-marketplace/i/chryzxc.opencode-vscode-chryzxc?label=VS%20Code%20installs)](https://marketplace.visualstudio.com/items?itemName=chryzxc.opencode-vscode-chryzxc)
 [![VS Code Marketplace rating](https://img.shields.io/visual-studio-marketplace/r/chryzxc.opencode-vscode-chryzxc)](https://marketplace.visualstudio.com/items?itemName=chryzxc.opencode-vscode-chryzxc&ssr=false#review-details)
