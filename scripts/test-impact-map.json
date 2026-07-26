@@ -104,7 +104,7 @@
         "package.json",
         "package-lock.json",
         "tsconfig.json",
-        "esbuild.config.js",
+        "esbuild.config.cjs",
         "webview/shared/package.json",
         "webview/shared/package-lock.json"
       ],

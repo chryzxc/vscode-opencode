@@ -11,12 +11,12 @@
 
 import { spawn } from 'child_process';
 import { watch } from 'chokidar';
-import { pathToFileURL } from 'url';
+import { fileURLToPath } from 'url';
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 
-const __filename = import.meta.url;
-const __dirname = dirname(pathToFileURL(__filename).pathname);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 // Configuration
 const EXTENSION_SRC_DIR = join(__dirname, '../src');
@@ -74,7 +74,7 @@ function execute(command, args, options = {}) {
 function startExtensionWatch() {
   logSection('Starting Extension Watch');
 
-  extensionWatchProcess = spawn('node', ['esbuild.config.js', '--watch'], {
+  extensionWatchProcess = spawn('node', ['esbuild.config.cjs', '--watch'], {
     stdio: 'inherit',
     cwd: join(__dirname, '..')
   });
@@ -92,9 +92,9 @@ function startExtensionWatch() {
 function startWebviewWatch() {
   logSection('Starting Webview Watch');
 
-  webviewWatchProcess = spawn('npm', ['run', 'dev'], {
+  webviewWatchProcess = spawn('npm', ['run', 'webview:watch'], {
     stdio: 'inherit',
-    cwd: join(__dirname, '../webview/shared'),
+    cwd: join(__dirname, '..'),
     shell: true,
     env: { ...process.env }
   });
