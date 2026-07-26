@@ -190,16 +190,6 @@ test('app reducer caps streaming arrays and deduplicates edit paths', () => {
   );
   assert.match(
     storeSource,
-    /const\s+MAX_STREAMING_STEPS\s*=\s*400/,
-    'store should cap streaming steps',
-  );
-  assert.match(
-    storeSource,
-    /const\s+MAX_STREAMING_PROGRESS_EVENTS\s*=\s*1000/,
-    'store should cap streaming progress events',
-  );
-  assert.match(
-    storeSource,
     /const\s+MAX_STREAMING_EDITS\s*=\s*300/,
     'store should cap tracked edited files during streaming',
   );
@@ -208,10 +198,20 @@ test('app reducer caps streaming arrays and deduplicates edit paths', () => {
     /appendWithCap\(\s*reasoningEvents,[\s\S]*MAX_STREAMING_REASONING_EVENTS/,
     'reasoning events should use bounded append helper',
   );
+  // steps and progressEvents intentionally use a dedup-merge helper
+  // (mergeLiveActivityItemLocal) instead of appendWithCap: incoming activity
+  // items are merged onto existing entries by stable key rather than
+  // appended, so the arrays stay bounded by distinct activity rather than by
+  // raw event volume.
   assert.match(
     storeSource,
-    /appendWithCap\(\s*state\.streaming\.progressEvents,[\s\S]*MAX_STREAMING_PROGRESS_EVENTS/,
-    'progress events should use bounded append helper',
+    /mergeLiveActivityItemLocal\(\s*state\.streaming\.steps,/,
+    'streaming steps should use the dedup-merge helper (mergeLiveActivityItemLocal)',
+  );
+  assert.match(
+    storeSource,
+    /mergeLiveActivityItemLocal\(\s*state\.streaming\.progressEvents,/,
+    'progress events should use the dedup-merge helper (mergeLiveActivityItemLocal)',
   );
   assert.match(
     storeSource,

@@ -233,7 +233,18 @@ function chatViewSource_extractMethodBody() {
 
 test("handleLoadSession calls syncRevertStateFromServer", () => {
   const loadSessionStart = chatViewProviderSource.indexOf("private async handleLoadSession(");
-  const loadSessionBody = chatViewProviderSource.slice(loadSessionStart, loadSessionStart + 10000);
+  // handleLoadSession grew past 10K chars, so extract the FULL method body by
+  // slicing to the next method boundary instead of a fixed window.
+  const loadSessionEnd = chatViewProviderSource.indexOf(
+    "private async handleDeleteSession(",
+    loadSessionStart,
+  );
+  const loadSessionBody =
+    loadSessionStart === -1
+      ? ""
+      : chatViewProviderSource.slice(loadSessionStart, loadSessionEnd === -1 ? undefined : loadSessionEnd);
+
+  assert.ok(loadSessionBody.length > 0, "handleLoadSession method body must exist");
 
   assert.ok(
     loadSessionBody.includes("syncRevertStateFromServer(sessionId)"),

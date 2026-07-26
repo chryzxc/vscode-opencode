@@ -18,9 +18,19 @@ test("SET_MESSAGES uses centralized canonicalization before storing messages", (
     "export function appReducer(state: AppState, action: AppAction): AppState",
   );
 
+  // Before canonicalization, SDK-backed session errors are merged from the
+  // prior tape into the incoming payload. Guard that pre-step so transient
+  // stream errors survive a SET_MESSAGES refresh.
   assert.match(
     reducerBody,
-    /const\s+canonicalMessages\s*=\s*canonicalizeMessagesForRender\(action\.payload,\s*\{[\s\S]*preserveEvtAssistantMessages:[\s\S]*\}\);/s,
+    /retainSdkBackedSessionErrors\(\s*state\.messages,\s*action\.payload/,
+    "SET_MESSAGES should retain SDK-backed session errors before canonicalization",
+  );
+  // The canonicalization argument may be the retained-errors variable rather
+  // than the raw action.payload — accept any single identifier argument here.
+  assert.match(
+    reducerBody,
+    /const\s+canonicalMessages\s*=\s*canonicalizeMessagesForRender\([a-zA-Z_$][\w$]*,\s*\{[\s\S]*preserveEvtAssistantMessages:[\s\S]*\}\);/s,
     "SET_MESSAGES should canonicalize payload via centralized reducer helper with live evt_ preservation awareness",
   );
   assert.match(

@@ -33,13 +33,13 @@ test("provider hydrates subagent conversation from child session messages using 
   );
   assert.match(
     providerSource,
-    /sessionService\.getMessages\(childSessionId\)/,
-    "Subagent conversation hydration should fetch child session messages",
+    /sessionSnapshotLoader\.loadMessagesOnly\(childSessionId\)/,
+    "Subagent conversation hydration should fetch child session messages via the snapshot loader",
   );
   assert.match(
     providerSource,
-    /processHistoryMessages\([\s\S]*childSessionId[\s\S]*\)/s,
-    "Subagent hydration should reuse processHistoryMessages (single source of truth)",
+    /adaptSdkMessages\(sdkMessages\)/,
+    "Subagent hydration should reuse adaptSdkMessages as the single source of truth for SDK message processing",
   );
   assert.match(
     providerSource,
@@ -84,8 +84,8 @@ test("sessions payload is top-level scoped and includes parentSessionId metadata
   );
   assert.match(
     providerSource,
-    /return\s*!sessionIds\.has\(parentSessionId\)/,
-    "Top-level filtering should remove child sessions whose parent exists",
+    /Child sessions are detail-only subagent transcripts[\s\S]*?return false;/s,
+    "Top-level filtering should always exclude child sessions, even orphaned ones",
   );
   assert.match(
     providerSource,

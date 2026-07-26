@@ -29,8 +29,8 @@ test('InputWrapper derives stop/send toggle from the active assistant response s
   );
   assert.match(
     chatShellSource,
-    /const showExtendedLoading = hasLiveAssistantTurn \|\| showAiResponseLoading;/,
-    'the rendered loading ticker must directly use the same live-turn condition as Stop',
+    /const showExtendedLoading\s*=\s*!state\.isCompacting\s*&&\s*\(hasLiveAssistantTurn \|\| showAiResponseLoading\);/,
+    'the rendered loading ticker must directly use the same live-turn condition as Stop, gated off while compaction owns the live-response surface',
   );
   assert.doesNotMatch(
     chatShellSource,

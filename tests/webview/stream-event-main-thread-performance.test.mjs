@@ -115,14 +115,14 @@ test("the first event of a new assistant turn remains marked as immediate", () =
   assert.doesNotMatch(handlerSource, /startTransition\(/);
 });
 
-test("enabled SDK diagnostics retain the complete external live-event trail", () => {
+test("enabled SDK diagnostics retain a bounded external live-event trail", () => {
   assert.match(handlerSource, /appendLiveSdkDebugEvents\(sessionId, events\)/);
   assert.match(
     handlerSource,
     /appendLiveEventsToDebugPanel\(debugEvents\)/,
   );
   assert.doesNotMatch(storeSource, /LIVE_EVENT_STREAM_DEBUG/);
-  assert.doesNotMatch(debugStoreSource, /MAX_LIVE_EVENTS/);
+  assert.match(debugStoreSource, /MAX_LIVE_EVENTS_PER_SESSION\s*=\s*200/);
   assert.doesNotMatch(debugStoreSource, /NOTIFY_INTERVAL_MS|setTimeout\(publish/);
   assert.match(debugStoreSource, /publish\(\);/);
 });

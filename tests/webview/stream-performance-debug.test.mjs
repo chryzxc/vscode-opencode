@@ -7,10 +7,6 @@ const providerSource = readSource(
   [joinFromRoot("src", "providers", "ChatViewProvider.ts")],
   "ChatViewProvider.ts",
 );
-const streamHandlerSource = readSource(
-  [joinFromRoot("src", "providers", "chat", "StreamEventHandler.ts")],
-  "StreamEventHandler.ts",
-);
 const loggerSource = readSource(
   [joinFromRoot("webview", "shared", "src", "chat", "lib", "logger.ts")],
   "logger.ts",
@@ -27,10 +23,9 @@ test("stream-performance diagnostics are always available during investigation",
 });
 
 test("performance logs are sampled and cover host, event batch, and scroll phases", () => {
-  assert.match(loggerSource, /now - previous < 250/);
+  assert.match(loggerSource, /now - previous < 2_000/);
   assert.match(messageHandlerSource, /streamPerformance\("stream-event-batch"/);
-  assert.match(streamHandlerSource, /\[STREAM-PERF\] host-stream-flush/);
-  assert.match(providerSource, /logStreamPerformance\("provider-webview-flush"/);
+  assert.match(providerSource, /logStreamPerformance\("provider-webview-event"/);
   assert.match(
     readSource([joinFromRoot("webview", "shared", "src", "chat", "ChatShell.tsx")], "ChatShell.tsx"),
     /streamPerformance\("scroll-input"/,

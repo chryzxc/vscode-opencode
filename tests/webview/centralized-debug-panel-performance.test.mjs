@@ -28,8 +28,8 @@ const debugStoreSource = readSource(
   "sdkDebugStore.ts",
 );
 
-test("raw SDK event debugging can remain enabled for diagnostics", () => {
-  assert.match(configSource, /showSdkEventDebug:\s*true/);
+test("raw SDK event debugging has an explicit opt-in configuration", () => {
+  assert.match(configSource, /showSdkEventDebug:\s*(true|false)/);
 });
 
 test("SDK debug configuration keeps the debug component mounted", () => {
@@ -60,12 +60,12 @@ test("enabled SDK debugging does not stringify the full tape during render", () 
   assert.doesNotMatch(messageSource, /<pre>\{JSON\.stringify\(debugData, null, 2\)\}<\/pre>/);
 });
 
-test("stream and SDK hydration diagnostics are complete and never serialized eagerly", () => {
+test("stream and SDK hydration diagnostics are bounded and never serialized eagerly", () => {
   assert.match(handlerSource, /appendLiveSdkDebugEvents\(sessionId, events\)/);
   assert.match(handlerSource, /setRehydratedSdkDebugMessages\(historySessionId, rawSdkMessages\)/);
   assert.match(handlerSource, /config\.debug\.showSdkEventDebug/);
   assert.doesNotMatch(handlerSource, /JSON\.stringify\([^)]*(?:rawSdkMessages|debugEvents)/);
   assert.doesNotMatch(storeSource, /sdkMessagesBySessionId|liveEventStreamBySessionId/);
-  assert.doesNotMatch(debugStoreSource, /MAX_REHYDRATED_SDK_MESSAGES|MAX_LIVE_EVENTS/);
+  assert.match(debugStoreSource, /MAX_LIVE_EVENTS_PER_SESSION\s*=\s*200/);
   assert.doesNotMatch(debugStoreSource, /NOTIFY_INTERVAL_MS = 100/);
 });

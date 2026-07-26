@@ -11,8 +11,13 @@ const source = readSource(
 test("inline subagent cards require exact parent message ownership", () => {
   assert.match(
     source,
-    /return Boolean\(messageId\) && subagent\.parentMessageId === messageId;/,
-    "a subagent must only render on the assistant message that owns it",
+    /useSubagentsForParentMessage\(subagentParentMessageId\)/,
+    "a subagent must render only on the assistant message that owns it, fetched via the parent-message-keyed hook",
+  );
+  assert.match(
+    source,
+    /inlineSubagentParentMessageIds[\s\S]*?subagentsByParentMessageId\?\.\[parentMessageId\]/,
+    "the block-summary card must aggregate subagents from the store-level parent-message key",
   );
 });
 

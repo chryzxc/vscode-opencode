@@ -180,24 +180,24 @@ test("normalizedCentralizedEventRichness gives +5 weight to events with summary.
   );
 });
 
-// ── Processing gate bypass ─────────────────────────────────────────
+// ── Processing gate ────────────────────────────────────────────────
+// Historically the host side ran every centralized event through a
+// `shouldBypassProcessingGate` filter that could drop message.updated /
+// session.diff events before they reached the webview. That gate (and its
+// bypass list) was removed in the UI/walkthrough refactor — those events now
+// reach the webview unconditionally. Guard that property by ensuring the gate
+// is not silently re-introduced, which would risk dropping diff-bearing events.
 
-test("extension processing gate bypasses message.updated and session.diff events", () => {
+test("extension does not gate message.updated or session.diff events before they reach the webview", () => {
   const providerSource = readSource(
     [joinFromRoot("src", "providers", "ChatViewProvider.ts")],
     "ChatViewProvider.ts",
   );
 
-  assert.match(
+  assert.doesNotMatch(
     providerSource,
-    /shouldBypassProcessingGate\s*=\s*[\s\S]*"message\.updated"/,
-    "must bypass processing gate for message.updated events",
-  );
-
-  assert.match(
-    providerSource,
-    /shouldBypassProcessingGate\s*=\s*[\s\S]*"session\.diff"/,
-    "must bypass processing gate for session.diff events",
+    /shouldBypassProcessingGate/,
+    "must not re-introduce a processing gate that could drop message.updated/session.diff events",
   );
 });
 

@@ -243,8 +243,63 @@ test("AssistantResponseCardInner merges live streaming progress rows into the ac
   );
   assert.match(
     messageComponentsSource,
-    /function orderDisplayEventsChronologically\([\s\S]*?left\.sequence - right\.sequence \|\| left\.index - right\.index[\s\S]*?events: orderDisplayEventsChronologically\(/s,
-    "The sticky activity projection must replay rows by stream sequence instead of merge insertion order",
+    /function orderDisplayEventsChronologically\(events: DisplayEvent\[\]\): DisplayEvent\[\] \{[\s\S]*?SDK stream is already ordered[\s\S]*?return events;/s,
+    "The live activity timeline must preserve SDK arrival order instead of re-sorting local snapshot indexes",
+  );
+  assert.doesNotMatch(
+    messageComponentsSource,
+    /normalizedEntries\.sort\(/,
+    "The display-event projection must not re-sort live SDK entries",
+  );
+  assert.doesNotMatch(
+    messageComponentsSource,
+    /orderedEntries\.sort\(/,
+    "The activity timeline grouping step must preserve the SDK event order",
+  );
+  assert.match(
+    messageComponentsSource,
+    /const entriesBySdkSequence = new Map<number, RawRenderEntry\[\]>\(\);[\s\S]*?for \(let streamSeq = 0; streamSeq < rawEventCount; streamSeq \+= 1\)[\s\S]*?for \(const entry of sdkOrderedEntries\)/s,
+    "Activity and assistant text lanes must be rendered by their original SDK tape position without a UI-level sort",
+  );
+  assert.match(
+    messageComponentsSource,
+    /function mergeProgressItemRecord\([\s\S]*?streamSeq:\s*existing\.streamSeq \?\? incoming\.streamSeq/s,
+    "An activity lifecycle update must retain its first SDK position instead of moving ahead of intervening assistant text",
+  );
+  assert.match(
+    messageComponentsSource,
+    /function mergeStickyDisplayEvent\([\s\S]*?streamSeq:\s*existing\.streamSeq \?\? incoming\.streamSeq/s,
+    "The sticky activity timeline must retain the original activity position across streaming rerenders",
+  );
+  assert.match(
+    messageComponentsSource,
+    /event\.label === "Assistant Response"[\s\S]*?!shouldInterleaveStreamingAssistantCommentary/s,
+    "Interleaved live assistant text must not be skipped from the activity timeline",
+  );
+  assert.match(
+    messageComponentsSource,
+    /showResponseBody && !shouldInterleaveStreamingAssistantCommentary/s,
+    "The response footer must not duplicate assistant text already interleaved in the live timeline",
+  );
+  assert.match(
+    messageComponentsSource,
+    /function isLikelyUserPromptEcho\([\s\S]*?response === prompt[\s\S]*?shorterLength \/ longerLength >= 0\.9[\s\S]*?response\.includes\(prompt\)/s,
+    "Text-only SDK events that echo the visible user prompt must not render as Assistant Response cards",
+  );
+  assert.match(
+    messageComponentsSource,
+    /commentaryItemsFromRawEventPayloads\(normalizedCentralizedRawSdkEventPayloads\)\.filter\([\s\S]*?!isLikelyUserPromptEcho\(item\.text, visibleTurnUserPromptText\)/s,
+    "Prompt-echo suppression must be applied before commentary reaches the activity timeline",
+  );
+  assert.match(
+    messageComponentsSource,
+    /const mergeKey = partID[\s\S]*?: id[\s\S]*?`id:\$\{id\}`[\s\S]*?`text:\$\{messageID \|\| "unknown"\}:\$\{normalizeComparableText\(text\)\}`/s,
+    "Separate text parts must not be collapsed solely because they share an assistant message ID",
+  );
+  assert.match(
+    messageComponentsSource,
+    /function timelineDisplayEventReactKey\([\s\S]*?event\.kind === "commentary"[\s\S]*?`commentary:\$\{event\.partID \|\| event\.key\}`/s,
+    "Assistant Response cards without part IDs need unique React keys",
   );
   assert.match(
     messageComponentsSource,
@@ -377,8 +432,8 @@ test("AssistantResponseCardInner merges live streaming progress rows into the ac
 
   assert.match(
     messageComponentsSource,
-    /const events = buildDisplayEvents\([\s\S]*?thoughtItems,[\s\S]*?mergedProgressItems,[\s\S]*?commentaryItems,[\s\S]*?fileChanges,[\s\S]*?assistantScopeMessageIds,[\s\S]*?\)/,
-    "Merged progress rows should be passed directly into buildDisplayEvents using message-scoped ids",
+    /const events = buildDisplayEvents\([\s\S]*?thoughtItems,[\s\S]*?mergedProgressItems,[\s\S]*?commentaryItems,[\s\S]*?fileChanges,[\s\S]*?assistantScopeMessageIds,[\s\S]*?normalizedCentralizedRawSdkEventPayloads\.length,[\s\S]*?\)/,
+    "Merged progress rows should be projected with the centralized SDK tape length",
   );
 });
 

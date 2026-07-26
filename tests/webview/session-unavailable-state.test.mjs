@@ -58,6 +58,8 @@ test("chat renders the unavailable state independently of AI processing state", 
 });
 
 test("internal compatibility probes cannot persist in user session history", () => {
+  // After the SDK refactor, persistence snapshots were removed; the internal-
+  // probe filter now lives at the SDK-response level (response.data.filter).
   assert.match(
     sessionServiceSource,
     /INTERNAL_SESSION_TITLE_PREFIXES[\s\S]*?OpenCode structured-output compatibility probe/,
@@ -65,13 +67,5 @@ test("internal compatibility probes cannot persist in user session history", () 
   assert.match(
     sessionServiceSource,
     /response\.data\.filter\([\s\S]*?!isInternalSession\(session\)/,
-  );
-  assert.match(
-    sessionServiceSource,
-    /persistedSessions\.filter\(\(session\)\s*=>\s*!isInternalSession\(session\)\)/,
-  );
-  assert.match(
-    sessionServiceSource,
-    /internalSessionIds\.has\(sessionId\)[\s\S]*?SESSION_ID_KEY,[\s\S]*?undefined/,
   );
 });

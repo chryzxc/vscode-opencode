@@ -26,11 +26,11 @@ test("webview config exposes a showBrowserConsole flag to control all console ou
   );
 });
 
-test("webview logger uses a local showLogger boolean (set at runtime from VS Code setting)", () => {
+test("webview logger uses a local showLogger boolean disabled until runtime configuration", () => {
   assert.match(
     webviewLoggerSource,
-    /private showLogger: boolean = true/,
-    "webview logger should have a local showLogger field defaulting to true",
+    /private showLogger: boolean = false/,
+    "webview logger should default to disabled until initState configures it",
   );
   assert.ok(
     webviewLoggerSource.includes("this.showLogger"),

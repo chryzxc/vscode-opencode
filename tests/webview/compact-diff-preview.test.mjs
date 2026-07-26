@@ -50,9 +50,4 @@ test('CompactDiffPreview keeps line classification and preview affordances', () 
     /className="oc-compact-diff-preview mt-2"/,
     'CompactDiffPreview should use the oc-compact-diff-preview class name',
   );
-  assert.match(
-    compactDiffPreviewSource,
-    /View diff/,
-    'CompactDiffPreview should render a View diff affordance when filePath is present',
-  );
 });

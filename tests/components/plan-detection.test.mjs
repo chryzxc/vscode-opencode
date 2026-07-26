@@ -24,7 +24,7 @@ const messageSource = readSource(
 test('plan detection enriches assistant messages from plan files and structured plan content', () => {
   // Verify the core enrichMessageWithPlan heuristic and output contract.
   // After refactoring, the implementation is in StructuredOutputProcessor module
-  const enrichBody = extractFunctionBody(chatProviderSource, '  async enrichMessageWithPlan(message: any): Promise<any>');
+  const enrichBody = extractFunctionBody(chatProviderSource, '  async enrichMessageWithPlan(');
 
   assert.match(
     enrichBody,
@@ -50,10 +50,11 @@ test('plan detection enriches assistant messages from plan files and structured 
 test('plan detection preserves safety guards and persistence behavior', () => {
   // Verify false-positive and failure-path guards remain in place.
   // After refactoring, the implementation is in StructuredOutputProcessor module
-  const enrichBody = extractFunctionBody(chatProviderSource, '  async enrichMessageWithPlan(message: any): Promise<any>');
+  const enrichBody = extractFunctionBody(chatProviderSource, '  async enrichMessageWithPlan(');
 
   assert.match(enrichBody, /if\s*\(!message\)\s*return\s+message;/, 'plan detection should no-op on empty messages');
-  assert.match(enrichBody, /(?:planContent|cleanPlanContent|structuredPlanContent)\.length\s*[><]=?\s*(?:100|200)/, 'plan detection should have length guards for plan responses');
+  assert.match(enrichBody, /structuredPlanContent\.trim\(\)\.length\s*>\s*0/, 'plan detection should guard structured plan enrichment on a non-empty trimmed content check');
+  assert.match(enrichBody, /fullContent\.length\s*>\s*500/, 'plan detection should treat long-form content as a structural length guard for plan responses');
   assert.match(enrichBody, /this\.persistPlan\(/, 'plan detection should attempt plan persistence with error handling');
   assert.match(enrichBody, /return\s+message;/, 'plan detection should return the original message when no valid plan is found');
 });
@@ -65,7 +66,7 @@ test('plan detection avoids classifying clarification questionnaires as implemen
     'provider should define clarification-questionnaire guard helper',
   );
 
-  const enrichBody = extractFunctionBody(chatProviderSource, '  async enrichMessageWithPlan(message: any): Promise<any>');
+  const enrichBody = extractFunctionBody(chatProviderSource, '  async enrichMessageWithPlan(');
   assert.match(
     enrichBody,
     /isInteractiveResponseType/,
@@ -87,7 +88,7 @@ test('plan detection avoids classifying clarification questionnaires as implemen
 });
 
 test('enrichMessageWithPlan must short-circuit clarification questionnaires before heuristic plan matching', () => {
-  const enrichBody = extractFunctionBody(chatProviderSource, '  async enrichMessageWithPlan(message: any): Promise<any>');
+  const enrichBody = extractFunctionBody(chatProviderSource, '  async enrichMessageWithPlan(');
 
   const idxClarify = enrichBody.indexOf('isClarificationQuestionnaire(');
   const idxKeyword = enrichBody.indexOf('basicPlanKeywordMatch');
@@ -100,7 +101,7 @@ test('enrichMessageWithPlan must short-circuit clarification questionnaires befo
 });
 
 test('enrichMessageWithPlan still produces a plan card for genuine plans', () => {
-  const enrichBody = extractFunctionBody(chatProviderSource, '  async enrichMessageWithPlan(message: any): Promise<any>');
+  const enrichBody = extractFunctionBody(chatProviderSource, '  async enrichMessageWithPlan(');
 
   const idxBranch = enrichBody.indexOf('if (hasPlanFile || hasPlanKeywords)');
   // Ensure the fallback plan detection branch exists and assigns a plan object
@@ -129,7 +130,7 @@ test('questionnaire-like content with plan keywords is not enriched as a plan', 
   );
 
   // Check that the heuristic would detect plan keywords if not for the questionnaire guard
-  const enrichBody = extractFunctionBody(chatProviderSource, '  async enrichMessageWithPlan(message: any): Promise<any>');
+  const enrichBody = extractFunctionBody(chatProviderSource, '  async enrichMessageWithPlan(');
   assert.ok(
     enrichBody.indexOf('basicPlanKeywordMatch') !== -1,
     'enrichMessageWithPlan should include basicPlanKeywordMatch heuristic',

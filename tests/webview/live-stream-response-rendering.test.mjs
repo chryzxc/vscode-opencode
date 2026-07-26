@@ -27,13 +27,13 @@ const streamingCardSource = readSource(
 test("renderable stream text paints immediately and centralized transcript takes over after completion", () => {
   assert.match(
     messageSource,
-    /!cardMessage[\s\S]*streaming\?\.hasRenderableContent === true[\s\S]*return \[streaming\.content\]/,
-    "the live response card should render only explicitly safe streamed text",
+    /!cardMessage[\s\S]*streaming\?\.hasRenderableContent === true[\s\S]*return liveChunks\.length > 0 \? liveChunks : \[streaming\.content\]/,
+    "the live response card should render only explicitly safe streamed text, preferring individual chunks and falling back to whole content",
   );
   assert.match(
     streamingCardSource,
-    /hasMatchingAssistantTurnInTranscript && !streaming\.isActive/,
-    "only the matching transcript turn may hide a completed live stream",
+    /hasMatchingAssistantTurnInTranscript &&[\s\S]*?streaming\.hasAssistantFinishSignal === true &&[\s\S]*?hasTranscriptAssistantForCurrentTurn[\s\S]*?return false;/,
+    "only the matching transcript turn may hide a live stream after the explicit assistant-finish signal and a rendered transcript response for this turn",
   );
   assert.match(
     shellSource,
@@ -209,8 +209,8 @@ test("continuous stream batches remain urgent enough to paint", () => {
 test("an active transcript placeholder does not suppress live event rendering", () => {
   assert.match(
     streamingCardSource,
-    /hasMatchingAssistantTurnInTranscript\s*&&\s*!streaming\.isActive/,
-    "matching transcript IDs may suppress the live card only after streaming completes",
+    /hasMatchingAssistantTurnInTranscript\s*&&[\s\S]*?streaming\.hasAssistantFinishSignal === true &&[\s\S]*?hasTranscriptAssistantForCurrentTurn[\s\S]*?return false;/,
+    "matching transcript IDs may suppress the live card only after the assistant-finish signal confirms the turn is complete",
   );
 });
 

@@ -37,6 +37,16 @@ describe("toastEvents", () => {
       assert.strictEqual(toastNotificationFromPayload({ event: "other.event", message: "ignored" }), null);
     });
 
+    it("returns null when a toast event has no user-visible message", () => {
+      assert.strictEqual(toastNotificationFromPayload({ type: "tui.show", title: "OpenCode" }), null);
+      assert.strictEqual(
+        toastNotificationFromPayload({
+          payload: { type: "tui.toast.show", properties: { title: "OpenCode" } },
+        }),
+        null,
+      );
+    });
+
     it("accepts a bare tui.toast.show payload and extracts core fields", () => {
       const notification = toastNotificationFromPayload({
         type: "tui.toast.show",
@@ -126,13 +136,8 @@ describe("toastEvents", () => {
       assert.equal(combined.sessionId, "combined-session");
     });
 
-    it("falls back to OpenCode title and empty message when no text fields resolve", () => {
-      const notification = toastNotificationFromPayload({ type: "tui.toast.show" });
-
-      assert.equal(notification.title, "OpenCode");
-      assert.equal(notification.message, "");
-      assert.equal(notification.variant, "info");
-      assert.equal(notification.durationMs, 4000);
+    it("does not create a notification when no text fields resolve", () => {
+      assert.strictEqual(toastNotificationFromPayload({ type: "tui.toast.show" }), null);
     });
 
     it("honors duration priority before falling back to defaults", () => {
@@ -182,9 +187,9 @@ describe("toastEvents", () => {
     });
 
     it("normalizes variants case-insensitively and falls back to info for unknown values", () => {
-      assert.equal(toastNotificationFromPayload({ type: "tui.show", variant: "eRrOr" }).variant, "error");
-      assert.equal(toastNotificationFromPayload({ type: "tui.show", variant: "mystery" }).variant, "info");
-      assert.equal(toastNotificationFromPayload({ type: "tui.show", severity: "warning" }).variant, "warning");
+      assert.equal(toastNotificationFromPayload({ type: "tui.show", message: "Error", variant: "eRrOr" }).variant, "error");
+      assert.equal(toastNotificationFromPayload({ type: "tui.show", message: "Info", variant: "mystery" }).variant, "info");
+      assert.equal(toastNotificationFromPayload({ type: "tui.show", message: "Warning", severity: "warning" }).variant, "warning");
     });
 
     it("strips numeric event-type suffixes before accepting toast events", () => {
@@ -200,10 +205,10 @@ describe("toastEvents", () => {
     });
 
     it("uses supported id-like fields for keys before building composite fallback keys", () => {
-      assert.equal(toastNotificationFromPayload({ type: "tui.show", eventID: "event-upper" }).key, "event-upper");
-      assert.equal(toastNotificationFromPayload({ type: "tui.show", eventId: "event-camel" }).key, "event-camel");
-      assert.equal(toastNotificationFromPayload({ type: "tui.show", messageID: "message-upper" }).key, "message-upper");
-      assert.equal(toastNotificationFromPayload({ type: "tui.show", messageId: "message-camel" }).key, "message-camel");
+      assert.equal(toastNotificationFromPayload({ type: "tui.show", eventID: "event-upper", message: "Upper" }).key, "event-upper");
+      assert.equal(toastNotificationFromPayload({ type: "tui.show", eventId: "event-camel", message: "Camel" }).key, "event-camel");
+      assert.equal(toastNotificationFromPayload({ type: "tui.show", messageID: "message-upper", message: "Upper" }).key, "message-upper");
+      assert.equal(toastNotificationFromPayload({ type: "tui.show", messageId: "message-camel", message: "Camel" }).key, "message-camel");
 
       const composite = toastNotificationFromPayload(
         { type: "tui.show", properties: { title: "Composite", message: "Fallback", sessionId: "session-z" } },

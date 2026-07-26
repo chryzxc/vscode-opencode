@@ -122,8 +122,8 @@ test("getCurrentSession selects an SDK session before creating an empty workspac
   );
   assert.match(
     getBody,
-    /const newestSdkSession = normalized\[0\];/,
-    "getCurrentSession must reuse an SDK session after restart",
+    /const newestSdkSession = topLevelSessionsForChat\(normalized\)\[0\];/,
+    "getCurrentSession must reuse the newest top-level SDK session after restart",
   );
   assert.match(
     getBody,

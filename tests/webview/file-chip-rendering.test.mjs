@@ -156,6 +156,29 @@ test("UserMessage file chips render with truncate and FileIcon", () => {
   );
 });
 
+test("text attachment chips open decoded data in a text editor tab", () => {
+  assert.match(
+    messageComponentsSource,
+    /function decodeTextDataUrl\(dataUrl\?: string\)/,
+    "pasted text attachments must decode their data URL payload",
+  );
+  assert.match(
+    messageComponentsSource,
+    /type:\s*\"openText\"[\s\S]*?content:\s*label\.textContent/,
+    "text attachment chips must send their decoded content to the extension",
+  );
+});
+
+test("extension opens text attachment content as a non-preview editor tab", () => {
+  const providerSource = readSource(
+    [joinFromRoot("src", "providers", "ChatViewProvider.ts")],
+    "ChatViewProvider.ts",
+  );
+  assert.match(providerSource, /case\s+\"openText\"/);
+  assert.match(providerSource, /workspace\.openTextDocument\(\{[\s\S]*?content/);
+  assert.match(providerSource, /showTextDocument\(document,\s*\{\s*preview:\s*false/);
+});
+
 test("Plan Approved keeps SDK file parts visible as openable plan attachments", () => {
   assert.match(
     messageComponentsSource,

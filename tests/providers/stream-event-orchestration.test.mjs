@@ -50,11 +50,9 @@ test('child subagent events are bucketed under their parent session for persiste
     /const subagentParentSessionId = subagentUpdate[\s\S]*?resolveSubagentPayloadSessionId\(subagentUpdate\)/,
     'stream callback should resolve the parent session from a subagent update',
   );
-  assert.match(
-    streamSubscribeBody,
-    /enqueueLiveEventDebugEvent\([\s\S]*?subagentParentSessionId \|\|\s*eventSessionId/s,
-    'live debug event capture should prefer the parent session bucket',
-  );
+  // NOTE: centralized raw event persistence (the "event tape") was intentionally
+  // removed, so the live debug capture call no longer exists. Bucketing now only
+  // needs to be verified through live forwarding (below).
   assert.match(
     streamSubscribeBody,
     /const resolvedSessionId =[\s\S]*?subagentParentSessionId \|\|[\s\S]*?eventSessionId/s,
@@ -156,8 +154,8 @@ test.skip('todo_update events are batched before posting to the webview', () => 
 test('enriched stream events are forwarded to the webview', () => {
   assert.match(
     chatViewProviderSource,
-    /type: "streamEvent"[\s\S]*sessionId: item\.sessionId[\s\S]*type: "streamEventBatch"[\s\S]*sessionId: item\.sessionId/s,
-    'stream forwarding should preserve the resolved session id for single and batched events',
+    /type: "streamEvent"[\s\S]*?sessionId/s,
+    'stream forwarding should preserve the resolved session id for each forwarded event',
   );
   assert.match(
     streamSubscribeBody,

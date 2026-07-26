@@ -15,8 +15,8 @@ const handlerSource = readSource(
 test("rehydrated SDK task tool parts project into the activity timeline", () => {
   assert.match(
     source,
-    /const fromSnapshotParts = progressItemsFromRawResponseParts\(\{\s*parts: cardMessage\?\.parts,\s*\}\);[\s\S]*?if \(fromSnapshotParts\.length > 0\)/,
-    "standalone hydrated message parts must become progress items when no event tape is available",
+    /const fromSnapshotParts = progressItemsFromRawResponseParts\(\{\s*parts: hydratedActivityParts,\s*\}\);[\s\S]*?return mergeProgressItemsForTimeline\(/,
+    "standalone hydrated message parts must flow through the canonical timeline merge unconditionally (no length guard)",
   );
   assert.match(
     source,

@@ -16,8 +16,11 @@ import { joinFromRoot, readAllSources, readSource } from "../helpers/source-util
  *      StructuredOutputProcessor.structuredOutputIncompatibleModelKeys
  *      - accumulation-only Map/Set with no eviction path
  *
- *   3. StreamEventHandler.pendingEvents
- *      - grows unbounded if upstream outpaces flush (e.g. large tool bursts)
+ * Note: StreamEventHandler previously buffered events in a `pendingEvents`
+ * queue (risking unbounded growth under backpressure). That batching buffer
+ * was removed during de-batching — `handleStreamEvent` now forwards each
+ * event directly via postMessage, so there is no queue to bound. The guard
+ * that asserted the cap has been removed accordingly.
  *
  * Contract: every long-lived collection on the stream hot path must either
  * (a) be cleared on session switch, (b) have per-entry delete on terminal
@@ -34,10 +37,6 @@ const chatViewProviderSource = readAllSources(
 const structuredOutputSource = readSource(
   [joinFromRoot("src", "providers", "chat", "StructuredOutputProcessor.ts")],
   "StructuredOutputProcessor.ts",
-);
-const streamEventHandlerSource = readSource(
-  [joinFromRoot("src", "providers", "chat", "StreamEventHandler.ts")],
-  "StreamEventHandler.ts",
 );
 
 test("streamedSubtaskPartsBySessionId has an explicit cleanup path", () => {
@@ -58,22 +57,5 @@ test("StructuredOutputProcessor diagnostic counters have an explicit cleanup pat
     structuredOutputSource,
     /structuredOutputIncompatibleModelKeys\.(clear\(\)|delete\()/,
     "structuredOutputIncompatibleModelKeys must be clearable so model-key growth is bounded",
-  );
-});
-
-test("StreamEventHandler bounds pendingEvents to prevent unbounded growth under backpressure", () => {
-  assert.match(
-    streamEventHandlerSource,
-    /MAX_PENDING_EVENTS|MAX_PENDING_STREAM_EVENTS/,
-    "StreamEventHandler should declare a max pending events cap constant",
-  );
-
-  // The cap must actually be enforced — when the queue exceeds the cap, the
-  // handler must shed events (drop oldest, drop non-terminal, or otherwise
-  // bound). Accept splice/shift/length-check patterns.
-  assert.match(
-    streamEventHandlerSource,
-    /pendingEvents\.(splice|shift)\(|pendingEvents\.length\s*[<>]=\s*(?:this\.)?(?:MAX_PENDING|MAX_PENDING_EVENTS|MAX_PENDING_STREAM_EVENTS)/,
-    "StreamEventHandler must actively shed events when pendingEvents exceeds the cap",
   );
 });

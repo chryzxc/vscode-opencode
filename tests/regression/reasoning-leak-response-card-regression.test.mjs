@@ -82,8 +82,8 @@ test('StructuredOutputProcessor.createFallbackMessage returns plan.intro/summary
 
   assert.match(
     fallbackBody,
-    /case\s*["']plan["'][\s\S]*plan\?\.intro[\s\S]*plan\?\.summary/,
-    'must return plan.intro || plan.summary || plan.title for plan fallback',
+    /case\s*["']implementation_plan["'][\s\S]*plan\?\.intro[\s\S]*plan\?\.summary/,
+    'must return plan.intro || plan.summary || plan.title for implementation_plan fallback',
   );
 });
 

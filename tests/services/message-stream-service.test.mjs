@@ -105,12 +105,21 @@ test('MessageStreamService uses AbortController for proper cancellation', () => 
   assert.match(stopBody, /this\.abortController = null/, 'stopListening should clear abortController reference');
 });
 
-test('MessageStreamService notifies all callbacks with error isolation', () => {
-  // Callback notification has been refactored into the centralized streaming system
-  assert.match(
+test('MessageStreamService isolates synchronous throws and async subscriber rejections', () => {
+  const notifyBody = extractFunctionBody(
     messageStreamSource,
-    /notifyCallbacks|callback|forEach|try|catch|error/,
-    'MessageStreamService should handle callback notification with error isolation',
+    'private notifyCallbacks(event: StreamEvent, rawEvent?: unknown): void',
+  );
+
+  assert.match(
+    notifyBody,
+    /Promise\.resolve\(\)\s*\.then\(\(\) => callback\(event, rawEvent\)\)\s*\.catch\(/s,
+    'subscriber invocation must contain both synchronous throws and rejected async callbacks',
+  );
+  assert.match(
+    notifyBody,
+    /Callback error in subscriber/,
+    'subscriber failures should be logged without interrupting later stream events',
   );
 });
 
