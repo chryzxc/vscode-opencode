@@ -46,6 +46,7 @@ scripts/**
 !changelog.md
 
 # Assets - large demo files
+assets/**
 assets/demo.gif
 assets/**/*.gif
 
@@ -63,3 +64,10 @@ azure-pipelines.yml
 # Misc
 .DS_Store
 *.log
+.codegraph
+.codegraph/**
+.omo
+.omo/**
+.opencode
+.opencode/**
+test_output.txt
