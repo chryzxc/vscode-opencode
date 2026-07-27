@@ -53,6 +53,11 @@ test("AssistantResponseCardInner merges live streaming progress rows into the ac
   );
   assert.match(
     activityIdentitySource,
+    /export function stableActivityIdentity\([\s\S]*?const callID = normalized\(input\.callID\);[\s\S]*?return `call:\$\{callID\}`;[\s\S]*?const partID = normalized\(input\.partID \|\| input\.id\);/s,
+    "Cross-envelope tool snapshots must prefer callID over changing part or event IDs",
+  );
+  assert.match(
+    activityIdentitySource,
     /tool === "bash"[\s\S]*?\{ command \}[\s\S]*?tool === "read"[\s\S]*?\{ file, offset, limit \}[\s\S]*?tool === "grep"/s,
     "The shared action identity must ignore transport-only fields while preserving Bash commands, exact Read ranges, and Grep inputs",
   );
@@ -417,6 +422,16 @@ test("AssistantResponseCardInner merges live streaming progress rows into the ac
     messageComponentsSource,
     /function mergeStickyDisplayEventsForTurn\([\s\S]*?return collapseConsecutiveReasoningDisplayEvents\(merged\);/s,
     "Sticky live-frame retention must also collapse a continuous reasoning phase so transient reasoning identities cannot accumulate Thinking rows",
+  );
+  assert.match(
+    messageComponentsSource,
+    /const collapsed: DisplayEvent\[\] = deduped;[\s\S]*?return mergeStickyDisplayEventsForTurn\(\[\], collapsed\);/s,
+    "The initial hydrated projection must apply the same semantic snapshot merge as live frames before rendering",
+  );
+  assert.match(
+    messageComponentsSource,
+    /function coalesceTimelineEventsForRender\([\s\S]*?activityDisplayEventIdentity\(event\)[\s\S]*?mergeStickyDisplayEvent\(existing, event\)[\s\S]*?coalesceTimelineEventsForRender\(\s*timelineDisplayEvents/s,
+    "The final timeline boundary must collapse repeated SDK call snapshots before creating visible rows",
   );
   assert.match(
     messageComponentsSource,

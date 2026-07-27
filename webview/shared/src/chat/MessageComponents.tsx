@@ -5158,7 +5158,7 @@ export function SharedActivityStep({
       <ExpandableStep className="flex-1">
         <div className={cn("oc-activity-step-surface flex flex-col items-start w-full min-w-0", isReadActivity ? "gap-0" : "gap-2")}>
           <div className="flex items-center gap-2 flex-wrap w-full min-h-[20px]">
-            <span className="oc-activity-step-title font-medium text-oc-text capitalize">{event.label}</span>
+            <span className="oc-activity-step-title font-medium text-oc-text capitalize">{event.label.replace(/_/g, " ")}</span>
             {globPattern ? <span className="max-w-[min(44ch,60vw)] truncate rounded bg-oc-bg-soft px-1.5 py-0.5 font-mono text-xs text-oc-text-soft" title={globPattern}>{globPattern}</span> : null}
             {description ? <span className="oc-activity-step-meta flex items-center gap-2 text-oc-text-soft"><span>&middot;</span><span>{description}</span></span> : null}
             {(labelLower === "read" || isGlobSearch || isEditLike) && filePath && !isUrl(filePath) ? (
@@ -5594,6 +5594,49 @@ function timelineDisplayGroupReactKey(
   return first
     ? `stepper:${timelineDisplayEventReactKey(first)}`
     : `stepper:empty:${fallbackIndex}`;
+}
+
+/**
+ * Coalesce one call's repeated SDK snapshots at the final render boundary.
+ * Some tapes replay the same part after hydration, after completion, and
+ * through a sync envelope; all of those snapshots carry the same call/part
+ * identity and must produce one visible row.
+ */
+function coalesceTimelineEventsForRender(events: DisplayEvent[]): DisplayEvent[] {
+  const result: DisplayEvent[] = [];
+  const indexByIdentity = new Map<string, number>();
+
+  for (const event of events) {
+    const identity =
+      event.kind === "activity"
+        ? activityDisplayEventIdentity(event)
+        : event.partID
+          ? `part:${event.partID}`
+          : event.messageID
+            ? `message:${event.messageID}:${event.kind}`
+            : "";
+    if (!identity) {
+      result.push(event);
+      continue;
+    }
+
+    const existingIndex = indexByIdentity.get(identity);
+    if (typeof existingIndex !== "number") {
+      indexByIdentity.set(identity, result.length);
+      result.push(event);
+      continue;
+    }
+
+    const existing = result[existingIndex];
+    const incomingPriority = displayEventSourcePriority(event.source);
+    const existingPriority = displayEventSourcePriority(existing.source);
+    result[existingIndex] =
+      incomingPriority >= existingPriority
+        ? mergeStickyDisplayEvent(existing, event)
+        : mergeStickyDisplayEvent(event, existing);
+  }
+
+  return result;
 }
 
 function diffStatsEqual(
@@ -7223,7 +7266,12 @@ function buildDisplayEvents(
 
   const collapsed: DisplayEvent[] = deduped;
 
-  return collapsed;
+  // Run the same semantic merge used by the sticky live projection once more
+  // before handing rows to React. A centralized tape can contain repeated
+  // pending/running/completed snapshots of one call (same part/call ID) that
+  // entered through different adapters; this final pass guarantees that the
+  // first render cannot paint both copies.
+  return mergeStickyDisplayEventsForTurn([], collapsed);
 }
 
 
@@ -8418,7 +8466,6 @@ function ResponseMessageInner({
     isProcessing,
     processingSessionIds,
     streaming: currentStreaming,
-    streamingBySessionId,
     selectedSubagentId,
     availableModels,
   } = useAppState(
@@ -8429,7 +8476,6 @@ function ResponseMessageInner({
       isProcessing: state.isProcessing,
       processingSessionIds: state.processingSessionIds,
       streaming: state.streaming,
-      streamingBySessionId: state.streamingBySessionId,
       selectedSubagentId: state.selectedSubagentId,
       availableModels: state.availableModels,
     }),
@@ -8482,8 +8528,11 @@ function ResponseMessageInner({
   const progressTimelineRef = useRef<HTMLDivElement>(null);
   const requestedSubagentConversationRef = useRef<Set<string>>(new Set());
   const activityTimelineMessage = message;
-  const activityTimelineStreaming =
-    streaming ?? (currentSessionId ? streamingBySessionId?.[currentSessionId] : undefined);
+  // A persisted transcript card must never fall back to the session-global
+  // stream. That stream belongs to the newest assistant turn; using it here
+  // lets its response text, stats, and activity leak into older cards. The
+  // dedicated message-less StreamingCard receives `streaming` explicitly.
+  const activityTimelineStreaming = streaming;
   // A collapsed response card is the visible summary for one user turn. That
   // turn can contain several assistant SDK messages (tools, then prose). Keep
   // their authoritative parts together here, but only on the one visible card.
@@ -9967,25 +10016,49 @@ const centralizedRawResponse = message?.rawResponse;
     [normalizedCentralizedRawSdkEventPayloads],
   );
 
-  const shouldInterleaveStreamingAssistantCommentary =
-    isStreamingActive &&
-    timelineDisplayEvents.some((event) => event.kind === "activity") &&
-    displayEvents.some(
-      (event) => event.kind === "commentary" && event.label === "Assistant Response",
-    );
+  const shouldInterleaveStreamingAssistantCommentary = false;
   const timelineDisplayEventGroups = useMemo(() => {
     const groups: Array<
       | { type: "activity"; events: DisplayEvent[] }
       | { type: "commentary"; event: DisplayEvent }
       | { type: "question-output"; text: string; key: string }
     > = [];
+    const coalescedTimelineDisplayEvents = coalesceTimelineEventsForRender(
+      timelineDisplayEvents,
+    );
     const orderedEntries: Array<
       | { type: "event"; seq: number; event: DisplayEvent }
       | { type: "question-output"; seq: number; text: string; key: string }
     > = [];
     let currentActivity: DisplayEvent[] = [];
+    const isLifecycleBoundary = (event: DisplayEvent, boundary: "start" | "finish") => {
+      if (!isHiddenLifecycleReasoningSeparator(event)) {
+        return false;
+      }
+      const label = event.label.trim().toLowerCase();
+      const summary = event.summary.trim().toLowerCase();
+      const partType = (event.partType || "").trim().toLowerCase();
+      return boundary === "start"
+        ? partType === "step-start" ||
+          label === "step-start" ||
+          label === "starting step" ||
+          (label === "step" && summary === "start") ||
+          (label === "start" && summary === "start")
+        : partType === "step-finish" ||
+          label === "step-finish" ||
+          label === "finishing step" ||
+          (label === "step" && summary === "finish") ||
+          (label === "finish" && summary === "finish");
+    };
+    const flushCurrentActivity = () => {
+      if (currentActivity.length === 0) {
+        return;
+      }
+      groups.push({ type: "activity", events: currentActivity });
+      currentActivity = [];
+    };
     const questionActivityFingerprints = new Set(
-      timelineDisplayEvents
+      coalescedTimelineDisplayEvents
         .filter((event) =>
           event.kind === "activity" &&
           isQuestionLikeActivityTool(event.activityDetail?.tool, event.partType),
@@ -10004,7 +10077,7 @@ const centralizedRawResponse = message?.rawResponse;
         ),
     );
 
-    for (const event of timelineDisplayEvents) {
+    for (const event of coalescedTimelineDisplayEvents) {
       // Assistant response text already renders in the dedicated response card
       // above the timeline. Keep it out of the timeline groups so the same
       // final answer cannot appear twice when the centralized tape contains
@@ -10055,41 +10128,40 @@ const centralizedRawResponse = message?.rawResponse;
 
     for (const entry of orderedEntriesByStream) {
       if (entry.type === "question-output") {
-        if (currentActivity.length > 0) {
-          groups.push({ type: "activity", events: currentActivity });
-          currentActivity = [];
-        }
+        flushCurrentActivity();
         groups.push({ type: "question-output", text: entry.text, key: entry.key });
         continue;
       }
       const event = entry.event;
       if (event.kind === "commentary") {
-        if (currentActivity.length > 0) {
-          groups.push({ type: "activity", events: currentActivity });
-          currentActivity = [];
-        }
+        flushCurrentActivity();
         groups.push({ type: "commentary", event });
       } else {
         const isQuestionEvent =
           (event.label ?? "").trim().toLowerCase() === "question" ||
           (event.activityDetail?.tool ?? "").trim().toLowerCase() === "question";
 
-        if (isQuestionEvent && currentActivity.length > 0) {
-          groups.push({ type: "activity", events: currentActivity });
-          currentActivity = [];
+        // Start a fresh visual timeline at every SDK lifecycle start. The
+        // start marker stays in that group (hidden in the UI) so its stable
+        // identity keeps completed groups mounted as later events arrive.
+        if (
+          (isQuestionEvent || isLifecycleBoundary(event, "start")) &&
+          currentActivity.length > 0
+        ) {
+          flushCurrentActivity();
         }
 
         currentActivity.push(event);
 
-        if (isQuestionEvent) {
-          groups.push({ type: "activity", events: currentActivity });
-          currentActivity = [];
+        // A finish closes precisely the block opened by step-start. Appending
+        // the next event therefore adds a new Stepper instead of replacing the
+        // existing activity list and producing a visible refresh.
+        if (isQuestionEvent || isLifecycleBoundary(event, "finish")) {
+          flushCurrentActivity();
         }
       }
     }
-    if (currentActivity.length > 0) {
-      groups.push({ type: "activity", events: currentActivity });
-    }
+    flushCurrentActivity();
     return groups;
   }, [
     assistantScopeMessageIds,
@@ -11150,7 +11222,11 @@ const hasVisibleResponseSectionContent =
       id={messageId ? `msg-${messageId}` : undefined}
       data-message-id={messageId || undefined}
       className={`oc-message-enter ${responseEnterClass} ${isContiguous ? "mb-2.5 mt-2" : "mb-3.5"}${isHiddenByBlock || isVisuallyEmpty ? " hidden" : ""}`}
-      style={DEFERRED_CHAT_CARD_STYLE}
+      // Do not apply content-visibility/intrinsic-size placeholders to the
+      // active stream. The browser may skip the timeline body and expose the
+      // 320px placeholder, leaving the Thought row stranded below a large
+      // blank area. Settled history cards keep the virtualization optimization.
+      style={streaming || isStreamingActive ? undefined : DEFERRED_CHAT_CARD_STYLE}
     >
       <div
         className={cn(
@@ -11286,7 +11362,7 @@ const hasVisibleResponseSectionContent =
                               <div className="oc-activity-step-surface flex flex-col items-start gap-2 w-full min-w-0">
                                 <div className="flex items-center gap-2 flex-wrap min-h-[20px]">
                                   <span className="oc-activity-step-title font-medium text-oc-text capitalize">
-                                    {event.label}
+                                    {event.label.replace(/_/g, " ")}
                                   </span>
                                 </div>
                                 {visibleQuestionPreludeSummary && (
@@ -11316,7 +11392,10 @@ const hasVisibleResponseSectionContent =
               hasLiveSessionStatus ||
               showThinkingPlaceholder ||
               nonQuestionTimelineDisplayEventGroups.length > 0) && (
-              <section data-assistant-section="activity" className="space-y-2">
+              <section data-assistant-section="activity" className="space-y-0">
+                {/* Lifecycle-delimited Steppers are siblings. Keep this
+                    section gap-free so start/finish blocks cannot accumulate
+                    empty space before the live Thought. */}
                 {/* Hide the session.status banner when statusType is "busy" — the AI response
                     loading indicator (ThinkingBubble / activity timeline) already conveys busy
                     state. Other status types (retry, error, idle, ready, etc.) must still
@@ -11465,11 +11544,10 @@ const hasVisibleResponseSectionContent =
                           : undefined;
                         const shouldRenderActivityBody = !isReadActivity;
 
-                        // Lifecycle markers (step-start / step-finish) are used internally by the 
-                        // message handler to group and structure the activity timeline.
-                        // We render them into the DOM so that React logic (like `isLast`, etc.)
-                        // and structural integrity are maintained, but we use the `hidden` class 
-                        // to ensure they are visually hidden from the user in the UI.
+                        // Lifecycle markers (step-start / step-finish) are used
+                        // only to split logical timeline blocks. They must not
+                        // mount a StepperItem: even a hidden item can affect
+                        // flex/connector sizing and create a gap between blocks.
                         const isLifecycleMarkerEvent =
                           event.internal === true && (
                             (event.partType || "").trim().toLowerCase() === "step-start" ||
@@ -11484,33 +11562,19 @@ const hasVisibleResponseSectionContent =
                             )) ||
                             (labelLower === "start" && (event.summary || "").trim().toLowerCase() === "start") ||
                             (labelLower === "finish" && (event.summary || "").trim().toLowerCase() === "finish")
-                          );
+                        );
                         if (isLifecycleMarkerEvent) {
+                          // Preserve the canonical start/finish classification
+                          // for lifecycle contracts even though the marker is
+                          // intentionally not mounted in the visual timeline.
                           const partTypeLower = (event.partType || "").trim().toLowerCase();
                           const isStart = partTypeLower === "step-start" ||
                             labelLower === "step-start" ||
                             labelLower === "starting step" ||
                             labelLower === "start" ||
                             (event.summary || "").trim().toLowerCase() === "start";
-                          return (
-                            <StepperItem
-                              key={timelineDisplayEventReactKey(event)}
-                              isLast={isLast}
-                              indicator={indicatorNode}
-                              className={cn(
-                                "oc-refined-stepper-item group hidden", // explicitly hidden but rendered for logic
-                                event.status === "running" ? "is-streaming" : "",
-                              )}
-                            >
-                              <div className="w-full">
-                                <div className="oc-reasoning-row cursor-default">
-                                  <span className="oc-reasoning-row-label">
-                                    {isStart ? "Starting step" : "Step complete"}
-                                  </span>
-                                </div>
-                              </div>
-                            </StepperItem>
-                          );
+                          void isStart;
+                          return null;
                         }
 
                         const isGlobSearch = labelLower === "glob";
@@ -11658,7 +11722,7 @@ const hasVisibleResponseSectionContent =
                                         )}>
                                           <div className="flex items-center gap-2 flex-wrap w-full min-h-[20px]">
                                             <span className="oc-activity-step-title font-medium text-oc-text capitalize">
-                                              {event.label}
+                                              {event.label.replace(/_/g, " ")}
                                             </span>
                                             {isGlobSearch && typeof event.activityDetail?.input?.pattern === "string" && event.activityDetail.input.pattern.trim() ? (
                                               <span
@@ -13036,10 +13100,24 @@ export function InfoBanner({ message, error }: InfoBannerProps) {
   );
 }
 
-export const ThinkingBubble = memo(function ThinkingBubble() {
+export const ThinkingBubble = memo(function ThinkingBubble({
+  hidden = false,
+}: {
+  /** Keep the layout slot during a brief stream-state gap without showing text. */
+  hidden?: boolean;
+}) {
   return (
-    <div className="mb-4">
-      <div className="inline-flex items-center py-1.5 text-[11px] font-medium text-oc-text-soft">
+    <div
+      // Keep the placeholder to one compact line.  The previous `mb-4` plus
+      // `min-h-[32px]` reserved nearly 48px, which became a conspicuous gap
+      // when a timeline step collapsed or a stream briefly reported idle.
+      className={cn(
+        hidden ? "h-5 min-h-0 mb-0" : "min-h-5 mb-2",
+        hidden && "invisible",
+      )}
+      aria-hidden={hidden || undefined}
+    >
+      <div className="inline-flex h-5 items-center text-[11px] font-medium text-oc-text-soft">
         <AIStatusTicker />
       </div>
     </div>

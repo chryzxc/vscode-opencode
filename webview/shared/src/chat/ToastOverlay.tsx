@@ -198,7 +198,7 @@ export function LiveEventBanner({
             role="status"
             aria-live="polite"
           >
-            <div className="flex items-start gap-2.5 px-3 py-2">
+            <div className={cn("flex items-start gap-2.5 py-2", isComposerPlacement ? "px-0" : "px-3")}>
               <div className={cn("mt-0.5 flex shrink-0 items-center justify-center", isComposerPlacement ? "h-3.5 w-3.5" : "h-4 w-4")} style={{ color: styles.accent }} aria-hidden="true">
                 <Icon className="h-3.5 w-3.5" />
               </div>

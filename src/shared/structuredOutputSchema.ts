@@ -83,11 +83,9 @@ export const structuredOutputSchema: StructuredOutputSchema = {
   schema: {
     type: "object",
     description:
-      "Return a JSON object with a type field. Use 'message' for normal responses. When the user asks to create, draft, produce, or improve an implementation plan—including a detailed plan for security improvements—you MUST use 'implementation_plan' and include a plan object (plan.file is required and must be a markdown filepath; you MUST create/write this markdown file before finalizing whenever you can edit files. If the file is not already written, include the full markdown in plan.content so the extension can persist it). REQUIRED COMPLETION CONTRACT: include a separate, file-backed walkthrough object describing what you actually did during this turn. The walkthrough is a retrospective execution record, NEVER a copy or restatement of text or plan.content. Its ordered walkthrough.steps must explain the AI response block in sequence: what it inspected, decisions made from the evidence, files actually changed, and checks run. For a planning turn, record the investigation and plan artifact creation, not the proposed implementation steps. Only list actual file changes in walkthrough.changes—never proposed changes. Record checks actually run in walkthrough.verification, using status='not_run' when no check was performed, and disclose unfinished work in walkthrough.limitations. TESTING MODE: include this distinct walkthrough on every final response, including plans, read-only replies, and conversational responses. If emitting subagent/background-task payloads through compatible fields, include a stable background task id as 'backgroundTaskId' (for example 'bg_123abc') and subagent role hints as 'agentRole' (or 'agentType') such as 'explorer' or 'librarian'.",
+      "Return a JSON object with a type field. Use 'message' for normal responses. When the user asks to create, draft, produce, or improve an implementation plan—including a detailed plan for security improvements—you MUST use 'implementation_plan' and include a plan object (plan.file is required and must be a markdown filepath; you MUST create/write this markdown file before finalizing whenever you can edit files. If the file is not already written, include the full markdown in plan.content so the extension can persist it). Include a separate, file-backed walkthrough object only for substantial completed work that benefits from a detailed retrospective, such as multi-step implementation, debugging, or research with multiple meaningful actions. Omit walkthrough for implementation_plan responses, simple replies, conversational responses, and work without a real multi-step retrospective. A walkthrough is a record of what actually happened, NEVER a copy or restatement of text or plan.content. Its ordered walkthrough.steps must explain the AI response block in sequence: what it inspected, decisions made from the evidence, files actually changed, and checks run. Only list actual file changes in walkthrough.changes—never proposed changes. Record checks actually run in walkthrough.verification, using status='not_run' when no check was performed, and disclose unfinished work in walkthrough.limitations. If emitting subagent/background-task payloads through compatible fields, include a stable background task id as 'backgroundTaskId' (for example 'bg_123abc') and subagent role hints as 'agentRole' (or 'agentType') such as 'explorer' or 'librarian'.",
     additionalProperties: false,
-    // Temporary walkthrough UI test mode: require an artifact on every final
-    // structured response without using unsupported conditional schema syntax.
-    required: ["type", "text", "walkthrough"],
+    required: ["type", "text"],
     properties: {
       type: {
         type: "string",
@@ -122,7 +120,7 @@ export const structuredOutputSchema: StructuredOutputSchema = {
 
       walkthrough: {
         type: "object",
-        description: "REQUIRED distinct retrospective of actions actually performed during this turn. It must not copy text or plan.content. For plan responses, explain the investigation and plan creation, not the proposed implementation steps. walkthrough.file is the markdown artifact path.",
+        description: "Optional distinct retrospective for substantial completed multi-step work. Do not include it for implementation_plan responses, simple replies, or conversational responses. It must not copy text or plan.content. walkthrough.file is the markdown artifact path.",
         additionalProperties: false,
         properties: {
           title: { type: "string", description: "Walkthrough title" },
@@ -131,8 +129,8 @@ export const structuredOutputSchema: StructuredOutputSchema = {
           summary: { type: "string", minLength: 1, description: "Concise retrospective outcome describing what was actually completed, distinct from the assistant response and plan summary." },
           steps: {
             type: "array",
-            minItems: 1,
-            description: "Ordered walkthrough of this completed response block. Preserve execution order and include inspection, decisions, changes, and verification steps when they occurred.",
+            minItems: 2,
+            description: "Ordered walkthrough of substantial completed work. Include at least two meaningful actions in execution order, covering inspection, decisions, changes, or verification when they occurred.",
             items: {
               type: "object",
               additionalProperties: false,

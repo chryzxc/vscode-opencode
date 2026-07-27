@@ -78,6 +78,23 @@ describe("shouldShowStreamingCard live event ownership", () => {
     assert.strictEqual(visible, false);
   });
 
+  it("hides an inactive activity card after its assistant response is canonicalized", () => {
+    const visible = shouldShowStreamingCard({
+      streaming: streamingState({
+        isActive: false,
+        progressEvents: [{
+          id: "step-finish",
+          title: "Finishing step",
+          status: "done",
+        }],
+      }),
+      transcriptAssistantMessageIds: ["msg-live"],
+      hasTranscriptAssistantForCurrentTurn: true,
+    });
+
+    assert.strictEqual(visible, false);
+  });
+
   it("keeps an inactive live activity card visible until the transcript has response content", () => {
     const visible = shouldShowStreamingCard({
       streaming: streamingState({
@@ -100,7 +117,7 @@ describe("shouldShowStreamingCard live event ownership", () => {
   it("keeps a completed response phase visible while the assistant turn has not finished", () => {
     const visible = shouldShowStreamingCard({
       streaming: streamingState({
-        isActive: false,
+        isActive: true,
         content: "First response message",
         hasRenderableContent: true,
       }),

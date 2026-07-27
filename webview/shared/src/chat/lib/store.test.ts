@@ -308,6 +308,29 @@ describe('error message reducer state', () => {
     assert.deepStrictEqual(nextState.errorMessages, ['Provider list timeout']);
   });
 
+  it('deduplicates repeated error toast messages', () => {
+    const seededState = appReducer(initialState, {
+      type: 'ADD_ERROR_MESSAGE',
+      payload: 'Session failed',
+    });
+
+    const nextState = appReducer(seededState, {
+      type: 'ADD_ERROR_MESSAGE',
+      payload: '  Session failed  ',
+    });
+
+    assert.deepStrictEqual(nextState.errorMessages, ['Session failed']);
+  });
+
+  it('removes every duplicate error toast when the visible popup is dismissed', () => {
+    const nextState = appReducer(
+      { ...initialState, errorMessages: ['Session failed', 'Session failed', 'Another error'] },
+      { type: 'REMOVE_ERROR_MESSAGES_BY_TEXT', payload: 'Session failed' },
+    );
+
+    assert.deepStrictEqual(nextState.errorMessages, ['Another error']);
+  });
+
   it('removes a dismissed error toast by index', () => {
     const seededState = {
       ...initialState,
@@ -1453,6 +1476,30 @@ describe('dedupeMirrorMessagesForCanonical', () => {
     assert.strictEqual(result[1].content, 'same assistant reply');
     assert.strictEqual((result[1] as any).rawResponse, '{"source":"hydrated"}');
   });
+
+  it('deduplicates delayed final assistant mirrors for the same user turn', () => {
+    const now = Date.now();
+    const result = dedupeMirrorMessagesForCanonical([
+      { role: 'user', id: 'user-1', content: 'prompt', created: now },
+      {
+        role: 'assistant',
+        id: 'assistant-live',
+        content: 'Completed response',
+        created: now + 1_000,
+        info: { parentID: 'user-1' },
+      } as Message,
+      {
+        role: 'assistant',
+        id: 'assistant-final',
+        content: 'Completed response',
+        created: now + 20_000,
+        info: { parentID: 'user-1' },
+      } as Message,
+    ]);
+
+    assert.strictEqual(result.length, 2);
+    assert.strictEqual(result[1]?.id, 'assistant-final');
+  });
 });
 
 describe('coalesceAssistantRunForCanonical', () => {
@@ -2014,6 +2061,35 @@ describe('live activity ordering', () => {
     } finally {
       Date.now = originalNow;
     }
+  });
+});
+
+describe('stream completion', () => {
+  it('preserves the completed timeline snapshot for the transcript handoff', () => {
+    const started = appReducer(
+      { ...initialState, currentSessionId: 'ses-completed' },
+      {
+        type: 'SET_STREAMING',
+        payload: {
+          messageId: 'msg-completed',
+          content: 'Completed response',
+          hasRenderableContent: true,
+          reasoning: '',
+          reasoningEvents: [],
+          steps: [],
+          progressEvents: [],
+          edits: [],
+          isActive: true,
+        },
+      },
+    );
+
+    const finished = appReducer(started, { type: 'FINISH_STREAMING' });
+
+    assert.equal(finished.streaming?.isActive, false);
+    assert.equal(finished.streaming?.content, 'Completed response');
+    assert.equal(finished.streamingBySessionId?.['ses-completed']?.isActive, false);
+    assert.equal(finished.messages[0]?.content, 'Completed response');
   });
 });
 

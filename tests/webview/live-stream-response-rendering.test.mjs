@@ -32,8 +32,8 @@ test("renderable stream text paints immediately and centralized transcript takes
   );
   assert.match(
     streamingCardSource,
-    /hasMatchingAssistantTurnInTranscript &&[\s\S]*?streaming\.hasAssistantFinishSignal === true &&[\s\S]*?hasTranscriptAssistantForCurrentTurn[\s\S]*?return false;/,
-    "only the matching transcript turn may hide a live stream after the explicit assistant-finish signal and a rendered transcript response for this turn",
+    /hasMatchingAssistantTurnInTranscript &&[\s\S]*?!streaming\.isActive &&[\s\S]*?hasTranscriptAssistantForCurrentTurn[\s\S]*?return false;/,
+    "only the matching transcript turn may hide an inactive live stream after a rendered transcript response takes ownership",
   );
   assert.match(
     shellSource,
@@ -60,8 +60,8 @@ test("active compaction owns the live-response surface without stopping stream p
   );
   assert.match(
     shellSource,
-    /suppressLiveAssistantPresentation=\{state\.isCompacting\}/,
-    "an assistant block already created by the live stream must receive the same compaction gate",
+    /suppressLiveAssistantPresentation=\{suppressTranscriptLiveAssistantBlock\}/,
+    "an assistant block already represented by the live card must be suppressed",
   );
   assert.match(
     shellSource,
@@ -75,13 +75,13 @@ test("active compaction owns the live-response surface without stopping stream p
   );
   assert.match(
     shellSource,
-    /function CompactionInProgressNotice\(\)[\s\S]*?role="status"[\s\S]*?Live activity resumes automatically\./,
-    "the maintenance state should explain the temporary timeline pause accessibly",
+    /function CompactionInProgressNotice\(\)[\s\S]*?role="status"[\s\S]*?>Compacting<\//,
+    "the maintenance state should present a concise compaction status",
   );
   assert.match(
     shellSource,
-    /suppressLiveAssistantPresentation=\{state\.isCompacting\}/,
-    "the transcript must receive the same compaction presentation gate",
+    /const suppressTranscriptLiveAssistantBlock\s*=\s*state\.isCompacting[\s\S]*?shouldRenderSeparateStreamingCard && hasLiveAssistantAlreadyInTranscript/s,
+    "a canonicalized live assistant phase must have exactly one visible owner",
   );
   assert.match(
     shellSource,
@@ -206,11 +206,56 @@ test("continuous stream batches remain urgent enough to paint", () => {
   );
 });
 
+test("the shell does not leak loading text into the composer", () => {
+  assert.doesNotMatch(
+    shellSource,
+    /ThinkingBubble|keepLoadingIndicatorSpace|shouldRenderLoadingIndicatorReserve/,
+    "loading presentation must stay in the activity timeline, not the composer flow",
+  );
+});
+
+test("active assistant cards do not use intrinsic virtualization height", () => {
+  assert.match(
+    messageSource,
+    /style=\{streaming \|\| isStreamingActive \? undefined : DEFERRED_CHAT_CARD_STYLE\}/,
+    "the live timeline must remain mounted instead of showing a large intrinsic-size placeholder",
+  );
+});
+
 test("an active transcript placeholder does not suppress live event rendering", () => {
   assert.match(
     streamingCardSource,
-    /hasMatchingAssistantTurnInTranscript\s*&&[\s\S]*?streaming\.hasAssistantFinishSignal === true &&[\s\S]*?hasTranscriptAssistantForCurrentTurn[\s\S]*?return false;/,
-    "matching transcript IDs may suppress the live card only after the assistant-finish signal confirms the turn is complete",
+    /hasMatchingAssistantTurnInTranscript\s*&&[\s\S]*?!streaming\.isActive &&[\s\S]*?hasTranscriptAssistantForCurrentTurn[\s\S]*?return false;/,
+    "matching transcript IDs may suppress the live card only after its stream is inactive",
+  );
+});
+
+test("ChatShell passes transcript ownership to the live-card handoff", () => {
+  assert.match(
+    shellSource,
+    /<StreamingCard[\s\S]*?transcriptAssistantMessageIds=\{transcriptAssistantMessageIds\}[\s\S]*?hasTranscriptAssistantForCurrentTurn=\{hasTranscriptAssistantForCurrentTurn\}/,
+    "the visibility guard must receive the canonical transcript ownership signal",
+  );
+});
+
+test("reasoning-only transcript phases do not replace the live activity timeline", () => {
+  assert.match(
+    shellSource,
+    /const isResponseTextPart\s*=\s*[\s\S]*?partType === "text"[\s\S]*?partType === "message"[\s\S]*?partType === "output_text"[\s\S]*?isResponseTextPart/s,
+    "only actual assistant response parts may hand ownership from the live card to the transcript",
+  );
+});
+
+test("persisted assistant cards cannot read the session-global live stream", () => {
+  assert.match(
+    messageSource,
+    /const activityTimelineStreaming = streaming;/,
+    "only a card explicitly passed the active stream may render live stream data",
+  );
+  assert.doesNotMatch(
+    messageSource,
+    /streaming \?\? \(currentSessionId \? streamingBySessionId\?\.\[currentSessionId\] : undefined\)/,
+    "historical transcript cards must not fall back to another assistant turn's session stream",
   );
 });
 

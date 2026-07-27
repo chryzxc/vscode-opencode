@@ -109,17 +109,18 @@ export function canonicalActivityActionIdentity(
  * and must never split one tool call into additional timeline rows.
  */
 export function stableActivityIdentity(input: ActivityIdentityInput): string {
-  // A part ID is owned by one SDK activity and remains stable across the
-  // repeated updated snapshots seen in the live stream. Some providers emit
-  // different call IDs for those snapshots, so the part must take priority.
-  const partID = normalized(input.partID || input.id);
-  if (partID) {
-    return `part:${partID}`;
-  }
-
+  // The call ID is the strongest cross-envelope identity. A rehydrated part
+  // and a live/sync mirror can expose different part/event IDs while still
+  // describing the same tool call; keying by those changing IDs creates two
+  // visible Grep/Read/Bash rows for one action.
   const callID = normalized(input.callID);
   if (callID) {
     return `call:${callID}`;
+  }
+
+  const partID = normalized(input.partID || input.id);
+  if (partID) {
+    return `part:${partID}`;
   }
 
   const messageID = normalized(input.messageID);

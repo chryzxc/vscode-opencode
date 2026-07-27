@@ -294,12 +294,12 @@ export function validateStructuredOutput(
     if (typeof record.error !== "undefined") {
       errors.push("implementation_plan responseType must not include error payload");
     }
+    if (typeof record.walkthrough !== "undefined") {
+      errors.push("implementation_plan responseType must not include walkthrough payload");
+    }
   }
 
   const walkthrough = asRecord(record.walkthrough);
-  if (!walkthrough) {
-    errors.push("structured output requires walkthrough while walkthrough testing is enabled");
-  }
   if (walkthrough) {
     const walkthroughFile = asString(walkthrough.file).trim();
     if (!isNonEmptyString(walkthrough.title)) {
@@ -320,8 +320,8 @@ export function validateStructuredOutput(
     if (!isWalkthroughNarrativeDistinct(record)) {
       errors.push("walkthrough.content must be a distinct retrospective and must not copy text or plan.content");
     }
-    if (!Array.isArray(walkthrough.steps) || walkthrough.steps.length === 0) {
-      errors.push("walkthrough.steps must contain at least one ordered response step");
+    if (!Array.isArray(walkthrough.steps) || walkthrough.steps.length < 2) {
+      errors.push("walkthrough.steps must contain at least two ordered response steps");
     } else {
       walkthrough.steps.forEach((value, index) => {
         const step = asRecord(value);

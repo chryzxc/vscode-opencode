@@ -184,6 +184,46 @@ describe('permissionRequestFromSdkPayload', () => {
 });
 
 describe('createMessageHandler - terminal turn identity', () => {
+  it('keeps the active timeline through an intermediate message completion', () => {
+    let state = {
+      ...initialState,
+      currentSessionId: 'ses-phase-completion',
+      isProcessing: true,
+      assistantTurnPending: true,
+      assistantTurnMessageId: 'msg-phase-1',
+      streaming: {
+        messageId: 'msg-phase-1',
+        content: '',
+        reasoning: '',
+        reasoningEvents: [],
+        steps: [{ id: 'step-read', title: 'Read source', type: 'tool', status: 'running' }],
+        progressEvents: [],
+        edits: [],
+        isActive: true,
+      },
+    } as AppState;
+    const dispatch = (action: Parameters<typeof appReducer>[1]) => {
+      state = appReducer(state, action);
+    };
+    const handler = createMessageHandler(dispatch, () => state);
+
+    handler({
+      data: {
+        type: 'streamEvent',
+        sessionId: 'ses-phase-completion',
+        event: {
+          type: 'message.completed',
+          properties: { info: { id: 'msg-phase-1', role: 'assistant' } },
+        },
+      },
+    } as MessageEvent);
+
+    assert.equal(state.isProcessing, true);
+    assert.equal(state.assistantTurnPending, true);
+    assert.equal(state.streaming?.isActive, true);
+    assert.equal(state.streaming?.steps[0]?.status, 'done');
+  });
+
   it('ends loading when a matching step-finish arrives for the active assistant turn', () => {
     let state = {
       ...initialState,

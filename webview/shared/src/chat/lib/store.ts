@@ -342,6 +342,7 @@ export type AppAction =
   | { type: "SET_AGENT_SEARCH"; payload: string }
   | { type: "ADD_ERROR_MESSAGE"; payload: string }
   | { type: "REMOVE_ERROR_MESSAGE"; payload: number }
+  | { type: "REMOVE_ERROR_MESSAGES_BY_TEXT"; payload: string }
   | { type: "CLEAR_ERROR_MESSAGES" }
   | { type: "SET_QUOTA_DATA"; payload: QuotaData | null }
   | { type: "SET_QUOTA_REFRESHING"; payload: boolean }
@@ -1835,6 +1836,7 @@ export function dedupeMirrorMessagesForCanonical(messages: Message[]): Message[]
     {
       role: string;
       id: string;
+      parentId: string;
       createdAt?: number;
       normalizedText: string;
       score: number;
@@ -1845,9 +1847,13 @@ export function dedupeMirrorMessagesForCanonical(messages: Message[]): Message[]
     const cached = messageMetaCache.get(message);
     if (cached) return cached;
     const meta = {
-      role: getMessageRoleForCanonical(message),
-      id: getMessageIdForCanonical(message),
-      createdAt: getMessageCreatedAtForCanonical(message),
+        role: getMessageRoleForCanonical(message),
+        id: getMessageIdForCanonical(message),
+        parentId: asStringLocal(
+          asRecordLocal(message.info)?.parentID,
+          asRecordLocal(message.info)?.parentId,
+        ),
+        createdAt: getMessageCreatedAtForCanonical(message),
       normalizedText: normalizeComparableTextLocal(
         extractMessageTextForCanonical(message),
       ),
@@ -1928,6 +1934,15 @@ export function dedupeMirrorMessagesForCanonical(messages: Message[]): Message[]
         const existing = deduped[idx];
         if (!existing) continue;
         const existingMeta = getMessageMeta(existing);
+        if (
+          meta.role === "assistant" &&
+          meta.parentId &&
+          meta.parentId === existingMeta.parentId &&
+          deduped.length - idx <= candidateMaxDistance
+        ) {
+          matched = idx;
+          break;
+        }
         if (
           typeof existingMeta.createdAt === "number" &&
           typeof meta.createdAt === "number"
@@ -3102,19 +3117,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     }
     case "APPEND_LIVE_TOAST_NOTIFICATION": {
       const sessionId = action.payload.sessionId ?? state.currentSessionId ?? "";
-      if (typeof console !== "undefined") {
-        console.warn("[LIVE-EVENT][reducer] APPEND_LIVE_TOAST_NOTIFICATION", {
-          toastKey: action.payload.notification.key,
-          toastType: action.payload.notification.type,
-          toastTitle: action.payload.notification.title,
-          resolvedSessionId: sessionId,
-          currentSessionId: state.currentSessionId ?? null,
-        });
-      }
       if (!sessionId) {
-        if (typeof console !== "undefined") {
-          console.warn("[LIVE-EVENT][reducer] APPEND_LIVE_TOAST_NOTIFICATION dropped — no sessionId");
-        }
         return state;
       }
       const existing = state.liveToastNotificationsBySessionId?.[sessionId] ?? [];
@@ -3374,13 +3377,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       };
     }
     case "UPDATE_LIVE_SESSION_STATUS": {
-      if (typeof console !== "undefined") {
-        console.warn("[LIVE-EVENT][reducer] UPDATE_LIVE_SESSION_STATUS", {
-          statusType: action.payload?.statusType ?? null,
-          hadStreaming: !!state.streaming,
-          currentSessionId: state.currentSessionId ?? null,
-        });
-      }
       const status = action.payload;
       const statusSessionId = status?.sessionId ?? state.currentSessionId;
       // A retry status can follow a terminal event from the previous attempt.
@@ -3952,6 +3948,13 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         liveSessionStatus: null,
         usage: action.payload?.usage ?? state.streaming.usage,
       };
+      const messages = canonicalizeMessagesForRender(
+        mergeStreamingSnapshotIntoMessagesLocal(state.messages, streaming),
+        { preserveEvtAssistantMessages: true },
+      );
+      const messagesBySessionId = state.currentSessionId
+        ? { ...state.messagesBySessionId, [state.currentSessionId]: messages }
+        : state.messagesBySessionId;
       logger.info("[LOADING][STORE] FINISH_STREAMING", {
         messageId: streaming.messageId,
         isProcessing: state.isProcessing,
@@ -3962,6 +3965,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       });
       return {
         ...state,
+        messages,
+        messagesBySessionId,
         streaming,
         streamingBySessionId: cacheStreamingForSession(
           state.streamingBySessionId,
@@ -4290,17 +4295,22 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, modelSearchQuery: action.payload };
     case "SET_AGENT_SEARCH":
       return { ...state, agentSearchQuery: action.payload };
-    case "ADD_ERROR_MESSAGE":
+    case "ADD_ERROR_MESSAGE": {
+      const message = action.payload.trim();
+      if (!message || state.errorMessages.some((existing) => existing.trim() === message)) {
+        return state;
+      }
       logger.info("ERROR_FLOW: ADD_ERROR_MESSAGE dispatched to store", {
         timestamp: new Date().toISOString(),
-        errorMessage: action.payload,
+        errorMessage: message,
         currentErrorCount: state.errorMessages.length,
-        newErrorMessages: [...state.errorMessages, action.payload],
+        newErrorMessages: [...state.errorMessages, message],
       });
       return {
         ...state,
-        errorMessages: [...state.errorMessages, action.payload],
+        errorMessages: [...state.errorMessages, message],
       };
+    }
     case "REMOVE_ERROR_MESSAGE":
       return {
         ...state,
@@ -4308,6 +4318,15 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           (_message, index) => index !== action.payload,
         ),
       };
+    case "REMOVE_ERROR_MESSAGES_BY_TEXT": {
+      const message = action.payload.trim();
+      return message
+        ? {
+            ...state,
+            errorMessages: state.errorMessages.filter((existing) => existing.trim() !== message),
+          }
+        : state;
+    }
     case "CLEAR_ERROR_MESSAGES":
       return { ...state, errorMessages: [] };
     case "SET_QUOTA_DATA":
@@ -4512,24 +4531,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
             interactiveEvents: deduplicatedEvents,
           }
         : state.streaming;
-      logger.info("[TRACE][STORE][SET_INTERACTIVE_EVENTS]", {
-        currentSessionId: state.currentSessionId,
-        incomingCount: Array.isArray(action.payload) ? action.payload.length : 0,
-        filteredCount: filteredEvents.length,
-        deduplicatedCount: deduplicatedEvents.length,
-        dismissedCount: dismissedInteractiveEventKeys.size,
-        hasStreaming: !!state.streaming,
-        streamingInteractiveCount: state.streaming?.interactiveEvents?.length ?? 0,
-      });
-      console.info("[TRACE][STORE][SET_INTERACTIVE_EVENTS]", {
-        currentSessionId: state.currentSessionId,
-        incomingCount: Array.isArray(action.payload) ? action.payload.length : 0,
-        filteredCount: filteredEvents.length,
-        deduplicatedCount: deduplicatedEvents.length,
-        dismissedCount: dismissedInteractiveEventKeys.size,
-        hasStreaming: !!state.streaming,
-        streamingInteractiveCount: state.streaming?.interactiveEvents?.length ?? 0,
-      });
       return {
         ...state,
         interactiveEvents: deduplicatedEvents,

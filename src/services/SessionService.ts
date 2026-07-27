@@ -1164,6 +1164,8 @@ export class SessionService {
   /** Track last logged session ID for deduplication */
   private lastLoggedSessionId: string | null = null;
 
+  private sessionSwitchRequestVersion = 0;
+
   // ============================================================================
   // PERSISTENCE KEYS
   // ============================================================================
@@ -1473,6 +1475,7 @@ export class SessionService {
    */
   async switchSession(sessionId: string): Promise<Session> {
     const flow = log.startFeatureFlow('SwitchSession', { sessionId });
+    const requestVersion = ++this.sessionSwitchRequestVersion;
 
     try {
       const client = await this.serverManager.ensureRunning();
@@ -1486,12 +1489,15 @@ export class SessionService {
         throw new Error("Session not found");
       }
 
-      this.currentSession = response.data;
-      this.persistState();
+      if (requestVersion === this.sessionSwitchRequestVersion) {
+        this.currentSession = response.data;
+        this.persistState();
+      }
 
       log.sessionEvent("switch", sessionId, {
         title: response.data.title,
         source: 'server',
+        applied: requestVersion === this.sessionSwitchRequestVersion,
       });
       log.endFeatureFlow(flow, {
         status: 'completed',

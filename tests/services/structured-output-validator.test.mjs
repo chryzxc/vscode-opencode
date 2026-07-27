@@ -125,7 +125,7 @@ test('structured output validator enforces message payload requirement', () => {
   );
 });
 
-test('structured output contract defines a typed, file-backed walkthrough artifact', () => {
+test('structured output contract defines an optional, file-backed walkthrough artifact', () => {
   assert.match(
     schemaSource,
     /export interface StructuredWalkthrough[\s\S]*file: string/,
@@ -173,13 +173,28 @@ test('structured output contract defines a typed, file-backed walkthrough artifa
   );
   assert.match(
     schemaSource,
-    /required:\s*\["type", "text", "walkthrough"\]/,
-    'testing mode should require a walkthrough with every structured response',
+    /required:\s*\["type", "text"\]/,
+    'walkthrough should remain optional for normal structured responses',
   );
   assert.match(
     validatorSource,
-    /structured output requires walkthrough while walkthrough testing is enabled/,
-    'runtime validation should match the schema testing requirement',
+    /implementation_plan responseType must not include walkthrough payload/,
+    'plan responses should not render a walkthrough alongside the plan card',
+  );
+  assert.match(
+    schemaSource,
+    /Include a separate, file-backed walkthrough object only for substantial completed work/,
+    'the schema should reserve walkthroughs for real, substantial retrospectives',
+  );
+  assert.match(
+    schemaSource,
+    /minItems: 2/,
+    'a walkthrough should contain multiple meaningful response steps',
+  );
+  assert.match(
+    validatorSource,
+    /walkthrough\.steps must contain at least two ordered response steps/,
+    'runtime validation should reject one-step walkthrough placeholders',
   );
 });
 

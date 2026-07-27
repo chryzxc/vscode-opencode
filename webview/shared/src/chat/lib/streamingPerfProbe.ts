@@ -115,9 +115,6 @@ function postDiagnostic(
     ...heapSnapshot(),
     ...context,
   };
-  if (typeof console !== "undefined") {
-    console.warn("[STREAM-DIAG]", payload);
-  }
   try {
     vscode.postMessage({
       type: "webviewLog",

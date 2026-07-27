@@ -41,7 +41,7 @@ export function shouldShowStreamingCard({
   // response for this exact turn.
   if (
     hasMatchingAssistantTurnInTranscript &&
-    streaming.hasAssistantFinishSignal === true &&
+    !streaming.isActive &&
     hasTranscriptAssistantForCurrentTurn
   ) {
     return false;

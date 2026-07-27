@@ -2002,10 +2002,14 @@ function normalizeDiffStats(
   const addedRaw =
     typeof rec.added === "number" && Number.isFinite(rec.added)
       ? rec.added
+      : typeof rec.additions === "number" && Number.isFinite(rec.additions)
+        ? rec.additions
       : undefined;
   const deletedRaw =
     typeof rec.deleted === "number" && Number.isFinite(rec.deleted)
       ? rec.deleted
+      : typeof rec.deletions === "number" && Number.isFinite(rec.deletions)
+        ? rec.deletions
       : undefined;
   if (typeof addedRaw !== "number" && typeof deletedRaw !== "number") {
     return undefined;
@@ -2053,7 +2057,7 @@ function diffExcerptFromPatch(
   if (!text) {
     return undefined;
   }
-  const lines = text
+  const allLines = text
     .replace(/\r\n/g, "\n")
     .split("\n")
     .map((line) => line.replace(/\s+$/u, ""))
@@ -2063,16 +2067,35 @@ function diffExcerptFromPatch(
       !line.startsWith("===================================================================") &&
       !line.startsWith("--- ") &&
       !line.startsWith("+++ "),
-    )
-    .slice(0, 40);
+    );
+  const lines = allLines.slice(0, 40);
   if (lines.length === 0) {
     return undefined;
   }
   return {
     header: lines.find((line) => line.startsWith("@@")),
     lines,
-    added: diffStats?.added ?? lines.filter((line) => line.startsWith("+")).length,
-    deleted: diffStats?.deleted ?? lines.filter((line) => line.startsWith("-")).length,
+    added: diffStats?.added ?? allLines.filter((line) => line.startsWith("+") && !line.startsWith("+++")).length,
+    deleted: diffStats?.deleted ?? allLines.filter((line) => line.startsWith("-") && !line.startsWith("---")).length,
+  };
+}
+
+function diffExcerptFromEditInput(input: UnknownRecord | null): ActivityDetail["diffExcerpt"] {
+  const oldText = asOptionalString(input?.oldString);
+  const newText = asOptionalString(input?.newString);
+  if (!oldText && !newText) {
+    return undefined;
+  }
+  const deletedLines = oldText ? oldText.split(/\r?\n/u) : [];
+  const addedLines = newText ? newText.split(/\r?\n/u) : [];
+  const allLines = [
+    ...deletedLines.map((line) => `-${line}`),
+    ...addedLines.map((line) => `+${line}`),
+  ];
+  return {
+    lines: allLines.slice(0, 40),
+    added: addedLines.length,
+    deleted: deletedLines.length,
   };
 }
 
@@ -10096,8 +10119,10 @@ function handleStreamEvent(
             // text prelude; this is not transport/event deduplication.
             if (renderable && textPartID && messageId) {
               if (pendingRenderableTextPart) {
-                pendingRenderableTextPart.partID = textPartID;
-                pendingRenderableTextPart.messageID = messageId;
+                Object.assign(pendingRenderableTextPart, {
+                  partID: textPartID,
+                  messageID: messageId,
+                });
               }
             }
             dispatch({
@@ -10179,8 +10204,10 @@ function handleStreamEvent(
           });
         }
         if (pendingRenderableTextPart?.partID === preludePartID) {
-          pendingRenderableTextPart.partID = undefined;
-          pendingRenderableTextPart.messageID = undefined;
+          Object.assign(pendingRenderableTextPart, {
+            partID: undefined,
+            messageID: undefined,
+          });
         }
         const tool = asString(part.tool);
         const stateObj = asRecord(part.state);
@@ -10188,8 +10215,14 @@ function handleStreamEvent(
         const partInputObj = asRecord((part as UnknownRecord).input);
         const partMetadata = asRecord(stateObj?.metadata) ?? asRecord(part.metadata);
         const metadataFileDiff = asRecord(partMetadata?.filediff);
+        const metadataFile = Array.isArray(partMetadata?.files)
+          ? asRecord(partMetadata.files[0])
+          : undefined;
         const filePath =
           asOptionalString(metadataFileDiff?.file) ||
+          asOptionalString(metadataFile?.relativePath) ||
+          asOptionalString(metadataFile?.filePath) ||
+          asOptionalString(metadataFile?.path) ||
           extractFilePathCandidate(inputObj) ||
           extractFilePathCandidate(partInputObj) ||
           extractFilePathCandidate(stateObj?.result) ||
@@ -10276,10 +10309,16 @@ function handleStreamEvent(
           added: typeof stateDiffExcerpt.added === 'number' ? stateDiffExcerpt.added : undefined,
           deleted: typeof stateDiffExcerpt.deleted === 'number' ? stateDiffExcerpt.deleted : undefined,
         } : undefined;
-        const metadataDiffStats = normalizeDiffStats(metadataFileDiff);
+        const metadataDiffStats =
+          normalizeDiffStats(metadataFileDiff) ?? normalizeDiffStats(metadataFile);
         const diffExcerpt = explicitDiffExcerpt ?? diffExcerptFromPatch(
-          metadataFileDiff?.patch ?? partMetadata?.diff,
+          metadataFileDiff?.patch ?? metadataFile?.patch ?? partMetadata?.diff ?? inputObj?.patchText,
           metadataDiffStats,
+        ) ?? diffExcerptFromEditInput(inputObj);
+        const resolvedDiffStats = metadataDiffStats ?? (
+          diffExcerpt
+            ? { added: diffExcerpt.added ?? 0, deleted: diffExcerpt.deleted ?? 0 }
+            : undefined
         );
 
         // Debug logging to trace data flow
@@ -10340,6 +10379,7 @@ function handleStreamEvent(
             internal: isInternalToolName(tool),
             meta: asString(part.meta) || metaValues[0] || undefined,
             filePath,
+            diffStats: resolvedDiffStats,
             sessionID,
             activityDetail: baseActivityDetail,
             startedAt: Date.now(),
@@ -10373,6 +10413,7 @@ function handleStreamEvent(
             internal: Boolean(existing.internal || isInternalToolName(tool)),
             meta: asString(part.meta) || metaValues[0] || existing.meta,
             filePath: filePath || existing.filePath,
+            diffStats: resolvedDiffStats || existing.diffStats,
             sessionID: sessionID || existing.sessionID,
             activityDetail: baseActivityDetail || existing.activityDetail,
           });
@@ -11329,15 +11370,13 @@ function handleStreamEvent(
     case 'session.completed':
     case 'finish':
     case 'done': {
+      const completesAssistantTurn = normalizedEventType !== 'message.completed';
         const terminalStatus: "done" | "error" =
         asString(payload.error) || asString(asRecord(payload.info)?.error)
           ? "error"
           : "done";
 
-      // Mark the assistant turn as closed if the function is provided.
-      // We pass both potential sources for message IDs (info, properties, or payload)
-      // to ensure the backend can correctly correlate the finalization event.
-      if (markAssistantTurnClosed) {
+      if (completesAssistantTurn && markAssistantTurnClosed) {
         markAssistantTurnClosed(
           asString(asRecord(payload.info)?.id),
           asString(asRecord(properties)?.messageID),
@@ -11356,9 +11395,14 @@ function handleStreamEvent(
           type: "SET_STREAMING",
           payload: {
             ...finalized,
-            hasAssistantFinishSignal: true,
+            ...(completesAssistantTurn
+              ? { hasAssistantFinishSignal: true }
+              : { hasTerminalStepSignal: true }),
           },
         });
+      }
+      if (!completesAssistantTurn) {
+        break;
       }
       dispatch({
         type: 'FINISH_STREAMING',
@@ -11994,14 +12038,6 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
     // longer report `processing`, but a permission request must still render.
     upsertPermissionRequest(payload, sessionId);
     const liveRoute = routeLiveEvent(payload, index);
-    logger.info("[LIVE-TOAST] route", {
-      source,
-      sessionId,
-      eventType: asString(asRecord(payload)?.type) ?? "unknown",
-      hasToast: !!liveRoute.toast,
-      hasSessionStatus: !!liveRoute.sessionStatus,
-      toastKey: liveRoute.toast?.key ?? null,
-    });
 
     if (liveRoute.toast) {
       dispatch({
@@ -15419,8 +15455,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
               persistedAssistantMessageIds.has(currentStreamingMessageId);
             if (hasPersistedAssistantSnapshot) {
               dispatch({ type: "SET_STREAMING", payload: null });
-            }
-            if (currentStreaming && !currentStreaming.isActive) {
+            } else if (currentStreaming && !currentStreaming.isActive) {
               const flushedMessage = buildStreamingMessage(currentStreaming);
               updatedMessages.push(flushedMessage);
               dispatch({ type: "SET_STREAMING", payload: null });

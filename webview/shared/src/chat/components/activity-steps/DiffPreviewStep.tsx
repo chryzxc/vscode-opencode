@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 
-import { ChevronDown, Copy, Diff, FileCode2, X } from "lucide-react";
+import { ChevronDown, Copy, Diff, X } from "lucide-react";
 
 import { cn } from "../../../utils";
 import {
@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/FadedCollapseOverlay";
 
 import { ActivityDiffExcerpt } from "../ActivityDiffExcerpt";
+import { ThemeFileIcon } from "../../../components/ThemeFileIcon";
 import { usePersistentModalOpen } from "../../lib/usePersistentModalOpen";
 import { ActivityStepStatusChip } from "./ActivityStepStatusChip";
 import { copyToClipboard } from "../../lib/clipboard";
@@ -21,6 +22,14 @@ type DiffExcerpt = {
   lines?: string[];
   added?: number;
   deleted?: number;
+};
+
+type PatchFileMetadata = {
+  filePath?: unknown;
+  relativePath?: unknown;
+  path?: unknown;
+  additions?: unknown;
+  deletions?: unknown;
 };
 
 type DiffPreviewStepProps = {
@@ -44,6 +53,33 @@ function compactPath(value?: string): string {
   const parts = normalized.split("/").filter(Boolean);
   if (parts.length <= 3) return normalized;
   return `.../${parts.slice(-3).join("/")}`;
+}
+
+function activityPatchFile(detail?: ActivityDetail): {
+  path?: string;
+  added?: number;
+  deleted?: number;
+} {
+  const input = (detail?.input ?? {}) as Record<string, unknown>;
+  const metadata = (detail?.metadata ?? {}) as Record<string, unknown>;
+  const files = Array.isArray(metadata.files) ? metadata.files as PatchFileMetadata[] : [];
+  const file = files.find((candidate) => candidate && typeof candidate === "object") ?? {};
+  const fileRecord = file as PatchFileMetadata;
+  const fileDiff = (metadata.filediff ?? {}) as Record<string, unknown>;
+  const patchText = stringValue(input.patchText ?? input.patch ?? input.diff ?? metadata.diff);
+  const patchPath = patchText.match(/^\*\*\* (?:Update|Add|Delete) File:\s*(.+)$/m)?.[1]?.trim();
+  const diffPath = patchText.match(/^(?:Index:\s*|\+\+\+\s+)(.+)$/m)?.[1]?.trim();
+  const added = Number(fileRecord.additions);
+  const deleted = Number(fileRecord.deletions);
+
+  return {
+    path: stringValue(
+      fileRecord.relativePath ?? fileRecord.filePath ?? fileRecord.path ?? input.filePath ??
+      fileDiff.file ?? patchPath ?? diffPath,
+    ) || undefined,
+    added: Number.isFinite(added) ? Math.max(0, added) : undefined,
+    deleted: Number.isFinite(deleted) ? Math.max(0, deleted) : undefined,
+  };
 }
 
 function countLines(excerpt?: DiffExcerpt): { changed: number; added: number; deleted: number } {
@@ -128,8 +164,8 @@ function parsePatchTextToExcerpt(patchText?: string): DiffExcerpt | undefined {
   );
 
   const previewLines = diffLines.slice(0, 40);
-  const added = previewLines.filter((line) => line.startsWith("+") && !line.startsWith("+++")).length;
-  const deleted = previewLines.filter((line) => line.startsWith("-") && !line.startsWith("---")).length;
+  const added = diffLines.filter((line) => line.startsWith("+") && !line.startsWith("+++")).length;
+  const deleted = diffLines.filter((line) => line.startsWith("-") && !line.startsWith("---")).length;
 
   return {
     header,
@@ -217,6 +253,12 @@ function DiffPreviewModal({
             <div className="mt-1 text-xs oc-text-secondary">
               Detailed file changes and summary
             </div>
+            {filePath ? (
+              <div className="mt-2 flex items-center gap-1.5 font-mono text-xs oc-text-secondary" title={filePath}>
+                <ThemeFileIcon filePath={filePath} className="h-3.5 w-3.5" />
+                <span className="truncate">{compactPath(filePath)}</span>
+              </div>
+            ) : null}
           </div>
           <button
             type="button"
@@ -312,10 +354,12 @@ export function DiffPreviewStep({
   }
 
   const counts = countLines(derivedExcerpt);
-  const added = Math.max(0, diffStats?.added ?? derivedExcerpt?.added ?? counts.added);
-  const deleted = Math.max(0, diffStats?.deleted ?? derivedExcerpt?.deleted ?? counts.deleted);
+  const patchFile = activityPatchFile(activityDetail);
+  const resolvedFilePath = filePath || patchFile.path;
+  const added = Math.max(0, diffStats?.added ?? patchFile.added ?? derivedExcerpt?.added ?? counts.added);
+  const deleted = Math.max(0, diffStats?.deleted ?? patchFile.deleted ?? derivedExcerpt?.deleted ?? counts.deleted);
   const summaryTitle = title || "Diff Preview";
-  const previewPath = compactPath(filePath);
+  const previewPath = compactPath(resolvedFilePath);
   return (
     <>
       <button
@@ -325,6 +369,20 @@ export function DiffPreviewStep({
         aria-label={`Open ${summaryTitle} details`}
       >
         <div className="overflow-hidden rounded-md transition-colors hover:bg-white/[0.02]">
+          {(previewPath || added > 0 || deleted > 0) ? (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-oc-border-soft bg-oc-bg-soft/40 px-2.5 py-1.5 text-xs">
+              {previewPath ? (
+                <span className="flex min-w-0 items-center gap-1.5 font-mono oc-text-secondary" title={resolvedFilePath}>
+                  <ThemeFileIcon filePath={resolvedFilePath} className="h-3.5 w-3.5" />
+                  <span className="truncate">{previewPath}</span>
+                </span>
+              ) : null}
+              <span className="ml-auto flex items-center gap-2 font-medium tabular-nums">
+                {added > 0 ? <span className={diffChipClass("add")}>+{added}</span> : null}
+                {deleted > 0 ? <span className={diffChipClass("del")}>-{deleted}</span> : null}
+              </span>
+            </div>
+          ) : null}
           {derivedExcerpt ? (
             <div
               ref={excerptPreviewRef}
@@ -346,8 +404,8 @@ export function DiffPreviewStep({
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
         title={summaryTitle}
-        filePath={filePath}
-        diffStats={diffStats}
+        filePath={resolvedFilePath}
+        diffStats={{ added, deleted }}
         excerpt={derivedExcerpt}
         activityDetail={activityDetail}
       />

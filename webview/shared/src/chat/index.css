@@ -4079,6 +4079,14 @@ body {
   z-index: 1;
 }
 
+/* Lifecycle start/finish rows stay in the data model for grouping, but their
+   `hidden` class must remove them from layout entirely. Without this guard,
+   the stepper's display rule can win the cascade and every separator adds
+   vertical space between the last tool and the live Thought row. */
+.oc-refined-stepper-item.hidden {
+  display: none !important;
+}
+
 /* Active streaming state - minimal, no background */
 .oc-refined-stepper-item.is-streaming {
   background: transparent;
@@ -5117,6 +5125,15 @@ body {
   --oc-activity-step-title-size: 11px;
   --oc-activity-step-meta-size: 11px;
   --oc-activity-step-gap: 0.25rem;
+}
+
+/* Multiple lifecycle-delimited blocks are rendered as sibling Steppers. Keep
+   their boundary flush; the rows themselves provide the only vertical rhythm.
+   This prevents a completed tool block from leaving an expanding gap before
+   the next Thought block during streaming reconciliation. */
+.oc-activity-timeline-compact + .oc-activity-timeline-compact {
+  margin-top: 0 !important;
+  padding-top: 0 !important;
 }
 
 .oc-activity-timeline-compact .oc-refined-stepper-item > :first-child {
@@ -6879,24 +6896,6 @@ body {
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.015em;
-}
-
-.oc-compaction-progress-state {
-  flex: 0 0 auto;
-  border: 1px solid color-mix(in srgb, var(--oc-accent) 44%, transparent);
-  border-radius: 999px;
-  padding: 0.08rem 0.38rem;
-  color: var(--oc-accent);
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.oc-compaction-progress-description {
-  color: color-mix(in srgb, var(--oc-text-soft) 92%, transparent);
-  font-size: 11px;
-  line-height: 1.35;
 }
 
 .oc-compaction-progress-track {

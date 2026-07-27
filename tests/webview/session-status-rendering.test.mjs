@@ -98,8 +98,8 @@ describe('Live-only session status rendering', () => {
     );
     assert.match(
       toastOverlaySource,
-      /const isComposerPlacement = placement === "composer";[\s\S]*?className="flex items-start gap-2\.5 px-3 py-2"/s,
-      'composer-bound status notifications should use the compact composer status layout',
+      /const isComposerPlacement = placement === "composer";[\s\S]*?isComposerPlacement \? "px-0" : "px-3"/s,
+      'composer-bound status notifications should remove horizontal padding while top notifications retain it',
     );
     assert.match(
       toastOverlaySource,

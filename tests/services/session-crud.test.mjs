@@ -42,6 +42,24 @@ test('session service implements SDK-authoritative core CRUD operations', () => 
   assert.match(listBody, /this\.sessionHistory\s*=\s*\[\]/, 'SDK errors must not expose stale local sessions');
 });
 
+test('session service ignores stale, out-of-order session switch responses', () => {
+  const switchBody = extractFunctionBody(
+    sessionServiceSource,
+    'async switchSession(sessionId: string): Promise<Session>',
+  );
+
+  assert.match(
+    switchBody,
+    /const requestVersion = \+\+this\.sessionSwitchRequestVersion;/,
+    'each explicit selection should receive a monotonically increasing request version',
+  );
+  assert.match(
+    switchBody,
+    /if \(requestVersion === this\.sessionSwitchRequestVersion\) \{[\s\S]*?this\.currentSession = response\.data;[\s\S]*?this\.persistState\(\);[\s\S]*?\}/,
+    'only the latest selection response may update the active session',
+  );
+});
+
 test('session service reads messages exclusively from the OpenCode SDK', () => {
   const getMessagesBody = extractFunctionBody(
     sessionServiceSource,

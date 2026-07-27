@@ -213,13 +213,7 @@ export function toastNotificationFromPayload(
   const payload = asRecord(entry);
   const eventType = normalizedLiveEventType(payload);
   if (!payload || (eventType !== "tui.toast.show" && eventType !== "tui.show")) {
-    if (payload && typeof console !== "undefined" && (eventType === "tui.toast.show" || eventType === "tui.show" || eventType.includes("tui") || eventType.includes("toast"))) {
-      console.warn("[LIVE-EVENT][toastParser] rejected event", { eventType, payloadType: payload.type, keys: Object.keys(payload).slice(0, 10) });
-    }
     return null;
-  }
-  if (typeof console !== "undefined") {
-    console.warn("[LIVE-EVENT][toastParser] accepted event", { eventType, title: payload.title, message: payload.message, keys: Object.keys(payload).slice(0, 10) });
   }
   const properties = eventProperties(payload) as RawToastProperties | null;
   const wrappedPayload = asRecord(payload.payload);
@@ -281,13 +275,7 @@ export function liveSessionStatusFromPayload(
   const payload = asRecord(entry);
   const eventType = normalizedLiveEventType(payload);
   if (!payload || (eventType !== "session.status" && eventType !== "session.idle")) {
-    if (payload && typeof console !== "undefined" && (asString(payload.type)?.includes("session") || eventType.includes("session"))) {
-      console.warn("[LIVE-EVENT][statusParser] rejected event", { eventType, payloadType: payload.type, keys: Object.keys(payload).slice(0, 10) });
-    }
     return null;
-  }
-  if (typeof console !== "undefined") {
-    console.warn("[LIVE-EVENT][statusParser] accepted session.status event", { eventType, keys: Object.keys(payload).slice(0, 10) });
   }
 
   const properties = eventProperties(payload);

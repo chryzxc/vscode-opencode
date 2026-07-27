@@ -1,6 +1,8 @@
 import { Fragment, memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { Archive, X } from "lucide-react";
 
+const ERROR_TOAST_DURATION_MS = 3_000;
+
 import { AppProvider, shallowEqual, useAppDispatch, useAppState } from "./lib/store";
 import { perfProbe } from "./lib/streamingPerfProbe";
 import {
@@ -53,7 +55,7 @@ import {
   InputWrapper,
 } from "./PanelComponents";
 import { LiveEventBanner } from "./ToastOverlay";
-import { StreamingCard } from "./StreamingComponents";
+import { shouldShowStreamingCard, StreamingCard } from "./StreamingComponents";
 import {
   AIStatusTicker,
   BackgroundTaskReminderMessage,
@@ -65,7 +67,6 @@ import {
   FileChangesSection,
   PermissionCard,
   SystemMessage,
-  ThinkingBubble,
   UserMessage,
 } from "./MessageComponents";
 import { SkillInstallerModal } from "./SkillInstallerModal";
@@ -2047,11 +2048,7 @@ function CompactionInProgressNotice() {
         </span>
         <span className="oc-compaction-progress-copy">
           <span className="oc-compaction-progress-heading">
-            <span>Compacting conversation</span>
-            <span className="oc-compaction-progress-state">In progress</span>
-          </span>
-          <span className="oc-compaction-progress-description">
-            Preparing a smaller working context. Live activity resumes automatically.
+            <span>Compacting</span>
           </span>
           <span className="oc-compaction-progress-track" aria-hidden="true">
             <span />
@@ -2504,13 +2501,17 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
   ]);
 
   const transcriptWindow = useMemo(
-    () =>
-      buildVirtualizedConversationWindow({
-        entryPrefixHeights,
-        totalEntries: visibleConversationEntries.length,
-        scrollViewport,
-      }),
-    [entryPrefixHeights, visibleConversationEntries.length, scrollViewport],
+    () => ({
+      // Keep the transcript in one real-DOM flow. Spacer-based virtualization
+      // is disabled while this activity layout is stabilized; stale estimates
+      // were the source of the expanding blank region.
+      startIndex: 0,
+      endIndex: visibleConversationEntries.length,
+      topPaddingHeight: 0,
+      bottomPaddingHeight: 0,
+      shouldVirtualize: false,
+    }),
+    [visibleConversationEntries.length],
   );
   const renderedConversationEntries = transcriptWindow.shouldVirtualize
     ? visibleConversationEntries.slice(
@@ -2651,12 +2652,11 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
             >
               {dividerHere ? <CompactionDivider at={lastCompactedAt} /> : null}
               <div
-                style={{
-                  contentVisibility: "auto",
-                  containIntrinsicSize: getTranscriptEntryContainIntrinsicSize(entry, {
-                    isHiddenByBlock: entryHiddenByBlock,
-                  }),
-                }}
+                // The active assistant entry must stay in normal layout flow.
+                // Applying content-visibility/intrinsic-size while its Thought
+                // timeline is growing makes the browser accumulate a blank
+                // placeholder between the last tool row and the live thought.
+                style={undefined}
               >
                 {messageNode}
               </div>
@@ -3698,52 +3698,17 @@ function ChatContent() {
     }
 
     const sortedPending = [...visiblePendingUserMessages].sort((a, b) => a.createdAt - b.createdAt);
-    const combined: ConversationRenderEntry[] = [];
-    let pendingIdx = 0;
-
-    for (const entry of baseVisibleConversationEntries) {
-      let entryTime = 0;
-      if (entry.kind === "message") {
-        entryTime = getCanonicalMessageCreatedAt(entry.message);
-      } else if (entry.kind === "session.diff") {
-        entryTime = entry.diff.createdAt ?? 0;
-      } else if (entry.kind === "session.error") {
-        entryTime = entry.error.createdAt ?? 0;
-      }
-
-      while (
-        pendingIdx < sortedPending.length &&
-        entryTime > 0 &&
-        sortedPending[pendingIdx].createdAt < entryTime
-      ) {
-        const pending = sortedPending[pendingIdx];
-        combined.push({
-          kind: "message",
-          key: `pending-user:${pending.id}`,
-          message: pendingUserMessageToMessage(pending),
-          messageIndex: -1,
-          order: 0,
-          renderKind: "user",
-        });
-        pendingIdx++;
-      }
-      combined.push(entry);
-    }
-
-    while (pendingIdx < sortedPending.length) {
-      const pending = sortedPending[pendingIdx];
-      combined.push({
+    return [
+      ...baseVisibleConversationEntries,
+      ...sortedPending.map((pending) => ({
         kind: "message",
         key: `pending-user:${pending.id}`,
         message: pendingUserMessageToMessage(pending),
         messageIndex: -1,
         order: 0,
         renderKind: "user",
-      });
-      pendingIdx++;
-    }
-
-    return combined;
+      })),
+    ];
   }, [baseVisibleConversationEntries, visiblePendingUserMessages]);
   // The entry list is derived from renderMessages and carries message indexes
   // used for block grouping. Deferring them independently can briefly pair a
@@ -3834,12 +3799,22 @@ function ChatContent() {
         return true;
       }
 
-      return Array.isArray(message.parts) && message.parts.some((part) =>
-        part?.synthetic !== true &&
-        [part?.text, part?.content, part?.message].some(
-          (value) => typeof value === "string" && value.trim().length > 0,
-        ),
-      );
+      // Reasoning/tool phases can contain text but are not response bodies.
+      // Treating them as canonical content unmounts the live card between
+      // `step-finish` and the next assistant phase, which clears its sticky
+      // activity timeline before the final response arrives.
+      return Array.isArray(message.parts) && message.parts.some((part) => {
+        const partType = typeof part?.type === "string" ? part.type.toLowerCase() : "";
+        const isResponseTextPart =
+          partType === "text" || partType === "message" || partType === "output_text";
+        return (
+          part?.synthetic !== true &&
+          isResponseTextPart &&
+          [part?.text, part?.content, part?.message].some(
+            (value) => typeof value === "string" && value.trim().length > 0,
+          )
+        );
+      });
     };
 
     let lastUserEntryIndex = -1;
@@ -3879,7 +3854,40 @@ function ChatContent() {
         .filter((messageId): messageId is string => typeof messageId === "string" && messageId.length > 0),
     [renderMessages],
   );
-  const errorToasts = state.errorMessages;
+  const shouldRenderSeparateStreamingCard = shouldShowStreamingCard({
+    streaming: renderedLiveStreaming,
+    interactiveEvents: state.interactiveEvents,
+    assistantTurnMessageId: state.assistantTurnMessageId,
+    transcriptAssistantMessageIds,
+    hasTranscriptAssistantForCurrentTurn,
+    subagentsByParentMessageId: state.subagentsByParentMessageId,
+  });
+  const hasLiveAssistantAlreadyInTranscript = useMemo(() => {
+    const liveAssistantIds = new Set(
+      [renderedLiveStreaming?.messageId, state.assistantTurnMessageId]
+        .filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+        .map((id) => id.trim()),
+    );
+    return transcriptAssistantMessageIds.some((id) => liveAssistantIds.has(id));
+  }, [renderedLiveStreaming?.messageId, state.assistantTurnMessageId, transcriptAssistantMessageIds]);
+  // Keep exactly one live owner for a canonicalized assistant phase. The
+  // message-less StreamingCard owns it until completion; once it disappears,
+  // the transcript card takes over. Rendering both is what duplicated tool
+  // steps and the final response card during event streaming.
+  const suppressTranscriptLiveAssistantBlock =
+    state.isCompacting ||
+    (shouldRenderSeparateStreamingCard && hasLiveAssistantAlreadyInTranscript);
+  const errorToasts = useMemo(() => {
+    const unique = new Set<string>();
+    return state.errorMessages.filter((message) => {
+      const normalized = message.trim();
+      if (!normalized || unique.has(normalized)) {
+        return false;
+      }
+      unique.add(normalized);
+      return true;
+    });
+  }, [state.errorMessages]);
 
   useEffect(() => {
     if (errorToasts.length > 0) {
@@ -3910,8 +3918,8 @@ function ChatContent() {
       return;
     }
     const timeoutId = window.setTimeout(() => {
-      dispatch({ type: "REMOVE_ERROR_MESSAGE", payload: 0 });
-    }, 3_000);
+      dispatch({ type: "REMOVE_ERROR_MESSAGES_BY_TEXT", payload: errorToasts[0] });
+    }, ERROR_TOAST_DURATION_MS);
     return () => window.clearTimeout(timeoutId);
   }, [dispatch, errorToasts]);
 
@@ -3987,7 +3995,7 @@ function ChatContent() {
                   aria-label="Dismiss error notification"
                   title="Dismiss error notification"
                   onClick={() =>
-                    dispatch({ type: "REMOVE_ERROR_MESSAGE", payload: index })
+                    dispatch({ type: "REMOVE_ERROR_MESSAGES_BY_TEXT", payload: message })
                   }
                 >
                   <X className="h-3 w-3" />
@@ -4096,7 +4104,7 @@ function ChatContent() {
             diffByBlockKey={diffByBlockKey}
             hydratedFileChangesByBlockKey={hydratedFileChangesByBlockKey}
             hasLiveAssistantTurn={hasLiveAssistantTurn}
-            suppressLiveAssistantPresentation={state.isCompacting}
+            suppressLiveAssistantPresentation={suppressTranscriptLiveAssistantBlock}
             assistantTurnMessageId={state.assistantTurnMessageId}
             interactiveEvents={deferredInteractiveEvents}
             isCompressed={isCompressed}
@@ -4132,16 +4140,12 @@ function ChatContent() {
               interactiveEvents={state.interactiveEvents}
               assistantTurnMessageId={state.assistantTurnMessageId}
               transcriptAssistantMessageIds={transcriptAssistantMessageIds}
+              hasTranscriptAssistantForCurrentTurn={hasTranscriptAssistantForCurrentTurn}
               currentSessionId={state.currentSessionId}
               subagentsByParentMessageId={state.subagentsByParentMessageId}
               subagentDetailsById={state.subagentDetailsById}
               todoItems={state.todoItems}
             />
-          ) : null}
-
-          {/* Single loading indicator pinned to the bottom of the chat. */}
-          {showExtendedLoading ? (
-            <ThinkingBubble />
           ) : null}
 
           {state.isCompacting ? <CompactionInProgressNotice /> : null}
