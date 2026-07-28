@@ -23,11 +23,25 @@ function computeLineNumbers(
   if (parsedHeader.length > 0) {
     result.push({ old: null, new: null, line: parsedHeader, isHeader: true });
   }
-  const { oldStart, newStart } =
+  let { oldStart, newStart } =
     parsedHeader.length > 0 ? parseHunkHeader(parsedHeader) : { oldStart: 1, newStart: 1 };
   let oldN = oldStart;
   let newN = newStart;
-  for (const line of lines) {
+  for (const [index, line] of lines.entries()) {
+    if (line.startsWith("@@")) {
+      // A complete patch can contain multiple hunks. Reset numbering at each
+      // subsequent header instead of treating it as a source-code line.
+      ({ oldStart, newStart } = parseHunkHeader(line));
+      oldN = oldStart;
+      newN = newStart;
+      result.push({ old: null, new: null, line, isHeader: true });
+      continue;
+    }
+    // Older callers may include the first header in `lines` as well as in
+    // `header`; avoid rendering that header twice.
+    if (index === 0 && parsedHeader.length > 0 && line === parsedHeader) {
+      continue;
+    }
     if (line.startsWith("+") && !line.startsWith("+++")) {
       result.push({ old: null, new: newN++, line, isHeader: false });
     } else if (line.startsWith("-") && !line.startsWith("---")) {
