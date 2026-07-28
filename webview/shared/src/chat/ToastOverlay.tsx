@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, Info, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Info, X, XCircle } from "lucide-react";
 
 import { cn } from "../utils";
 import logger from "./lib/logger";
@@ -60,13 +60,24 @@ export function LiveEventBanner({
   const notifications = useMemo(() => {
     const persisted = extractCentralizedToastNotifications(rawSdkEventPayloads);
     const allNotifications = [...persisted, ...(liveNotifications ?? [])];
-    const placedNotifications = allNotifications.filter((notification) =>
-      placement === "composer"
+    const placedNotifications = allNotifications.filter((notification) => {
+      // A late SSE/debug payload from another session must never become a
+      // visible toast in the active session. Untagged notifications are kept
+      // for compatibility with older SDK payloads and are scoped by the
+      // reducer/live-event route already.
+      if (
+        notification.sessionId &&
+        sessionId &&
+        notification.sessionId !== sessionId
+      ) {
+        return false;
+      }
+      return placement === "composer"
         ? notification.type === "session.status"
-        : notification.type !== "session.status",
-    );
+        : notification.type !== "session.status";
+    });
     return placedNotifications;
-  }, [liveNotifications, placement, rawSdkEventPayloads]);
+  }, [liveNotifications, placement, rawSdkEventPayloads, sessionId]);
   const [activeToast, setActiveToast] = useState<CentralizedToastNotification | null>(null);
   const [toastNow, setToastNow] = useState(() => Date.now());
   const toastQueueRef = useRef<CentralizedToastNotification[]>([]);
@@ -125,6 +136,13 @@ export function LiveEventBanner({
         showNextToast();
       }, nextToast.durationMs);
     }
+  };
+
+  const dismissActiveToast = () => {
+    clearActiveTimer();
+    activeToastRef.current = null;
+    setActiveToast(null);
+    showNextToast();
   };
 
   useEffect(() => {
@@ -217,6 +235,15 @@ export function LiveEventBanner({
                       Retrying in {formatRetryCountdown(activeToast.next, toastNow)}
                     </div>
                   ) : null}
+                  <button
+                    type="button"
+                    className="oc-quick-input-icon-btn shrink-0 rounded p-1"
+                    title="Dismiss notification"
+                    aria-label="Dismiss notification"
+                    onClick={dismissActiveToast}
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
                 </div>
                 {activeToast.message ? (
                   <div className={cn(
@@ -231,6 +258,3 @@ export function LiveEventBanner({
           </div>
         );
       })()}
-    </div>
-  );
-}

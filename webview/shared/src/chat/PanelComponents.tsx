@@ -2182,18 +2182,33 @@ export const InputWrapper = memo(function InputWrapper() {
 
     // 1. Top-level interactive events (out-of-band questions, etc.)
     if (Array.isArray(interactiveEvents)) {
-      events = [...events, ...interactiveEvents];
+      events = [
+        ...events,
+        ...interactiveEvents.filter(
+          (event) => !event.sessionID || !currentSessionId || event.sessionID === currentSessionId,
+        ),
+      ];
     }
 
     // 2. Interactive events from currently streaming response
     if (streaming?.isActive && Array.isArray(streaming.interactiveEvents)) {
-      events = [...events, ...streaming.interactiveEvents];
+      events = [
+        ...events,
+        ...streaming.interactiveEvents.filter(
+          (event) => !event.sessionID || !currentSessionId || event.sessionID === currentSessionId,
+        ),
+      ];
     } else {
       // 3. If not streaming, fallback to interactive events from the latest assistant message,
       // but ONLY if the assistant is the absolute last speaker in the conversation.
       const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null;
       if (lastMsg?.role === "assistant" && Array.isArray(lastMsg.interactiveEvents)) {
-        events = [...events, ...lastMsg.interactiveEvents];
+        events = [
+          ...events,
+          ...lastMsg.interactiveEvents.filter(
+            (event) => !event.sessionID || !currentSessionId || event.sessionID === currentSessionId,
+          ),
+        ];
       }
     }
 
@@ -2201,7 +2216,7 @@ export const InputWrapper = memo(function InputWrapper() {
       events,
       dismissedInteractiveEventKeys,
     );
-  }, [messages, streaming, interactiveEvents, dismissedInteractiveEventKeys]);
+  }, [messages, streaming, interactiveEvents, dismissedInteractiveEventKeys, currentSessionId]);
 
   const filteredCommands = useMemo(() => {
     if (!slashTrigger) {
