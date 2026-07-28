@@ -3720,8 +3720,16 @@ function ChatContent() {
     [renderMessages, visibleConversationEntries],
   );
   const deferredTranscriptSnapshot = useDeferredValue(transcriptSnapshot);
+  // The deferred snapshot is useful while tokens are arriving, but retaining
+  // it after the stream becomes inactive leaves the live card unmounted before
+  // the completed assistant transcript is painted. Use the current atomic
+  // snapshot for the terminal handoff so the response body and prompt appear
+  // in the same commit.
+  const transcriptSnapshotForRender = state.streaming?.isActive
+    ? deferredTranscriptSnapshot
+    : transcriptSnapshot;
   const deferredVisibleConversationEntries =
-    deferredTranscriptSnapshot.visibleConversationEntries;
+    transcriptSnapshotForRender.visibleConversationEntries;
   const transcriptScrollViewport =
     deferredVisibleConversationEntries.length >= VIRTUALIZED_TRANSCRIPT_MIN_ENTRIES
       ? scrollRenderViewport
@@ -4111,7 +4119,7 @@ function ChatContent() {
             isProcessing={state.isProcessing}
             lastCompactedAt={state.lastCompactedAt}
             onSetBlockExpanded={handleSetBlockExpanded}
-            renderMessages={deferredTranscriptSnapshot.renderMessages}
+            renderMessages={transcriptSnapshotForRender.renderMessages}
             resolveAgentColor={resolveAgentColor}
             selectedAgent={state.selectedAgent}
             streamingAgent={deferredStreamingAgent}
