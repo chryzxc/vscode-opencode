@@ -148,8 +148,6 @@ function parsePatchTextToExcerpt(patchText?: string): DiffExcerpt | undefined {
     return undefined;
   }
 
-  const header = lines.find((line) => line.startsWith("@@")) || undefined;
-
   const diffLines = lines.filter(
     (line) =>
       !line.startsWith("*** Begin Patch") &&
@@ -163,13 +161,19 @@ function parsePatchTextToExcerpt(patchText?: string): DiffExcerpt | undefined {
       !line.startsWith("+++ "),
   );
 
-  const previewLines = diffLines.slice(0, 40);
+  const firstHunkIndex = diffLines.findIndex((line) => line.startsWith("@@"));
+  const header = firstHunkIndex >= 0 ? diffLines[firstHunkIndex] : undefined;
+
+  // Keep the complete unified diff, including context and every hunk. The
+  // modal provides scrolling, so truncating here would hide later changes.
+  // The first hunk header is supplied separately through `header`.
+  const excerptLines = diffLines.filter((line, index) => index !== firstHunkIndex);
   const added = diffLines.filter((line) => line.startsWith("+") && !line.startsWith("+++")).length;
   const deleted = diffLines.filter((line) => line.startsWith("-") && !line.startsWith("---")).length;
 
   return {
     header,
-    lines: previewLines,
+    lines: excerptLines,
     added,
     deleted,
   };
