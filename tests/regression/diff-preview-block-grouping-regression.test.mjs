@@ -30,6 +30,37 @@ const messageHandlerSource = readSource(
   "messageHandler.ts",
 );
 
+const diffPreviewStepSource = readSource(
+  [joinFromRoot("webview", "shared", "src", "chat", "components", "activity-steps", "DiffPreviewStep.tsx")],
+  "DiffPreviewStep.tsx",
+);
+
+const activityDiffExcerptSource = readSource(
+  [joinFromRoot("webview", "shared", "src", "chat", "components", "ActivityDiffExcerpt.tsx")],
+  "ActivityDiffExcerpt.tsx",
+);
+
+test("diff preview keeps the complete patch instead of applying a fixed line cap", () => {
+  assert.match(
+    diffPreviewStepSource,
+    /const excerptLines = diffLines\.filter\(\(line, index\) => index !== firstHunkIndex\)/,
+    "the parser should retain context and all later hunks",
+  );
+  assert.doesNotMatch(
+    diffPreviewStepSource,
+    /slice\(0,\s*40\)/,
+    "the parser must not truncate patches at 40 lines",
+  );
+});
+
+test("diff excerpt resets line numbering for every hunk header", () => {
+  assert.match(
+    activityDiffExcerptSource,
+    /if \(line\.startsWith\("@@"\)\)[\s\S]*?parseHunkHeader\(line\)[\s\S]*?oldN = oldStart[\s\S]*?newN = newStart/s,
+    "each hunk header should reset old and new line counters",
+  );
+});
+
 // ── parseCentralizedSessionDiffEvent ─────────────────────────────────
 
 test("parseCentralizedSessionDiffEvent handles both session.diff and message.updated event types", () => {
