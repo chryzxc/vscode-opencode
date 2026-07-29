@@ -258,3 +258,6 @@ export function LiveEventBanner({
           </div>
         );
       })()}
+    </div>
+  );
+}
