@@ -57,6 +57,8 @@ import * as vscode from "vscode";
 import * as cp from "child_process";
 import * as net from "net";
 import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import { createOpencodeClient, OpencodeClient } from "@opencode-ai/sdk/v2";
 import { createLogger } from "../utils/Logger";
 import { LoggingCategories } from "../utils/LoggingSchema";
@@ -308,23 +310,38 @@ export class OpencodeServerManager {
       return this.opencodeBinaryPath;
     }
 
-    let opencodeBinary = "opencode";
+    const configuredBinary = vscode.workspace
+      .getConfiguration("opencode")
+      .get<string>("cliPath", "")
+      .trim();
+    if (configuredBinary) {
+      this.opencodeBinaryPath = this.normalizeWindowsExecutablePath(configuredBinary);
+      log.info("Using configured opencode CLI path", {
+        path: this.opencodeBinaryPath,
+      });
+      return this.opencodeBinaryPath;
+    }
+
+    let opencodeBinary: string | undefined;
     try {
-      const resolverCommand =
-        process.platform === "win32" ? "where opencode" : "which opencode";
-      const resolverResult = cp
-        .execSync(resolverCommand, {
+      const resolverResult = cp.execFileSync(
+        process.platform === "win32"
+          ? "where"
+          : process.platform === "darwin"
+            ? "/bin/zsh"
+            : "/bin/sh",
+        process.platform === "win32" ? ["opencode"] : ["-lc", "command -v opencode"],
+        {
           encoding: "utf-8",
           stdio: ["ignore", "pipe", "ignore"],
-        })
+        },
+      )
         .trim()
         .split(/\r?\n/)
         .map((line) => line.trim())
         .filter(Boolean);
       if (resolverResult.length > 0) {
-        opencodeBinary = this.normalizeWindowsExecutablePath(
-          resolverResult[0],
-        );
+        opencodeBinary = this.normalizeWindowsExecutablePath(resolverResult[0]);
         log.debug("Resolved opencode binary path", { path: opencodeBinary });
       }
     } catch (error) {
@@ -334,8 +351,40 @@ export class OpencodeServerManager {
       );
     }
 
-    this.opencodeBinaryPath = opencodeBinary;
-    return opencodeBinary;
+    if (!opencodeBinary) {
+      const home = os.homedir();
+      const candidatePaths = process.platform === "win32"
+        ? [
+            path.join(home, ".opencode", "bin", "opencode.exe"),
+            path.join(home, ".bun", "bin", "opencode.exe"),
+            path.join(home, "AppData", "Roaming", "npm", "opencode.cmd"),
+          ]
+        : [
+            path.join(home, ".opencode", "bin", "opencode"),
+            path.join(home, ".bun", "bin", "opencode"),
+            path.join(home, ".local", "bin", "opencode"),
+            "/opt/homebrew/bin/opencode",
+            "/usr/local/bin/opencode",
+            "/usr/bin/opencode",
+          ];
+      const existingCandidate = candidatePaths.find((candidate) => {
+        try {
+          fs.accessSync(candidate, fs.constants.X_OK);
+          return true;
+        } catch {
+          return false;
+        }
+      });
+      if (existingCandidate) {
+        opencodeBinary = this.normalizeWindowsExecutablePath(existingCandidate);
+        log.info("Resolved opencode CLI from fallback install locations", {
+          path: opencodeBinary,
+        });
+      }
+    }
+
+    this.opencodeBinaryPath = opencodeBinary ?? "opencode";
+    return this.opencodeBinaryPath;
   }
 
   private probeOpencodeBinaryVersion(binaryPath: string): string | undefined {
