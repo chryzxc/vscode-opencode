@@ -85,3 +85,21 @@ test("server manager still probes the CLI after a failed SDK health request", ()
     "a healthy compatibility endpoint must not bypass the CLI version fallback",
   );
 });
+
+test("server manager resolves CLI paths for GUI-launched VS Code hosts", () => {
+  assert.match(
+    serverManagerSource,
+    /getConfiguration\("opencode"\)[\s\S]*get<string>\("cliPath"/,
+    "users must be able to configure an absolute CLI path",
+  );
+  assert.match(
+    serverManagerSource,
+    /command -v opencode/,
+    "CLI lookup should also load the shell command path used outside VS Code",
+  );
+  assert.match(
+    serverManagerSource,
+    /\.opencode[\s\S]*\.bun[\s\S]*\.local[\s\S]*homebrew/,
+    "CLI lookup should cover standard user and Homebrew install locations",
+  );
+});
