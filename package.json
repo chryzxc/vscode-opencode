@@ -188,6 +188,11 @@
           "default": 0,
           "description": "Port for OpenCode server (0 = auto-assign)"
         },
+        "opencode.cliPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional absolute path to the OpenCode CLI executable when it is not visible to the VS Code extension host PATH."
+        },
         "opencode.autoStart": {
           "type": "boolean",
           "default": true,
