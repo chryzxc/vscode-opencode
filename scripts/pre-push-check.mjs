@@ -140,9 +140,18 @@ function runTests(changedFiles, testsOnly) {
   }
 }
 
+function runStreamingContractGuard(changedFiles) {
+  const result = run(NODE_BIN, ["scripts/streaming-contract-check.mjs", ...changedFiles]);
+  if (result.status !== 0) {
+    process.exit(result.status);
+  }
+}
+
 function main() {
   const testsOnly = process.argv.includes("--tests-only");
   const changedFiles = getChangedFiles();
+
+  runStreamingContractGuard(changedFiles);
 
   if (!testsOnly) {
     mustSucceed(NPM_BIN, ["run", "structured-output:check"]);

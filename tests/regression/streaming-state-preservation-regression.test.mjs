@@ -17,6 +17,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  extractFunctionBody,
   joinFromRoot,
   readSource,
 } from '../helpers/source-utils.mjs';
@@ -261,6 +262,52 @@ test("assistant-phase identity updates never clear an already rendered live snap
     pendingReducer,
     /streaming:\s*null/,
     "assistant-phase transitions must not remove the streaming snapshot; terminal/session lifecycle owns removal",
+  );
+});
+
+test("partial SET_STREAMING snapshots are required to preserve rendered activity arrays", () => {
+  const storeSource = readSource(
+    [joinFromRoot("webview", "shared", "src", "chat", "lib", "store.ts")],
+    "store.ts",
+  );
+  const mergeBody = extractFunctionBody(
+    storeSource,
+    "function mergeStreamingSnapshotLocal(",
+  );
+
+  assert.match(
+    mergeBody,
+    /NON-DESTRUCTIVE ACTIVITY INVARIANT/,
+    "the streaming merge must document that partial SDK snapshots cannot erase activity",
+  );
+  assert.match(
+    mergeBody,
+    /steps:\s*mergeActivityArraysLocal\(existing\?\.steps,\s*normalizedIncoming\.steps\)/,
+    "message phase re-keying must merge existing and incoming steps",
+  );
+  assert.match(
+    mergeBody,
+    /progressEvents:\s*mergeActivityArraysLocal\(\s*existing\?\.progressEvents,\s*normalizedIncoming\.progressEvents/s,
+    "message phase re-keying must merge existing and incoming progress events",
+  );
+});
+
+test("FINISH_STREAMING deactivates without dropping the rendered activity snapshot", () => {
+  const storeSource = readSource(
+    [joinFromRoot("webview", "shared", "src", "chat", "lib", "store.ts")],
+    "store.ts",
+  );
+  const finishBody = extractFunctionBody(storeSource, 'case "FINISH_STREAMING":');
+
+  assert.match(
+    finishBody,
+    /FINISH_STREAMING deliberately deactivates the stream without removing[\s\S]*?any activity arrays/,
+    "terminal stream finalization must document preservation of rendered activity",
+  );
+  assert.match(
+    finishBody,
+    /\.\.\.state\.streaming,[\s\S]*isActive:\s*false/s,
+    "FINISH_STREAMING must build on the existing snapshot instead of replacing it with an empty one",
   );
 });
 

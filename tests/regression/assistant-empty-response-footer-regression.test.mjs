@@ -16,7 +16,7 @@ test("assistant footer copy button and timestamp only render when response conte
   );
   assert.match(
     messageSource,
-    /!isStreamingActive &&[\s\S]*showResponseSection &&[\s\S]*hasCopyableResponseContent && \(/,
-    "assistant footer should be hidden for timeline-only or empty-content responses",
+    /const shouldShowResponseActions =[\s\S]*isAssistantTurnCollapsed[\s\S]*isLastInBlock[\s\S]*shouldShowResponseActions &&[\s\S]*showResponseSection &&[\s\S]*hasCopyableResponseContent && \(/,
+    "assistant actions should only render on completed collapsed response summaries",
   );
 });

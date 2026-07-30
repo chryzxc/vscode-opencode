@@ -65,7 +65,7 @@ test('stream handler suppresses stray global events before a request starts', ()
   );
 });
 
-test('upsertStreamingStep deduplicates by id, callID, or title', () => {
+test('upsertStreamingStep deduplicates by stable IDs and never merges a new start by title', () => {
   const upsertBody = extractFunctionBody(
     messageHandlerSource,
     'function upsertStreamingStep(',
@@ -73,8 +73,13 @@ test('upsertStreamingStep deduplicates by id, callID, or title', () => {
 
   assert.match(
     upsertBody,
-    /const idx = streaming\.steps\.findIndex\([\s\S]*candidate\.id === step\.id\) \|\|[\s\S]*candidate\.callID === step\.callID\) \|\|[\s\S]*candidate\.title\.trim\(\)\.toLowerCase\(\) === titleKey/s,
-    'upsertStreamingStep should deduplicate steps by id, callID, or title depending on options',
+    /const stableIndex = streaming\.steps\.findIndex\([\s\S]*candidate\.id === step\.id\) \|\|[\s\S]*candidate\.callID === step\.callID/s,
+    'upsertStreamingStep should use stable SDK identity for ordinary updates',
+  );
+  assert.match(
+    upsertBody,
+    /isStepFinish[\s\S]*new start must always append/s,
+    'title fallback must only close an open step on finish; a new start must not replace it',
   );
 });
 

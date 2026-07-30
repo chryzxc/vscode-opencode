@@ -25,6 +25,19 @@ test("rehydrated SDK task tool parts project into the activity timeline", () => 
   );
 });
 
+test("rehydrated canonical activity arrays are not concatenated twice", () => {
+  assert.match(
+    source,
+    /Array\.isArray\(candidate\.steps\)\s*&&\s*candidate\.steps\.length\s*>\s*0[\s\S]*?return candidate\.steps;[\s\S]*?return Array\.isArray\(candidate\.progressEvents\)/,
+    "hydrated sibling messages should prefer the canonical steps array when progressEvents mirrors it",
+  );
+  assert.match(
+    source,
+    /Array\.isArray\(cardMessage\?\.steps\)\s*&&\s*cardMessage\.steps\.length\s*>\s*0[\s\S]*?\?\s*cardMessage\.steps[\s\S]*?:\s*\(cardMessage\?\.progressEvents \?\? \[\]\)/,
+    "the current hydrated card should use progressEvents only as a fallback",
+  );
+});
+
 test("live task tool events use the same SDK state title and streaming activity path", () => {
   assert.match(
     handlerSource,

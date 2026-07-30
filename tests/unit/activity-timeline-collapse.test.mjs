@@ -20,6 +20,10 @@ const fadedCollapseOverlaySource = readSource(
   [joinFromRoot("webview", "shared", "src", "components", "ui", "FadedCollapseOverlay.tsx")],
   "FadedCollapseOverlay.tsx",
 );
+const chatCssSource = readSource(
+  [joinFromRoot("webview", "shared", "src", "chat", "index.css")],
+  "index.css",
+);
 
 
 test("activity timeline tracks an explicit expanded-vs-collapsed assistant turn state", () => {
@@ -110,6 +114,14 @@ test("the final visible activity row ends its connector before hidden lifecycle 
   );
 });
 
+test("lifecycle-delimited activity steppers keep one continuous connector", () => {
+  assert.match(
+    chatCssSource,
+    /\.oc-activity-timeline-compact\s*\+\s*\.oc-activity-timeline-compact[\s\S]*?::before[\s\S]*?background/s,
+    "adjacent lifecycle-delimited steppers need a connector bridge so hidden start/finish markers do not visibly disconnect activity rows",
+  );
+});
+
 test("collapsed activity timeline renders the worked-for summary affordance", () => {
   assert.match(
     messageComponentsSource,
@@ -164,8 +176,8 @@ test("completed assistant responses use rendered overflow for their card preview
   );
   assert.match(
     messageComponentsSource,
-    /const shouldConstrainResponsePreview =[\s\S]*!isStreamingActive[\s\S]*showResponseBody[\s\S]*!isResponseExpanded;/,
-    "every completed response body should receive the shared preview boundary",
+    /const shouldConstrainResponsePreview =[\s\S]*showResponseBody[\s\S]*!isResponseExpanded;/,
+    "every response body should receive the shared local preview boundary before expansion",
   );
   assert.match(
     messageComponentsSource,
@@ -174,7 +186,7 @@ test("completed assistant responses use rendered overflow for their card preview
   );
   assert.match(
     messageComponentsSource,
-    /data-assistant-section="response"[\s\S]*max-h-\[28rem\][\s\S]*<FadedCollapseOverlay/s,
+    /data-assistant-section="response"[\s\S]*max-h-32[\s\S]*<FadedCollapseOverlay/s,
     "the bounded preview should use the shared fade control inside the response card",
   );
   assert.match(

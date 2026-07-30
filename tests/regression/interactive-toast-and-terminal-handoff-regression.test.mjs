@@ -57,3 +57,23 @@ test("terminal transcript handoff does not use a stale deferred snapshot", () =>
     "the transcript must consume the same atomic snapshot as its visible entries",
   );
 });
+
+test("live-card ownership uses the transcript snapshot that is actually mounted", () => {
+  const source = read("webview/shared/src/chat/ChatShell.tsx");
+
+  assert.match(
+    source,
+    /const renderedTranscriptMessages = transcriptSnapshotForRender\.renderMessages;/,
+    "ownership must have an explicit name for the rendered transcript snapshot",
+  );
+  assert.match(
+    source,
+    /renderedTranscriptMessages\s*\.filter\(\(message\) =>[\s\S]*?transcriptAssistantMessageIds/s,
+    "live-card identity matching must read the mounted transcript, not the newest state",
+  );
+  assert.match(
+    source,
+    /const hasTranscriptAssistantForCurrentTurn = useMemo\(\(\) =>[\s\S]*?deferredVisibleConversationEntries\.length[\s\S]*?\}, \[deferredVisibleConversationEntries\]\);/s,
+    "content ownership must use the same deferred visible entries as the transcript",
+  );
+});
