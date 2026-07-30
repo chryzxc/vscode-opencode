@@ -13,15 +13,15 @@ export interface CompatibilityResult {
 }
 
 export const OPENCODE_COMPATIBILITY = {
-  extensionVersion: "0.1.14",
+  extensionVersion: "0.3.3",
   sdk: {
     package: "@opencode-ai/sdk",
-    supportedRange: ">=1.15.12 <1.16.0",
-    testedVersions: ["1.15.12", "1.15.13"],
+    supportedRange: ">=1.18.0 <1.19.0",
+    testedVersions: ["1.18.4"],
   },
   server: {
-    supportedRange: ">=1.15.0 <1.16.0",
-    testedVersions: ["1.15.12", "1.15.13"],
+    supportedRange: ">=1.18.0 <1.19.0",
+    testedVersions: ["1.18.9"],
   },
   policy: "warn" as const,
 };

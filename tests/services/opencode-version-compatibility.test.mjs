@@ -85,3 +85,21 @@ test("server manager still probes the CLI after a failed SDK health request", ()
     "a healthy compatibility endpoint must not bypass the CLI version fallback",
   );
 });
+
+test("server manager rejects unsupported servers when a healthy connection is required", () => {
+  assert.match(serverManagerSource, /rejectUnsupportedServer\(\)/);
+  assert.match(serverManagerSource, /outside the supported range/);
+});
+
+test("server manager resolves CLI paths for GUI-launched VS Code hosts", () => {
+  assert.match(
+    serverManagerSource,
+    /getConfiguration\("opencode"\)[\s\S]*get<string>\("cliPath"/,
+    "users must be able to configure an absolute CLI path",
+  );
+  assert.match(serverManagerSource, /command -v opencode/);
+  assert.match(
+    serverManagerSource,
+    /\.opencode[\s\S]*\.bun[\s\S]*\.local[\s\S]*homebrew/,
+  );
+});

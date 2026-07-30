@@ -57,10 +57,21 @@ test('persisted user message includes file parts from contexts for rehydration s
   assert.match(body, /source:\s*\{[\s\S]*path:\s*ctx\.file/, 'persisted file parts should carry the context source path');
 });
 
-test('promptWithStructuredOutput exists and uses client.session.prompt', () => {
+test('promptWithStructuredOutput uses the current async session endpoint', () => {
   // Implementation detail test simplified - function signatures are implementation details
   assert.match(source, /promptWithStructuredOutput|structured.*output|prompt/, 'should handle structured output prompts');
-  assert.match(source, /client\.session\.prompt|session\.prompt|prompt\(/, 'should use session prompt API');
+  assert.match(source, /client\.session\.promptAsync|promptAsync\.call/, 'should use async session prompt API');
+});
+
+test('prompt transport prefers the current async session endpoint', () => {
+  assert.match(source, /client\?\.session/);
+  assert.match(source, /asyncSession\.promptAsync\.call\(asyncSession/);
+  assert.doesNotMatch(source, /client\.session\.prompt\(/);
+});
+
+test('prompt transport omits agent switching for unsupported server versions', () => {
+  assert.match(source, /shouldSendAgentToServer/);
+  assert.match(source, /Object\.entries\(requestBody\)\.filter\(\(\[key\]\) => key !== "agent"\)/);
 });
 
 test('structured-output fallback retries on later requests instead of disabling the feature globally', () => {

@@ -53,16 +53,16 @@ test("questionReply handler — promptAsync fallback includes agent parameter", 
   const source = readSource("src/providers/ChatViewProvider.ts");
 
   // Locate the promptAsync call inside the stale-question fallback path.
-  const promptAsyncIdx = source.indexOf("promptAsyncFn.call(");
-  assert.notEqual(promptAsyncIdx, -1, "promptAsyncFn.call should exist in ChatViewProvider");
+  const promptAsyncIdx = source.indexOf("asyncSession.promptAsync.call(");
+  assert.notEqual(promptAsyncIdx, -1, "the async session prompt path should exist in ChatViewProvider");
 
   // Grab a generous window around the call to inspect its arguments.
-  const window = source.slice(promptAsyncIdx, promptAsyncIdx + 600);
+  const window = source.slice(Math.max(0, promptAsyncIdx - 220), promptAsyncIdx + 600);
 
   assert.match(
     window,
-    /agent:\s*this\.modelAndAgentManager\.getSelectedAgent\(\)/,
-    "promptAsync call must include agent: this.modelAndAgentManager.getSelectedAgent()",
+    /const selectedAgent\s*=\s*this\.modelAndAgentManager\.getSelectedAgent\(\)[\s\S]*?shouldSendAgentToServer\(\)[\s\S]*?agent:\s*selectedAgent/,
+    "promptAsync call must pass the selected agent when the server compatibility contract allows it",
   );
   assert.match(window, /sessionID:\s*replySessionId/, "promptAsync call must include sessionID");
   assert.match(window, /parts:\s*\[/, "promptAsync call must include parts");

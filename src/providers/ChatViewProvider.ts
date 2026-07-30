@@ -3619,30 +3619,20 @@ export class ChatViewProvider
                 this.sendProcessingSessionsUpdate();
                 this.logger.error("[DEBUG][HOST] Processing state set, kicking agent loop via promptAsync", { replySessionId });
 
-                // STEP 3: Use client.session.promptAsync (fire-and-forget, returns 202 immediately).
-                // We MUST NOT use client.session.prompt() here — that endpoint blocks the HTTP
-                // connection for the entire agent turn (timeout: false) and deadlocks the extension.
-                // promptAsync returns immediately and streams events via SSE.
-                // NOTE: client.session is Session2 in the v2 SDK — promptAsync is defined on Session2.
-                // The path is client.session.promptAsync, NOT client.v2.session.promptAsync.
+                // STEP 3: Use the current async session endpoint. It admits the input
+                // and returns immediately; the agent loop continues over SSE.
                 try {
-                  const promptAsyncFn = (client as any)?.session?.promptAsync;
-                  if (typeof promptAsyncFn === "function") {
-                    await promptAsyncFn.call((client as any).session, {
+                  const asyncSession = (client as any)?.session;
+                  if (typeof asyncSession?.promptAsync === "function") {
+                    const selectedAgent = this.modelAndAgentManager.getSelectedAgent();
+                    await asyncSession.promptAsync.call(asyncSession, {
                       sessionID: replySessionId,
-                      directory: this.getWorkspaceDirectory(),
-                      // Include the agent so the server uses the correct agent instead of
-                      // falling back to the workspace default (which may not exist).
-                      agent: this.modelAndAgentManager.getSelectedAgent(),
-                      // Include parts so the agent knows what the user answered
+                      ...(this.shouldSendAgentToServer() ? { agent: selectedAgent } : {}),
                       parts: [{ type: "text", text: displayText }],
                     });
-                    this.logger.error("[DEBUG][HOST] promptAsync succeeded - agent loop kicked", { replySessionId });
+                    this.logger.error("[DEBUG][HOST] async session prompt succeeded - agent loop kicked", { replySessionId });
                   } else {
-                    // promptAsync unavailable (old server). This is a hard blocker — we cannot
-                    // safely fall back to the blocking prompt() since it deadlocks the extension
-                    // and breaks the stop button. Report error and clean up processing state.
-                    this.logger.error("[DEBUG][HOST] promptAsync not found on client.session — cannot safely kick agent loop without deadlocking");
+                    this.logger.error("[DEBUG][HOST] v2 session prompt is unavailable");
                     this.processingSessionIds.delete(replySessionId);
                     if (this.activeStreamSessionId === replySessionId) {
                       this.activeStreamSessionId = undefined;
@@ -5673,7 +5663,7 @@ export class ChatViewProvider
           return true;
         }
 
-        const prompt = await client.session.prompt({
+        const prompt = await client.session.promptAsync({
           sessionID: probeSessionId,
           ...(workspaceDirectory ? { directory: workspaceDirectory } : {}),
           noReply: true,
@@ -5852,6 +5842,12 @@ export class ChatViewProvider
   }
 
   // PROMPT-OWNERSHIP: do not modify — transport-only path
+  /** Older servers can persist an agent switch without the required seq value. */
+  private shouldSendAgentToServer(): boolean {
+    const serverVersion = this.serverManager.getVersion();
+    return !serverVersion || checkOpencodeServerVersion(serverVersion).status === "supported";
+  }
+
   private async promptWithStructuredOutput(
     client: any,
     sessionID: string,
@@ -5866,8 +5862,15 @@ export class ChatViewProvider
   ) {
     const workspaceDirectory = this.getWorkspaceDirectory();
     const requireStructuredOutput = options?.requireStructuredOutput === true;
+    const asyncSession = client?.session;
+    if (typeof asyncSession?.promptAsync !== "function") {
+      throw new Error("This OpenCode server does not support the async session prompt endpoint");
+    }
 
     const callPrompt = (requestBody: Record<string, unknown>) => {
+      const promptBody = this.shouldSendAgentToServer()
+        ? requestBody
+        : Object.fromEntries(Object.entries(requestBody).filter(([key]) => key !== "agent"));
       const sdkStartTime = Date.now();
       this.logger.debug("Initiating SDK prompt call", {
         sessionID,
@@ -5879,9 +5882,9 @@ export class ChatViewProvider
       this.logger.info("[OPENCOD GO MODEL] SDK prompt call details", {
         sessionID,
         model: (requestBody as any)?.model,
-        agent: (requestBody as any)?.agent,
-        partsCount: (requestBody as any)?.parts?.length,
-        partTypes: (requestBody as any)?.parts?.map((p: any) => p.type),
+        agent: (promptBody as any)?.agent,
+        partsCount: (promptBody as any)?.parts?.length,
+        partTypes: (promptBody as any)?.parts?.map((p: any) => p.type),
         hasFiles: options?.hasFiles,
         hasContexts: options?.hasContexts,
         hasImages: options?.hasImages,
@@ -5889,10 +5892,10 @@ export class ChatViewProvider
         requireStructuredOutput,
       });
 
-      const promise = client.session.prompt({
-        sessionID: sessionID,
+      const promise = asyncSession.promptAsync.call(asyncSession, {
+        sessionID,
         ...(workspaceDirectory ? { directory: workspaceDirectory } : {}),
-        ...(requestBody as Record<string, unknown>),
+        ...(promptBody as Record<string, unknown>),
       });
 
       // Add timing tracking
@@ -8733,32 +8736,24 @@ export class ChatViewProvider
         // Auto-compact if the context window is getting full.
         void this.maybeAutoCompact(session.id, responseData);
       } else {
-        const noDataMessageText =
-          "No final response payload was returned by the provider.";
+        // A prompt request can resolve before the server publishes the
+        // assistant message on SSE. Keep the turn active until that stream
+        // reaches its terminal event.
+        preserveProcessingAfterTransportTimeout = true;
         const rawResponse = this.buildRawResponseDebugText({
           status: response?.response?.status,
           data: response?.data,
           error: response?.error,
         });
-        const fallbackMessage = {
-          role: "assistant",
-          content: noDataMessageText,
-          parts: [{ type: "text", text: noDataMessageText }],
-          rawResponse,
-          timing: {
-            duration: duration,
-          },
-        };
-
-        await this.sessionService.appendMessage(session.id, fallbackMessage);
-        this.view?.webview.postMessage({
-          type: "messageResponse",
-          message: fallbackMessage,
-        });
-        this.logger.warn("No response data received from OpenCode", {
+        // An empty prompt response is not an assistant response. OpenCode may
+        // complete the HTTP request before its authoritative SSE message
+        // arrives, so let the stream own the turn instead of persisting or
+        // rendering synthetic fallback text.
+        this.logger.info("Prompt returned without an assistant payload; awaiting stream events", {
           sessionId: session.id,
           status: response?.response?.status,
           hasError: Boolean(response?.error),
+          hasRawResponse: Boolean(rawResponse),
         });
       }
     } catch (error) {
@@ -9559,6 +9554,8 @@ export class ChatViewProvider
     this.view?.webview.postMessage({
       type: "compatibilityStatus",
       compatibilityWarnings: nextWarnings,
+      sdkVersion: this.installedSdkVersion,
+      serverVersion: this.serverManager.getVersion(),
     });
     this.refreshView();
   }
@@ -9568,6 +9565,8 @@ export class ChatViewProvider
     this.view?.webview.postMessage({
       type: "compatibilityStatus",
       compatibilityWarnings: compatibilityWarnings,
+      sdkVersion: this.installedSdkVersion,
+      serverVersion: this.serverManager.getVersion(),
     });
   }
 
