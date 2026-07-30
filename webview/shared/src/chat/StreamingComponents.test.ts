@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import type { StreamingState } from "./lib/types";
-import { shouldShowStreamingCard } from "./lib/streamingCardVisibility";
+import {
+  hasMatchingTranscriptContent,
+  shouldShowStreamingCard,
+  suppressDuplicateStreamingContent,
+} from "./lib/streamingCardVisibility";
 
 function streamingState(
   overrides: Partial<StreamingState> = {},
@@ -22,6 +26,23 @@ function streamingState(
 }
 
 describe("shouldShowStreamingCard live event ownership", () => {
+  it("bridges ownership when phase IDs change but the current response is already rendered", () => {
+    assert.strictEqual(
+      hasMatchingTranscriptContent(
+        streamingState({ content: "The response is complete.", hasRenderableContent: true }),
+        ["The response is complete."],
+      ),
+      true,
+    );
+    assert.strictEqual(
+      hasMatchingTranscriptContent(
+        streamingState({ content: "A newer response.", hasRenderableContent: true }),
+        ["An older response."],
+      ),
+      false,
+    );
+  });
+
   it("keeps live reasoning visible when the transcript already has an assistant placeholder", () => {
     const visible = shouldShowStreamingCard({
       streaming: streamingState({
@@ -136,5 +157,37 @@ describe("shouldShowStreamingCard live event ownership", () => {
       }),
       false,
     );
+  });
+
+  it("removes transcript-owned text from a live phase overlay while preserving activity", () => {
+    const result = suppressDuplicateStreamingContent(
+      streamingState({
+        content: "I’m tracing the battle loop, player/enemy actions.",
+        hasRenderableContent: true,
+        reasoningEvents: [{ text: "Thinking", createdAt: 1 }],
+      }),
+      [" I’m tracing the battle loop,   player/enemy actions. "],
+    );
+
+    assert.strictEqual(result.content, "");
+    assert.strictEqual(result.hasRenderableContent, false);
+    assert.deepStrictEqual(result.reasoningEvents, [{ text: "Thinking", createdAt: 1 }]);
+  });
+
+  it("removes a live partial response when the transcript already has its completed text", () => {
+    const result = suppressDuplicateStreamingContent(
+      streamingState({
+        content: "I’ll trace where the battle screen is launched",
+        hasRenderableContent: true,
+        progressEvents: [{ id: "tool-live", title: "Read BattleScreen", status: "done" }],
+      }),
+      ["I’ll trace where the battle screen is launched and how the AI loop is wired."],
+    );
+
+    assert.strictEqual(result.content, "");
+    assert.strictEqual(result.hasRenderableContent, false);
+    assert.deepStrictEqual(result.progressEvents, [
+      { id: "tool-live", title: "Read BattleScreen", status: "done" },
+    ]);
   });
 });

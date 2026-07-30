@@ -169,6 +169,16 @@ test("assistant timeline groups interleave completed question outputs in stream 
     /left\.type === "event" \? -1 : 1/,
     "when activity and question output share a sequence, activity should render first",
   );
+  assert.match(
+    body,
+    /seq:\s*eventIndex/,
+    "activity and assistant response entries must use retained arrival order, not mixed raw/live sequence domains",
+  );
+  assert.match(
+    body,
+    /anchorIndex >= 0[\s\S]*?anchorIndex \+ 0\.1/s,
+    "derived question output should be anchored to the retained timeline position",
+  );
 });
 
 test("question prelude is hoisted ahead of generic activity rendering", () => {

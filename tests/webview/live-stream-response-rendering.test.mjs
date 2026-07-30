@@ -80,13 +80,92 @@ test("active compaction owns the live-response surface without stopping stream p
   );
   assert.match(
     shellSource,
-    /const suppressTranscriptLiveAssistantBlock\s*=\s*state\.isCompacting[\s\S]*?shouldRenderSeparateStreamingCard && hasLiveAssistantAlreadyInTranscript/s,
-    "a canonicalized live assistant phase must have exactly one visible owner",
+    /const shouldKeepSeparateStreamingCard\s*=\s*[\s\S]*?shouldRenderSeparateStreamingCard &&[\s\S]*?!hasLiveAssistantAlreadyInTranscript[\s\S]*?!hasTranscriptAssistantForCurrentTurn[\s\S]*?const shouldKeepSeparateStreamingCardForContentOwnership\s*=\s*shouldKeepSeparateStreamingCard && !liveResponseContentAlreadyRendered/s,
+    "a current-turn transcript or matching response content must prevent a second live card",
   );
   assert.match(
     shellSource,
     /const isSuppressedLiveBlock\s*=\s*suppressLiveAssistantPresentation[\s\S]*?messageNode = isSuppressedLiveBlock \? null/s,
     "a live assistant response already represented in the transcript must also stay hidden during compaction",
+  );
+});
+
+test("transcript ownership is declared after its deferred source and before handoff reads it", () => {
+  const deferredEntriesIndex = shellSource.indexOf("const deferredVisibleConversationEntries");
+  const ownershipIndex = shellSource.indexOf("const hasTranscriptAssistantForCurrentTurn = useMemo");
+  const handoffReadIndex = shellSource.indexOf("hasTranscriptAssistantForCurrentTurn,\n    subagentsByParentMessageId");
+  assert.ok(deferredEntriesIndex >= 0, "ChatShell must define the deferred transcript entries");
+  assert.ok(ownershipIndex >= 0, "ChatShell must define transcript ownership");
+  assert.ok(handoffReadIndex >= 0, "the live-card handoff must read transcript ownership");
+  assert.ok(
+    deferredEntriesIndex < ownershipIndex && ownershipIndex < handoffReadIndex,
+    "the deferred transcript must initialize before ownership, and ownership before the handoff can read it",
+  );
+});
+
+test("conversation transcript receives transcript ownership as an explicit prop", () => {
+  assert.match(
+    shellSource,
+    /type ConversationTranscriptProps = \{[\s\S]*?hasTranscriptAssistantForCurrentTurn: boolean;/,
+    "the transcript component must declare ownership as a required prop",
+  );
+  assert.match(
+    shellSource,
+    /const MemoizedConversationTranscript = memo\(function ConversationTranscript\(\{[\s\S]*?hasTranscriptAssistantForCurrentTurn,[\s\S]*?\}\)/,
+    "the transcript component must destructure the ownership prop locally",
+  );
+  assert.match(
+    shellSource,
+    /<MemoizedConversationTranscript[\s\S]*?hasTranscriptAssistantForCurrentTurn=\{hasTranscriptAssistantForCurrentTurn\}/,
+    "ChatShell must pass ownership explicitly to the transcript component",
+  );
+});
+
+test("retry status uses a compact accessible inline status treatment", () => {
+  assert.match(
+    messageSource,
+    /oc-live-session-status[\s\S]*?role="status"[\s\S]*?aria-live="polite"/s,
+    "retry status should remain discoverable to assistive technology while using the refined inline treatment",
+  );
+  assert.match(
+    messageSource,
+    /oc-live-session-status__countdown[\s\S]*?liveStatusCountdown/s,
+    "retry countdown should remain a distinct scannable value",
+  );
+});
+
+test("dismissed live status notifications stay dismissed across retry heartbeats", () => {
+  const toastSource = readSource(
+    [joinFromRoot("webview", "shared", "src", "chat", "ToastOverlay.tsx")],
+    "ToastOverlay.tsx",
+  );
+  assert.match(
+    toastSource,
+    /function toastDismissalKey\([\s\S]*?session\.status[\s\S]*?notification\.message/s,
+    "session status dismissal must use semantic status data rather than the changing transport key",
+  );
+  assert.match(
+    toastSource,
+    /dismissedToastKeysRef[\s\S]*?nextToasts = notifications\.filter\([\s\S]*?dismissedToastKeysRef/s,
+    "dismissed notifications must be filtered before new heartbeat frames are queued",
+  );
+});
+
+test("compaction divider exposes a clear toggle affordance", () => {
+  assert.match(
+    shellSource,
+    /oc-compaction-divider-action[\s\S]*?ChevronDown[\s\S]*?ChevronUp/s,
+    "the compaction boundary should show directional expand/collapse affordances",
+  );
+  assert.match(
+    shellSource,
+    /oc-compaction-divider-card-button[\s\S]*?aria-pressed=\{!collapsed\}/s,
+    "the compaction boundary must retain its accessible toggle state",
+  );
+  assert.match(
+    shellSource,
+    /oc-compaction-divider-line[\s\S]*?<svg[\s\S]*?<path d="M0 9 C/s,
+    "the compaction boundary should use a subtle curved divider instead of rigid straight rules",
   );
 });
 
@@ -135,11 +214,16 @@ test("a text-labeled delta stays in reasoning when its SDK part was already type
   );
 });
 
-test("assistant phase changes retain the already visible live response", () => {
+test("assistant phase changes retain activity but reset response-card ownership", () => {
   assert.match(
     handlerSource,
     /if \(shouldStartFreshAssistantTurn\) \{[\s\S]*?\.\.\.currentStreamingSnapshot,[\s\S]*?messageId,[\s\S]*?isActive: true,/s,
-    "a later SDK assistant envelope must retain the active response snapshot instead of blanking it",
+    "a later SDK assistant envelope must retain the active turn while adopting its own message identity",
+  );
+  assert.match(
+    handlerSource,
+    /messageId,[\s\S]*?content: "",[\s\S]*?reasoning: "",[\s\S]*?responseChunks: \[\]/s,
+    "a later assistant message must not inherit the previous phase response body or response chunks",
   );
 });
 
@@ -211,6 +295,29 @@ test("the shell does not leak loading text into the composer", () => {
     shellSource,
     /ThinkingBubble|keepLoadingIndicatorSpace|shouldRenderLoadingIndicatorReserve/,
     "loading presentation must stay in the activity timeline, not the composer flow",
+  );
+});
+
+test("the live response card owns the AI loading text until its response finishes", () => {
+  assert.match(
+    messageSource,
+    /const shouldShowLiveLoadingText\s*=\s*isCurrentCardLiveAssistantTurn[\s\S]*?!isParentResponseFinished[\s\S]*?!isAborted[\s\S]*?!hideLoadingText/,
+    "the loading ticker should follow canonical live-card ownership rather than only local stream activity",
+  );
+  assert.match(
+    messageSource,
+    /shouldShowLiveLoadingText[\s\S]*?data-assistant-section="live-loading-text"[\s\S]*?<AIStatusTicker \/>/,
+    "the loading ticker must be rendered inside the active assistant activity section",
+  );
+  assert.match(
+    messageSource,
+    /\|\|\s*shouldShowLiveLoadingText\)\s*&&/,
+    "a live turn without activity rows must still mount the loading text",
+  );
+  assert.doesNotMatch(
+    messageSource,
+    /\{isLiveStream && !isParentResponseFinished && !isAborted \?/,
+    "completed or aborted response cards must not keep the live loading ticker",
   );
 });
 

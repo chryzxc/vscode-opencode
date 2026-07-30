@@ -59,6 +59,7 @@ import {
 import {
   liveSessionStatusFromPayload,
   toastNotificationFromPayload,
+  type CentralizedToastNotification,
 } from "./toastEvents";
 import { routeLiveEvent } from "./liveEventRouter";
 import {
@@ -349,8 +350,8 @@ function summarizeStreamEventForLog(payload: UnknownRecord): Record<string, unkn
       typeof (payload as UnknownRecord).structured_output !== "undefined" ||
       typeof infoRecord?.structuredOutput !== "undefined" ||
       typeof (infoRecord as UnknownRecord | null)?.structured_output !== "undefined",
-    payloadKeys: Object.keys(payload),
-    propertyKeys: properties ? Object.keys(properties) : [],
+    payloadKeys: objectKeys(payload),
+    propertyKeys: objectKeys(properties),
   };
 }
 
@@ -493,6 +494,11 @@ type UnknownRecord = Record<string, unknown>;
 
 export function asRecord(value: unknown): UnknownRecord | null {
   return typeof value === 'object' && value !== null ? (value as UnknownRecord) : null;
+}
+
+function objectKeys(value: unknown): string[] {
+  const record = asRecord(value);
+  return record ? Object.keys(record) : [];
 }
 
 export function asString(value: unknown, fallback = ''): string {
@@ -1405,6 +1411,35 @@ function normalizeCompatibilityWarnings(value: unknown): CompatibilityWarning[] 
       } satisfies CompatibilityWarning;
     })
     .filter((item): item is CompatibilityWarning => !!item);
+}
+
+function compatibilityWarningToast(
+  warnings: CompatibilityWarning[],
+  sdkVersion?: string,
+  serverVersion?: string,
+  sessionId?: string | null,
+): CentralizedToastNotification | null {
+  const sdkLabel = sdkVersion || warnings.find((item) => item.component === "sdk")?.version;
+  const serverLabel = serverVersion || warnings.find((item) => item.component === "server")?.version;
+  const sdkParts = sdkLabel?.match(/^v?(\d+)\.(\d+)/);
+  const serverParts = serverLabel?.match(/^v?(\d+)\.(\d+)/);
+  const versionsDiffer = Boolean(
+    sdkParts && serverParts &&
+    (sdkParts[1] !== serverParts[1] || sdkParts[2] !== serverParts[2]),
+  );
+  if (warnings.length === 0 && !versionsDiffer) return null;
+
+  const displaySdkLabel = sdkLabel || "unknown";
+  const displayServerLabel = serverLabel || "unknown";
+  return {
+    key: `compatibility:${displaySdkLabel}:${displayServerLabel}:${warnings.map((item) => item.component).join(",")}`,
+    type: "compatibility.warning",
+    title: "OpenCode version mismatch",
+    message: `The extension SDK (${displaySdkLabel}) and OpenCode TUI/server (${displayServerLabel}) are not on a supported matching version. Update OpenCode TUI/server to continue receiving fixes and compatibility support.`,
+    variant: "warning",
+    durationMs: 12000,
+    sessionId: sessionId || undefined,
+  };
 }
 
 function asSessionStats(value: unknown): AppState["sessionStats"] | undefined {
@@ -3692,7 +3727,14 @@ function salvageStructuredOutput(value: unknown): StructuredOutput | undefined {
       ? "question"
       : rawResponseType?.toLowerCase();
 
-  const message = asString(rec.message).trim() || undefined;
+  // OpenCode's StructuredOutput tool emits the message body as `text` while
+  // the normalized contract uses `message`. If validation rejects the raw
+  // provider shape, salvage must preserve that body instead of returning a
+  // truthy structured object with no renderable response text.
+  const message =
+    asString(rec.message).trim() ||
+    asString(rec.text).trim() ||
+    undefined;
   const planRec = asRecord(rec.plan);
   const plan = planRec
     ? {
@@ -5053,12 +5095,31 @@ function upsertStreamingStep(
   }
 
   const titleKey = title.toLowerCase();
-  const idx = streaming.steps.findIndex(
+  const stableIndex = streaming.steps.findIndex(
     (candidate) =>
       (step.id && candidate.id === step.id) ||
-      (step.callID && candidate.callID === step.callID) ||
-      candidate.title.trim().toLowerCase() === titleKey,
+      (step.callID && candidate.callID === step.callID),
   );
+  const isStepFinish =
+    step.partType?.trim().toLowerCase() === "step-finish" ||
+    step.status === "done" ||
+    step.status === "error";
+  // Title is presentation data, not activity identity. In particular,
+  // consecutive step-start events frequently use the same generic title
+  // ("Working" / "Running..."). Matching those by title makes the new start
+  // overwrite the previous start-finish block, which looks like the entire
+  // activity timeline was cleared. Without SDK IDs, only a finish may close
+  // the latest still-open matching start; a new start must always append.
+  const idx = stableIndex >= 0
+    ? stableIndex
+    : isStepFinish
+      ? streaming.steps.findLastIndex(
+        (candidate) =>
+          candidate.title.trim().toLowerCase() === titleKey &&
+          candidate.status !== "done" &&
+          candidate.status !== "error",
+      )
+      : -1;
 
   if (idx < 0) {
     dispatch({
@@ -7596,8 +7657,12 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
   // Rebuild the centralized raw tape in burst order so hydration matches the
   // exact stream chronology instead of inheriting the newest assistant turn.
   let mergedRawSdkEventPayloads: unknown[] | undefined;
+  // Assistant phases arrive as separate SDK envelopes. The final structured
+  // response is commonly nested under info.structured on the last envelope;
+  // never let burst coalescing discard it just because an earlier phase used a
+  // different field location. This is a preservation rule, not a dedupe rule.
   let latestStructuredOutput = asRecord(
-    (base as unknown as UnknownRecord).structuredOutput,
+    resolveStructuredOutputFromMessageRecord(base as unknown as UnknownRecord),
   );
   const mergeStructuredOutputRecords = (
     existing: UnknownRecord | null,
@@ -7758,7 +7823,7 @@ function coalesceAssistantHistoryBurst(burst: Message[]): Message {
       }
     }
     const structured = asRecord(
-      (message as unknown as UnknownRecord).structuredOutput,
+      resolveStructuredOutputFromMessageRecord(message as unknown as UnknownRecord),
     );
     if (structured) {
       latestStructuredOutput = mergeStructuredOutputRecords(
@@ -9192,7 +9257,7 @@ function handleStreamEvent(
     logger.debug(`Handling Stream Event: ${eventType}`, {
       timestamp: new Date().toISOString(),
       eventType,
-      payloadKeys: Object.keys(payload),
+      payloadKeys: objectKeys(payload),
       hasProperties: !!asRecord(payload.properties),
       hasPart: !!asRecord(payload.part),
       hasStructured: !!asRecord(payload.structured),
@@ -10670,9 +10735,11 @@ function handleStreamEvent(
       if (shouldStartFreshAssistantTurn) {
         // OpenCode advances a single user turn through multiple assistant SDK
         // envelopes (text -> tools -> text). This is a live phase transition,
-        // not a new conversation turn. Retain the existing live response and
-        // activity while adopting the newest assistant message ID; clearing it
-        // here is what made response text disappear until SDK rehydration.
+        // not a new conversation turn. Preserve the turn-level activity, but
+        // reset response-body state: each assistant message ID owns its own
+        // response card. Spreading the previous content/responseChunks here
+        // makes phase N+1 render phase N's prose, then appends phase N+1 to it.
+        // Activity is merged by the reducer; response text is deliberately not.
         const eventAgent = asString(infoRecord?.agent) || asString(payload.agent);
         const eventModel = asRecord(infoRecord?.model) || asRecord(payload.model);
         const eventModelID = asString(infoRecord?.modelID) || asString(payload.modelID);
@@ -10682,6 +10749,14 @@ function handleStreamEvent(
           payload: {
             ...currentStreamingSnapshot,
             messageId,
+            content: "",
+            hasRenderableContent: false,
+            reasoning: "",
+            reasoningEvents: [],
+            contentStartSeq: undefined,
+            contentPartStartIndex: undefined,
+            responseChunks: [],
+            lastRenderableTextPartID: undefined,
             isActive: true,
             agent: eventAgent || getState().selectedAgent || undefined,
             model:
@@ -12318,6 +12393,18 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
             type: "SET_COMPATIBILITY_WARNINGS",
             payload: normalizeCompatibilityWarnings(state.compatibilityWarnings),
           });
+          const initCompatibilityToast = compatibilityWarningToast(
+            normalizeCompatibilityWarnings(state.compatibilityWarnings),
+            asOptionalString(state.sdkVersion),
+            asOptionalString(state.serverVersion),
+            sessionId,
+          );
+          if (initCompatibilityToast) {
+            dispatch({
+              type: "APPEND_LIVE_TOAST_NOTIFICATION",
+              payload: { sessionId, notification: initCompatibilityToast },
+            });
+          }
           dispatch({ type: "SET_RECEIVED_INIT_STATE", payload: true });
           // Startup should become interactive as soon as initState arrives.
           // chatHistory is still allowed to hydrate afterward, but we do not
@@ -12430,10 +12517,26 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           break;
         }
         case "compatibilityStatus": {
+          const compatibilityWarnings = normalizeCompatibilityWarnings(data.compatibilityWarnings);
           dispatch({
             type: "SET_COMPATIBILITY_WARNINGS",
-            payload: normalizeCompatibilityWarnings(data.compatibilityWarnings),
+            payload: compatibilityWarnings,
           });
+          const compatibilityToast = compatibilityWarningToast(
+            compatibilityWarnings,
+            asOptionalString(data.sdkVersion) || getState().sdkVersion,
+            asOptionalString(data.serverVersion) || getState().serverVersion,
+            getState().currentSessionId,
+          );
+          if (compatibilityToast) {
+            dispatch({
+              type: "APPEND_LIVE_TOAST_NOTIFICATION",
+              payload: {
+                sessionId: getState().currentSessionId,
+                notification: compatibilityToast,
+              },
+            });
+          }
           break;
         }
         case "compactionStatus": {
@@ -12931,15 +13034,31 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           }
           const isMatchingStreamingMessage =
             streamingMessageId && finalMessageId && streamingMessageId === finalMessageId;
+          const hasVisibleCurrentStreamingSnapshot = hasVisibleStreamingSnapshot(currentStreaming);
+          const responseBelongsToDifferentAssistantPhase = Boolean(
+            hasVisibleCurrentStreamingSnapshot &&
+            streamingMessageId &&
+            finalMessageId &&
+            streamingMessageId !== finalMessageId,
+          );
           // Only clear streaming state if this messageResponse matches the
           // current stream, or if the final payload is authoritative enough to
           // replace the local snapshot without losing visible assistant output.
+          // IMPORTANT: an assistant turn can contain several SDK message IDs.
+          // A mismatched response with an already-rendered activity timeline is
+          // an intermediate phase response, not permission to clear the live
+          // card. Clearing here drops the previous step block immediately when
+          // the next step-start arrives. FINISH_STREAMING preserves that block
+          // and the next phase is merged into it by the reducer.
+          const responseHasAuthoritativePayload =
+            !shouldDropMismatchedSnapshot &&
+            (hasOwnResponsePayload || interactiveEventsInResponse.length > 0);
           const shouldClearStreamingAfterResponse =
-            isMatchingStreamingMessage ||
-            !currentStreaming ||
-            !streamingMessageId ||
-            (!shouldDropMismatchedSnapshot &&
-              (hasOwnResponsePayload || interactiveEventsInResponse.length > 0));
+            !responseBelongsToDifferentAssistantPhase &&
+            (isMatchingStreamingMessage ||
+              !currentStreaming ||
+              !streamingMessageId ||
+              responseHasAuthoritativePayload);
           streamDebug("Stream response: completion decision", {
             responseMessageId: responseMessageId ?? null,
             finalMessageId,
@@ -14138,11 +14257,12 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           const events = Array.isArray(data.events) ? data.events : [];
           const debugEvents: Array<{ event: unknown; sessionId: string | null }> = [];
           for (const [eventIndex, item] of events.entries()) {
-            const event = asRecord(item.event) ?? item;
+            const itemRecord = asRecord(item);
+            const event = asRecord(itemRecord?.event) ?? itemRecord ?? {};
             const sessionId =
               extractCentralizedEventSessionId(event) ||
-              asString(item.sessionId) ||
-              asString(item.sessionID) ||
+              asString(itemRecord?.sessionId) ||
+              asString(itemRecord?.sessionID) ||
               getState().currentSessionId ||
               null;
             debugEvents.push({ event, sessionId });
@@ -14689,13 +14809,14 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
           };
           const processBatchEvents = () => {
             for (const [eventIndex, item] of events.entries()) {
-              const evtPayload = asRecord(item.event) ?? item;
+              const itemRecord = asRecord(item);
+              const evtPayload = asRecord(itemRecord?.event) ?? itemRecord ?? {};
               const evtType = getCentralizedEventType(evtPayload) || "unknown";
               const isTerminalSessionError =
                 evtType === "session.error" || evtType === "error";
               const envelopeSessionId =
-                asString(item.sessionId) ||
-                asString(item.sessionID);
+                asString(itemRecord?.sessionId) ||
+                asString(itemRecord?.sessionID);
               const eventSessionId =
                 extractCentralizedEventSessionId(evtPayload) || envelopeSessionId;
               const stateBeforeBatchEvent = getState();
@@ -15751,15 +15872,18 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         }
       }
     } catch (error) {
+      const eventRecord = asRecord(event.data);
+      const errorMessage = error instanceof Error ? error.message : String(error);
       logger.error('Error processing message', {
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage,
         stack: error instanceof Error ? error.stack : undefined,
-        eventType: asString((event.data as { type?: unknown })?.type),
-        eventData: event.data
+        eventType: asString(eventRecord?.type) || 'unknown',
+        eventKeys: objectKeys(eventRecord).slice(0, 80),
+        eventCount: Array.isArray(eventRecord?.events) ? eventRecord.events.length : undefined,
       });
       dispatch({
         type: "ADD_ERROR_MESSAGE",
-        payload: `An unexpected UI error occurred while processing an event. Some data may be missing or stuck. Please check the logs. Error: ${error instanceof Error ? error.message : String(error)}`
+        payload: `An unexpected UI error occurred while processing an event. Some data may be missing or stuck. Please check the logs. Error: ${errorMessage}`
       });
     }
   };

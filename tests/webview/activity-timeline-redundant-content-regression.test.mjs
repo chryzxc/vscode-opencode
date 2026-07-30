@@ -46,7 +46,7 @@ test("activity timeline suppresses summary blocks when summary matches the title
   );
   assert.match(
     messageComponentsSource,
-    /labelLower !== "read" && labelLower !== "todowrite" && !isEditLike && visibleSummary && \(/,
+    /labelLower !== "read" && labelLower !== "todowrite"(?: && labelLower !== "skill_mcp")? && !isEditLike && visibleSummary && \(/,
     "generic activity summary rendering should skip rows whose visible summary was suppressed",
   );
 });
@@ -131,11 +131,11 @@ test("patch activity rows preserve and render file paths from patch parts", () =
   );
 });
 
-test("file-backed activity summary rows stretch across the available left column", () => {
+test("file-backed activity summaries use the bounded activity preview", () => {
   assert.match(
     messageComponentsSource,
-    /className="oc-refined-file-link oc-refined-file-link-with-tooltip w-full min-w-0"/,
-    "summary-row file links should claim the available width so they do not stop short before the View diff action",
+    /labelLower !== "read" && labelLower !== "todowrite"(?: && labelLower !== "skill_mcp")? && !isEditLike && visibleSummary && \([\s\S]*?<CollapsedMarkdownPreview[\s\S]*?content=\{[\s\S]*?visibleSummary/s,
+    "file-backed activity summaries must not bypass the bounded content preview",
   );
 });
 
@@ -164,6 +164,23 @@ test("implementation plan card renders through the dedicated plan card component
     messageComponentsSource,
     /const \{[\s\S]*responseChunksToRender,[\s\S]*\} = useMemo\(\(\) =>[\s\S]*getRenderablePlanResponseChunks\(/s,
     "implementation plan response presentation should be derived through the dedicated helper",
+  );
+});
+
+test("plan and walkthrough View buttons remain text-only", () => {
+  const planCardSource = messageComponentsSource.slice(
+    messageComponentsSource.indexOf("function ImplementationPlanCard("),
+    messageComponentsSource.indexOf("function resolveProviderName("),
+  );
+  assert.doesNotMatch(
+    planCardSource,
+    /<FileText(?:Icon)?[\s\S]*?>/,
+    "implementation plan View must not include a redundant file icon",
+  );
+  assert.doesNotMatch(
+    planCardSource,
+    /function WalkthroughCard[\s\S]*?<FileText(?:Icon)?[\s\S]*?>/s,
+    "walkthrough View must not include a redundant file icon",
   );
 });
 

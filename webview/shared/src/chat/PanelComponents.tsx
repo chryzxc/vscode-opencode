@@ -49,6 +49,11 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { shallowEqual, useAppDispatch, useAppState } from "./lib/store";
+import {
+  getNextPromptIndex,
+  getPreviousPromptIndex,
+  getPromptHistory,
+} from "./lib/promptHistory";
 import { PENDING_CURRENT_SESSION_KEY } from "./lib/pendingUserMessages";
 import vscode from "./lib/vscode";
 import type {
@@ -618,8 +623,12 @@ function TodoChecklistIcon({ status }: { status: TodoItem["status"] }) {
       );
     case "in_progress":
       return (
-        <span className="flex h-4 w-4 items-center justify-center rounded-full border border-oc-green/45 text-oc-green">
-          <RefreshCw className="h-2.5 w-2.5 animate-spin" />
+        <span
+          className="oc-todo-progress-indicator"
+          role="img"
+          aria-label="In progress"
+        >
+          <span aria-hidden="true" />
         </span>
       );
     case "failed":
@@ -666,6 +675,7 @@ export const ActiveTaskPanel = memo(function ActiveTaskPanel() {
     compactionDividerIndex,
     sdkVersion,
     serverVersion,
+    compatibilityWarnings,
     contextInputTokens,
     contextUsagePct,
   } = useAppState(
@@ -689,6 +699,7 @@ export const ActiveTaskPanel = memo(function ActiveTaskPanel() {
       compactionDividerIndex: state.compactionDividerIndex,
       sdkVersion: state.sdkVersion,
       serverVersion: state.serverVersion,
+      compatibilityWarnings: state.compatibilityWarnings,
       contextInputTokens: state.contextInputTokens,
       contextUsagePct: state.contextUsagePct,
     }),
@@ -708,6 +719,7 @@ export const ActiveTaskPanel = memo(function ActiveTaskPanel() {
   );
   const runtimeSdkVersion = sdkVersion || "-";
   const runtimeTuiVersion = serverVersion || "Loading…";
+  const hasRuntimeMismatch = compatibilityWarnings.length > 0;
   const progressListRef = useRef<HTMLDivElement>(null);
 
   const selectedModelContextLimit = useMemo(() => {
@@ -1155,61 +1167,72 @@ export const ActiveTaskPanel = memo(function ActiveTaskPanel() {
         )}
 
         <MiniSection title="Runtime">
-          <div className="oc-inspector-data-list flex flex-col gap-1.5 text-xs">
-            <div className="oc-inspector-data-row flex items-center justify-between rounded-md border border-oc-border-soft bg-oc-panel-soft px-2 py-1.5 transition-colors hover:border-oc-border">
+          <div className={`oc-inspector-data-list overflow-hidden rounded-md border text-xs ${hasRuntimeMismatch ? "border-yellow-500/50" : "border-oc-border-soft"}`}>
+            <div className={`oc-inspector-data-row flex items-center justify-between border-b px-3 py-2 transition-colors ${hasRuntimeMismatch ? "border-yellow-500/30 bg-yellow-500/10 hover:bg-yellow-500/15" : "border-oc-border-soft bg-oc-panel-soft hover:bg-oc-panel"}`}>
               <span className="text-[10px] uppercase tracking-wider font-medium text-[var(--oc-text-soft)] opacity-90">
                 OpenCode TUI
               </span>
-              <span className="font-mono text-[10px] font-medium text-[var(--oc-text-soft)] opacity-70">
+              <span className={`font-mono text-[10px] font-medium ${hasRuntimeMismatch ? "text-yellow-200" : "text-[var(--oc-text-soft)] opacity-70"}`}>
                 {runtimeTuiVersion}
               </span>
             </div>
-            <div className="oc-inspector-data-row flex items-center justify-between rounded-md border border-oc-border-soft bg-oc-panel-soft px-2 py-1.5 transition-colors hover:border-oc-border">
+            <div className={`oc-inspector-data-row flex items-center justify-between px-3 py-2 transition-colors ${hasRuntimeMismatch ? "bg-yellow-500/10 hover:bg-yellow-500/15" : "bg-oc-panel-soft hover:bg-oc-panel"}`}>
               <span className="text-[10px] uppercase tracking-wider font-medium text-[var(--oc-text-soft)] opacity-90">
                 OpenCode SDK
               </span>
-              <span className="font-mono text-[10px] font-medium text-[var(--oc-text-soft)] opacity-70">
+              <span className={`font-mono text-[10px] font-medium ${hasRuntimeMismatch ? "text-yellow-200" : "text-[var(--oc-text-soft)] opacity-70"}`}>
                 {runtimeSdkVersion}
               </span>
             </div>
+            {hasRuntimeMismatch && (
+              <div className="flex items-start gap-2 border-t border-yellow-500/30 bg-yellow-500/15 px-3 py-2 text-[10px] leading-4 text-yellow-100">
+                <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0 text-yellow-300" aria-hidden="true" />
+                <span>SDK and TUI versions are incompatible. Update OpenCode TUI/server.</span>
+              </div>
+            )}
           </div>
         </MiniSection>
 
         <MiniSection title="Session">
-          <div className="oc-inspector-session-grid grid grid-cols-2 gap-1.5 text-xs">
-            <div className="oc-inspector-data-row col-span-2 flex items-center justify-between rounded-md border border-oc-border-soft bg-oc-panel-soft px-2 py-1.5 transition-colors hover:border-oc-border">
-              <span className="text-[10px] uppercase tracking-wider font-medium text-[var(--oc-text-soft)] opacity-90">ID</span>
-              <span className="font-mono text-[10px] font-medium text-[var(--oc-text-soft)] opacity-70">
+          <div className="oc-inspector-session-grid overflow-hidden rounded-md border border-oc-border-soft text-xs">
+            <div className="oc-inspector-data-row flex min-w-0 items-center justify-between gap-3 border-b border-oc-border-soft bg-oc-panel-soft px-3 py-2 transition-colors hover:bg-oc-panel">
+              <span className="shrink-0 text-[10px] font-medium uppercase tracking-wider text-[var(--oc-text-soft)] opacity-90">ID</span>
+              <span
+                className="min-w-0 truncate font-mono text-[10px] font-medium text-[var(--oc-text-soft)] opacity-70"
+                title={currentSessionId || undefined}
+              >
                 {currentSessionId ? currentSessionId.slice(0, 16) : "—"}
               </span>
             </div>
-            <div className="oc-inspector-stat flex flex-col gap-0.5 rounded-md border border-oc-border-soft bg-oc-panel-soft p-1.5 transition-colors hover:border-oc-border">
-              <span className="text-[9px] uppercase tracking-wider text-[var(--oc-text-soft)] opacity-70">
+            <div className="grid grid-cols-2 border-b border-oc-border-soft">
+              <div className="oc-inspector-stat flex min-h-[3.5rem] flex-col justify-center gap-0.5 border-r border-oc-border-soft bg-oc-panel-soft px-3 py-2 transition-colors hover:bg-oc-panel">
+                <span className="text-[9px] uppercase tracking-wider text-[var(--oc-text-soft)] opacity-70">
                 Messages
-              </span>
-              <span className="font-semibold tabular-nums text-[var(--oc-text-soft)]">
+                </span>
+                <span className="font-semibold tabular-nums text-[var(--oc-text-soft)]">
                 {messageCount}
-              </span>
-            </div>
-            <div className="oc-inspector-stat flex flex-col gap-0.5 rounded-md border border-oc-border-soft bg-oc-panel-soft p-1.5 transition-colors hover:border-oc-border">
-              <span className="text-[9px] uppercase tracking-wider text-[var(--oc-text-soft)] opacity-70">
+                </span>
+              </div>
+              <div className="oc-inspector-stat flex min-h-[3.5rem] flex-col justify-center gap-0.5 bg-oc-panel-soft px-3 py-2 transition-colors hover:bg-oc-panel">
+                <span className="text-[9px] uppercase tracking-wider text-[var(--oc-text-soft)] opacity-70">
                 Status
-              </span>
-              <span
-                className={`font-semibold text-[10px] uppercase tracking-wider ${isActive
+                </span>
+                <span
+                  className={`font-semibold text-[10px] uppercase tracking-wider ${isActive
                     ? "text-oc-accent animate-pulse"
                     : "text-[var(--oc-text-soft)] opacity-70"
-                  }`}
-              >
+                    }`}
+                >
                 {isActive ? "ACTIVE" : "IDLE"}
-              </span>
+                </span>
+              </div>
             </div>
-            <div className="oc-inspector-data-row col-span-2 flex items-center justify-between rounded-md border border-oc-border-soft bg-oc-panel-soft px-2 py-1.5 transition-colors hover:border-oc-border">
-              <span className="text-[10px] uppercase tracking-wider font-medium text-[var(--oc-text-soft)] opacity-90">
+            <div className="oc-inspector-data-row flex items-center justify-between gap-3 bg-oc-panel-soft px-3 py-2 transition-colors hover:bg-oc-panel">
+              <span className="shrink-0 text-[10px] font-medium uppercase tracking-wider text-[var(--oc-text-soft)] opacity-90">
                 Date started
               </span>
               <span
-                className={`oc-inspector-session-date font-medium tabular-nums ${isActive ? "text-oc-accent" : "text-[var(--oc-text-soft)] opacity-80"
+                className={`oc-inspector-session-date text-right text-[11px] font-medium tabular-nums ${isActive ? "text-oc-accent" : "text-[var(--oc-text-soft)] opacity-80"
                   }`}
               >
                 {startedLabel}
@@ -1219,6 +1242,20 @@ export const ActiveTaskPanel = memo(function ActiveTaskPanel() {
         </MiniSection>
       </div>
     </div>
+  );
+});
+
+/** Persistent details inspector for wider chat layouts. */
+export const DesktopRightPanel = memo(function DesktopRightPanel() {
+  return (
+    <aside className="oc-right-panel oc-desktop-right-panel min-h-0 w-[320px] shrink-0 overflow-y-auto border-l">
+      <ActiveTaskPanel />
+      <QuotaMonitor />
+      <McpPanel />
+      <LspPanel />
+      <SkillsPanel />
+      <AgentsPanel />
+    </aside>
   );
 });
 
@@ -2076,6 +2113,9 @@ export const InputWrapper = memo(function InputWrapper() {
     assistantTurnPending,
   );
   const [isEscapeArmed, setIsEscapeArmed] = useState(false);
+  const promptHistory = useMemo(() => getPromptHistory(messages), [messages]);
+  const [promptHistoryIndex, setPromptHistoryIndex] = useState<number | null>(null);
+  const draftBeforeHistoryRef = useRef<string | null>(null);
 
   const prevInputLengthRef = useRef(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -2087,6 +2127,38 @@ export const InputWrapper = memo(function InputWrapper() {
   const textareaHasValue = inputValue.length > 0;
   const textareaMinRows = 2;
   const textareaMaxRows = textareaHasValue ? 8 : 3;
+
+  const navigatePromptHistory = (direction: "previous" | "next") => {
+    if (promptHistory.length === 0) return;
+
+    if (direction === "previous" && promptHistoryIndex === null) {
+      draftBeforeHistoryRef.current = inputValue;
+    }
+
+    const nextIndex = direction === "previous"
+      ? getPreviousPromptIndex(promptHistoryIndex, promptHistory.length)
+      : getNextPromptIndex(promptHistoryIndex, promptHistory.length);
+    if (nextIndex === null) {
+      setPromptHistoryIndex(null);
+      dispatch({
+        type: "SET_INPUT_VALUE",
+        payload: draftBeforeHistoryRef.current ?? "",
+      });
+      draftBeforeHistoryRef.current = null;
+    } else {
+      setPromptHistoryIndex(nextIndex);
+      dispatch({ type: "SET_INPUT_VALUE", payload: promptHistory[nextIndex] });
+    }
+    setSlashTrigger(null);
+    setMentionTrigger(null);
+    requestAnimationFrame(() => {
+      const textarea = textareaRef.current;
+      if (!textarea) return;
+      textarea.focus();
+      const cursor = textarea.value.length;
+      textarea.setSelectionRange(cursor, cursor);
+    });
+  };
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
@@ -2564,6 +2636,9 @@ export const InputWrapper = memo(function InputWrapper() {
     const text = inputValue.trim();
     if (!text) return;
 
+    setPromptHistoryIndex(null);
+    draftBeforeHistoryRef.current = null;
+
     // Capture values before clearing state
     const currentFiles = selectedFiles.length > 0 ? [...selectedFiles] : undefined;
     const currentContexts = resolveMentionedFileContexts(
@@ -2643,6 +2718,9 @@ export const InputWrapper = memo(function InputWrapper() {
   const steerPrompt = () => {
     const text = inputValue.trim();
     if (!text || !hasLiveAssistantTurn || isSteering) return;
+
+    setPromptHistoryIndex(null);
+    draftBeforeHistoryRef.current = null;
 
     dispatch({ type: "SET_STEERING", payload: true });
     vscode.postMessage({
@@ -3462,6 +3540,8 @@ export const InputWrapper = memo(function InputWrapper() {
             className="oc-textarea"
             onChange={(e) => {
               const nextValue = e.target.value;
+              setPromptHistoryIndex(null);
+              draftBeforeHistoryRef.current = null;
               dispatch({ type: "SET_INPUT_VALUE", payload: nextValue });
               const cursor = e.target.selectionStart ?? nextValue.length;
               setSlashTrigger(getSlashTrigger(nextValue, cursor));
@@ -3563,6 +3643,26 @@ export const InputWrapper = memo(function InputWrapper() {
                 }
               }
 
+              if (e.key === "ArrowUp" && !e.shiftKey && !slashTrigger && !mentionTrigger) {
+                const target = e.currentTarget;
+                const atStart = target.selectionStart === 0 && target.selectionEnd === 0;
+                if (atStart || inputValue.length === 0) {
+                  e.preventDefault();
+                  navigatePromptHistory("previous");
+                  return;
+                }
+              }
+
+              if (e.key === "ArrowDown" && !e.shiftKey && !slashTrigger && !mentionTrigger) {
+                const target = e.currentTarget;
+                const atEnd = target.selectionStart === inputValue.length && target.selectionEnd === inputValue.length;
+                if (atEnd && promptHistoryIndex !== null) {
+                  e.preventDefault();
+                  navigatePromptHistory("next");
+                  return;
+                }
+              }
+
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 sendPrompt();
@@ -3633,7 +3733,10 @@ export const InputWrapper = memo(function InputWrapper() {
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() => applyMentionSuggestion(suggestion)}
                 >
-                  {suggestion.name}
+                  <span className="flex w-full min-w-0 items-center gap-2">
+                    <FileIcon filePath={suggestion.path} className="h-3.5 w-3.5 shrink-0" />
+                    <span className="truncate">{suggestion.name}</span>
+                  </span>
                 </button>
               ))}
             </div>
@@ -3656,7 +3759,7 @@ export const InputWrapper = memo(function InputWrapper() {
                       <Bot className="h-3.5 w-3.5 shrink-0 text-[var(--vscode-textLink-foreground)]" />
                     )}
                     {item.type === "file" && (
-                      <span className="shrink-0 oc-text-secondary text-[10px]">📄</span>
+                      <FileIcon filePath={item.path} className="h-3.5 w-3.5 shrink-0" />
                     )}
                     {item.type === "resource" && (
                       <Wrench className="h-3.5 w-3.5 shrink-0 text-[var(--vscode-notificationsWarningIcon-foreground)]" />

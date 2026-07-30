@@ -1136,7 +1136,13 @@ describe("appReducer render-stability guards", () => {
           filePath: "src/chat.tsx",
           diffStats: { added: 3, deleted: 1 },
         }],
-        progressEvents: [],
+        progressEvents: [{
+          id: "part-edit",
+          callID: "call-edit",
+          title: "Edit src/chat.tsx",
+          type: "tool",
+          status: "done",
+        }],
         edits: [],
         interactiveEvents: [],
         isActive: true,
@@ -1157,7 +1163,13 @@ describe("appReducer render-stability guards", () => {
           type: "tool",
           status: "running",
         }],
-        progressEvents: [],
+        progressEvents: [{
+          id: "part-read",
+          callID: "call-read",
+          title: "Read src/chat.tsx",
+          type: "tool",
+          status: "running",
+        }],
         edits: [],
         interactiveEvents: [],
         isActive: true,
@@ -1173,6 +1185,11 @@ describe("appReducer render-stability guards", () => {
       nextPhase.streaming?.steps?.[0]?.diffStats,
       { added: 3, deleted: 1 },
       "the retained edit step must keep the diff data that selects its UI",
+    );
+    assert.deepStrictEqual(
+      nextPhase.streaming?.progressEvents?.map((step) => step.callID),
+      ["call-edit", "call-read"],
+      "the parallel progress timeline must preserve the earlier activity block too",
     );
   });
 
@@ -2027,6 +2044,73 @@ describe('getTimestampForItem', () => {
 });
 
 describe('live activity ordering', () => {
+  it('seeds a new assistant phase from activity already materialized for the current user turn', () => {
+    const seededState = {
+      ...initialState,
+      currentSessionId: 'ses-phase-seed',
+      isProcessing: true,
+      assistantTurnPending: true,
+      messages: [
+        { id: 'user-current', role: 'user', content: 'continue' },
+        {
+          id: 'msg-old-phase',
+          role: 'assistant',
+          steps: [
+            { id: 'step-old', title: 'Read old phase', status: 'done', callID: 'call-old' },
+          ],
+          progressEvents: [],
+        },
+      ] as Message[],
+      streaming: null,
+    };
+
+    const nextState = appReducer(seededState, {
+      type: 'SET_STREAMING',
+      payload: {
+        messageId: 'msg-new-phase',
+        content: '',
+        hasRenderableContent: false,
+        reasoning: '',
+        reasoningEvents: [],
+        steps: [
+          { id: 'step-new', title: 'Read new phase', status: 'pending', callID: 'call-new' },
+        ],
+        progressEvents: [],
+        edits: [],
+        isActive: true,
+      },
+    });
+
+    assert.deepEqual(
+      nextState.streaming?.steps.map((step) => step.id),
+      ['step-old', 'step-new'],
+      'a new phase must enrich the current turn timeline instead of reducing it to its latest step',
+    );
+  });
+
+  it('does not merge repeated lifecycle markers by their generic title', () => {
+    const merged = mergeActivityArraysLocal(
+      [
+        { partType: 'step-start', title: 'Starting step', status: 'done' },
+        { partType: 'step-finish', title: 'Finishing step', status: 'done' },
+      ],
+      [
+        { partType: 'step-start', title: 'Starting step', status: 'done' },
+        { partType: 'step-finish', title: 'Finishing step', status: 'done' },
+      ],
+    );
+
+    assert.deepEqual(
+      merged?.map((step) => `${step.partType}:${step.title}`),
+      [
+        'step-start:Starting step',
+        'step-finish:Finishing step',
+        'step-start:Starting step',
+        'step-finish:Finishing step',
+      ],
+    );
+  });
+
   it('assigns a strictly increasing sequence when multiple steps arrive in one millisecond', () => {
     const originalNow = Date.now;
     Date.now = () => 1_000;
@@ -2065,6 +2149,50 @@ describe('live activity ordering', () => {
 });
 
 describe('stream completion', () => {
+  it('materializes a rendered start-finish timeline before direct streaming cleanup', () => {
+    const started = appReducer(
+      { ...initialState, currentSessionId: 'ses-direct-clear' },
+      {
+        type: 'SET_STREAMING',
+        payload: {
+          messageId: 'msg-direct-clear',
+          content: '',
+          hasRenderableContent: false,
+          reasoning: '',
+          reasoningEvents: [],
+          steps: [
+            {
+              id: 'step-start-1',
+              title: 'Starting step',
+              status: 'done',
+              partType: 'step-start',
+            },
+            {
+              id: 'step-finish-1',
+              title: 'Finishing step',
+              status: 'done',
+              partType: 'step-finish',
+            },
+          ],
+          progressEvents: [],
+          edits: [],
+          isActive: false,
+        },
+      },
+    );
+
+    const cleared = appReducer(started, {
+      type: 'SET_STREAMING',
+      payload: null,
+    });
+
+    assert.equal(cleared.streaming, null);
+    assert.deepEqual(
+      cleared.messages[0]?.steps?.map((step) => step.id),
+      ['step-start-1', 'step-finish-1'],
+    );
+  });
+
   it('preserves the completed timeline snapshot for the transcript handoff', () => {
     const started = appReducer(
       { ...initialState, currentSessionId: 'ses-completed' },

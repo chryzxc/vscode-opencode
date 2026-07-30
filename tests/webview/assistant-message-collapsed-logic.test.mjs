@@ -1,5 +1,19 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
+import { joinFromRoot, readSource } from "../helpers/source-utils.mjs";
+
+const chatShellSource = readSource(
+    [joinFromRoot("webview", "shared", "src", "chat", "ChatShell.tsx")],
+    "ChatShell.tsx",
+);
+const chatCssSource = readSource(
+    [joinFromRoot("webview", "shared", "src", "chat", "index.css")],
+    "chat index.css",
+);
+const messageComponentsSource = readSource(
+    [joinFromRoot("webview", "shared", "src", "chat", "MessageComponents.tsx")],
+    "MessageComponents.tsx",
+);
 
 /**
  * Collapsed State Rendering Logic Tests
@@ -36,6 +50,39 @@ function getCollapsedRenderingState({
 }
 
 describe("Assistant Message Collapsed State UI Logic", () => {
+    it("animates completed assistant entries into the collapsed state", () => {
+        assert.match(
+            chatShellSource,
+            /oc-transcript-entry[\s\S]*oc-transcript-entry--collapsed[\s\S]*aria-hidden=\{entryHiddenByBlock \|\| undefined\}/,
+            "collapsed assistant entries should use an animated shell and remain hidden from assistive technology",
+        );
+        assert.match(
+            chatShellSource,
+            /oc-transcript-entry-content[\s\S]*\{messageNode\}/,
+            "the entry content should be wrapped so the shell can animate its layout track",
+        );
+        assert.match(
+            messageComponentsSource,
+            /isVisuallyEmpty && !isHiddenByBlock \? " hidden"/,
+            "the card itself should remain mounted while the outer shell performs the collapse",
+        );
+        assert.match(
+            chatCssSource,
+            /\.oc-transcript-entry\s*\{[\s\S]*--oc-assistant-collapse-duration:\s*320ms[\s\S]*grid-template-rows:\s*minmax\(0, 1fr\)[\s\S]*transition:\s*grid-template-rows var\(--oc-assistant-collapse-duration\)/,
+            "the collapse should animate a bounded grid track with a deliberate duration instead of using an arbitrary max-height",
+        );
+        assert.match(
+            chatCssSource,
+            /\.oc-transcript-entry--collapsed\s*\{[\s\S]*grid-template-rows:\s*0fr/,
+            "the collapsed shell should shrink its content track to zero",
+        );
+        assert.match(
+            chatCssSource,
+            /\.oc-transcript-entry-content\s*\{[\s\S]*transition:[\s\S]*opacity 240ms[\s\S]*transform var\(--oc-assistant-collapse-duration\)/,
+            "the collapse should pair the layout movement with a deliberate opacity/transform transition",
+        );
+    });
+
     it("should hide header and move timestamp inside bubble for intermediate steps without text", () => {
         const state = getCollapsedRenderingState({
             hasPrimaryResponseBody: false,

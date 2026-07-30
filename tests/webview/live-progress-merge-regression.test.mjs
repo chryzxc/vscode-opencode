@@ -6,6 +6,14 @@ const messageComponentsSource = readFileSync(
   new URL("../../webview/shared/src/chat/MessageComponents.tsx", import.meta.url),
   "utf8",
 );
+const chatShellSource = readFileSync(
+  new URL("../../webview/shared/src/chat/ChatShell.tsx", import.meta.url),
+  "utf8",
+);
+const messageHandlerSource = readFileSync(
+  new URL("../../webview/shared/src/chat/lib/messageHandler.ts", import.meta.url),
+  "utf8",
+);
 const activityIdentitySource = readFileSync(
   new URL("../../webview/shared/src/chat/lib/activityIdentity.ts", import.meta.url),
   "utf8",
@@ -21,6 +29,21 @@ test("AssistantResponseCardInner merges live streaming progress rows into the ac
     /const mergeReasoningPartText = \(current: string, incoming: string\): string => \{[\s\S]*?current\.includes\(incoming\)[\s\S]*?incoming\.includes\(current\)/s,
     "Repeated or cumulative snapshots for one reasoning part must be coalesced instead of concatenated",
   );
+  assert.match(
+    chatShellSource,
+    /const structuredResponse\s*=\s*[\s\S]*?hasResponseText:\s*Boolean\([\s\S]*?structuredResponse\?\.message[\s\S]*?structuredResponse\?\.text/s,
+    "collapsed assistant blocks must treat the structured final response as the last response-bearing card",
+  );
+  assert.match(
+    chatShellSource,
+    /structuredOutputFromRawSdkEventPayloads,[\s\S]*?\} from "\.\/lib\/messageHandler";[\s\S]*?const rawStructuredResponse\s*=\s*structuredOutputFromRawSdkEventPayloads\(/s,
+    "the transcript must import the raw structured-output helper before using it for collapsed-card selection",
+  );
+  assert.match(
+    messageHandlerSource,
+    /let latestStructuredOutput\s*=\s*asRecord\(\s*resolveStructuredOutputFromMessageRecord\(base[\s\S]*?const structured = asRecord\(\s*resolveStructuredOutputFromMessageRecord\(message/s,
+    "assistant burst coalescing must preserve structured output from info.structured and other SDK envelope locations",
+  );
 
   assert.match(
     messageComponentsSource,
@@ -30,14 +53,14 @@ test("AssistantResponseCardInner merges live streaming progress rows into the ac
 
   assert.match(
     messageComponentsSource,
-    /function todoWriteChecklistIdentity\([\s\S]*?tool !== "todowrite"[\s\S]*?content[\s\S]*?priority[\s\S]*?return `todowrite:\$\{JSON\.stringify\(normalizedTodos\)\}`;/s,
-    "TodoWrite snapshots should coalesce by checklist identity while allowing their mutable item statuses to advance",
+    /function todoWriteChecklistIdentity\([\s\S]*?tool !== "todowrite"[\s\S]*?content[\s\S]*?priority[\s\S]*?record\?\.status[\s\S]*?return `todowrite:\$\{JSON\.stringify\(normalizedTodos\)\}`;/s,
+    "TodoWrite snapshots should dedupe exact checklist states while preserving status transitions as chronological rows",
   );
 
   assert.match(
     messageComponentsSource,
     /const existingTodoChecklistIndex[\s\S]*?deduped\[existingTodoChecklistIndex\] = mergeStickyDisplayEvent\(existing, event\);/s,
-    "A later hydrated TodoWrite state must replace the earlier checklist snapshot instead of leaving a stale 0/N card",
+    "an exact repeated hydrated TodoWrite state should merge without creating a duplicate row",
   );
 
   assert.match(
@@ -50,6 +73,11 @@ test("AssistantResponseCardInner merges live streaming progress rows into the ac
     activityIdentitySource,
     /export function canonicalActivityActionIdentity\([\s\S]*?!tool \|\| input == null[\s\S]*?activityValueFingerprint\(actionInput\)/s,
     "Every tool activity needs one input-based canonical identity",
+  );
+  assert.match(
+    activityIdentitySource,
+    /const VOLATILE_ACTIVITY_TIMING_KEYS = new Set\(\[[\s\S]*?"time"[\s\S]*?"startedat"[\s\S]*?filter\(\(key\) => !VOLATILE_ACTIVITY_TIMING_KEYS\.has\(key\.trim\(\)\.toLowerCase\(\)\)\)/s,
+    "semantic action identity must ignore lifecycle timing fields while retaining meaningful input fields",
   );
   assert.match(
     activityIdentitySource,
@@ -116,6 +144,17 @@ test("AssistantResponseCardInner merges live streaming progress rows into the ac
 
   assert.match(
     messageComponentsSource,
+    /function coalesceTimelineEventsForRender[\s\S]*?const snapshotIdentity = event\.kind === "activity" \? activitySnapshotIdentity\(event\) : "";[\s\S]*?snapshot:\$\{snapshotIdentity\}/s,
+    "the final render boundary must merge same-input activity snapshots even when transport call IDs differ",
+  );
+  assert.match(
+    messageComponentsSource,
+    /function progressVisibleActionIdentity[\s\S]*?activityDetail\?\.tool \|\| item\.title[\s\S]*?canonicalActivityActionIdentity\([\s\S]*?item\.activityDetail\?\.tool \|\| item\.title/s,
+    "live progress identity must fall back to the visible tool title when the streaming envelope omits activityDetail.tool",
+  );
+
+  assert.match(
+    messageComponentsSource,
     /key: "live-reasoning-placeholder"[\s\S]*?streamSeq: Number\.MAX_SAFE_INTEGER/s,
     "A pending live reasoning placeholder must sort after the activity that preceded its latest delta",
   );
@@ -171,12 +210,12 @@ test("AssistantResponseCardInner merges live streaming progress rows into the ac
   );
   assert.match(
     messageComponentsSource,
-    /function mergeProgressItemsForTimeline\([\s\S]*?item\.callID \? `call:\$\{item\.callID\}` : ""[\s\S]*?semantic:\$\{semanticKey\}[\s\S]*?action:\$\{actionKey\}/s,
-    "SDK lifecycle IDs must win while semantic action fallback merges mirrored snapshots with different IDs",
+    /function mergeProgressItemsForTimeline\([\s\S]*?semantic:\$\{semanticKey\}[\s\S]*?progressVisibleActionIdentity\(item\)[\s\S]*?action:\$\{actionKey\}[\s\S]*?item\.callID \? `call:\$\{item\.callID\}` : ""/s,
+    "Visible action identity must merge mirrored snapshots across different SDK message and call IDs",
   );
   assert.match(
     messageComponentsSource,
-    /Generic titles such as "Running read\.\.\."[\s\S]*?if \(!semanticKey && !item\.callID && !item\.id && !item\.messageID\)/s,
+    /Generic titles such as "Running read\.\.\."[\s\S]*?const canUseTitleFallback =[\s\S]*?!isLifecycleMarker/s,
     "A generic progress title must never replace a rendered activity that has a real identity",
   );
   assert.doesNotMatch(
@@ -248,6 +287,11 @@ test("AssistantResponseCardInner merges live streaming progress rows into the ac
   );
   assert.match(
     messageComponentsSource,
+    /timelineSeq\?: number[\s\S]*?function mergeStickyDisplayEventsForTurn[\s\S]*?stampTimelinePosition[\s\S]*?timelineSeq:/s,
+    "sticky activity rows need a turn-local arrival position because raw streamSeq values come from incompatible sources",
+  );
+  assert.match(
+    messageComponentsSource,
     /function orderDisplayEventsChronologically\(events: DisplayEvent\[\]\): DisplayEvent\[\] \{[\s\S]*?SDK stream is already ordered[\s\S]*?return events;/s,
     "The live activity timeline must preserve SDK arrival order instead of re-sorting local snapshot indexes",
   );
@@ -303,7 +347,7 @@ test("AssistantResponseCardInner merges live streaming progress rows into the ac
   );
   assert.match(
     messageComponentsSource,
-    /function timelineDisplayEventReactKey\([\s\S]*?event\.kind === "commentary"[\s\S]*?`commentary:\$\{event\.partID \|\| event\.key\}`/s,
+    /function timelineDisplayEventReactKey\([\s\S]*?event\.kind === "commentary"[\s\S]*?event\.partID \|\| \(event\.timelineSeq \?\? event\.key\)/s,
     "Assistant Response cards without part IDs need unique React keys",
   );
   assert.match(
@@ -449,6 +493,23 @@ test("AssistantResponseCardInner merges live streaming progress rows into the ac
     messageComponentsSource,
     /const events = buildDisplayEvents\([\s\S]*?thoughtItems,[\s\S]*?mergedProgressItems,[\s\S]*?commentaryItems,[\s\S]*?fileChanges,[\s\S]*?assistantScopeMessageIds,[\s\S]*?normalizedCentralizedRawSdkEventPayloads\.length,[\s\S]*?\)/,
     "Merged progress rows should be projected with the centralized SDK tape length",
+  );
+});
+
+test("large SDK tapes are ordered without spreading rows into call arguments", () => {
+  const buildDisplayEventsSource = messageComponentsSource.slice(
+    messageComponentsSource.indexOf("function buildDisplayEvents("),
+    messageComponentsSource.indexOf("function getAgentName("),
+  );
+  assert.doesNotMatch(
+    buildDisplayEventsSource,
+    /sdkOrderedEntries\.push\(\.\.\./,
+    "large event tapes must not use argument-spread pushes that can overflow the call stack",
+  );
+  assert.match(
+    buildDisplayEventsSource,
+    /for \(const entry of entriesAtSequence\) \{[\s\S]*?sdkOrderedEntries\.push\(entry\)/s,
+    "SDK sequence ordering must append entries incrementally",
   );
 });
 

@@ -1,5 +1,46 @@
 import type { AppState, StreamingState } from "./types";
 
+function normalizeComparableText(value: string): string {
+  return value.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/** Bridge assistant phase IDs only when the current turn already renders the same response. */
+export function hasMatchingTranscriptContent(
+  streaming: StreamingState | null | undefined,
+  transcriptAssistantContents: string[] = [],
+): boolean {
+  const content = normalizeComparableText(streaming?.content ?? "");
+  if (!content) return false;
+  return transcriptAssistantContents.some((candidate) => {
+    const transcriptContent = normalizeComparableText(candidate);
+    return transcriptContent === content || transcriptContent.includes(content);
+  });
+}
+
+/** Keep live activity, but do not paint text already owned by the transcript. */
+export function suppressDuplicateStreamingContent(
+  streaming: StreamingState,
+  transcriptAssistantContents: string[] = [],
+): StreamingState {
+  const content = normalizeComparableText(streaming.content);
+  // The live text may be a partial snapshot while the transcript already has
+  // the completed version of that same response. Exact equality is too weak:
+  // it lets the same AI response appear once in the transcript and once in
+  // the activity-preserving live overlay. Suppress only when the transcript
+  // contains the whole live snapshot; a genuinely newer live suffix remains
+  // visible until the transcript catches up.
+  if (!content || !hasMatchingTranscriptContent(streaming, transcriptAssistantContents)) {
+    return streaming;
+  }
+
+  return {
+    ...streaming,
+    content: "",
+    hasRenderableContent: false,
+    responseChunks: [],
+  };
+}
+
 export type ShouldShowStreamingCardInput = {
   streaming: StreamingState | null;
   interactiveEvents?: AppState["interactiveEvents"];

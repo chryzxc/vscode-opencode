@@ -1,7 +1,12 @@
+import { useState } from "react";
 import type { ActivityDetail } from "../../lib/types";
 import { ExpandableStep } from "@/components/ui/ExpandableStep";
 import { TerminalBlock } from "@/components/ui/TerminalBlock";
 import { MarkdownRenderer } from "../../../components/MarkdownRenderer";
+import {
+  FadedCollapseOverlay,
+  useFadedContentOverflow,
+} from "@/components/ui/FadedCollapseOverlay";
 
 type Props = {
   label: string;
@@ -12,6 +17,8 @@ type Props = {
 };
 
 export function SubagentActivityStep({ label, activityDetail, summary, showHeader = true }: Props) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const { ref: bodyRef, hasOverflow } = useFadedContentOverflow<HTMLDivElement>(!isExpanded);
   const input = activityDetail?.input;
   const command = activityDetail?.command || (typeof input?.command === "string" ? input.command : undefined);
   const description = activityDetail?.metadata?.description || (typeof input?.description === "string" ? input.description : undefined);
@@ -30,7 +37,20 @@ export function SubagentActivityStep({ label, activityDetail, summary, showHeade
         <span className="oc-activity-step-title font-medium capitalize">{label}</span>
       </div> : null}
       {description ? <div className="oc-activity-step-meta mt-1">{description}</div> : null}
-      {body ? <div className="mt-2 w-full">{body}</div> : null}
+      {body ? (
+        <div
+          ref={bodyRef}
+          className={isExpanded ? "mt-2 w-full" : "relative mt-2 max-h-[140px] w-full overflow-hidden"}
+        >
+          {body}
+          {!isExpanded && hasOverflow ? (
+            <FadedCollapseOverlay
+              label="Show full"
+              onClick={() => setIsExpanded(true)}
+            />
+          ) : null}
+        </div>
+      ) : null}
     </ExpandableStep>
   );
 }

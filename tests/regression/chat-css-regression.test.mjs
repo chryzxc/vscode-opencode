@@ -38,16 +38,11 @@ test('chat css pipeline keeps Tailwind enabled for utility-heavy React chat comp
   assert.match(panelComponentsSource, /className="[^"]*\bpx-3\b[^"]*"/, 'panel components should continue using spacing utility classes');
 });
 
-test('details overview uses the same content gutter as the other tabs', () => {
+test('details tabs use one shared content gutter', () => {
   assert.match(
     chatCssSource,
-    /\.oc-details-sheet\s+\.oc-details-tab-content--overview\s*\{[^}]*padding:\s*8px\s+0\s+10px;/s,
-    'the Active Task overview should align with Quota, Integrations, and Tools content',
-  );
-  assert.match(
-    chatCssSource,
-    /\.oc-details-sheet\s+\.oc-details-tab-content--overview\s*>\s*\.oc-active-task-panel\s*\{[^}]*margin-top:\s*0;/s,
-    'the overview panel should not add a second top inset inside the shared tab gutter',
+    /\.oc-details-sheet\s+\.oc-details-tab-content\s*\{[^}]*padding:\s*8px\s+16px\s+10px;/s,
+    'all details tabs should align through the shared horizontal and vertical content gutter',
   );
 });
 
@@ -79,6 +74,42 @@ test('overview section headers use labels and chevrons without decorative dots',
     chatCssSource,
     /\.oc-details-sheet\s+\.oc-inspector-section-toggle\s*>\s*span:first-child\s*\{[^}]*width:\s*5px/s,
     'the first section-header span is its label, not a dot that needs dot sizing styles',
+  );
+});
+
+test('active checklist progress marker uses the themed status indicator', () => {
+  assert.match(
+    panelComponentsSource,
+    /oc-todo-progress-indicator[\s\S]*aria-label="In progress"/,
+    'in-progress checklist items should use the themed progress marker',
+  );
+  assert.doesNotMatch(
+    panelComponentsSource,
+    /case "in_progress"[\s\S]*<RefreshCw className="h-2\.5 w-2\.5 animate-spin" \/>/,
+    'the active checklist marker should not render the bright refresh glyph',
+  );
+  assert.match(
+    chatCssSource,
+    /\.oc-todo-progress-indicator::before[\s\S]*border-top-color:[\s\S]*animation:\s*oc-todo-progress-spin/,
+    'the active checklist marker should use an accent arc animation',
+  );
+});
+
+test('active compaction uses the shared card border token', () => {
+  assert.match(
+    chatCssSource,
+    /\.oc-compaction-progress\s*\{[^}]*border:\s*1px solid var\(--oc-border\);/s,
+    'the active compaction card should use the same visible border token as chat cards',
+  );
+  assert.match(
+    chatCssSource,
+    /\.oc-compaction-progress-icon\s*\{[^}]*border:\s*1px solid var\(--oc-border\);/s,
+    'the active compaction icon should use the shared card border token',
+  );
+  assert.match(
+    chatCssSource,
+    /\.oc-compaction-progress-icon\s*\{[^}]*color:\s*var\(--oc-text\);/s,
+    'the active compaction icon should use a visible foreground color',
   );
 });
 

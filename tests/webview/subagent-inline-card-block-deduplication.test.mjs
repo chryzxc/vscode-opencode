@@ -21,15 +21,25 @@ test("a contiguous assistant response block renders one shared subagent panel", 
   );
 });
 
-test("the live card falls back to current-session subagent data when its stream phase id advances", () => {
+test("the live card scopes phase-advance fallback to the active assistant turn", () => {
   assert.match(
     source,
-    /const liveSessionSubagents = useMemo\([\s\S]*?subagent\?\.parentSessionId === currentSessionId/,
-    "the live card should retain current-session subagents across a tool-to-text phase id change",
+    /const liveSessionSubagents = useMemo\([\s\S]*?messages[\s\S]*?assistantTurnMessageId[\s\S]*?parentMessageId/s,
+    "the live card fallback must derive subagent ownership from the active assistant turn",
   );
   assert.match(
     source,
-    /!message && formattedSubagents\.length === 0[\s\S]*?liveSessionSubagents/,
-    "the session fallback must be limited to the message-less streaming card",
+    /const liveSessionParentMessageIds = new Set<string>\(\[[\s\S]*?subagentParentMessageId[\s\S]*?assistantTurnMessageId[\s\S]*?\]\)/s,
+    "phase changes must retain the live and active-turn assistant IDs",
+  );
+  assert.match(
+    source,
+    /const activeAssistantIds = new Set\([\s\S]*?messages \?\? \[\][\s\S]*?role[\s\S]*?assistantTurnMessageId/s,
+    "phase changes must derive additional assistant IDs from the active turn",
+  );
+  assert.doesNotMatch(
+    source,
+    /Object\.values\(subagentsByParentMessageId \?\? \{\}\)\s*\.flat\(\)\s*\.filter\(\(subagent\) => subagent\?\.parentSessionId === currentSessionId\)/s,
+    "the live card must not fall back to every subagent in the session",
   );
 });

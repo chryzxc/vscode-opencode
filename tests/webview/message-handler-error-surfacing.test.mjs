@@ -224,6 +224,39 @@ test("batched and scoped session.error events still reach the toast store", () =
   );
 });
 
+test("event-boundary failures always log safe metadata without retaining the payload", () => {
+  assert.match(
+    messageHandlerSource,
+    /const eventRecord = asRecord\(event\.data\);[\s\S]*?eventKeys: objectKeys\(eventRecord\)\.slice\(0, 80\)/,
+    "the fallback log must identify the event shape even when processing fails",
+  );
+  assert.doesNotMatch(
+    messageHandlerSource,
+    /eventData:\s*event\.data/,
+    "the fallback log must not retain the complete event graph",
+  );
+});
+
+test("malformed stream batch items are normalized before field access", () => {
+  assert.match(
+    messageHandlerSource,
+    /const itemRecord = asRecord\(item\);[\s\S]*?const evtPayload = asRecord\(itemRecord\?\.event\) \?\? itemRecord \?\? \{\};/,
+    "null or primitive batch items must not escape into event processing",
+  );
+});
+
+test("webview errors remain logged when routine logging is disabled", () => {
+  const loggerSource = readSource(
+    [joinFromRoot("webview", "shared", "src", "chat", "lib", "logger.ts")],
+    "logger.ts",
+  );
+  assert.match(
+    loggerSource,
+    /if \(level !== 'error' && !this\.showLogger\)/,
+    "error records must bypass the routine showLogger filter",
+  );
+});
+
 test("session.error always resets assistant turn pending regardless of error type", () => {
   const block = extractSessionErrorBlock(messageHandlerSource);
 

@@ -44,6 +44,22 @@ function formatRetryCountdown(next: number, now: number): string {
     : `${seconds}s`;
 }
 
+function toastDismissalKey(notification: CentralizedToastNotification): string {
+  // Retry heartbeats can change `next` and therefore their transport key while
+  // still representing the same visible warning. Dismissal must follow the
+  // semantic notification, otherwise the next heartbeat immediately resurrects
+  // the banner the user just closed.
+  if (notification.type === "session.status") {
+    return [
+      notification.type,
+      notification.sessionId ?? "",
+      notification.title,
+      notification.message,
+    ].join("\u001f");
+  }
+  return notification.key;
+}
+
 export function LiveEventBanner({
   sessionId,
   rawSdkEventPayloads,
@@ -83,6 +99,7 @@ export function LiveEventBanner({
   const toastQueueRef = useRef<CentralizedToastNotification[]>([]);
   const activeToastRef = useRef<CentralizedToastNotification | null>(null);
   const seenToastKeysRef = useRef<Set<string>>(new Set());
+  const dismissedToastKeysRef = useRef<Set<string>>(new Set());
   const timeoutHandleRef = useRef<number | null>(null);
   const initializedSessionRef = useRef<string | null>(null);
 
@@ -139,6 +156,13 @@ export function LiveEventBanner({
   };
 
   const dismissActiveToast = () => {
+    const dismissedToast = activeToastRef.current;
+    if (dismissedToast) {
+      dismissedToastKeysRef.current.add(toastDismissalKey(dismissedToast));
+      toastQueueRef.current = toastQueueRef.current.filter(
+        (notification) => !dismissedToastKeysRef.current.has(toastDismissalKey(notification)),
+      );
+    }
     clearActiveTimer();
     activeToastRef.current = null;
     setActiveToast(null);
@@ -152,12 +176,15 @@ export function LiveEventBanner({
       clearActiveTimer();
       toastQueueRef.current = [];
       seenToastKeysRef.current = new Set();
+      dismissedToastKeysRef.current = new Set();
       activeToastRef.current = null;
       setActiveToast(null);
     }
 
     const nextToasts = notifications.filter(
-      (notification) => !seenToastKeysRef.current.has(notification.key),
+      (notification) =>
+        !seenToastKeysRef.current.has(notification.key) &&
+        !dismissedToastKeysRef.current.has(toastDismissalKey(notification)),
     );
 
     if (nextToasts.length === 0) {
@@ -258,3 +285,6 @@ export function LiveEventBanner({
           </div>
         );
       })()}
+    </div>
+  );
+}

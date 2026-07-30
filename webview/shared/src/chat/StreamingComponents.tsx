@@ -10,7 +10,10 @@ import {
 
 
 import type { AppState, StreamingState, StreamingStep } from './lib/types';
-import { shouldShowStreamingCard } from './lib/streamingCardVisibility';
+import {
+  shouldShowStreamingCard,
+  suppressDuplicateStreamingContent,
+} from './lib/streamingCardVisibility';
 import vscode from './lib/vscode';
 import { ResponseMessage, FileIcon } from './MessageComponents';
 
@@ -148,6 +151,8 @@ type StreamingCardProps = {
   subagentsByParentMessageId?: AppState["subagentsByParentMessageId"];
   subagentDetailsById?: AppState["subagentDetailsById"];
   todoItems?: AppState["todoItems"];
+  messages?: AppState["messages"];
+  transcriptAssistantContents?: string[];
 };
 
 export const StreamingCard = memo(function StreamingCard({
@@ -161,14 +166,20 @@ export const StreamingCard = memo(function StreamingCard({
   subagentsByParentMessageId,
   subagentDetailsById,
   todoItems,
+  messages,
+  transcriptAssistantContents,
 }: StreamingCardProps) {
+  const displayStreaming = useMemo(
+    () => streaming && suppressDuplicateStreamingContent(streaming, transcriptAssistantContents),
+    [streaming, transcriptAssistantContents],
+  );
   // The live streaming card exists only for the in-flight assistant turn.
   // Once the transcript owns the same turn, the finalized ResponseMessage
   // becomes the only source of truth for that response block.
   const visible = useMemo(
     () =>
       shouldShowStreamingCard({
-        streaming,
+        streaming: displayStreaming,
         interactiveEvents,
         assistantTurnMessageId,
         transcriptAssistantMessageIds,
@@ -179,13 +190,13 @@ export const StreamingCard = memo(function StreamingCard({
       assistantTurnMessageId,
       hasTranscriptAssistantForCurrentTurn,
       interactiveEvents,
-      streaming,
+      displayStreaming,
       subagentsByParentMessageId,
       transcriptAssistantMessageIds,
     ],
   );
 
-  if (!visible || !streaming) return null;
+  if (!visible || !displayStreaming) return null;
 
   return (
     <ResponseMessage
@@ -193,13 +204,14 @@ export const StreamingCard = memo(function StreamingCard({
           // omit deltas, so waiting for their finalized snapshot makes a response
           // appear all at once after an otherwise empty loading period.
           message={undefined}
-          streaming={streaming}
+          streaming={displayStreaming}
           isContiguous={isContiguous}
           interactiveEvents={interactiveEvents}
           currentSessionId={currentSessionId}
           subagentsByParentMessageId={subagentsByParentMessageId}
           subagentDetailsById={subagentDetailsById}
           todoItems={todoItems}
+          messages={messages}
     />
   );
 });

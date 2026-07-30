@@ -1,5 +1,5 @@
 import { Fragment, memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { Archive, X } from "lucide-react";
+import { Archive, ChevronDown, ChevronUp, X } from "lucide-react";
 
 const ERROR_TOAST_DURATION_MS = 3_000;
 
@@ -16,6 +16,7 @@ import {
   normalizeCentralizedEventPayloads,
   normalizeMessage,
   normalizeSubagentDetail,
+  structuredOutputFromRawSdkEventPayloads,
 } from "./lib/messageHandler";
 import {
   isBackgroundTaskReminderMessage,
@@ -51,11 +52,13 @@ import { config } from "../config";
 import {
   StickyHeader,
   HistorySidebar,
+  DesktopRightPanel,
   MobileRightSummary,
   InputWrapper,
 } from "./PanelComponents";
 import { LiveEventBanner } from "./ToastOverlay";
 import { shouldShowStreamingCard, StreamingCard } from "./StreamingComponents";
+import { hasMatchingTranscriptContent } from "./lib/streamingCardVisibility";
 import {
   AIStatusTicker,
   BackgroundTaskReminderMessage,
@@ -71,7 +74,7 @@ import {
 } from "./MessageComponents";
 import { SkillInstallerModal } from "./SkillInstallerModal";
 import { SessionModal } from "./components/SessionModal";
-import type { AppState, CentralizedSessionDiffEvent, Message } from "./lib/types";
+import type { AppState, CentralizedSessionDiffEvent, Message, StreamingState } from "./lib/types";
 
 function firstNonEmptyString(...values: unknown[]): string | undefined {
   for (const value of values) {
@@ -1372,6 +1375,7 @@ type ConversationRenderEntry =
 
 type CentralizedTranscriptProjection = {
   renderMessages: Message[];
+  liveResponseContentAlreadyRendered: boolean;
   conversationEntries: ConversationRenderEntry[];
 };
 
@@ -1994,11 +1998,18 @@ function CompactionDivider({
       ? `Compacted ${compactedAt}`
       : "Archive boundary";
   const actionLabel = collapsed ? "Show history" : "Hide history";
+  const dividerLine = (
+    <span className="oc-compaction-divider-line" aria-hidden="true">
+      <svg viewBox="0 0 120 18" preserveAspectRatio="none">
+        <path d="M0 9 C18 9 17 3 34 3 S50 15 66 9 S84 3 100 6 S111 9 120 9" />
+      </svg>
+    </span>
+  );
 
   return (
-    <div className="oc-compaction-divider-wrap -mx-6 py-2 sm:-mx-8">
+    <div className="oc-compaction-divider-wrap -mx-6 sm:-mx-8">
       <div className="oc-compaction-divider">
-        <span className="oc-compaction-divider-line" />
+        {dividerLine}
         {isInteractive ? (
           <button
             type="button"
@@ -2015,7 +2026,14 @@ function CompactionDivider({
               <span className="oc-compaction-divider-label">{summary}</span>
               <span className="oc-compaction-divider-meta">{meta}</span>
             </span>
-            <span className="oc-compaction-divider-action">{actionLabel}</span>
+            <span className="oc-compaction-divider-action">
+              <span>{actionLabel}</span>
+              {collapsed ? (
+                <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+              ) : (
+                <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
+              )}
+            </span>
           </button>
         ) : (
           <div className="oc-compaction-divider-card" aria-label={meta}>
@@ -2028,7 +2046,7 @@ function CompactionDivider({
             </span>
           </div>
         )}
-        <span className="oc-compaction-divider-line" />
+        {dividerLine}
       </div>
     </div>
   );
@@ -2090,6 +2108,8 @@ type ConversationTranscriptProps = {
   selectedAgent: string;
   streamingAgent?: string;
   isStreamingActive: boolean;
+  hasTranscriptAssistantForCurrentTurn: boolean;
+  liveStreaming?: StreamingState | null;
   subagentDetailsById: AppState["subagentDetailsById"];
   subagentsByParentMessageId: AppState["subagentsByParentMessageId"];
   todoItems: AppState["todoItems"];
@@ -2248,10 +2268,13 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
   isProcessing,
   lastCompactedAt,
   renderMessages,
+  liveResponseContentAlreadyRendered,
   resolveAgentColor,
   selectedAgent,
   streamingAgent,
   isStreamingActive,
+  hasTranscriptAssistantForCurrentTurn,
+  liveStreaming,
   subagentDetailsById,
   subagentsByParentMessageId,
   todoItems,
@@ -2394,6 +2417,14 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
           return {};
         }
         const message = entry.message;
+        const rawStructuredResponse = structuredOutputFromRawSdkEventPayloads(
+          message.rawSdkEventPayloads,
+        );
+        const structuredResponse =
+          asRecord(message.structuredOutput) ??
+          asRecord(message.info?.structuredOutput) ??
+          asRecord(message.info?.structured) ??
+          asRecord(rawStructuredResponse);
         return {
           role: message.role ?? message.info?.role,
           userBlockKey: firstNonEmptyString(message.info?.id, message.id) ?? `user:${index}`,
@@ -2402,7 +2433,17 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
           // block; their exact message ownership is enforced during hydration.
           assistantBlockKey: firstNonEmptyString(message.info?.parentID) ?? undefined,
           hasResponseText: Boolean(
-            message.content || message.text || message.info?.content || message.info?.text,
+            message.content ||
+            message.text ||
+            message.info?.content ||
+            message.info?.text ||
+            // StructuredOutput is the authoritative final response for SDK
+            // turns that finish with `finish: "tool-calls"`. Its message is
+            // not copied into `message.content`, so excluding it makes the
+            // collapsed block choose the earlier commentary text instead of
+            // the final response that expanded view already renders.
+            structuredResponse?.message ||
+            structuredResponse?.text,
           ),
           hasInlineAbort:
             message.aborted === true && message.interruptedPresentation === "inline",
@@ -2583,6 +2624,15 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
             messageNode = <PermissionCard perm={message} />;
           } else {
             const blockGroupKey = entryBlockKeys[entryIndex];
+            const transcriptMessageId = firstNonEmptyString(message.info?.id, message.id);
+            const liveStreamingMessageId = firstNonEmptyString(liveStreaming?.messageId);
+            const transcriptOwnsLiveStreaming = Boolean(
+              transcriptMessageId &&
+              (
+                transcriptMessageId === liveStreamingMessageId ||
+                transcriptMessageId === assistantTurnMessageId
+              )
+            );
             const isAbsoluteLastInBlock =
               isAbsoluteLastInBlockByIndex.get(entryIndex) ?? false;
             const isFirstInBlock = isFirstInBlockByIndex.get(entryIndex) ?? true;
@@ -2612,6 +2662,29 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
             messageNode = isSuppressedLiveBlock ? null : (
               <ResponseMessage
                 message={message}
+                // Once the transcript contains the active assistant identity,
+                // this card becomes the single live owner. Feed it the live
+                // snapshot so handing ownership away from the message-less
+                // StreamingCard cannot drop activity rows that have not yet
+                // been persisted into this message envelope. Only the final
+                // card in the block receives it; otherwise each phase would
+                // render the same AI response twice.
+                streaming={
+                  isLiveBlock &&
+                  isLastInBlock &&
+                  // The rendered current-turn transcript is the visual owner
+                  // even when OpenCode rotates to a new assistant phase ID.
+                  // Phase IDs identify transport envelopes, not separate cards.
+                  // Without this turn-level fallback, the message-less live
+                  // card is mounted at the bottom for one render and then
+                  // disappears when the phase finishes, while the transcript
+                  // card briefly shows an older snapshot.
+                  (transcriptOwnsLiveStreaming ||
+                    liveResponseContentAlreadyRendered ||
+                    hasTranscriptAssistantForCurrentTurn)
+                    ? liveStreaming ?? undefined
+                    : undefined
+                }
                 isContiguous={isContiguous}
                 interactiveEvents={interactiveEvents}
                 messages={renderMessages}
@@ -2649,9 +2722,12 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
             <div
               key={entry.key}
               ref={getMeasuredEntryRef(entry.key)}
+              className={`oc-transcript-entry${entryHiddenByBlock ? " oc-transcript-entry--collapsed" : ""}`}
+              aria-hidden={entryHiddenByBlock || undefined}
             >
               {dividerHere ? <CompactionDivider at={lastCompactedAt} /> : null}
               <div
+                className="oc-transcript-entry-content"
                 // The active assistant entry must stay in normal layout flow.
                 // Applying content-visibility/intrinsic-size while its Thought
                 // timeline is growing makes the browser accumulate a blank
@@ -2863,6 +2939,11 @@ function ChatContent() {
   // visible hitching. A small throttle preserves "stick to bottom" behavior without
   // overdriving layout/reflow during heavy token streams.
   const lastFollowAutoScrollAtRef = useRef(0);
+  // Follow mode is append-only. A transient render can briefly reduce
+  // scrollHeight while ownership/deferred content catches up; scrolling to
+  // that reduced height moves the viewport onto the user's prompt. Only a
+  // genuine height increase is allowed to advance the bottom-follow position.
+  const lastFollowAutoScrollHeightRef = useRef<number | null>(null);
   const pendingFollowAutoScrollRafRef = useRef<number | null>(null);
   const pendingFollowAutoScrollTimeoutRef = useRef<number | null>(null);
 
@@ -2890,10 +2971,22 @@ function ChatContent() {
 
       const root = messagesScrollRef.current;
       if (!root) return;
+      const nextScrollHeight = root.scrollHeight;
+      const previousScrollHeight = lastFollowAutoScrollHeightRef.current;
+      lastFollowAutoScrollHeightRef.current = nextScrollHeight;
+      // Re-rendering or replacing a transient live owner must not move the
+      // viewport. New records are appended below; only growth advances the
+      // stack's bottom edge.
+      if (
+        previousScrollHeight !== null &&
+        nextScrollHeight <= previousScrollHeight
+      ) {
+        return;
+      }
       lastFollowAutoScrollAtRef.current = performance.now();
       // This runs after layout, so it does not force a synchronous reflow while
       // streaming or mounting a richer activity component.
-      root.scrollTop = root.scrollHeight;
+      root.scrollTop = nextScrollHeight;
     });
   }, []);
 
@@ -3246,9 +3339,9 @@ function ChatContent() {
 
   // Activity cards can mount or grow after their initial render (for example
   // when a subagent detail, diff, or markdown block appears). ResizeObserver
-  // catches growth; the child-list observer catches node mounts that do not
-  // report a size change. Both feed the same coalesced scheduler and avoid
-  // character-data/attribute observation on the streaming hot path.
+  // catches the resulting layout growth. Do not also observe child-list
+  // mutations: that schedules a bottom write for every transient DOM change
+  // and makes the entire conversation visibly drift during event streaming.
   useEffect(() => {
     const content = messageContentRef.current;
     if (!content) return;
@@ -3259,15 +3352,8 @@ function ChatContent() {
         : new ResizeObserver(scheduleFollowAutoScroll);
     resizeObserver?.observe(content);
 
-    const mutationObserver =
-      typeof MutationObserver === "undefined"
-        ? null
-        : new MutationObserver(scheduleFollowAutoScroll);
-    mutationObserver?.observe(content, { childList: true, subtree: true });
-
     return () => {
       resizeObserver?.disconnect();
-      mutationObserver?.disconnect();
     };
   }, [scheduleFollowAutoScroll]);
 
@@ -3600,7 +3686,6 @@ function ChatContent() {
         shouldMountStreamingCard,
         suppressedByCompaction: state.isCompacting,
         suppressedByTerminalTranscript: false,
-        hasTranscriptAssistantForCurrentTurn,
         rehydratedMessageCount: renderMessages.length,
       },
     };
@@ -3728,8 +3813,64 @@ function ChatContent() {
   const transcriptSnapshotForRender = state.streaming?.isActive
     ? deferredTranscriptSnapshot
     : transcriptSnapshot;
+  // STREAMING OWNERSHIP INVARIANT: ownership must be resolved from the same
+  // transcript snapshot that is actually mounted below. During a live stream
+  // this can be the deferred snapshot. Resolving ownership from the newest
+  // `renderMessages` while mounting an older deferred snapshot creates a
+  // one-render gap where the live card has already been removed but the
+  // transcript card has not arrived yet. That gap changes scrollHeight and
+  // makes the browser's bottom anchor land on the user's prompt.
+  const renderedTranscriptMessages = transcriptSnapshotForRender.renderMessages;
   const deferredVisibleConversationEntries =
     transcriptSnapshotForRender.visibleConversationEntries;
+  // Resolve ownership only after the deferred transcript snapshot exists.
+  // Keeping this immediately beside its source prevents a temporal-dead-zone
+  // regression when diagnostics or the live-card handoff read the value.
+  const hasTranscriptAssistantForCurrentTurn = useMemo(() => {
+    const hasRenderableAssistantContent = (message: Message) => {
+      if (
+        [message.content, message.text, message.structuredOutput?.message].some(
+          (value) => typeof value === "string" && value.trim().length > 0,
+        )
+      ) {
+        return true;
+      }
+      return Array.isArray(message.parts) && message.parts.some((part) => {
+        const partType = typeof part?.type === "string" ? part.type.toLowerCase() : "";
+        const isResponseTextPart =
+          partType === "text" || partType === "message" || partType === "output_text";
+        return (
+          part?.synthetic !== true &&
+          isResponseTextPart &&
+          [part?.text, part?.content, part?.message].some(
+            (value) => typeof value === "string" && value.trim().length > 0,
+          )
+        );
+      });
+    };
+
+    let lastUserEntryIndex = -1;
+    for (let index = 0; index < deferredVisibleConversationEntries.length; index += 1) {
+      const entry = deferredVisibleConversationEntries[index];
+      if (entry.kind !== "message") continue;
+      if (firstNonEmptyString(entry.message.role, entry.message.info?.role) === "user") {
+        lastUserEntryIndex = index;
+      }
+    }
+    if (lastUserEntryIndex < 0) return false;
+
+    for (let index = lastUserEntryIndex + 1; index < deferredVisibleConversationEntries.length; index += 1) {
+      const entry = deferredVisibleConversationEntries[index];
+      if (
+        entry.kind === "message" &&
+        firstNonEmptyString(entry.message.role, entry.message.info?.role) === "assistant" &&
+        hasRenderableAssistantContent(entry.message)
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }, [deferredVisibleConversationEntries]);
   const transcriptScrollViewport =
     deferredVisibleConversationEntries.length >= VIRTUALIZED_TRANSCRIPT_MIN_ENTRIES
       ? scrollRenderViewport
@@ -3797,70 +3938,28 @@ function ChatContent() {
     }
     return blockKeys;
   }, [visibleConversationEntries]);
-  const hasTranscriptAssistantForCurrentTurn = useMemo(() => {
-    const hasRenderableAssistantContent = (message: Message) => {
-      if (
-        [message.content, message.text, message.structuredOutput?.message].some(
-          (value) => typeof value === "string" && value.trim().length > 0,
-        )
-      ) {
-        return true;
-      }
-
-      // Reasoning/tool phases can contain text but are not response bodies.
-      // Treating them as canonical content unmounts the live card between
-      // `step-finish` and the next assistant phase, which clears its sticky
-      // activity timeline before the final response arrives.
-      return Array.isArray(message.parts) && message.parts.some((part) => {
-        const partType = typeof part?.type === "string" ? part.type.toLowerCase() : "";
-        const isResponseTextPart =
-          partType === "text" || partType === "message" || partType === "output_text";
-        return (
-          part?.synthetic !== true &&
-          isResponseTextPart &&
-          [part?.text, part?.content, part?.message].some(
-            (value) => typeof value === "string" && value.trim().length > 0,
-          )
-        );
-      });
-    };
-
-    let lastUserEntryIndex = -1;
-    for (let index = 0; index < visibleConversationEntries.length; index += 1) {
-      const entry = visibleConversationEntries[index];
-      if (entry.kind !== "message") {
-        continue;
-      }
-      const role = firstNonEmptyString(entry.message.role, entry.message.info?.role);
-      if (role === "user") {
-        lastUserEntryIndex = index;
-      }
-    }
-
-    if (lastUserEntryIndex < 0) {
-      return false;
-    }
-
-    for (let index = lastUserEntryIndex + 1; index < visibleConversationEntries.length; index += 1) {
-      const entry = visibleConversationEntries[index];
-      if (entry.kind !== "message") {
-        continue;
-      }
-      const role = firstNonEmptyString(entry.message.role, entry.message.info?.role);
-      if (role === "assistant" && hasRenderableAssistantContent(entry.message)) {
-        return true;
-      }
-    }
-
-    return false;
-  }, [visibleConversationEntries]);
   const transcriptAssistantMessageIds = useMemo(
     () =>
-      renderMessages
+      renderedTranscriptMessages
         .filter((message) => firstNonEmptyString(message.role, message.info?.role) === "assistant")
         .flatMap((message) => collectMessageIdentityCandidates(message))
         .filter((messageId): messageId is string => typeof messageId === "string" && messageId.length > 0),
-    [renderMessages],
+    [renderedTranscriptMessages],
+  );
+  const transcriptAssistantContents = useMemo(
+    () => renderedTranscriptMessages
+      .filter((message) => firstNonEmptyString(message.role, message.info?.role) === "assistant")
+      .flatMap((message) => [
+        message.content,
+        message.text,
+        ...(Array.isArray(message.parts)
+          ? message.parts
+            .filter((part) => part?.type === "text" || part?.type === "message")
+            .map((part) => firstNonEmptyString(part.text, part.content, part.message))
+          : []),
+      ])
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0),
+    [renderedTranscriptMessages],
   );
   const shouldRenderSeparateStreamingCard = shouldShowStreamingCard({
     streaming: renderedLiveStreaming,
@@ -3878,13 +3977,32 @@ function ChatContent() {
     );
     return transcriptAssistantMessageIds.some((id) => liveAssistantIds.has(id));
   }, [renderedLiveStreaming?.messageId, state.assistantTurnMessageId, transcriptAssistantMessageIds]);
+  const liveResponseContentAlreadyRendered = useMemo(
+    () =>
+      hasTranscriptAssistantForCurrentTurn &&
+      hasMatchingTranscriptContent(renderedLiveStreaming, transcriptAssistantContents),
+    [hasTranscriptAssistantForCurrentTurn, renderedLiveStreaming, transcriptAssistantContents],
+  );
   // Keep exactly one live owner for a canonicalized assistant phase. The
   // message-less StreamingCard owns it until completion; once it disappears,
   // the transcript card takes over. Rendering both is what duplicated tool
   // steps and the final response card during event streaming.
-  const suppressTranscriptLiveAssistantBlock =
-    state.isCompacting ||
-    (shouldRenderSeparateStreamingCard && hasLiveAssistantAlreadyInTranscript);
+  // There must be exactly one live response owner. If the transcript already
+  // contains the current assistant identity, keep the transcript card mounted
+  // and give it the live snapshot above; rendering the separate message-less
+  // card as well produces a transient duplicate AI response and causes one
+  // copy's activity rows to disappear when the ownership decision settles.
+  const shouldKeepSeparateStreamingCard =
+    shouldRenderSeparateStreamingCard &&
+    !hasLiveAssistantAlreadyInTranscript &&
+    // Once any renderable assistant response exists after the latest user
+    // message, the transcript owns the entire assistant turn. Do not use a
+    // newly-issued SDK phase ID to create a second visual card at the bottom;
+    // those IDs are transport identities and may change within one response.
+    !hasTranscriptAssistantForCurrentTurn;
+  const shouldKeepSeparateStreamingCardForContentOwnership =
+    shouldKeepSeparateStreamingCard && !liveResponseContentAlreadyRendered;
+  const suppressTranscriptLiveAssistantBlock = state.isCompacting;
   const errorToasts = useMemo(() => {
     const unique = new Set<string>();
     return state.errorMessages.filter((message) => {
@@ -4120,10 +4238,13 @@ function ChatContent() {
             lastCompactedAt={state.lastCompactedAt}
             onSetBlockExpanded={handleSetBlockExpanded}
             renderMessages={transcriptSnapshotForRender.renderMessages}
+            liveResponseContentAlreadyRendered={liveResponseContentAlreadyRendered}
             resolveAgentColor={resolveAgentColor}
             selectedAgent={state.selectedAgent}
             streamingAgent={deferredStreamingAgent}
             isStreamingActive={Boolean(state.streaming?.isActive)}
+            hasTranscriptAssistantForCurrentTurn={hasTranscriptAssistantForCurrentTurn}
+            liveStreaming={renderedLiveStreaming}
             subagentDetailsById={deferredSubagentDetailsById}
             subagentsByParentMessageId={deferredSubagentsByParentMessageId}
             todoItems={deferredTodoItems}
@@ -4140,7 +4261,7 @@ function ChatContent() {
                   from the transcript so activity and response content stay unified. */}
           {!state.isCompacting ? (
             <StreamingCard
-              streaming={renderedLiveStreaming}
+                  streaming={shouldKeepSeparateStreamingCardForContentOwnership ? renderedLiveStreaming : null}
               isContiguous={
                 visibleMessages.length > 0 &&
                 visibleMessages[visibleMessages.length - 1].role === "assistant"
@@ -4153,6 +4274,8 @@ function ChatContent() {
               subagentsByParentMessageId={state.subagentsByParentMessageId}
               subagentDetailsById={state.subagentDetailsById}
               todoItems={state.todoItems}
+              messages={renderMessages}
+              transcriptAssistantContents={transcriptAssistantContents}
             />
           ) : null}
 
@@ -4200,6 +4323,8 @@ function ChatContent() {
         {/* Input area (queue panel is embedded inside InputWrapper) */}
         {!isSwitchingSession && <InputWrapper />}
       </div>
+
+      <DesktopRightPanel />
 
       {/* Skill Installer Modal */}
       <SkillInstallerModal

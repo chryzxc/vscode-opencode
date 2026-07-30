@@ -11,6 +11,17 @@ export interface ActivityIdentityInput {
   partType?: string;
 }
 
+const VOLATILE_ACTIVITY_TIMING_KEYS = new Set([
+  "time",
+  "timestamp",
+  "starttime",
+  "endtime",
+  "startedat",
+  "endedat",
+  "starttimestamp",
+  "endtimestamp",
+]);
+
 function normalized(value?: string): string {
   return (value ?? "").trim().toLowerCase();
 }
@@ -50,8 +61,13 @@ export function activityValueFingerprint(value: unknown, depth = 0): string {
   }
   if (typeof value !== "object") return "unknown";
   const record = value as Record<string, unknown>;
+  // SDK tool snapshots often carry lifecycle timestamps inside the input
+  // envelope. They describe when the same action was observed, not which
+  // action the user sees. Exclude only explicit timing keys; fields such as
+  // Read's `lineStart`, `lineEnd`, `offset`, and `limit` remain semantic input.
   return `{${Object.keys(record)
     .sort()
+    .filter((key) => !VOLATILE_ACTIVITY_TIMING_KEYS.has(key.trim().toLowerCase()))
     .map((key) => `${key}:${activityValueFingerprint(record[key], depth + 1)}`)
     .join(",")}}`;
 }

@@ -67,7 +67,10 @@ class WebviewLogger {
   }
 
   private shouldLog(level: LogLevel): boolean {
-    if (!this.showLogger) {
+    // Errors must remain observable even when routine webview logging is
+    // disabled. The message handler uses this logger for its last-resort
+    // event boundary, so suppressing errors makes the warning impossible to diagnose.
+    if (level !== 'error' && !this.showLogger) {
       return false;
     }
 

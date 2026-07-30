@@ -75,7 +75,7 @@ describe('Live-only session status rendering', () => {
     );
     assert.match(
       messageComponentsSource,
-      /Next retry in \{liveStatusCountdown\}/,
+      /liveStatusCountdown\s*\?\s*\([\s\S]*?<span>\{liveStatusCountdown\}<\/span>/,
       'live retry row should show a countdown label instead of relying on centralized transcript timing',
     );
   });

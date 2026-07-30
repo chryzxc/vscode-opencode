@@ -674,6 +674,25 @@ function activityArrayItemKeyLocal(item: unknown, index: number): string {
   if (id) return `id:${id}`;
   const callID = asStringLocal(rec.callID, rec.callId);
   if (callID) return `call:${callID}`;
+  const partType = asStringLocal(rec.partType, rec.type).trim().toLowerCase();
+  const isLifecycleMarker =
+    partType === "step-start" ||
+    partType === "step-finish" ||
+    partType === "step-update";
+  if (isLifecycleMarker) {
+    // Lifecycle markers delimit separate activity blocks. Their titles are
+    // intentionally generic, so using title/text as a fallback identity
+    // makes the next step-start replace the previous one. Only merge them
+    // when the SDK supplies a real sequence/key; otherwise return an empty
+    // identity and let the append-only path preserve both markers.
+    const streamSeq = asStringLocal(rec.streamSeq);
+    const eventKey = asStringLocal(rec.key);
+    return streamSeq
+      ? `lifecycle-seq:${partType}:${streamSeq}`
+      : eventKey
+        ? `lifecycle-key:${partType}:${eventKey}`
+        : "";
+  }
   const file = asStringLocal(rec.file, rec.path, rec.filePath);
   if (file) return `file:${file}`;
   const createdAt = asStringLocal(rec.createdAt);
@@ -739,6 +758,15 @@ function activitySnapshotKeyLocal(item: unknown): string {
   const cached = activitySnapshotKeyCacheLocal.get(record);
   if (cached !== undefined) return cached;
   const detail = asRecordLocal(record.activityDetail);
+  const partType = asStringLocal(record.partType, record.type).trim().toLowerCase();
+  if (
+    partType === "step-start" ||
+    partType === "step-finish" ||
+    partType === "step-update"
+  ) {
+    // Never coalesce lifecycle boundaries by their repeated visible text.
+    return "";
+  }
   const tool = asStringLocal(detail?.tool, record.tool, record.type, record.partType)
     .trim()
     .toLowerCase();
@@ -759,7 +787,7 @@ function mergeLiveActivityItemLocal<T>(items: T[], incoming: T): T[] {
   const incomingSnapshotKey = activitySnapshotKeyLocal(incoming);
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const existing = items[index];
-    const sameStableKey = activityArrayItemKeyLocal(existing, 0) === incomingKey;
+    const sameStableKey = Boolean(incomingKey) && activityArrayItemKeyLocal(existing, 0) === incomingKey;
     const sameSnapshot =
       Boolean(incomingSnapshotKey) &&
       activitySnapshotKeyLocal(existing) === incomingSnapshotKey;
@@ -856,10 +884,12 @@ export function mergeActivityArraysLocal<T>(
     const key = activityArrayItemKeyLocal(item, 0);
     const snapshotKey = activitySnapshotKeyLocal(item);
     const existingIndex =
-      indexByKey.get(key) ??
+      (key ? indexByKey.get(key) : undefined) ??
       (snapshotKey ? indexByActivitySnapshot.get(snapshotKey) : undefined);
     if (typeof existingIndex !== "number") {
-      indexByKey.set(key, merged.length);
+      if (key) {
+        indexByKey.set(key, merged.length);
+      }
       if (snapshotKey) {
         indexByActivitySnapshot.set(snapshotKey, merged.length);
       }
@@ -936,6 +966,13 @@ function mergeStreamingSnapshotLocal(
   existing: StreamingState | null | undefined,
   incoming: StreamingState,
 ): StreamingState {
+  // NON-DESTRUCTIVE ACTIVITY INVARIANT:
+  // `SET_STREAMING` receives partial SDK snapshots. An empty `steps` or
+  // `progressEvents` array means that this envelope has no activity payload;
+  // it does not mean the already-rendered timeline should be deleted. Every
+  // replacement/phase-rekey path below must merge the arrays, preserving the
+  // visible start-finish blocks until terminal handoff materializes them into
+  // the transcript. If this changes, add a regression test before merging.
   // Stream transport payloads are incremental and may omit fields that are
   // present in a fully-hydrated StreamingState. Normalize them before any
   // merge/update path reads collection lengths or string methods.
@@ -1065,6 +1102,53 @@ function mergeStreamingSnapshotLocal(
       [...(existing.rawSdkEventPayloads ?? []), ...normalizedIncoming.rawSdkEventPayloads],
     ),
   };
+}
+
+/**
+ * Recover activity already materialized into the transcript when a new SDK
+ * assistant phase starts after the previous phase was finalized. OpenCode can
+ * set `streaming` to null between those phases; the next live payload then
+ * contains only its newest step. Seed only from assistant messages after the
+ * latest user message so an unrelated older turn is never pulled into the
+ * active card.
+ */
+function activityFromCurrentUserTurnLocal(
+  messages: Message[],
+): Pick<StreamingState, "steps" | "progressEvents" | "reasoningEvents" | "edits" | "interactiveEvents"> {
+  let latestUserIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (getMessageRoleForCanonical(messages[index]) === "user") {
+      latestUserIndex = index;
+      break;
+    }
+  }
+
+  if (latestUserIndex < 0) {
+    return {
+      steps: [],
+      progressEvents: [],
+      reasoningEvents: [],
+      edits: [],
+      interactiveEvents: [],
+    };
+  }
+
+  let steps: Message["steps"] = [];
+  let progressEvents: Message["progressEvents"] = [];
+  let reasoningEvents: Message["reasoningEvents"] = [];
+  let edits: Message["edits"] = [];
+  let interactiveEvents: Message["interactiveEvents"] = [];
+  for (let index = latestUserIndex + 1; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (getMessageRoleForCanonical(message) !== "assistant") continue;
+    steps = mergeActivityArraysLocal(steps, message.steps) ?? [];
+    progressEvents = mergeActivityArraysLocal(progressEvents, message.progressEvents) ?? [];
+    reasoningEvents = mergeActivityArraysLocal(reasoningEvents, message.reasoningEvents) ?? [];
+    edits = mergeActivityArraysLocal(edits, message.edits) ?? [];
+    interactiveEvents = mergeActivityArraysLocal(interactiveEvents, message.interactiveEvents) ?? [];
+  }
+
+  return { steps, progressEvents, reasoningEvents, edits, interactiveEvents };
 }
 
 function mergeStreamingSnapshotIntoMessagesLocal(
@@ -3302,21 +3386,64 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, sessionStats: merged, sessionsStatsById };
     }
     case "SET_STREAMING": {
+      // `SET_STREAMING(null)` is a terminal ownership operation, not a stream
+      // update. Intermediate assistant phases must use mergeStreamingSnapshotLocal
+      // above; clearing here during a phase transition erases the live activity
+      // card before the next SDK envelope can append its next step. Callers that
+      // intentionally clear must first flush/finalize the visible snapshot or
+      // be handling an explicit fresh-turn/session teardown.
+      const phaseSeed =
+        action.payload &&
+        !state.streaming &&
+        (state.isProcessing || state.assistantTurnPending)
+          ? activityFromCurrentUserTurnLocal(state.messages)
+          : undefined;
       const streaming = action.payload
         ? mergeStreamingSnapshotLocal(state.streaming, {
           ...action.payload,
+          // A previous phase may already have been flushed into messages while
+          // the assistant turn remains active. Do not let this phase's partial
+          // `steps` array replace those rendered rows with only the newest one.
+          steps: phaseSeed
+            ? mergeActivityArraysLocal(phaseSeed.steps, action.payload.steps) ?? []
+            : action.payload.steps,
+          progressEvents: phaseSeed
+            ? mergeActivityArraysLocal(phaseSeed.progressEvents, action.payload.progressEvents) ?? []
+            : action.payload.progressEvents,
+          reasoningEvents: phaseSeed
+            ? mergeActivityArraysLocal(phaseSeed.reasoningEvents, action.payload.reasoningEvents) ?? []
+            : action.payload.reasoningEvents ?? [],
+          edits: phaseSeed
+            ? mergeActivityArraysLocal(phaseSeed.edits, action.payload.edits) ?? []
+            : action.payload.edits,
+          interactiveEvents: phaseSeed
+            ? mergeActivityArraysLocal(phaseSeed.interactiveEvents, action.payload.interactiveEvents) ?? []
+            : action.payload.interactiveEvents ?? [],
           hasRenderableContent: action.payload.hasRenderableContent ?? false,
-          reasoningEvents: action.payload.reasoningEvents ?? [],
-          progressEvents: action.payload.progressEvents ?? [],
           hasAssistantFinishSignal:
             action.payload.hasAssistantFinishSignal ?? false,
           hasTerminalStepSignal: action.payload.hasTerminalStepSignal ?? false,
-          interactiveEvents: action.payload.interactiveEvents ?? [],
           rawSdkEventPayloads: dedupeCentralizedDebugPayloads(
             (action.payload.rawSdkEventPayloads ?? []).filter(shouldIncludeCentralizedDebugPayload),
           ),
         })
         : null;
+      // FINAL SAFETY NET — NON-DESTRUCTIVE ACTIVITY INVARIANT:
+      // `SET_STREAMING(null)` is used by several transport cleanup paths, not
+      // only by the normal messageResponse handoff. A missed explicit flush
+      // must never make already-rendered activity disappear. Materialize the
+      // last visible snapshot into the transcript before dropping the live
+      // pointer; this is intentionally redundant with FINISH_STREAMING and is
+      // what makes future cleanup code safe by construction. If this guard is
+      // removed or narrowed, add a regression test proving a rendered
+      // start/finish timeline survives a direct SET_STREAMING(null).
+      const messages =
+        action.payload === null && hasVisibleStreamingSnapshotLocal(state.streaming)
+          ? canonicalizeMessagesForRender(
+            mergeStreamingSnapshotIntoMessagesLocal(state.messages, state.streaming),
+            { preserveEvtAssistantMessages: true },
+          )
+          : state.messages;
       logger.info("[LOADING][STORE] SET_STREAMING", {
         payloadIsNull: action.payload === null,
         isActive: streaming?.isActive,
@@ -3330,7 +3457,11 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       });
       return {
         ...state,
+        messages,
         streaming,
+        messagesBySessionId: state.currentSessionId
+          ? { ...state.messagesBySessionId, [state.currentSessionId]: messages }
+          : state.messagesBySessionId,
         streamingBySessionId: cacheStreamingForSession(
           state.streamingBySessionId,
           state.currentSessionId,
@@ -3364,14 +3495,38 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         action.payload.sessionId,
         streaming,
       );
+      // The session-scoped variant has the same destructive risk as
+      // SET_STREAMING(null). A background-session cleanup can arrive while its
+      // last activity card is still visible in the cached transcript. Flush
+      // that snapshot into the session cache before clearing the pointer, so a
+      // start/finish block cannot vanish just because cleanup used the scoped
+      // action instead of the active-session action.
+      const sessionMessages =
+        action.payload.streaming === null &&
+        hasVisibleStreamingSnapshotLocal(existingSessionStreaming)
+          ? canonicalizeMessagesForRender(
+            mergeStreamingSnapshotIntoMessagesLocal(
+              state.messagesBySessionId[action.payload.sessionId] ??
+                (state.currentSessionId === action.payload.sessionId ? state.messages : []),
+              existingSessionStreaming,
+            ),
+            { preserveEvtAssistantMessages: true },
+          )
+          : undefined;
+      const nextMessagesBySessionId = sessionMessages
+        ? { ...state.messagesBySessionId, [action.payload.sessionId]: sessionMessages }
+        : state.messagesBySessionId;
       if (state.currentSessionId !== action.payload.sessionId) {
         return {
           ...state,
+          messagesBySessionId: nextMessagesBySessionId,
           streamingBySessionId,
         };
       }
       return {
         ...state,
+        messages: sessionMessages ?? state.messages,
+        messagesBySessionId: nextMessagesBySessionId,
         streaming,
         streamingBySessionId,
       };
@@ -3948,6 +4103,10 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         liveSessionStatus: null,
         usage: action.payload?.usage ?? state.streaming.usage,
       };
+      // FINISH_STREAMING deliberately deactivates the stream without removing
+      // any activity arrays. The transcript handoff below copies this exact
+      // snapshot into `messages`; clearing `steps` here would make completed
+      // activity disappear between the live card and hydrated history.
       const messages = canonicalizeMessagesForRender(
         mergeStreamingSnapshotIntoMessagesLocal(state.messages, streaming),
         { preserveEvtAssistantMessages: true },

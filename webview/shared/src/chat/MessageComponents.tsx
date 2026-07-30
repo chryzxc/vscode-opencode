@@ -16,7 +16,6 @@ import {
   Copy,
   GitFork,
   FileText,
-  FileText as FileTextIcon,
   Loader2,
   X,
   CornerDownLeft,
@@ -1894,7 +1893,6 @@ function ImplementationPlanCard({
         onClick={() => vscode.postMessage({ type: "viewPlan", plan })}
         className="oc-plan-btn plan-card-action shrink-0 self-start"
       >
-        <FileTextIcon className="h-3 w-3" />
         View
       </button>
     </div>
@@ -1932,7 +1930,6 @@ function WalkthroughCard({
         onClick={() => vscode.postMessage({ type: "viewWalkthrough", walkthrough })}
         className="oc-plan-btn plan-card-action shrink-0 self-start"
       >
-        <FileTextIcon className="h-3 w-3" />
         View
       </button>
     </div>
@@ -3056,17 +3053,24 @@ function mergeProgressItemsForTimeline(
 
   const addKey = (item: ProgressItem, index: number) => {
     const semanticKey = progressItemIdentityKey(item);
-    const actionKey = canonicalActivityActionIdentity(
-      item.activityDetail?.tool,
-      item.activityDetail?.input,
-    );
+    const normalizedPartType = normalizeComparableText(item.partType);
+    const isLifecycleMarker =
+      normalizedPartType === "step-start" ||
+      normalizedPartType === "step-finish" ||
+      normalizedPartType === "step-update";
+    // Transport IDs identify SDK envelopes, not necessarily distinct visible
+    // actions. The same Read can arrive once from the live event stream and
+    // again from a later assistant phase with different message/call IDs.
+    // Deduplicate by the visible action across phases; the first row remains
+    // in place and mergeProgressItemRecord only enriches it.
+    const actionKey = progressVisibleActionIdentity(item);
     if (semanticKey) {
       indexByKey.set(`semantic:${semanticKey}`, index);
     }
     // SDK mirrors can occasionally have different part/call IDs. Keep the
     // action fingerprint as an additional key, but never let mutable output
     // fields define identity.
-    if (actionKey) {
+    if (!isLifecycleMarker && actionKey) {
       indexByKey.set(`action:${actionKey}`, index);
     }
     if (item.mergeKey) {
@@ -3085,30 +3089,38 @@ function mergeProgressItemsForTimeline(
     // nor an action. Only use a title when the SDK gave us no semantic, call,
     // part, or message identity at all; otherwise it can replace a rendered
     // Read with an unrelated later Read and make the first row disappear.
-    if (!semanticKey && !item.callID && !item.id && !item.messageID) {
+    if (!isLifecycleMarker && !semanticKey && !item.callID && !item.id && !item.messageID) {
       indexByKey.set(`title:${normalizeComparableText(item.title)}`, index);
     }
   };
 
   const ingest = (item: ProgressItem, incomingPreferred: boolean) => {
     const semanticKey = progressItemIdentityKey(item);
-    const actionKey = canonicalActivityActionIdentity(
-      item.activityDetail?.tool,
-      item.activityDetail?.input,
-    );
-    const canUseTitleFallback = !semanticKey && !item.callID && !item.id && !item.messageID;
+    const normalizedPartType = normalizeComparableText(item.partType);
+    const isLifecycleMarker =
+      normalizedPartType === "step-start" ||
+      normalizedPartType === "step-finish" ||
+      normalizedPartType === "step-update";
+    const actionKey = progressVisibleActionIdentity(item);
+    const canUseTitleFallback =
+      !isLifecycleMarker && !semanticKey && !item.callID && !item.id && !item.messageID;
     // A tool's input evolves while its call is running (especially File_edit,
     // where old/new strings and patch metadata arrive in separate snapshots).
     // Match the SDK lifecycle ID first so those snapshots enrich one row. The
     // semantic action key remains the fallback for the /event + /global/event
     // mirrors that legitimately carry different transport IDs.
     const keys = [
-      item.mergeKey,
+      // Prefer semantic identity before transport mergeKey. Raw and live
+      // mirrors often assign different merge keys to the same visible Read;
+      // checking mergeKey first lets that duplicate through.
+      semanticKey ? `semantic:${semanticKey}` : "",
+      !isLifecycleMarker && actionKey
+        ? `action:${actionKey}`
+        : "",
       item.callID ? `call:${item.callID}` : "",
       !item.callID && item.id ? `id:${item.id}` : "",
       !item.callID && !item.id && item.messageID ? `msg:${item.messageID}` : "",
-      semanticKey ? `semantic:${semanticKey}` : "",
-      actionKey ? `action:${actionKey}` : "",
+      item.mergeKey,
       canUseTitleFallback ? `title:${normalizeComparableText(item.title)}` : "",
     ].filter(Boolean);
 
@@ -3580,6 +3592,16 @@ function progressItemIdentityKey(item: {
   partType?: string;
   activityDetail?: ActivityDetail;
 }): string {
+  const normalizedPartType = normalizeComparableText(item.partType);
+  const isLifecycleMarker =
+    normalizedPartType === "step-start" ||
+    normalizedPartType === "step-finish" ||
+    normalizedPartType === "step-update";
+  if (isLifecycleMarker && !item.callID && !item.id && !item.messageID) {
+    // Lifecycle boundaries are not repeated tool snapshots. Do not derive an
+    // identity from their generic title/action when the SDK omitted IDs.
+    return "";
+  }
   const stableIdentity = stableActivityIdentity({
     callID: item.callID,
     id: item.id,
@@ -3619,6 +3641,36 @@ function progressItemIdentityKey(item: {
   ]
     .filter((segment) => segment.length > 0)
     .join("|");
+}
+
+function progressVisibleActionIdentity(item: ProgressItem): string {
+  const tool = normalizeComparableText(item.activityDetail?.tool || item.title);
+  const input = asRecord(item.activityDetail?.input);
+  const metadata = asRecord(item.activityDetail?.metadata);
+  const display = asRecord(metadata?.display);
+  const file = normalizeComparableText(
+    item.filePath ||
+      item.activityDetail?.file ||
+      asString(input?.filePath) ||
+      asString(input?.file) ||
+      asString(input?.path),
+  );
+  if (tool === "read" || tool === "read_file") {
+    const offset = input?.offset ?? input?.lineStart ?? display?.lineStart ?? "";
+    const limit = input?.limit ?? input?.lineEnd ?? display?.lineEnd ?? "";
+    if (file) {
+      // Read mirrors frequently omit structured input on one side while still
+      // exposing the same visible file/range in title/metadata.
+      return `visible-read:${file}:${String(offset)}:${String(limit)}`;
+    }
+  }
+  return canonicalActivityActionIdentity(
+    // Some live envelopes omit activityDetail.tool but still provide the
+    // visible tool title and input. Use that title as the semantic tool name;
+    // otherwise the unmatched live row is appended after finalized rows.
+    item.activityDetail?.tool || item.title,
+    item.activityDetail?.input,
+  );
 }
 
 function mergeProgressItemRecord(existing: ProgressItem, incoming: ProgressItem): ProgressItem {
@@ -3706,11 +3758,6 @@ function progressItemsFromSteps(
         "endedAt" in step && typeof step.endedAt === "number"
           ? step.endedAt
           : undefined;
-      const mergeKey = stepCallId
-        ? `call:${stepCallId}`
-        : stepId
-          ? `id:${stepId}`
-          : `title:${title.trim().toLowerCase()}`;
       const stepFilePath =
         "filePath" in step
           ? (step as StreamingStep).filePath
@@ -3721,6 +3768,20 @@ function progressItemsFromSteps(
           : undefined;
       const stepPartType =
         "partType" in step ? (step.partType as string | undefined) : undefined;
+      const normalizedStepPartType = normalizeComparableText(stepPartType);
+      const isLifecycleMarker =
+        normalizedStepPartType === "step-start" ||
+        normalizedStepPartType === "step-finish" ||
+        normalizedStepPartType === "step-update";
+      const mergeKey = stepCallId
+        ? `call:${stepCallId}`
+        : stepId
+          ? `id:${stepId}`
+          : stepMessageId
+            ? `msg:${stepMessageId}:${index}`
+            : isLifecycleMarker
+              ? `lifecycle:${normalizedStepPartType}:${index}`
+              : `title:${title.trim().toLowerCase()}`;
       const stepInternal =
         "internal" in step ? Boolean(step.internal) : false;
       const baseMergeKey =
@@ -4446,24 +4507,39 @@ function TodoInlineSummary({
   );
 }
 
+function todoItemsFromDisplayEvent(event: DisplayEvent): unknown[] {
+  const candidates: unknown[][] = [];
+  const inputTodos = event.activityDetail?.input?.todos;
+  if (Array.isArray(inputTodos)) {
+    candidates.push(inputTodos);
+  }
+
+  const output = event.activityDetail?.output;
+  if (typeof output === "string" && output.trim()) {
+    try {
+      const parsedOutput = JSON.parse(output) as unknown;
+      if (Array.isArray(parsedOutput)) {
+        candidates.push(parsedOutput);
+      } else {
+        const parsedRecord = asRecord(parsedOutput);
+        if (Array.isArray(parsedRecord?.todos)) {
+          candidates.push(parsedRecord.todos);
+        }
+      }
+    } catch {
+      // A partial tool output is expected while the input remains complete.
+    }
+  }
+
+  return candidates.reduce<unknown[]>(
+    (richest, candidate) => candidate.length > richest.length ? candidate : richest,
+    [],
+  );
+}
+
 function TodoWriteStep({ event }: { event: DisplayEvent }) {
   const [showTodoChecklist, setShowTodoChecklist] = useState(true);
-
-  let todos: any[] = [];
-  try {
-    const parsedOutput = event.activityDetail?.output ? JSON.parse(event.activityDetail.output) : null;
-    const parsedInputTodos = event.activityDetail?.input?.todos;
-    
-    if (Array.isArray(parsedOutput)) {
-      todos = parsedOutput;
-    } else if (Array.isArray(parsedInputTodos)) {
-      todos = parsedInputTodos;
-    } else if (parsedOutput?.todos && Array.isArray(parsedOutput.todos)) {
-      todos = parsedOutput.todos;
-    }
-  } catch (e) {
-    // ignore
-  }
+  const todos = todoItemsFromDisplayEvent(event);
 
   // A TodoWrite activity already has its own pending state in the timeline.
   // Do not add a second generic loading row before its checklist payload arrives.
@@ -4477,6 +4553,105 @@ function TodoWriteStep({ event }: { event: DisplayEvent }) {
       showTodoChecklist={showTodoChecklist}
       setShowTodoChecklist={setShowTodoChecklist}
     />
+  );
+}
+
+function skillMcpOutputText(rawOutput: unknown): string {
+  const output = asString(rawOutput).trim();
+  if (!output) return "";
+
+  try {
+    const parsed = JSON.parse(output) as unknown;
+    if (Array.isArray(parsed)) {
+      const textParts = parsed
+        .map((entry) => asString(asRecord(entry)?.text).trim())
+        .filter(Boolean);
+      if (textParts.length > 0) return textParts.join("\n\n");
+    }
+    const parsedText = asString(asRecord(parsed)?.text).trim();
+    if (parsedText) return parsedText;
+  } catch {
+    // OpenCode may emit a partially written output string while streaming.
+  }
+
+  return output;
+}
+
+function SkillMcpActivityStep({ event }: { event: DisplayEvent }) {
+  const input = asRecord(event.activityDetail?.input);
+  const mcpName = asString(input?.mcp_name) || asString(input?.mcpName);
+  const toolName = asString(input?.tool_name) || asString(input?.toolName);
+  const output = skillMcpOutputText(event.activityDetail?.output);
+  const title = [mcpName, toolName].filter(Boolean).join(" · ") || "skill_mcp";
+
+  return (
+    // The shared activity row already renders the skill_mcp title, MCP name,
+    // and tool name. This component owns only the bounded result body so the
+    // same metadata is not rendered twice and no card is nested in that row.
+    <div className="flex w-full min-w-0 flex-col items-start gap-1">
+      {output ? (
+        <div className="w-full min-w-0">
+          <CollapsedMarkdownPreview title={`${title} output`} content={output} variant="bare" />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function genericToolPayloadText(value: unknown): string {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return "";
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      return `\`\`\`json\n${JSON.stringify(parsed, null, 2)}\n\`\`\``;
+    } catch {
+      return trimmed;
+    }
+  }
+
+  if (value && typeof value === "object") {
+    try {
+      return `\`\`\`json\n${JSON.stringify(value, null, 2)}\n\`\`\``;
+    } catch {
+      return "";
+    }
+  }
+
+  return "";
+}
+
+/**
+ * Schema-agnostic fallback for tools without a dedicated activity card.
+ * Preserve arbitrary input/output keys instead of maintaining a growing list
+ * of tool-specific field mappings. Specialized renderers remain authoritative
+ * and this fallback only fills an otherwise title-only activity row.
+ */
+function GenericToolPayloadStep({ event }: { event: DisplayEvent }) {
+  const input = asRecord(event.activityDetail?.input);
+  const inputText = genericToolPayloadText(
+    input && Object.keys(input).length > 0 ? input : undefined,
+  );
+  const outputText = genericToolPayloadText(event.activityDetail?.output);
+  if (!inputText && !outputText) return null;
+
+  return (
+    // The parent activity row already owns the surface. Keep payload previews
+    // bare here so a generic tool cannot render a card inside another card.
+    <div className="flex w-full min-w-0 flex-col items-start gap-2">
+      {inputText ? (
+        <div className="w-full min-w-0">
+          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider oc-text-secondary">Input</div>
+          <CollapsedMarkdownPreview title={`${event.label} input`} content={inputText} variant="bare" />
+        </div>
+      ) : null}
+      {outputText ? (
+        <div className="w-full min-w-0">
+          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider oc-text-secondary">Output</div>
+          <CollapsedMarkdownPreview title={`${event.label} output`} content={outputText} variant="bare" />
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -5074,6 +5249,8 @@ type DisplayEvent = {
   isImportant?: boolean;
   updateCount: number;
   streamSeq?: number;
+  /** Stable position assigned when this row first enters the turn-scoped sticky tape. */
+  timelineSeq?: number;
 };
 
 /**
@@ -5322,6 +5499,27 @@ function displayEventSourcePriority(source?: DisplayEvent["source"]): number {
  * @returns A stable identity string, or empty string if no stable identity can be generated
  */
 function activityDisplayEventIdentity(event: DisplayEvent): string {
+  const partType = (event.partType || "").trim().toLowerCase();
+  const isLifecycleMarker =
+    partType === "step-start" ||
+    partType === "step-finish" ||
+    partType === "step-update";
+
+  // A message ID scopes an assistant turn, not an individual step. When the
+  // SDK omits call/part IDs, falling back to messageID + label/tool makes the
+  // next identical step replace the previous one during the final render
+  // merge. Lifecycle markers are ordered tape entries in that case; keep
+  // their own stream identity so each start-finish block remains mounted.
+  if (isLifecycleMarker && !event.callID && !event.partID) {
+    return event.timelineSeq !== undefined
+      ? `lifecycle:${event.timelineSeq}`
+      : event.streamSeq !== undefined
+      ? `lifecycle:${event.streamSeq}`
+      : event.key
+        ? `lifecycle:${event.key}`
+        : "";
+  }
+
   // A streamed row's React key contains its transient array position
   // (`stream-7`, `stream-8`, ...). It is not an SDK identity and must never
   // outrank the semantic action/patch identities used for mirrored snapshots.
@@ -5343,39 +5541,19 @@ function activityDisplayEventIdentity(event: DisplayEvent): string {
 }
 
 /**
- * TodoWrite emits a new completed SDK call whenever it advances the same
- * checklist. Those calls have distinct transport identities, but a response
- * card should show the latest state of that checklist once—not every prior
- * 0/3, 1/3, and 2/3 snapshot. The item content and priority define a checklist;
- * each item's mutable status is deliberately excluded from the identity.
+ * TodoWrite emits a new SDK snapshot whenever it advances the same checklist.
+ * Transport IDs are not reliable across live/envelope/hydrated mirrors, so
+ * dedupe only an exact repeated snapshot. The item status is part of the
+ * identity on purpose: 0/4, 1/4, 2/4, and 4/4 are chronological UI records,
+ * not duplicates. Omitting status collapses the stream to one final-looking
+ * row and makes earlier progress disappear until rehydration.
  */
 function todoWriteChecklistIdentity(event: DisplayEvent): string {
   const tool = (event.activityDetail?.tool ?? event.label ?? "").trim().toLowerCase();
   if (event.kind !== "activity" || tool !== "todowrite") {
     return "";
   }
-
-  let todos: unknown[] | undefined;
-  const output = event.activityDetail?.output;
-  if (output) {
-    try {
-      const parsed = JSON.parse(output) as unknown;
-      if (Array.isArray(parsed)) {
-        todos = parsed;
-      } else {
-        const parsedRecord = asRecord(parsed);
-        if (Array.isArray(parsedRecord?.todos)) {
-          todos = parsedRecord.todos;
-        }
-      }
-    } catch {
-      // A partial tool payload can carry non-JSON output while the structured
-      // input is still complete; use that input below.
-    }
-  }
-  if (!todos && Array.isArray(event.activityDetail?.input?.todos)) {
-    todos = event.activityDetail.input.todos;
-  }
+  const todos = todoItemsFromDisplayEvent(event);
   if (!todos || todos.length === 0) {
     return "";
   }
@@ -5385,6 +5563,7 @@ function todoWriteChecklistIdentity(event: DisplayEvent): string {
     return [
       asString(record?.content).trim(),
       asString(record?.priority).trim(),
+      asString(record?.status).trim().toLowerCase(),
     ];
   });
   return `todowrite:${JSON.stringify(normalizedTodos)}`;
@@ -5400,6 +5579,17 @@ function todoWriteChecklistIdentity(event: DisplayEvent): string {
  */
 function activitySnapshotIdentity(event: DisplayEvent): string {
   if (event.kind !== "activity") return "";
+  const partType = (event.partType || "").trim().toLowerCase();
+  if (
+    partType === "step-start" ||
+    partType === "step-finish" ||
+    partType === "step-update"
+  ) {
+    // Lifecycle markers delimit activity blocks. Their visible text is often
+    // identical across consecutive steps, so a text/action fingerprint must
+    // not collapse the next marker into the previous block.
+    return "";
+  }
   if (isEditLikeActivity(event)) return "";
   const detail = event.activityDetail;
   const tool = firstNonEmptyString(detail?.tool, event.label, event.partType);
@@ -5575,13 +5765,14 @@ function timelineDisplayEventReactKey(event: DisplayEvent): string {
     // A message can contain several distinct text parts. messageID alone is
     // not a React identity and caused all but one Assistant Response card to
     // disappear when a part ID was absent from a live envelope.
-    return `commentary:${event.partID || event.key}`;
+    return `commentary:${event.partID || (event.timelineSeq ?? event.key)}`;
   }
   return firstNonEmptyString(
     activityPatchIdentity(event),
     todoWriteChecklistIdentity(event),
     activitySnapshotIdentity(event),
     activityDisplayEventIdentity(event),
+    event.timelineSeq !== undefined ? `timeline:${event.timelineSeq}` : undefined,
     event.key,
   ) || event.key;
 }
@@ -5606,7 +5797,7 @@ function coalesceTimelineEventsForRender(events: DisplayEvent[]): DisplayEvent[]
   const result: DisplayEvent[] = [];
   const indexByIdentity = new Map<string, number>();
 
-  for (const event of events) {
+  const rememberIdentity = (event: DisplayEvent, index: number): void => {
     const identity =
       event.kind === "activity"
         ? activityDisplayEventIdentity(event)
@@ -5615,14 +5806,53 @@ function coalesceTimelineEventsForRender(events: DisplayEvent[]): DisplayEvent[]
           : event.messageID
             ? `message:${event.messageID}:${event.kind}`
             : "";
-    if (!identity) {
+    if (identity) {
+      indexByIdentity.set(`transport:${identity}`, index);
+    }
+    // A patch part and its tool metadata can have different transport IDs but
+    // still describe one visible edit. Match the semantic patch fingerprint at
+    // the final render boundary so mirrored Edit rows cannot survive earlier
+    // projection layers. Different patch contents remain separate edits.
+    const patchIdentity = event.kind === "activity" ? activityPatchIdentity(event) : "";
+    if (patchIdentity) {
+      indexByIdentity.set(`patch:${patchIdentity}`, index);
+    }
+    // Transport IDs can differ between `/event`, `/global/event`, and
+    // rehydrated snapshots. The visible action/input identity is the final
+    // cross-envelope fallback; lifecycle timing is already excluded from its
+    // fingerprint, so a new start time cannot create a second visible row.
+    const snapshotIdentity = event.kind === "activity" ? activitySnapshotIdentity(event) : "";
+    if (snapshotIdentity) {
+      indexByIdentity.set(`snapshot:${snapshotIdentity}`, index);
+    }
+  };
+
+  for (const event of events) {
+    const transportIdentity =
+      event.kind === "activity"
+        ? activityDisplayEventIdentity(event)
+        : event.partID
+          ? `part:${event.partID}`
+          : event.messageID
+            ? `message:${event.messageID}:${event.kind}`
+            : "";
+    const patchIdentity = event.kind === "activity" ? activityPatchIdentity(event) : "";
+    const snapshotIdentity = event.kind === "activity" ? activitySnapshotIdentity(event) : "";
+    const matchingKeys = [
+      transportIdentity ? `transport:${transportIdentity}` : "",
+      patchIdentity ? `patch:${patchIdentity}` : "",
+      snapshotIdentity ? `snapshot:${snapshotIdentity}` : "",
+    ].filter(Boolean);
+    if (matchingKeys.length === 0) {
       result.push(event);
       continue;
     }
 
-    const existingIndex = indexByIdentity.get(identity);
+    const existingIndex = matchingKeys
+      .map((key) => indexByIdentity.get(key))
+      .find((index): index is number => typeof index === "number");
     if (typeof existingIndex !== "number") {
-      indexByIdentity.set(identity, result.length);
+      rememberIdentity(event, result.length);
       result.push(event);
       continue;
     }
@@ -5634,6 +5864,7 @@ function coalesceTimelineEventsForRender(events: DisplayEvent[]): DisplayEvent[]
       incomingPriority >= existingPriority
         ? mergeStickyDisplayEvent(existing, event)
         : mergeStickyDisplayEvent(event, existing);
+    rememberIdentity(result[existingIndex], existingIndex);
   }
 
   return result;
@@ -5713,6 +5944,8 @@ function mergeStickyDisplayEvent(
     // pull that text card ahead of the activity.
     streamSeq:
       existing.streamSeq ?? incoming.streamSeq,
+    timelineSeq:
+      existing.timelineSeq ?? incoming.timelineSeq,
   };
 }
 
@@ -5792,6 +6025,23 @@ function mergeStickyDisplayEventsForTurn(
   const activityPatchIndex = new Map<string, number>();
   const activityPatchFileIndex = new Map<string, number>();
   const sparseActivityPatchFileIndex = new Map<string, number>();
+  let nextTimelineSeq = previousEvents.reduce(
+    (highest, event) =>
+      typeof event.timelineSeq === "number"
+        ? Math.max(highest, event.timelineSeq + 1)
+        : highest,
+    0,
+  );
+
+  const stampTimelinePosition = (event: DisplayEvent): DisplayEvent => {
+    if (typeof event.timelineSeq === "number") {
+      nextTimelineSeq = Math.max(nextTimelineSeq, event.timelineSeq + 1);
+      return event;
+    }
+    const stamped = { ...event, timelineSeq: nextTimelineSeq };
+    nextTimelineSeq += 1;
+    return stamped;
+  };
 
   const remember = (event: DisplayEvent, index: number) => {
     const identity =
@@ -5831,6 +6081,7 @@ function mergeStickyDisplayEventsForTurn(
   };
 
   const ingest = (event: DisplayEvent) => {
+    event = stampTimelinePosition(event);
     const identity =
       event.kind === "activity"
         ? activityDisplayEventIdentity(event)
@@ -6214,14 +6465,14 @@ function SubagentsInlineCard({
                   key={subagent.id}
                   type="button"
                   className={cn(
-                    "oc-subagent-row w-full rounded-md border bg-oc-bg-soft px-2 py-1 text-left transition-colors",
+                    "oc-subagent-row w-full min-w-0 max-w-full overflow-hidden rounded-md border bg-oc-bg-soft px-2 py-1 text-left transition-colors",
                     "hover:bg-oc-panel",
                   )}
                   style={cardStyle}
                   onClick={() => openSubagentModal(subagent.id)}
                 >
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex min-w-0 items-center gap-2">
+                  <div className="flex min-w-0 items-center justify-between gap-2">
+                    <div className="flex min-w-0 flex-1 items-center gap-2">
                       <div className="oc-agent-icon shrink-0" style={accentTextStyle}>
                         {resolvedStatus === "running" ? (
                           <Loader2 className="h-3 w-3 animate-spin" />
@@ -6241,30 +6492,30 @@ function SubagentsInlineCard({
                         {modelInfo}
                       </span>
                     </div>
-                    <span className="font-medium text-oc-2xs oc-text-secondary">
+                    <span className="shrink-0 font-medium text-oc-2xs oc-text-secondary">
                       {formatDuration(durationMs)}
                     </span>
                   </div>
-                  <div className="mt-0.5 flex min-w-0 items-center gap-1">
-                    <span className="text-[9px] font-medium oc-text-secondary">
+                  <div className="mt-0.5 flex min-w-0 max-w-full items-center gap-1 overflow-hidden">
+                    <span className="shrink-0 text-[9px] font-medium oc-text-secondary">
                       {statusText}
                     </span>
                     {agentRole ? (
-                      <span className="rounded border border-oc-border-soft px-1 py-0 text-[8px] font-medium uppercase tracking-wide oc-text-secondary">
+                      <span className="max-w-full truncate rounded border border-oc-border-soft px-1 py-0 text-[8px] font-medium uppercase tracking-wide oc-text-secondary">
                         {agentRole}
                       </span>
                     ) : null}
                     {backgroundTaskId ? (
-                      <span className="rounded border border-oc-border-soft px-1 py-0 text-[8px] font-medium uppercase tracking-wide oc-text-secondary">
+                      <span className="max-w-full truncate rounded border border-oc-border-soft px-1 py-0 text-[8px] font-medium uppercase tracking-wide oc-text-secondary">
                         {backgroundTaskId}
                       </span>
                     ) : null}
                   </div>
                   {shouldShowActivity ? (
-                    <div className="mt-0.5 min-h-[12px] font-medium text-[9px] oc-text-secondary">
+                    <div className="mt-0.5 min-h-[12px] min-w-0 max-w-full overflow-hidden font-medium text-[9px] oc-text-secondary">
                       <FadeSwapText
                         text={loadingHint || activityText}
-                        className="block truncate"
+                        className="block min-w-0 max-w-full truncate"
                         durationMs={220}
                       />
                     </div>
@@ -6874,9 +7125,18 @@ function buildDisplayEvents(
   }
   const sdkOrderedEntries: RawRenderEntry[] = [];
   for (let streamSeq = 0; streamSeq < rawEventCount; streamSeq += 1) {
-    sdkOrderedEntries.push(...(entriesBySdkSequence.get(streamSeq) ?? []));
+    // Do not use push(...entriesAtSequence) here. A long SDK tape can contain
+    // thousands of rows, and spreading them into function arguments can throw
+    // `RangeError: Maximum call stack size exceeded` before React gets to paint.
+    const entriesAtSequence = entriesBySdkSequence.get(streamSeq);
+    if (!entriesAtSequence) continue;
+    for (const entry of entriesAtSequence) {
+      sdkOrderedEntries.push(entry);
+    }
   }
-  sdkOrderedEntries.push(...trailingEntries);
+  for (const entry of trailingEntries) {
+    sdkOrderedEntries.push(entry);
+  }
 
   const rawEvents: DisplayEvent[] = [];
 
@@ -8513,10 +8773,52 @@ function ResponseMessageInner({
     if (message || !currentSessionId) {
       return [] as SubagentSummary[];
     }
+    const liveSessionParentMessageIds = new Set<string>([
+      subagentParentMessageId,
+      assistantTurnMessageId,
+    ].filter((id): id is string => Boolean(id)));
+
+    // A live response can move through several assistant phase IDs. Resolve
+    // those phases through their shared user-turn parent, but never fall back
+    // to every subagent in the session: that would render an older block's
+    // card at the bottom of the conversation.
+    const activeAssistantIds = new Set(
+      (messages ?? [])
+        .filter((candidate) =>
+          firstNonEmptyString(candidate.role, candidate.info?.role)?.toLowerCase() === "assistant" &&
+          collectMessageIdentityCandidates(candidate).has(assistantTurnMessageId || ""),
+        )
+        .map((candidate) => firstNonEmptyString(candidate.id, candidate.info?.id))
+        .filter((id): id is string => Boolean(id)),
+    );
+    const activeTurnParentIds = new Set(
+      (messages ?? [])
+        .filter((candidate) => {
+          const candidateId = collectMessageIdentityCandidates(candidate);
+          return candidateId.size > 0 && Array.from(candidateId).some((id) => activeAssistantIds.has(id));
+        })
+        .map((candidate) => firstNonEmptyString(candidate.info?.parentID, candidate.info?.parentId))
+        .filter((id): id is string => Boolean(id)),
+    );
+    for (const candidate of messages ?? []) {
+      const role = firstNonEmptyString(candidate.role, candidate.info?.role)?.toLowerCase();
+      const parentId = firstNonEmptyString(candidate.info?.parentID, candidate.info?.parentId);
+      if (role === "assistant" && parentId && activeTurnParentIds.has(parentId)) {
+        for (const id of collectMessageIdentityCandidates(candidate)) {
+          liveSessionParentMessageIds.add(id);
+        }
+      }
+    }
+
     return Object.values(subagentsByParentMessageId ?? {})
       .flat()
-      .filter((subagent) => subagent?.parentSessionId === currentSessionId);
-  }, [currentSessionId, message, subagentsByParentMessageId]);
+      .filter(
+        (subagent) =>
+          subagent?.parentSessionId === currentSessionId &&
+          Boolean(subagent.parentMessageId) &&
+          liveSessionParentMessageIds.has(subagent.parentMessageId),
+      );
+  }, [assistantTurnMessageId, currentSessionId, message, messages, subagentParentMessageId, subagentsByParentMessageId]);
 
   const [showSubagents, setShowSubagents] = useState(true);
   const [showAllSubagents, setShowAllSubagents] = useState(false);
@@ -8950,14 +9252,18 @@ const centralizedRawResponse = message?.rawResponse;
   const hydratedActivitySteps = useMemo(
     () =>
       collapsedBlockAssistantMessages.length > 0
-        ? collapsedBlockAssistantMessages.flatMap((candidate) => [
-            ...(Array.isArray(candidate.progressEvents) ? candidate.progressEvents : []),
-            ...(Array.isArray(candidate.steps) ? candidate.steps : []),
-          ])
-        : [
-            ...(cardMessage?.progressEvents ?? []),
-            ...(cardMessage?.steps ?? []),
-          ],
+        ? collapsedBlockAssistantMessages.flatMap((candidate) => {
+            // Hydrated messages mirror the canonical activity list into both
+            // `steps` and `progressEvents`. Prefer one representation so the
+            // same tool call is not projected twice before semantic merging.
+            if (Array.isArray(candidate.steps) && candidate.steps.length > 0) {
+              return candidate.steps;
+            }
+            return Array.isArray(candidate.progressEvents) ? candidate.progressEvents : [];
+          })
+        : Array.isArray(cardMessage?.steps) && cardMessage.steps.length > 0
+          ? cardMessage.steps
+          : (cardMessage?.progressEvents ?? []),
     [
       cardMessage?.progressEvents,
       cardMessage?.steps,
@@ -8972,9 +9278,37 @@ const centralizedRawResponse = message?.rawResponse;
     [normalizedCentralizedRawSdkEventPayloads],
   );
   const rawContent = rawContentChunks.join("");
+  // The final structured response can live on a later assistant phase than
+  // the card envelope selected for this render. In collapsed blocks, search
+  // the complete coalesced block in reverse arrival order so the final SDK
+  // response remains visible even when the selected card only contains tools
+  // or commentary parts.
+  const responseSourceMessage =
+    [...collapsedBlockAssistantMessages].reverse().find((candidate) => {
+      const candidateStructured =
+        asRecord(candidate.structuredOutput) ??
+        asRecord(candidate.info?.structuredOutput) ??
+        asRecord(candidate.info?.structured) ??
+        asRecord(
+          structuredOutputFromRawSdkEventPayloads(candidate.rawSdkEventPayloads),
+        );
+      return Boolean(
+        asString(candidateStructured?.message).trim() ||
+        asString(candidateStructured?.text).trim(),
+      );
+    }) ?? cardMessage;
+  const structuredSnapshot =
+    asRecord(responseSourceMessage?.structuredOutput) ??
+    asRecord(responseSourceMessage?.info?.structuredOutput) ??
+    asRecord(responseSourceMessage?.info?.structured) ??
+    asRecord(
+      structuredOutputFromRawSdkEventPayloads(responseSourceMessage?.rawSdkEventPayloads),
+    );
   const snapshotContent = firstNonEmptyString(
-    cardMessage?.content,
-    cardMessage?.text,
+    responseSourceMessage?.content,
+    responseSourceMessage?.text,
+    asString(structuredSnapshot?.message),
+    asString(structuredSnapshot?.text),
     cardMessage?.parts
       ?.filter((part) => part?.type === "text")
       .map((part) => firstNonEmptyString(part.text, part.content, part.message) ?? "")
@@ -9132,6 +9466,148 @@ const centralizedRawResponse = message?.rawResponse;
       ),
     [progressItems, liveProgressItems, isStreamingActive],
   );
+  const liveDuplicateProgressTraceRef = useRef("");
+  useEffect(() => {
+    const groups = new Map<string, ProgressItem[]>();
+    for (const item of mergedProgressItems) {
+      const fingerprint = progressVisibleActionIdentity(item);
+      if (!fingerprint) continue;
+      groups.set(fingerprint, [...(groups.get(fingerprint) ?? []), item]);
+    }
+    const duplicates = [...groups.entries()]
+      .filter(([, items]) => items.length > 1)
+      .map(([fingerprint, items]) => ({
+        fingerprint,
+        rows: items.map((item) => ({
+          key: item.key,
+          mergeKey: item.mergeKey,
+          id: item.id,
+          callID: item.callID,
+          messageID: item.messageID,
+          streamSeq: item.streamSeq,
+          source: item.source,
+          status: item.status,
+        })),
+      }));
+    if (duplicates.length === 0) return;
+    const signature = JSON.stringify(duplicates);
+    if (signature === liveDuplicateProgressTraceRef.current) return;
+    liveDuplicateProgressTraceRef.current = signature;
+    logger.error("[ACTIVITY-DUPLICATE-TRACE] identical visible rows survived progress merge", {
+      messageId,
+      streamingMessageId: activityTimelineStreaming?.messageId ?? null,
+      isStreamingActive,
+      turnId: activityTimelineTurnMessageId,
+      duplicates,
+      finalizedCount: progressItems.length,
+      liveCount: liveProgressItems.length,
+      mergedCount: mergedProgressItems.length,
+    });
+  }, [
+    activityTimelineStreaming?.messageId,
+    activityTimelineTurnMessageId,
+    isStreamingActive,
+    liveProgressItems,
+    mergedProgressItems,
+    messageId,
+    progressItems,
+  ]);
+  // The final sticky display tape can preserve a row after the progress
+  // projection has already dropped it. That made the old loss detector silent
+  // while the user-visible activity-step list still shrank. Track the merge
+  // boundary itself so every partial loss is reported, including losses caused
+  // by a new SDK step-start/step-finish phase.
+  const liveProgressLossTraceRef = useRef<{
+    sessionId: string | null;
+    streamingMessageId: string | null;
+    rows: Map<string, ProgressItem>;
+    lastSignature: string;
+  }>({ sessionId: null, streamingMessageId: null, rows: new Map(), lastSignature: "" });
+  useEffect(() => {
+    const identityForProgressItem = (item: ProgressItem): string =>
+      // A tool snapshot can gain its structured input after the pending
+      // envelope. Keep that update attached to the same row by callID before
+      // considering the cross-call visible-action fingerprint.
+      (item.callID ? `call:${item.callID}` : "") ||
+      progressVisibleActionIdentity(item) ||
+      progressItemIdentityKey(item) ||
+      (item.id ? `id:${item.id}` : "") ||
+      item.key;
+    const rows = new Map<string, ProgressItem>();
+    for (const item of mergedProgressItems) {
+      rows.set(identityForProgressItem(item), item);
+    }
+    const previous = liveProgressLossTraceRef.current;
+    const sameSession = previous.sessionId === currentSessionId;
+    const streamingMessageId = activityTimelineStreaming?.messageId ?? null;
+    const sameStreamingPhase = previous.streamingMessageId === streamingMessageId;
+    // A new assistant message ID is a legitimate OpenCode phase transition.
+    // Its raw finalized rows are replaced by the new live phase rows; that is
+    // not a rendered-row loss and must not be reported as one.
+    if (sameSession && sameStreamingPhase && isStreamingActive) {
+      const removed = [...previous.rows.entries()]
+        .filter(([identity]) => !rows.has(identity))
+        .map(([identity, item]) => ({
+          identity,
+          key: item.key,
+          mergeKey: item.mergeKey,
+          title: item.title,
+          partType: item.partType,
+          status: item.status,
+          source: item.source,
+          id: item.id,
+          callID: item.callID,
+          messageID: item.messageID,
+          streamSeq: item.streamSeq,
+        }));
+      if (removed.length > 0) {
+        const signature = JSON.stringify({
+          sessionId: currentSessionId,
+          streamingMessageId: activityTimelineStreaming?.messageId ?? null,
+          removed,
+          previousCount: previous.rows.size,
+          currentCount: rows.size,
+        });
+        if (signature !== previous.lastSignature) {
+          logger.error("[ACTIVITY-LIVE-LOSS] progress rows disappeared before display projection", {
+            sessionId: currentSessionId,
+            streamingMessageId: activityTimelineStreaming?.messageId ?? null,
+            removed,
+            currentRows: [...rows.values()].map((item) => ({
+              identity: identityForProgressItem(item),
+              key: item.key,
+              mergeKey: item.mergeKey,
+              title: item.title,
+              partType: item.partType,
+              status: item.status,
+              source: item.source,
+              id: item.id,
+              callID: item.callID,
+              messageID: item.messageID,
+              streamSeq: item.streamSeq,
+            })),
+            finalizedCount: progressItems.length,
+            liveCount: liveProgressItems.length,
+            mergedCount: mergedProgressItems.length,
+          });
+          previous.lastSignature = signature;
+        }
+      }
+    }
+    liveProgressLossTraceRef.current = {
+      sessionId: currentSessionId,
+      streamingMessageId,
+      rows,
+      lastSignature: previous.lastSignature,
+    };
+  }, [
+    activityTimelineStreaming?.messageId,
+    currentSessionId,
+    isStreamingActive,
+    liveProgressItems,
+    mergedProgressItems,
+    progressItems,
+  ]);
   const visibleTurnUserPromptText = useMemo(() => {
     if (!Array.isArray(messages)) {
       return "";
@@ -9211,6 +9687,46 @@ const centralizedRawResponse = message?.rawResponse;
     },
     [thoughtItems, mergedProgressItems, commentaryItems, fileChanges, assistantScopeMessageIds, messageId, isParentResponseFinished, normalizedCentralizedRawSdkEventPayloads.length],
   );
+  const completedDuplicateDisplayTraceRef = useRef("");
+  useEffect(() => {
+    const groups = new Map<string, DisplayEvent[]>();
+    for (const event of displayEvents) {
+      if (event.kind !== "activity") continue;
+      const identity =
+        activitySnapshotIdentity(event) ||
+        activityDisplayEventIdentity(event) ||
+        displayEventFingerprint(event);
+      groups.set(identity, [...(groups.get(identity) ?? []), event]);
+    }
+    const duplicates = [...groups.entries()]
+      .filter(([, events]) => events.length > 1)
+      .map(([identity, events]) => ({
+        identity,
+        rows: events.map((event) => ({
+          key: event.key,
+          label: event.label,
+          partType: event.partType,
+          callID: event.callID,
+          partID: event.partID,
+          messageID: event.messageID,
+          streamSeq: event.streamSeq,
+          timelineSeq: event.timelineSeq,
+          source: event.source,
+        })),
+      }));
+    if (duplicates.length === 0) return;
+    const signature = JSON.stringify(duplicates);
+    if (signature === completedDuplicateDisplayTraceRef.current) return;
+    completedDuplicateDisplayTraceRef.current = signature;
+    logger.error("[ACTIVITY-DUPLICATE-TRACE] identical visible rows survived display projection", {
+      turnId: activityTimelineTurnMessageId,
+      messageId,
+      isStreamingActive,
+      duplicates,
+      progressCount: mergedProgressItems.length,
+      displayCount: displayEvents.length,
+    });
+  }, [activityTimelineTurnMessageId, displayEvents, isStreamingActive, mergedProgressItems.length, messageId]);
   const activityOrderTraceRef = useRef<string>("");
   useEffect(() => {
     if (!config.debug.showSdkEventDebug) {
@@ -9564,6 +10080,90 @@ const centralizedRawResponse = message?.rawResponse;
     stickyTimelineDisplayEventsRef.current.messageId === activityTimelineTurnMessageId
       ? stickyTimelineDisplayEventsRef.current.events
       : visibleDisplayEvents;
+
+  // Always-on, narrowly scoped evidence for the user-visible regression. This
+  // does not log ordinary stream updates; it logs only when a row that was in
+  // the rendered live timeline is absent on the next render of the same turn.
+  // Keep this outside the debug flag so a reproduction can be diagnosed from
+  // the normal webview log without asking the user to change settings.
+  const liveActivityLossTraceRef = useRef<{
+    turnId: string | null;
+    rows: Map<string, DisplayEvent>;
+    lastSignature: string;
+  }>({ turnId: null, rows: new Map(), lastSignature: "" });
+  useEffect(() => {
+    const rows = new Map<string, DisplayEvent>();
+    for (const event of timelineDisplayEvents) {
+      if (event.kind !== "activity") continue;
+      const identity =
+        activityDisplayEventIdentity(event) ||
+        (event.timelineSeq !== undefined
+          ? `timeline:${event.timelineSeq}`
+          : `key:${event.key}`);
+      rows.set(identity, event);
+    }
+    const previous = liveActivityLossTraceRef.current;
+    if (previous.turnId === activityTimelineTurnMessageId && isStreamingActive) {
+      const removed = [...previous.rows.entries()]
+        .filter(([identity]) => !rows.has(identity))
+        .map(([identity, event]) => ({
+          identity,
+          key: event.key,
+          label: event.label,
+          partType: event.partType,
+          status: event.status,
+          source: event.source,
+          messageID: event.messageID,
+          partID: event.partID,
+          callID: event.callID,
+          streamSeq: event.streamSeq,
+          timelineSeq: event.timelineSeq,
+        }));
+      if (removed.length > 0) {
+        const signature = JSON.stringify({
+          turnId: activityTimelineTurnMessageId,
+          removed,
+          nextRowCount: rows.size,
+        });
+        if (signature !== previous.lastSignature) {
+          logger.error("[ACTIVITY-LIVE-LOSS] rendered rows disappeared during stream", {
+            turnId: activityTimelineTurnMessageId,
+            messageId,
+            streamingMessageId: activityTimelineStreaming?.messageId ?? null,
+            assistantTurnMessageId,
+            removed,
+            nextRows: [...rows.values()].map((event) => ({
+              key: event.key,
+              label: event.label,
+              partType: event.partType,
+              source: event.source,
+              messageID: event.messageID,
+              partID: event.partID,
+              callID: event.callID,
+              streamSeq: event.streamSeq,
+              timelineSeq: event.timelineSeq,
+            })),
+            visibleDisplayEventCount: visibleDisplayEvents.length,
+            timelineDisplayEventCount: timelineDisplayEvents.length,
+          });
+          previous.lastSignature = signature;
+        }
+      }
+    }
+    liveActivityLossTraceRef.current = {
+      turnId: activityTimelineTurnMessageId,
+      rows,
+      lastSignature: previous.lastSignature,
+    };
+  }, [
+    activityTimelineStreaming?.messageId,
+    activityTimelineTurnMessageId,
+    assistantTurnMessageId,
+    isStreamingActive,
+    messageId,
+    timelineDisplayEvents,
+    visibleDisplayEvents.length,
+  ]);
 
   // Evidence-only guard for the regression where a row paints during a live
   // turn and is then removed by a later projection. The sticky merge above is
@@ -9953,6 +10553,12 @@ const centralizedRawResponse = message?.rawResponse;
   const isAssistantTurnCollapsed =
     canCollapseCompletedAssistantTurn &&
     !effectiveExpanded;
+  // Copy/Fork belong to the compact completed-turn summary. Keeping them out
+  // of live and expanded cards prevents actions from appearing while the
+  // response is still changing and avoids repeating them for assistant phases.
+  const shouldShowResponseActions =
+    isAssistantTurnCollapsed &&
+    (blockSize === undefined || blockSize <= 1 || isLastInBlock === true);
 
   const { blockTokens, blockDuration } = useMemo(() => {
     if (!isAssistantTurnCollapsed || !blockGroupKey || !messages || blockSize === undefined || blockSize <= 1) {
@@ -10077,7 +10683,7 @@ const centralizedRawResponse = message?.rawResponse;
         ),
     );
 
-    for (const event of coalescedTimelineDisplayEvents) {
+    for (const [eventIndex, event] of coalescedTimelineDisplayEvents.entries()) {
       // Assistant response text already renders in the dedicated response card
       // above the timeline. Keep it out of the timeline groups so the same
       // final answer cannot appear twice when the centralized tape contains
@@ -10091,10 +10697,11 @@ const centralizedRawResponse = message?.rawResponse;
       }
       orderedEntries.push({
         type: "event",
-        seq:
-          typeof event.streamSeq === "number"
-            ? event.streamSeq
-            : Number.MAX_SAFE_INTEGER,
+        // `streamSeq` is not a comparable global clock: raw SDK payloads use
+        // array indexes while live reducer rows use arrival timestamps. The
+        // sticky timeline has already accepted and merged events in arrival
+        // order, so use that retained array position for final rendering.
+        seq: eventIndex,
         event,
       });
     }
@@ -10105,9 +10712,18 @@ const centralizedRawResponse = message?.rawResponse;
       if (questionActivityFingerprints.has(normalizeComparableText(chunk.text))) {
         return;
       }
+      const anchorIndex = coalescedTimelineDisplayEvents.findIndex(
+        (event) => event.streamSeq === chunk.streamSeq,
+      );
       orderedEntries.push({
         type: "question-output",
-        seq: chunk.streamSeq,
+        // Question output is a derived sidecar. Anchor it to the retained
+        // event position when possible; never compare its raw tape index
+        // directly with live timestamp-based activity sequences.
+        seq:
+          anchorIndex >= 0
+            ? anchorIndex + 0.1
+            : coalescedTimelineDisplayEvents.length + index,
         text: chunk.text,
         key: `${messageId || "assistant"}-question-output-${index}`,
       });
@@ -10994,6 +11610,16 @@ const responseBodyChunks = useMemo(() => {
     : "";
   const isLiveStreamingCard = !cardMessage && !!streaming?.isActive;
   const isLiveStream = !!streaming?.isActive;
+  // Keep the loading label owned by the canonical live card. `isLiveStream`
+  // describes only this component's local stream prop and can be false for a
+  // transcript card during the live-card handoff, even while this card is the
+  // active assistant turn. The ticker must also be able to render before the
+  // first activity row exists.
+  const shouldShowLiveLoadingText =
+    isCurrentCardLiveAssistantTurn &&
+    !isParentResponseFinished &&
+    !isAborted &&
+    !hideLoadingText;
   // Centralized data is the source of truth for what belongs in the final
   // assistant response. If the response text is present, render it directly
   // instead of hiding it behind a live-stream flag.
@@ -11025,16 +11651,16 @@ const responseBodyChunks = useMemo(() => {
 const hasVisibleResponseSectionContent =
     (showResponseBody && !shouldInterleaveStreamingAssistantCommentary) ||
     (shouldShowPlanCard && !!plan);
-  // Response visibility belongs to the response card itself. Activity/block
-  // collapse may summarize work around the card, but must never truncate the
-  // assistant's response text.
+  // The response card has its own preview state. It sits outside the activity
+  // block's collapsed content, so its height must be controlled independently.
   const responseChunksVisibleInCurrentView = responseChunksToRender;
   // Every completed response body is constrained to the preview height first.
   // Whether it receives a fade is determined from its rendered height rather
   // than an arbitrary character count, so code-heavy and markdown-heavy cards
   // behave consistently too.
   const shouldConstrainResponsePreview =
-    !isStreamingActive && showResponseBody && !isResponseExpanded;
+    showResponseBody &&
+    !isResponseExpanded;
   const canPreviewResponse = shouldConstrainResponsePreview && hasResponseOverflow;
   const isResponsePreviewCollapsed = canPreviewResponse;
 
@@ -11221,7 +11847,7 @@ const hasVisibleResponseSectionContent =
     <div
       id={messageId ? `msg-${messageId}` : undefined}
       data-message-id={messageId || undefined}
-      className={`oc-message-enter ${responseEnterClass} ${isContiguous ? "mb-2.5 mt-2" : "mb-3.5"}${isHiddenByBlock || isVisuallyEmpty ? " hidden" : ""}`}
+      className={`oc-message-enter ${responseEnterClass} ${isContiguous ? "mb-2.5 mt-2" : "mb-3.5"}${isVisuallyEmpty && !isHiddenByBlock ? " hidden" : ""}`}
       // Do not apply content-visibility/intrinsic-size placeholders to the
       // active stream. The browser may skip the timeline body and expose the
       // 320px placeholder, leaving the Thought row stranded below a large
@@ -11391,7 +12017,8 @@ const hasVisibleResponseSectionContent =
             (hasStickyTimelineActivity ||
               hasLiveSessionStatus ||
               showThinkingPlaceholder ||
-              nonQuestionTimelineDisplayEventGroups.length > 0) && (
+              nonQuestionTimelineDisplayEventGroups.length > 0 ||
+              shouldShowLiveLoadingText) && (
               <section data-assistant-section="activity" className="space-y-0">
                 {/* Lifecycle-delimited Steppers are siblings. Keep this
                     section gap-free so start/finish blocks cannot accumulate
@@ -11401,60 +12028,49 @@ const hasVisibleResponseSectionContent =
                     state. Other status types (retry, error, idle, ready, etc.) must still
                     render so the user sees retry countdowns and surfacing session events. */}
                 {hasLiveSessionStatus && liveSessionStatus?.statusType !== "busy" ? (
-                  <div className="mb-2 px-2.5">
+                  <div className="mb-2 px-1.5">
                     <div
-                      className="w-full rounded-[10px] border px-3 py-2.5 text-left transition-colors"
+                      className={cn(
+                        "oc-live-session-status",
+                        liveSessionStatus.statusType === "retry" && "is-retry",
+                      )}
+                      role="status"
+                      aria-live="polite"
                       style={{
-                        background: liveSessionStatus.statusType === "retry"
-                          ? "color-mix(in srgb, var(--vscode-warningForeground) 8%, transparent)"
-                          : "color-mix(in srgb, var(--oc-text) 3%, transparent)",
-                        borderColor: liveSessionStatus.statusType === "retry"
-                          ? "color-mix(in srgb, var(--vscode-warningForeground) 15%, transparent)"
-                          : "color-mix(in srgb, var(--oc-border) 80%, transparent)",
-                      }}
+                        "--oc-live-status-color": liveSessionStatus.statusType === "retry"
+                          ? "var(--vscode-warningForeground)"
+                          : "var(--oc-text-secondary)",
+                      } as CSSProperties}
                     >
-                      <div className="flex min-w-0 items-center gap-3">
-                        <div
-                          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full"
-                          style={{
-                            background: liveSessionStatus.statusType === "retry"
-                              ? "color-mix(in srgb, var(--vscode-warningForeground) 15%, transparent)"
-                              : "color-mix(in srgb, var(--oc-text) 6%, transparent)",
-                            color: liveSessionStatus.statusType === "retry"
-                              ? "var(--vscode-warningForeground)"
-                              : "var(--oc-text)",
-                          }}
-                        >
-                          {liveSessionStatus.statusType === "retry" ? (
-                            <AlertTriangle className="h-3.5 w-3.5" />
-                          ) : (
-                            <div className="h-2 w-2 rounded-full animate-pulse bg-current" />
-                          )}
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div
-                            className="text-[11px] font-medium uppercase tracking-[0.06em]"
-                            style={{
-                              color: liveSessionStatus.statusType === "retry"
-                                ? "var(--vscode-warningForeground)"
-                                : "var(--oc-text-secondary)",
-                            }}
-                          >
-                            {liveStatusTitle}
-                          </div>
-                          {liveStatusSubtitle ? (
-                            <div className="text-[13px] leading-snug mt-0.5 text-oc-text">
-                              {liveStatusSubtitle}
-                            </div>
-                          ) : null}
-                          {liveStatusCountdown ? (
-                            <div className="flex items-center gap-1 mt-1 text-[11px] text-oc-text-soft">
-                              <Clock className="h-3 w-3" />
-                              <span>Next retry in {liveStatusCountdown}</span>
-                            </div>
-                          ) : null}
-                        </div>
+                      <div className="oc-live-session-status__icon" aria-hidden="true">
+                        {liveSessionStatus.statusType === "retry" ? (
+                          <AlertTriangle className="h-3.5 w-3.5" />
+                        ) : (
+                          <div className="h-2 w-2 rounded-full animate-pulse bg-current" />
+                        )}
                       </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="oc-live-session-status__title">
+                          <span>{liveStatusTitle}</span>
+                          {liveSessionStatus.statusType === "retry" ? (
+                            <span className="oc-live-session-status__state">Waiting</span>
+                          ) : null}
+                        </div>
+                        {liveSessionStatus.statusType === "retry" && liveSessionStatus.attempt ? (
+                          <div className="oc-live-session-status__meta">
+                            Attempt {liveSessionStatus.attempt}
+                          </div>
+                        ) : null}
+                        {liveStatusSubtitle ? (
+                          <div className="oc-live-session-status__description">{liveStatusSubtitle}</div>
+                        ) : null}
+                      </div>
+                      {liveStatusCountdown ? (
+                        <div className="oc-live-session-status__countdown">
+                          <Clock className="h-3 w-3" aria-hidden="true" />
+                          <span>{liveStatusCountdown}</span>
+                        </div>
+                      ) : null}
                     </div>
                   </div>
                 ) : null}
@@ -11534,6 +12150,29 @@ const hasVisibleResponseSectionContent =
                           (isActivityTextRedundantWithTitle(event.label, event.detail) ||
                             isActivityTextRedundantWithTitle(visibleSummary, event.detail) ||
                             isActivityTextRedundantWithTitle(event.description, event.detail));
+                        // OpenCode's generic `task` tool carries the selected
+                        // subagent in input.subagent_type. Keep it visible in
+                        // the step header so task rows identify which agent
+                        // performed the work without expanding the prompt.
+                        const taskSubagentType =
+                          labelLower === "task"
+                            ? asString(event.activityDetail?.input?.subagent_type).trim()
+                            : "";
+                        // skill_mcp exposes the selected MCP server and tool in
+                        // its structured input. Keep both visible in the step
+                        // header so the activity row identifies the external
+                        // capability without expanding the raw arguments/output.
+                        const skillMcpName =
+                          labelLower === "skill_mcp"
+                            ? asString(event.activityDetail?.input?.mcp_name).trim()
+                            : "";
+                        const skillMcpToolName =
+                          labelLower === "skill_mcp"
+                            ? asString(event.activityDetail?.input?.tool_name).trim()
+                            : "";
+                        const skillMcpTarget = [skillMcpName, skillMcpToolName]
+                          .filter(Boolean)
+                          .join(" · ");
                         // A file-read row is intentionally a compact timeline marker.
                         // Its payload can be a complete source file, and mounting an
                         // otherwise-empty detail column leaves a clipped surface and
@@ -11606,6 +12245,7 @@ const hasVisibleResponseSectionContent =
                             id={timelineDisplayEventReactKey(event)}
                             isLast={isLast}
                             status={event.status}
+                            animateEntrance={isStreamingActive}
                           >
                             {(() => {
                               if (event.kind === "reasoning") {
@@ -11690,6 +12330,12 @@ const hasVisibleResponseSectionContent =
                                 );
                               } else {
                                 const activityTool = (event.activityDetail?.tool ?? "").trim().toLowerCase();
+                                const taskSubagentType = labelLower === "task"
+                                  ? firstNonEmptyString(
+                                      asString((event.activityDetail?.input as Record<string, unknown> | undefined)?.subagent_type),
+                                      asString((event.activityDetail?.input as Record<string, unknown> | undefined)?.agent),
+                                    )
+                                  : undefined;
                                 return (
                                   <div className="flex items-start justify-between gap-2 w-full">
                                     <ExpandableStep className="flex-1">
@@ -11724,6 +12370,30 @@ const hasVisibleResponseSectionContent =
                                             <span className="oc-activity-step-title font-medium text-oc-text capitalize">
                                               {event.label.replace(/_/g, " ")}
                                             </span>
+                                            {taskSubagentType ? (
+                                              <span
+                                                className="oc-activity-step-meta max-w-[min(44ch,60vw)] truncate font-mono text-[11px] text-oc-text-soft"
+                                                title={taskSubagentType}
+                                              >
+                                                {taskSubagentType}
+                                              </span>
+                                            ) : null}
+                                            {taskSubagentType ? (
+                                              <span
+                                                className="oc-activity-step-meta max-w-[min(44ch,60vw)] truncate font-mono"
+                                                title={taskSubagentType}
+                                              >
+                                                {taskSubagentType}
+                                              </span>
+                                            ) : null}
+                                            {skillMcpTarget ? (
+                                              <span
+                                                className="oc-activity-step-meta max-w-[min(52ch,70vw)] truncate font-mono"
+                                                title={skillMcpTarget}
+                                              >
+                                                {skillMcpTarget}
+                                              </span>
+                                            ) : null}
                                             {isGlobSearch && typeof event.activityDetail?.input?.pattern === "string" && event.activityDetail.input.pattern.trim() ? (
                                               <span
                                                 className="max-w-[min(44ch,60vw)] truncate rounded bg-oc-bg-soft px-1.5 py-0.5 font-mono text-xs text-oc-text-soft"
@@ -11792,8 +12462,11 @@ const hasVisibleResponseSectionContent =
 
                                           {shouldRenderActivityBody ? (
                                           <div className="flex flex-col gap-1 w-full">
-                                              {/* For read, todowrite, and edit events, skip the generic summary block here — they have their own custom UI below.
-                                                  For all other events, render the file link or summary as usual. */}
+                                              {/* For read, TodoWrite, and edit events, skip the generic summary
+                                                  block because they have dedicated content below. Every other
+                                                  activity summary must pass through a bounded preview; otherwise
+                                                  one large Markdown/tool payload can expand the entire timeline
+                                                  while the other activity rows remain collapsed. */}
                                               {/* Bash/Glob payloads live in activityDetail, not necessarily in the
                                                   generic summary.  Render their terminal surface directly so live
                                                   tool snapshots do not disappear until SDK rehydration supplies a
@@ -11805,73 +12478,36 @@ const hasVisibleResponseSectionContent =
                                                     messageContent={content}
                                                   />
                                                 </div>
-                                              ) : labelLower !== "read" && labelLower !== "todowrite" && !isEditLike && visibleSummary && (
-                                                event.filePath && !isUrl(event.filePath) && event.label !== "bash" && !isCallStyleActivityLabel(event.label) ? (
-                                                isGlobSearch ? (
-                                                  <TerminalBlockWithOutput
-                                                    event={event}
-                                                    messageContent={content}
-                                                  />
-                                                ) : SEARCH_LABELS.has(event.label) ? (
-                                                  <DetailedSearchActivityPreview
-                                                    event={event}
-                                                    isGlobSearch={isGlobSearch}
-                                                  />
-                                                ) : (
-                                                  <button
-                                                    type="button"
-                                                    className="oc-refined-file-link oc-refined-file-link-with-tooltip w-full min-w-0"
-                                                      onClick={() =>
-                                                        vscode.postMessage({
-                                                          type: "openFile",
-                                                          file: event.filePath!,
-                                                        })
-                                                      }
-                                                    >
-                                                      <FileIcon
-                                                        filePath={event.filePath}
-                                                        isDirectory={isDirectoryActivityPath(event.filePath, event.activityDetail)}
-                                                      />
-                                                      <span className="break-words whitespace-pre-wrap">
-                                                        {visibleSummary}
-                                                      </span>
-                                                      <span className="oc-refined-file-link-tooltip oc-refined-file-link-tooltip-below" role="tooltip">
-                                                        {event.filePath}
-                                                      </span>
-                                                    </button>
-                                                  )
-                                                ) : (
-                                                  <div className="oc-refined-event-summary">
-                                                    {event.label === "bash" || isGlobSearch ? (
-                                                      <TerminalBlockWithOutput
-                                                        event={event}
-                                                        messageContent={content}
-                                                      />
+                                              ) : labelLower === "skill_mcp" ? (
+                                                <SkillMcpActivityStep event={event} />
+                                              ) : !visibleSummary && (
+                                                (event.activityDetail?.input && Object.keys(event.activityDetail.input).length > 0) ||
+                                                asString(event.activityDetail?.output).trim()
+                                              ) ? (
+                                                <GenericToolPayloadStep event={event} />
+                                              ) : labelLower !== "read" && labelLower !== "todowrite" && labelLower !== "skill_mcp" && !isEditLike && visibleSummary && (
+                                                <div className="oc-refined-event-summary">
+                                                  {labelLower === "bash" || isGlobSearch ? (
+                                                    <TerminalBlockWithOutput
+                                                      event={event}
+                                                      messageContent={content}
+                                                    />
                                                   ) : SEARCH_LABELS.has(event.label) ? (
                                                     <DetailedSearchActivityPreview
                                                       event={event}
                                                       isGlobSearch={isGlobSearch}
                                                     />
-                                                    ) : event.filePath && isUrl(event.filePath) ? (
-                                                      <a
-                                                        href={event.filePath}
-                                                        target="_blank"
-                                                        rel="noopener noreferrer"
-                                                        className="oc-refined-url-link flex items-center gap-1.5 hover:underline"
-                                                      >
-                                                        <ArrowUpRight className="h-3.5 w-3.5 shrink-0 opacity-70" />
-                                                        <span className="break-words whitespace-pre-wrap">
-                                                          {visibleSummary}
-                                                        </span>
-                                                      </a>
-                                                    ) : (
-                                                      <CollapsedMarkdownPreview
-                                                        title={event.label}
-                                                        content={visibleSummary}
-                                                      />
-                                                    )}
-                                                  </div>
-                                                )
+                                                  ) : (
+                                                    <CollapsedMarkdownPreview
+                                                      title={event.label}
+                                                      content={
+                                                        event.filePath && isUrl(event.filePath)
+                                                          ? `${visibleSummary}\n\n[Open link](${event.filePath})`
+                                                          : visibleSummary
+                                                      }
+                                                    />
+                                                  )}
+                                                </div>
                                               )}
 
                                               {!SEARCH_LABELS.has(labelText) && labelLower !== "bash" && labelLower !== "todowrite" && labelLower !== "read" && event.description && !shouldHideDescription && (
@@ -11926,7 +12562,10 @@ const hasVisibleResponseSectionContent =
                                                   </div>
 
                                                   {labelLower !== "bash" && event.activityDetail.command && (
-                                                    <TerminalBlock command={event.activityDetail.command} />
+                                                    <CollapsedTerminalBlockPreview
+                                                      title={`${event.label} command`}
+                                                      command={event.activityDetail.command}
+                                                    />
                                                   )}
                                                 </div>
                                               )}
@@ -11967,6 +12606,26 @@ const hasVisibleResponseSectionContent =
                     </Stepper>
                   );
                 })}
+
+                {/*
+                 * Keep the live status text attached to the assistant card.
+                 * The ticker used to be mounted only by the session-switch
+                 * spinner, so normal SSE responses could lose the loading
+                 * text while their activity rows were still streaming. It
+                 * must not be rendered in the composer: mounting it here
+                 * preserves the card's ownership and prevents a response
+                 * rerender from moving the scroll target to the user prompt.
+                 */}
+                {shouldShowLiveLoadingText ? (
+                  <div
+                    data-assistant-section="live-loading-text"
+                    className="px-1 py-1"
+                    role="status"
+                    aria-live="polite"
+                  >
+                    <AIStatusTicker />
+                  </div>
+                ) : null}
 
               </section>
             )}
@@ -12035,7 +12694,7 @@ const hasVisibleResponseSectionContent =
                   ref={responsePreviewRef}
                   className={cn(
                     "relative mt-1.5 space-y-1.5",
-                    shouldConstrainResponsePreview && "max-h-[28rem] overflow-hidden",
+                    shouldConstrainResponsePreview && "max-h-32 overflow-hidden",
                   )}
                 >
                   {responseChunksVisibleInCurrentView.map((chunk, index) => (
@@ -12049,6 +12708,7 @@ const hasVisibleResponseSectionContent =
                   ))}
                   {isResponsePreviewCollapsed && (
                     <FadedCollapseOverlay
+                      label="Show full response"
                       onClick={() => setIsResponseExpanded(true)}
                       backgroundClassName="from-background via-background/90 to-transparent"
                     />
@@ -12056,7 +12716,7 @@ const hasVisibleResponseSectionContent =
                 </div>
               )}
 
-              {canPreviewResponse && isResponseExpanded && (
+              {hasResponseOverflow && isResponseExpanded && (
                 <div className="mt-2 flex justify-start">
                   <button
                     type="button"
@@ -12188,7 +12848,7 @@ const hasVisibleResponseSectionContent =
 
         </div>
 
-        {!isStreamingActive &&
+        {shouldShowResponseActions &&
           showResponseSection &&
           hasCopyableResponseContent && (
           // For the main text response (messages with copyable content),

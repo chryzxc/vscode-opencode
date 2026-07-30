@@ -93,8 +93,13 @@ test('ChatShell implements smart auto-follow pause and jump-to-latest control', 
   );
   assert.match(
     chatShellSource,
-    /root\.scrollTop\s*=\s*root\.scrollHeight/,
+    /root\.scrollTop\s*=\s*nextScrollHeight/,
     'chat shell should force-scroll to the latest edge when follow-mode is enabled',
+  );
+  assert.match(
+    chatShellSource,
+    /lastFollowAutoScrollHeightRef[\s\S]*?nextScrollHeight <= previousScrollHeight[\s\S]*?return;/s,
+    'follow mode must ignore transient height reductions so the viewport cannot drift to the prompt',
   );
   assert.match(
     chatShellSource,
@@ -116,10 +121,10 @@ test('ChatShell implements smart auto-follow pause and jump-to-latest control', 
     /new ResizeObserver\(scheduleFollowAutoScroll\)/,
     'chat shell should follow component growth as well as stream state changes',
   );
-  assert.match(
+  assert.doesNotMatch(
     chatShellSource,
     /new MutationObserver\(scheduleFollowAutoScroll\)[\s\S]*?childList: true, subtree: true/s,
-    'chat shell should also detect newly mounted activity components',
+    'child-list mutations must not trigger a bottom write for every transient stream render',
   );
   assert.match(
     chatShellSource,
