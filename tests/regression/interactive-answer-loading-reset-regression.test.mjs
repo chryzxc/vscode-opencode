@@ -30,10 +30,15 @@ test("interactive answer handoff still clears stale processing and streaming sta
   );
 });
 
-test("SDK-native question replies clear stale local loading state before posting questionReply", () => {
+test("SDK-native question replies clear stale loading state without clearing the visible assistant snapshot", () => {
   assert.match(
     panelComponentsSource,
-    /if \(canReplyToSdkQuestion\) \{[\s\S]*SET_PROCESSING[\s\S]*payload:\s*false[\s\S]*SET_STEERING[\s\S]*payload:\s*false[\s\S]*SET_STREAMING[\s\S]*payload:\s*null[\s\S]*type:\s*"questionReply"/s,
-    "SDK question reply submits should clear stale processing, steering, and streaming state before waiting for continuation events",
+    /if \(canReplyToSdkQuestion\) \{[\s\S]*SET_PROCESSING[\s\S]*payload:\s*false[\s\S]*SET_STEERING[\s\S]*payload:\s*false[\s\S]*questionReply/s,
+    "SDK question reply submits should clear stale loading state before waiting for continuation events",
+  );
+  assert.doesNotMatch(
+    panelComponentsSource,
+    /submitBatchResponses[\s\S]*SET_STREAMING[\s\S]*payload:\s*null/s,
+    "answer submission must not clear the assistant card while the SDK continuation is pending",
   );
 });

@@ -57,7 +57,15 @@ export function buildAssistantBlockPresentation(
       currentBlockKey = entry.userBlockKey || `user:${index}`;
     } else if (role === "assistant") {
       const assistantBlockKey = entry.assistantBlockKey?.trim();
-      const key = assistantBlockKey || currentBlockKey;
+      // Transcript order is authoritative for visible response ownership. SDK
+      // question continuations can reuse the original parentID even after a
+      // user answer has been inserted, so parentID must not pull that later
+      // assistant card back into the previous response block. Contiguous
+      // assistant phases stay together under the current user turn; the
+      // assistant key is only a fallback before the first user entry exists.
+      const key = currentBlockKey !== "initial"
+        ? currentBlockKey
+        : assistantBlockKey || currentBlockKey;
       assistantEntries.push({ index, key });
       entryBlockKeys.push(key);
       return;

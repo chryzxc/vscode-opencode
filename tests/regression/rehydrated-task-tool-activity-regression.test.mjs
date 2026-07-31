@@ -38,6 +38,41 @@ test("rehydrated canonical activity arrays are not concatenated twice", () => {
   );
 });
 
+test("rehydrated completed question parts keep the original prompt in the assistant card", () => {
+  assert.match(
+    source,
+    /function questionPromptSummaryFromInput\([\s\S]*?questionPromptSummaryFromEventProperties\(input \?\? null\)/,
+    "hydrated question parts must read the prompt from state.input using the same parser as live question events",
+  );
+  assert.match(
+    source,
+    /const questionPrompt = isQuestionToolName\(toolName\)[\s\S]*?summary: questionPrompt \|\| filePath \|\| preview \|\| rawTitle/,
+    "raw hydrated tool parts must project the question prompt instead of only the generic question title",
+  );
+  assert.match(
+    source,
+    /const questionPrompt = isQuestionToolName\(rawActivityDetail\?\.tool\)[\s\S]*?summary: questionPrompt \?\? questionPresentation\.summary/,
+    "the canonical steps projection must not replace the prompt with the completed answer output",
+  );
+});
+
+test("hydrated final text parts remain the response-card candidate after question turns", () => {
+  const chatShellSource = readSource(
+    [joinFromRoot("webview", "shared", "src", "chat", "ChatShell.tsx")],
+    "ChatShell.tsx",
+  );
+  assert.match(
+    chatShellSource,
+    /const hasHydratedTextPart = \(message\.parts \?\? \[\]\)\.some\([\s\S]*?partType !== "text"[\s\S]*?firstNonEmptyString\(part\?\.text, part\?\.content, part\?\.message\)/,
+    "final assistant text stored in hydrated SDK parts must be recognized as response content",
+  );
+  assert.match(
+    chatShellSource,
+    /message\.info\?\.text \|\|[\s\S]*?hasHydratedTextPart \|\|/,
+    "the hydrated text-part signal must participate in collapsed response-card selection",
+  );
+});
+
 test("live task tool events use the same SDK state title and streaming activity path", () => {
   assert.match(
     handlerSource,

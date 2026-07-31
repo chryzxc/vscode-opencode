@@ -2425,6 +2425,18 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
           asRecord(message.info?.structuredOutput) ??
           asRecord(message.info?.structured) ??
           asRecord(rawStructuredResponse);
+        const hasHydratedTextPart = (message.parts ?? []).some((part) => {
+          if (part?.synthetic === true) {
+            return false;
+          }
+          const partType = firstNonEmptyString(part?.type)?.toLowerCase();
+          if (partType !== "text" && partType !== "message" && partType !== "output_text") {
+            return false;
+          }
+          return Boolean(
+            firstNonEmptyString(part?.text, part?.content, part?.message),
+          );
+        });
         return {
           role: message.role ?? message.info?.role,
           userBlockKey: firstNonEmptyString(message.info?.id, message.id) ?? `user:${index}`,
@@ -2437,6 +2449,11 @@ const MemoizedConversationTranscript = memo(function ConversationTranscript({
             message.text ||
             message.info?.content ||
             message.info?.text ||
+            // Hydrated OpenCode messages can keep the final assistant reply
+            // only in parts[].type="text". Treat that as response content so
+            // a completed question/tool phase cannot become the collapsed card
+            // while the real final AI response is hidden as activity-only.
+            hasHydratedTextPart ||
             // StructuredOutput is the authoritative final response for SDK
             // turns that finish with `finish: "tool-calls"`. Its message is
             // not copied into `message.content`, so excluding it makes the

@@ -45,7 +45,7 @@ describe("buildAssistantBlockPresentation", () => {
     assert.equal(result.blockSizeByKey.get("user-1"), 1);
   });
 
-  it("keeps separate SDK assistant message IDs as separate response blocks", () => {
+  it("keeps adjacent assistant phases in one response block despite different SDK IDs", () => {
     const result = buildAssistantBlockPresentation([
       { role: "user", userBlockKey: "user-1" },
       { role: "assistant", assistantBlockKey: "assistant-tool-call", hasResponseText: false },
@@ -54,13 +54,30 @@ describe("buildAssistantBlockPresentation", () => {
 
     assert.deepStrictEqual(result.entryBlockKeys, [
       "user-1",
-      "assistant-tool-call",
-      "assistant-final",
+      "user-1",
+      "user-1",
     ]);
-    assert.equal(result.blockSizeByKey.get("assistant-tool-call"), 1);
-    assert.equal(result.blockSizeByKey.get("assistant-final"), 1);
+    assert.equal(result.blockSizeByKey.get("user-1"), 2);
     assert.equal(result.isLastTextInBlockByIndex.get(1), false);
-    assert.equal(result.isLastTextInBlockByIndex.get(2), false);
+    assert.equal(result.isLastTextInBlockByIndex.get(2), true);
+  });
+
+  it("starts a new response block after a user answer even when SDK parentID repeats", () => {
+    const result = buildAssistantBlockPresentation([
+      { role: "user", userBlockKey: "prompt" },
+      { role: "assistant", assistantBlockKey: "prompt", hasResponseText: false },
+      { role: "user", userBlockKey: "answer" },
+      { role: "assistant", assistantBlockKey: "prompt", hasResponseText: false },
+    ]);
+
+    assert.deepStrictEqual(result.entryBlockKeys, [
+      "prompt",
+      "prompt",
+      "answer",
+      "answer",
+    ]);
+    assert.equal(result.blockSizeByKey.get("prompt"), 1);
+    assert.equal(result.blockSizeByKey.get("answer"), 1);
   });
 
   it("marks identical activity-only snapshots in one parent block as duplicates", () => {

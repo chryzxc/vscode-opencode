@@ -2624,6 +2624,18 @@ function questionPromptSummaryFromEventProperties(
   return undefined;
 }
 
+/**
+ * Hydrated SDK tool parts store the questionnaire under `state.input`, while
+ * live `question.asked` envelopes store the same payload under event
+ * properties. Keep both paths on one presentation contract so rehydration
+ * cannot replace a visible question with the generic tool label.
+ */
+function questionPromptSummaryFromInput(
+  input: Record<string, unknown> | null | undefined,
+): string | undefined {
+  return questionPromptSummaryFromEventProperties(input ?? null);
+}
+
 function isQuestionToolName(tool?: string): boolean {
   const normalized = (tool || "").trim().toLowerCase();
   return (
@@ -3732,8 +3744,17 @@ function progressItemsFromSteps(
         rawActivityDetail?.output,
       );
       const title = questionPresentation.title ?? step.title;
+      const questionPrompt = isQuestionToolName(rawActivityDetail?.tool)
+        ? questionPromptSummaryFromInput(asRecord(rawActivityDetail?.input))
+        : undefined;
       const activityDetail = questionPresentation.isCompleted
-        ? { ...rawActivityDetail, summary: questionPresentation.summary ?? rawActivityDetail?.summary }
+        ? {
+            ...rawActivityDetail,
+            // A completed question's output is the answer confirmation. The
+            // prompt is the content users saw in the live card and must remain
+            // the summary after the SDK rehydrates the tool part.
+            summary: questionPrompt ?? questionPresentation.summary ?? rawActivityDetail?.summary,
+          }
         : rawActivityDetail;
       const meta = step.meta;
       const stepId =
@@ -3929,7 +3950,16 @@ function progressItemsFromRawResponseParts(
       asString(partRec.output),
     );
     const preview = firstNonEmptyString(asString(metadataRec?.preview));
+    const questionPrompt = isQuestionToolName(toolName)
+      ? questionPromptSummaryFromInput(inputRec)
+      : undefined;
+    const questionPresentation = completedQuestionToolPresentation(
+      toolName,
+      status,
+      output,
+    );
     const rawTitle = firstNonEmptyString(
+      questionPresentation.title,
       asString(stateRec?.title),
       asString(partRec.title),
       toolName,
@@ -3988,7 +4018,10 @@ function progressItemsFromRawResponseParts(
       diffStats: undefined,
       activityDetail: {
         kind: toolName === "read" ? "read" : toolName || "tool_call",
-        summary: filePath || preview || rawTitle,
+        // The completed output contains the answer, not the original prompt.
+        // Preserve the prompt from state.input so the hydrated assistant card
+        // remains visually equivalent to the live question card.
+        summary: questionPrompt || filePath || preview || rawTitle,
         tool: toolName,
         file: filePath,
         input: normalizedInputRec,
@@ -8846,14 +8879,38 @@ function ResponseMessageInner({
       Array.isArray(messages),
   );
   const collapsedBlockAssistantMessages = useMemo(
-    () =>
-      shouldAggregateCollapsedBlockActivity
-        ? (messages ?? []).filter((candidate) =>
-            firstNonEmptyString(candidate.role, candidate.info?.role)?.toLowerCase() === "assistant" &&
-            firstNonEmptyString(candidate.info?.parentID, candidate.info?.parentId) === blockGroupKey,
-          )
-        : [],
-    [blockGroupKey, messages, shouldAggregateCollapsedBlockActivity],
+    () => {
+      if (!shouldAggregateCollapsedBlockActivity || !Array.isArray(messages)) {
+        return [];
+      }
+
+      // The visible transcript order is the ownership boundary. A question
+      // continuation may reuse an older SDK parentID after the user answers;
+      // filtering only by parentID would pull that continuation into the prior
+      // card and make the response appear after the next user message.
+      const currentMessageIndex = message
+        ? messages.findIndex((candidate) => candidate === message)
+        : -1;
+      if (currentMessageIndex < 0) {
+        return messages.filter((candidate) =>
+          firstNonEmptyString(candidate.role, candidate.info?.role)?.toLowerCase() === "assistant" &&
+          firstNonEmptyString(candidate.info?.parentID, candidate.info?.parentId) === blockGroupKey,
+        );
+      }
+
+      const isAssistant = (candidate: Message | undefined): boolean =>
+        firstNonEmptyString(candidate?.role, candidate?.info?.role)?.toLowerCase() === "assistant";
+      let start = currentMessageIndex;
+      while (start > 0 && isAssistant(messages[start - 1])) {
+        start -= 1;
+      }
+      let end = currentMessageIndex;
+      while (end + 1 < messages.length && isAssistant(messages[end + 1])) {
+        end += 1;
+      }
+      return messages.slice(start, end + 1).filter(isAssistant);
+    },
+    [blockGroupKey, message, messages, shouldAggregateCollapsedBlockActivity],
   );
   const collapsedBlockAssistantMessageIds = useMemo(
     () =>
