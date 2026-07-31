@@ -114,11 +114,16 @@ test("the final visible activity row ends its connector before hidden lifecycle 
   );
 });
 
-test("lifecycle-delimited activity steppers keep one continuous connector", () => {
+test("lifecycle-delimited activity steppers do not add an artificial connector bridge", () => {
+  assert.doesNotMatch(
+    chatCssSource,
+    /\.oc-activity-timeline-compact\s*\+\s*\.oc-activity-timeline-compact\s*::before/,
+    "adjacent lifecycle-delimited steppers must not render an unusual connector line between activity blocks",
+  );
   assert.match(
     chatCssSource,
-    /\.oc-activity-timeline-compact\s*\+\s*\.oc-activity-timeline-compact[\s\S]*?::before[\s\S]*?background/s,
-    "adjacent lifecycle-delimited steppers need a connector bridge so hidden start/finish markers do not visibly disconnect activity rows",
+    /\.oc-activity-timeline-compact\s+\.oc-stepper-connector\s*\{[\s\S]*?background:\s*var\(--oc-surface-divider\)\s*!important/s,
+    "activity step connectors should use the subdued surface divider instead of the shared bright neutral utility",
   );
 });
 

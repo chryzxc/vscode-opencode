@@ -22,6 +22,23 @@ import {
   getFinalAssistantResponseTextFromRawSdkEventPayloads,
 } from './rawResponse';
 import { appReducer, initialState } from './store';
+import { resolveContextUsagePct } from './contextUsage';
+
+describe('resolveContextUsagePct', () => {
+  it('derives the displayed percentage from tokens even when stored percentage is stale zero', () => {
+    assert.equal(resolveContextUsagePct(469_996, 1_000_000, 0), 47);
+  });
+
+  it('uses the reported percentage only when the displayed token pair is unavailable', () => {
+    assert.equal(resolveContextUsagePct(0, 0, 12), 12);
+    assert.equal(resolveContextUsagePct(0, 1_000_000, undefined), 0);
+  });
+
+  it('clamps percentages to the context meter range', () => {
+    assert.equal(resolveContextUsagePct(2_000_000, 1_000_000, 0), 100);
+    assert.equal(resolveContextUsagePct(0, 0, 120), 100);
+  });
+});
 
 describe('extractEventMessageId', () => {
   it('uses a tool part messageID instead of its evt transport-frame ID', () => {
@@ -694,7 +711,7 @@ describe('createMessageHandler - chatHistory hydration guards', () => {
 });
 
 describe('createMessageHandler - SDK context usage', () => {
-  it('uses tokens.input from a streaming SDK message.updated event', () => {
+  it('uses uncached input plus cache-read tokens from the SDK event', () => {
     let state: AppState = {
       ...initialState,
       currentSessionId: 'ses-sdk-context',
@@ -725,14 +742,14 @@ describe('createMessageHandler - SDK context usage', () => {
             role: 'assistant',
             providerID: 'openai',
             modelID: 'gpt-test',
-            tokens: { input: 12_345 },
+            tokens: { input: 12_345, cache: { read: 987_655 } },
           },
         },
       },
     } as MessageEvent);
 
-    assert.equal(state.contextInputTokens, 12_345);
-    assert.equal(state.contextUsagePct, 1);
+    assert.equal(state.contextInputTokens, 1_000_000);
+    assert.equal(state.contextUsagePct, 100);
   });
 });
 

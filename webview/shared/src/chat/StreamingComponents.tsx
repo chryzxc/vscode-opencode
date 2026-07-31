@@ -59,8 +59,9 @@ export function ProgressStep({ step }: { step: StreamingStep }) {
             <button
               type="button"
               onClick={handleOpenFile}
-              className="inline-flex items-center gap-1 text-oc-text-soft hover:text-oc-accent hover:underline transition-colors"
-              title={step.filePath}
+              className="oc-activity-path-tooltip inline-flex items-center gap-1 text-oc-text-soft hover:text-oc-accent hover:underline transition-colors"
+              data-tooltip={step.filePath}
+              aria-label={`${step.title}: ${step.filePath}`}
             >
               <FileIcon filePath={step.filePath} className="h-3.5 w-3.5 shrink-0" />
               <span className="truncate font-medium">{step.title}</span>

@@ -1483,10 +1483,16 @@ function normalizeTokenCount(value: unknown): number | undefined {
 }
 
 function getMessageInputTokens(message: Message): number | undefined {
-  return (
-    normalizeTokenCount(message.tokens?.input) ??
-    normalizeTokenCount(message.info?.tokens?.input)
-  );
+  // OpenCode splits prompt usage into uncached input and cache-read tokens.
+  // `tokens.input` alone can therefore be tiny (for example, only the newest
+  // user text) even when the model receives a large cached conversation.
+  const tokens = message.tokens ?? message.info?.tokens;
+  const input = normalizeTokenCount(tokens?.input);
+  const cacheRead = normalizeTokenCount(tokens?.cache?.read);
+  if (input === undefined && cacheRead === undefined) {
+    return undefined;
+  }
+  return (input ?? 0) + (cacheRead ?? 0);
 }
 
 function getMessageModelIdentity(message: Message): {
@@ -10268,6 +10274,9 @@ function handleStreamEvent(
             payload: { partID: preludePartID },
           });
         }
+        // Scoped/inactive-session processing can call handleStreamEvent without
+        // the optional cross-event identity holder. Retraction is best-effort
+        // bookkeeping only; never let a missing holder crash the stream.
         if (pendingRenderableTextPart?.partID === preludePartID) {
           Object.assign(pendingRenderableTextPart, {
             partID: undefined,
@@ -10651,7 +10660,14 @@ function handleStreamEvent(
         asRecord(infoRecord?.tokens) ??
         asRecord(properties?.tokens) ??
         asRecord(payload.tokens);
-      const contextInputTokens = normalizeTokenCount(eventTokens?.input);
+      // Context size is the SDK prompt size: uncached input plus cached
+      // prompt tokens. SessionStats remains cumulative billing/usage data.
+      const eventInputTokens = normalizeTokenCount(eventTokens?.input);
+      const eventCacheReadTokens = normalizeTokenCount(eventTokens?.cache?.read);
+      const contextInputTokens =
+        eventInputTokens === undefined && eventCacheReadTokens === undefined
+          ? undefined
+          : (eventInputTokens ?? 0) + (eventCacheReadTokens ?? 0);
       if (contextInputTokens !== undefined) {
         const modelIdentity = {
           providerID: firstNonEmptyString(
