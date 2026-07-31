@@ -90,7 +90,7 @@ const StepperItem = React.forwardRef<
       </div>
       {/* Vertical connecting line — grows to fill remaining column height */}
       {!isLast && (
-        <div className="w-px flex-1 bg-neutral-500/30 mt-1 min-h-[6px]" />
+        <div className="oc-stepper-connector w-px flex-1 bg-neutral-500/30 mt-1 min-h-[6px]" />
       )}
     </div>
 

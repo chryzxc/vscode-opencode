@@ -38,18 +38,23 @@ test('chat css pipeline keeps Tailwind enabled for utility-heavy React chat comp
   assert.match(panelComponentsSource, /className="[^"]*\bpx-3\b[^"]*"/, 'panel components should continue using spacing utility classes');
 });
 
-test('details tabs use one shared content gutter', () => {
+test('details tabs use one shared content gutter with an overview reset', () => {
   assert.match(
     chatCssSource,
-    /\.oc-details-sheet\s+\.oc-details-tab-content\s*\{[^}]*padding:\s*8px\s+16px\s+10px;/s,
+    /\.oc-details-sheet\s+\.oc-details-tab-content\s*\{[^}]*box-sizing:\s*border-box;[^}]*padding:\s*8px\s+8px\s+10px;/s,
     'all details tabs should align through the shared horizontal and vertical content gutter',
+  );
+  assert.match(
+    chatCssSource,
+    /\.oc-details-sheet\s+\.oc-details-tab-content--overview\s*\{[^}]*padding-top:\s*0;[^}]*padding-right:\s*0;[^}]*padding-left:\s*0;/s,
+    'overview should remove only its duplicate inner gutter while retaining the shared tab contract',
   );
 });
 
 test('Active Task is a peer overview section instead of a parent heading', () => {
   assert.match(
     panelComponentsSource,
-    /className="oc-active-task-content"[\s\S]*?<MiniSection title="Active Task">/,
+    /className="oc-active-task-content[^\"]*"[\s\S]*?<MiniSection title="Active Task" className="order-2">/,
     'Active Task should use the same MiniSection row as Context, Runtime, and Session',
   );
   assert.doesNotMatch(
@@ -110,6 +115,24 @@ test('active compaction uses the shared card border token', () => {
     chatCssSource,
     /\.oc-compaction-progress-icon\s*\{[^}]*color:\s*var\(--oc-text\);/s,
     'the active compaction icon should use a visible foreground color',
+  );
+});
+
+test('activity path tooltips use an owned opaque surface', () => {
+  assert.match(
+    chatCssSource,
+    /\.oc-activity-path-tooltip::after\s*\{[\s\S]*?background:\s*var\(--oc-panel\);[\s\S]*?border:\s*1px solid var\(--oc-border\);/s,
+    'activity path tooltips should have an opaque themed background and visible border',
+  );
+  assert.match(
+    chatCssSource,
+    /\.oc-activity-path-tooltip:hover::after,[\s\S]*?\.oc-activity-path-tooltip:focus-visible::after/s,
+    'activity path tooltips should open on hover and keyboard focus',
+  );
+  assert.match(
+    chatCssSource,
+    /\.oc-refined-file-link-tooltip\s*\{[\s\S]*?background:\s*var\(--vscode-editor-background, var\(--oc-panel\)\);/s,
+    'refined file-link tooltips should use an opaque editor surface instead of a translucent mix',
   );
 });
 

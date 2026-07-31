@@ -129,6 +129,13 @@ body.vscode-high-contrast-light {
     var(--vscode-editorWidget-background, var(--vscode-editor-background))
   );
 
+  /* Shared horizontal track for the persistent desktop inspector. Keep this
+   * as the single source of truth for Overview and lower sections. */
+  --oc-desktop-inspector-gutter: 4px;
+  /* Lower panels have one fewer content wrapper than Overview, so their
+   * outer gutter must include that missing wrapper's visual inset. */
+  --oc-desktop-secondary-inspector-gutter: 16px;
+
   /* Borders */
   --oc-border: var(--vscode-widget-border, rgba(255, 255, 255, 0.06));
   --oc-border-soft: rgba(255, 255, 255, 0.01);
@@ -181,6 +188,13 @@ body.vscode-high-contrast-light {
   --oc-surface-fill-soft: color-mix(in srgb, var(--oc-panel-soft) 86%, transparent);
   --oc-surface-panel: color-mix(in srgb, var(--oc-bg-soft) 18%, transparent);
   --oc-surface-divider: color-mix(in srgb, var(--oc-border) 72%, transparent);
+
+  /*
+   * One neutral hover surface for the inspector/details UI. Do not use the
+   * VS Code accent hover token here: themes are allowed to define that token
+   * as an almost-black background, which makes the content look disabled.
+   */
+  --oc-inspector-hover: color-mix(in srgb, var(--oc-text) 10%, var(--oc-panel));
 }
 
 .text-oc-agent-custom {
@@ -213,9 +227,57 @@ body.vscode-high-contrast-light {
 }
 
 .oc-accent-soft-action:hover {
-  background: color-mix(in srgb, var(--oc-accent) 22%, var(--oc-panel) 78%);
+  background: var(--oc-inspector-hover);
   border-color: color-mix(in srgb, var(--oc-accent) 52%, var(--oc-border));
-  color: color-mix(in srgb, var(--oc-text) 96%, var(--oc-accent));
+  color: var(--oc-text);
+}
+
+/* One readable hover contract for inspector actions. Do not rely on the
+ * theme's accent foreground here: some VS Code themes provide a dark accent,
+ * which makes labels such as "Refresh quota" disappear on hover. */
+.oc-inspector-action {
+  color: var(--oc-text) !important;
+  opacity: 1 !important;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
+}
+
+.oc-inspector-action:hover,
+.oc-inspector-action:focus-visible {
+  background: var(--oc-inspector-hover) !important;
+  border-color: color-mix(in srgb, var(--oc-accent) 48%, var(--oc-border)) !important;
+  color: var(--oc-text) !important;
+  opacity: 1 !important;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--oc-accent) 14%, transparent);
+}
+
+.oc-inspector-action:hover svg,
+.oc-inspector-action:focus-visible svg {
+  color: var(--oc-text) !important;
+  opacity: 1 !important;
+  stroke: currentColor !important;
+}
+
+/* Section headers are structural toggles, not action cards. Keep their
+ * background identical to the surrounding inspector on hover; only the
+ * chevron remains interactive through its click target. */
+.oc-details-sheet .oc-inspector-section-toggle:hover,
+.oc-details-sheet .oc-inspector-section-toggle:focus-visible,
+.oc-right-panel .oc-inspector-section-toggle:hover,
+.oc-right-panel .oc-inspector-section-toggle:focus-visible {
+  background: transparent !important;
+  color: var(--oc-text-secondary) !important;
+}
+
+.oc-details-sheet .oc-inspector-section-toggle:hover svg,
+.oc-details-sheet .oc-inspector-section-toggle:focus-visible svg,
+.oc-right-panel .oc-inspector-section-toggle:hover svg,
+.oc-right-panel .oc-inspector-section-toggle:focus-visible svg {
+  color: var(--oc-text-soft) !important;
+  opacity: 0.7 !important;
+  stroke: currentColor !important;
 }
 
 .oc-processing-badge {
@@ -557,8 +619,22 @@ body {
 }
 
 @media (min-width: 1100px) {
+  .oc-mobile-details-overlay {
+    display: none;
+  }
+
   .oc-desktop-right-panel {
     display: flex;
+    flex-direction: column;
+    min-width: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  .oc-desktop-right-panel > * {
+    width: 100%;
+    min-width: 0;
+    flex: 0 0 auto;
   }
 }
 
@@ -662,7 +738,7 @@ body {
 }
 
 .oc-details-tabs button:hover {
-  background: color-mix(in srgb, var(--oc-text) 4%, transparent) !important;
+  background: var(--oc-inspector-hover) !important;
   color: var(--oc-text);
 }
 
@@ -706,8 +782,36 @@ body {
   text-transform: uppercase;
 }
 
+.oc-active-task-content {
+  display: flex;
+  flex-direction: column;
+}
+
 .oc-details-sheet .oc-active-task-content {
   padding: 0;
+}
+
+/* Keep the overview hierarchy identical in the extended sheet and the
+ * desktop right panel: context is the primary diagnostic, followed by task
+ * progress and then lower-priority runtime/session metadata. */
+.oc-active-task-content > .oc-inspector-section.order-1 {
+  order: 1;
+}
+
+.oc-active-task-content > .oc-inspector-section.order-2 {
+  order: 2;
+}
+
+.oc-active-task-content > .oc-inspector-section.order-3 {
+  order: 3;
+}
+
+.oc-active-task-content > .oc-inspector-section.order-4 {
+  order: 4;
+}
+
+.oc-active-task-content > .oc-inspector-section.order-5 {
+  order: 5;
 }
 
 .oc-details-sheet .oc-inspector-section {
@@ -723,7 +827,7 @@ body {
 }
 
 .oc-details-sheet .oc-inspector-section-toggle {
-  min-height: 38px;
+  min-height: 32px;
   padding: 0 2px;
 }
 
@@ -734,9 +838,9 @@ body {
 
 .oc-details-sheet .oc-inspector-section-toggle > span:first-child {
   color: var(--oc-text-secondary);
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 600;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.1em;
 }
 
 .oc-details-sheet .oc-inspector-section-content {
@@ -753,6 +857,85 @@ body {
 .oc-details-sheet .oc-inspector-context-summary:hover,
 .oc-details-sheet .oc-inspector-compaction:hover {
   border-color: var(--oc-surface-border);
+}
+
+/* Session compaction has three different pieces of information. Keep them
+ * in a stable grid so the timestamp never becomes a large dark pill or
+ * pushes the action button into an awkward third line on narrow panels. */
+.oc-compaction-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.oc-compaction-copy {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.oc-compaction-title {
+  min-width: 0;
+  color: var(--oc-text-secondary);
+  white-space: nowrap;
+}
+
+.oc-compaction-meta {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: max-content;
+  white-space: nowrap;
+}
+
+.oc-compaction-meta time {
+  color: var(--oc-text);
+  font-weight: 600;
+}
+
+.oc-compaction-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.oc-compaction-button {
+  min-width: 76px;
+  border-color: var(--oc-surface-border) !important;
+  background: transparent !important;
+  color: var(--oc-text-secondary) !important;
+}
+
+.oc-compaction-button:hover,
+.oc-compaction-button:focus-visible {
+  border-color: var(--oc-accent) !important;
+  background: var(--oc-inspector-hover) !important;
+  color: var(--oc-text) !important;
+}
+
+@media (max-width: 520px) {
+  .oc-compaction-header {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+  }
+
+  .oc-compaction-copy {
+    flex-wrap: wrap;
+    gap: 2px 8px;
+  }
+
+  .oc-compaction-meta {
+    flex-basis: 100%;
+  }
+
+  .oc-compaction-status {
+    grid-column: 2;
+    grid-row: 1;
+  }
 }
 
 .oc-details-sheet .oc-inspector-context-summary .rounded-full {
@@ -948,7 +1131,7 @@ body {
 .oc-details-sheet .oc-lsp-panel .oc-panel-section:hover,
 .oc-details-sheet .oc-skills-panel .oc-panel-section:hover,
 .oc-details-sheet .oc-agents-panel .oc-panel-section:hover {
-  background: color-mix(in srgb, var(--oc-text) 3%, transparent);
+  background: var(--oc-inspector-hover);
 }
 
 .oc-details-sheet .oc-mcp-panel .oc-panel-section > div:not(:first-child),
@@ -982,6 +1165,30 @@ body {
   min-height: 28px;
 }
 
+/* Header refresh/collapse controls intentionally match the compact extended
+ * panel. The modal-wide button minimum above must not turn these small icon
+ * controls into oversized standalone cards. */
+.oc-details-sheet .oc-quota-monitor > div:first-child .oc-inspector-action.oc-collapse-btn,
+.oc-details-sheet .oc-mcp-panel > div:first-child .oc-inspector-action,
+.oc-details-sheet .oc-lsp-panel > div:first-child .oc-inspector-action,
+.oc-details-sheet .oc-skills-panel > div:first-child .oc-inspector-action,
+.oc-details-sheet .oc-agents-panel > div:first-child .oc-inspector-action {
+  width: 20px;
+  min-width: 20px;
+  height: 20px;
+  min-height: 20px;
+  padding: 0;
+  border-radius: 6px;
+}
+
+.oc-details-sheet .oc-mcp-panel > div:first-child .oc-inspector-action svg,
+.oc-details-sheet .oc-lsp-panel > div:first-child .oc-inspector-action svg,
+.oc-details-sheet .oc-skills-panel > div:first-child .oc-inspector-action svg,
+.oc-details-sheet .oc-agents-panel > div:first-child .oc-inspector-action svg {
+  width: 12px;
+  height: 12px;
+}
+
 .oc-details-sheet-header {
   min-height: 36px;
   padding-top: 4px;
@@ -990,6 +1197,23 @@ body {
 
 .oc-details-sheet-body {
   padding: 6px 8px 8px;
+}
+
+.oc-details-sheet-body--all {
+  overflow-y: auto;
+}
+
+.oc-details-all-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.oc-details-all-sections > .oc-active-task-panel,
+.oc-details-all-sections > .oc-quota-monitor,
+.oc-details-all-sections > .oc-details-tab-stack {
+  width: 100%;
+  margin: 0;
 }
 
 .oc-details-tabs,
@@ -1005,7 +1229,27 @@ body {
  * inset, so switching tabs never shifts the panel content sideways. */
 .oc-details-sheet .oc-details-tab-content {
   box-sizing: border-box;
-  padding: 8px 16px 10px;
+  padding: 8px 8px 10px;
+}
+
+/* Overview already contains its own section-level spacing. Do not add the
+ * wide tab-content gutter again around the Context and Compaction sections. */
+.oc-details-sheet .oc-details-tab-content--overview {
+  padding-top: 0;
+  padding-right: 0;
+  padding-left: 0;
+  overflow-x: hidden;
+}
+
+.oc-details-sheet .oc-details-tab-content--overview .oc-active-task-content {
+  padding-right: 0;
+  padding-left: 0;
+}
+
+.oc-details-sheet .oc-details-tab-content--overview .oc-inspector-section-toggle,
+.oc-details-sheet .oc-details-tab-content--overview .oc-inspector-section-content {
+  padding-right: 0;
+  padding-left: 0;
 }
 
 .oc-details-sheet .oc-details-tab-stack {
@@ -1027,7 +1271,12 @@ body {
 }
 
 .oc-details-sheet .oc-details-tab-content--overview > .oc-active-task-panel {
-  margin-top: 0;
+  margin-top: -4px;
+  width: calc(100% + 8px);
+  margin-right: -4px;
+  margin-left: -4px;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 .oc-details-sheet .oc-active-task-heading,
@@ -1112,10 +1361,11 @@ body {
   min-height: 34px;
   margin: 0;
   border-bottom: 1px solid var(--oc-surface-divider);
-  padding: 0 10px;
+  padding: 0 6px;
 }
 
 .oc-right-panel .oc-active-task-heading .oc-panel-title,
+.oc-right-panel .oc-inspector-section-toggle > span:first-child,
 .oc-right-panel .oc-quota-monitor .oc-panel-title,
 .oc-right-panel .oc-mcp-panel .oc-panel-title,
 .oc-right-panel .oc-lsp-panel .oc-panel-title,
@@ -1129,7 +1379,7 @@ body {
 }
 
 .oc-right-panel .oc-active-task-content {
-  padding: 0 8px;
+  padding: 0 var(--oc-desktop-inspector-gutter);
 }
 
 .oc-right-panel .oc-inspector-section {
@@ -1216,7 +1466,18 @@ body {
 .oc-right-panel .oc-skills-panel,
 .oc-right-panel .oc-agents-panel {
   border-top: 0;
-  padding: 0 8px;
+  padding: 0 var(--oc-desktop-secondary-inspector-gutter);
+}
+
+/* Keep every section after Overview on the same horizontal track. Applying
+ * this to the direct desktop-panel children keeps Quota, MCP, LSP, Skills,
+ * and Agents on the same compact 4px track as the top content. */
+.oc-desktop-right-panel > .oc-quota-monitor,
+.oc-desktop-right-panel > .oc-mcp-panel,
+.oc-desktop-right-panel > .oc-lsp-panel,
+.oc-desktop-right-panel > .oc-skills-panel,
+.oc-desktop-right-panel > .oc-agents-panel {
+  margin-top: 12px;
 }
 
 .oc-right-panel .oc-quota-monitor > div:last-child,
@@ -1225,6 +1486,23 @@ body {
 .oc-right-panel .oc-skills-panel > div:last-child,
 .oc-right-panel .oc-agents-panel > div:last-child {
   padding: 7px 2px 8px;
+}
+
+/* Section content should sit directly on the inspector surface. The nested
+ * dark rounded wrapper makes the header and its list read like a separate
+ * card, especially in the extended panel. Keep row dividers, but flatten the
+ * outer component wrapper. */
+.oc-details-sheet .oc-mcp-panel > div:last-child,
+.oc-details-sheet .oc-lsp-panel > div:last-child,
+.oc-details-sheet .oc-skills-panel > div:last-child,
+.oc-details-sheet .oc-agents-panel > div:last-child,
+.oc-right-panel .oc-mcp-panel > div:last-child,
+.oc-right-panel .oc-lsp-panel > div:last-child,
+.oc-right-panel .oc-skills-panel > div:last-child,
+.oc-right-panel .oc-agents-panel > div:last-child {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .oc-right-panel .oc-quota-monitor .oc-modal-shell {
@@ -1258,7 +1536,11 @@ body {
   display: flex;
   flex-direction: column;
   gap: 0;
-  overflow: hidden;
+  /* Keep long integration/tool lists inside their own scroll region. The
+   * outer extended panel must remain available for the other sections. */
+  max-height: 320px;
+  overflow-x: hidden;
+  overflow-y: auto;
   border: 1px solid var(--oc-surface-border-soft);
   border-radius: 8px;
   background: color-mix(in srgb, var(--oc-panel-soft) 28%, transparent);
@@ -1281,6 +1563,18 @@ body {
 .oc-right-panel .oc-agents-panel .oc-panel-section > div:first-child {
   min-height: 32px;
   padding: 6px 8px;
+}
+
+/* Every inspector row uses the same hover surface. Keep this override after
+ * the compact-panel rules because Tailwind hover utilities otherwise win by
+ * source order and reintroduce theme-dependent dark backgrounds. */
+.oc-details-sheet .oc-inspector-data-row:hover,
+.oc-details-sheet .oc-inspector-stat:hover,
+.oc-details-sheet .oc-details-list-row:hover,
+.oc-right-panel .oc-inspector-data-row:hover,
+.oc-right-panel .oc-inspector-stat:hover,
+.oc-right-panel .oc-details-list-row:hover {
+  background: var(--oc-inspector-hover) !important;
 }
 
 /* Extra-compact modal mode. The modal can be visually large on wide panes,
@@ -1318,6 +1612,17 @@ body {
 .oc-details-sheet .oc-agents-panel {
   padding-right: 4px;
   padding-left: 4px;
+}
+
+/* Skills is rendered as a flat list, so give the modal list the same grouped
+ * card surface already used by Agents. Keep this scoped to the modal; the
+ * extended panel intentionally uses its flatter, scrollable presentation. */
+.oc-details-sheet .oc-skills-panel > div:last-child {
+  overflow: hidden;
+  border: 1px solid var(--oc-surface-border-soft);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--oc-panel-soft) 28%, transparent);
+  padding: 0;
 }
 
 .oc-details-sheet .oc-quota-monitor > div:last-child,
@@ -1414,33 +1719,20 @@ body {
   border-bottom: 0;
 }
 
+/* The compact rule above removes card borders from individual records, but
+ * the modal Skills card still needs row dividers to preserve list structure. */
+.oc-details-sheet .oc-skills-panel .oc-panel-section {
+  border-bottom: 1px solid var(--oc-surface-divider);
+}
+
+.oc-details-sheet .oc-skills-panel .oc-panel-section:last-of-type {
+  border-bottom: 0;
+}
+
 .oc-details-sheet .oc-skills-panel .oc-skill-details,
 .oc-right-panel .oc-skills-panel .oc-skill-details {
   min-width: 0;
   overflow-wrap: anywhere;
-}
-
-/* Keep row disclosure controls readable against the muted inspector surface.
- * The shared ghost-button hover color can otherwise be overridden by the
- * compact panel's low-contrast text utility. */
-.oc-details-sheet .oc-detail-row-toggle,
-.oc-right-panel .oc-detail-row-toggle {
-  color: var(--oc-text-secondary);
-  opacity: 0.85;
-}
-
-.oc-details-sheet .oc-detail-row-toggle:hover,
-.oc-details-sheet .oc-detail-row-toggle:focus-visible,
-.oc-right-panel .oc-detail-row-toggle:hover,
-.oc-right-panel .oc-detail-row-toggle:focus-visible {
-  color: var(--oc-accent) !important;
-  opacity: 1;
-  background: color-mix(in srgb, var(--oc-accent) 12%, transparent) !important;
-}
-
-.oc-details-sheet .oc-detail-row-toggle svg,
-.oc-right-panel .oc-detail-row-toggle svg {
-  stroke: currentColor;
 }
 
 .oc-details-sheet .oc-skills-panel .oc-panel-section:hover,
@@ -1450,7 +1742,7 @@ body {
 
 .oc-details-sheet .oc-skills-panel .oc-details-list-row:hover,
 .oc-right-panel .oc-skills-panel .oc-details-list-row:hover {
-  background: color-mix(in srgb, var(--oc-text) 4%, transparent);
+  background: var(--oc-inspector-hover);
 }
 
 .oc-details-sheet .oc-agents-panel .oc-details-list-row .text-xs,
@@ -1571,6 +1863,20 @@ body {
 .oc-details-sheet .oc-skills-panel > div:last-child,
 .oc-details-sheet .oc-agents-panel > div:last-child {
   border-radius: 6px;
+}
+
+/* Keep the extended Agents records in the same grouped card surface as the
+ * modal list. The rows inside remain flat and keep their dividers. */
+.oc-right-panel .oc-agents-panel > div:last-child {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.oc-right-panel .oc-agents-panel .oc-agent-list {
+  border: 1px solid var(--oc-surface-border-soft);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--oc-panel-soft) 28%, transparent);
 }
 
 /* ── History Sidebar ─────────────────────────────────────────────────────── */
@@ -4650,11 +4956,7 @@ body {
   padding: 6px 10px;
   border: 1px solid var(--vscode-widget-border, var(--oc-border));
   border-radius: 6px;
-  background: color-mix(
-    in srgb,
-    var(--vscode-editorHoverWidget-background, var(--oc-panel)) 94%,
-    black 6%
-  );
+  background: var(--vscode-editor-background, var(--oc-panel));
   color: var(--vscode-editorHoverWidget-foreground, var(--vscode-editor-foreground, var(--oc-text)));
   box-shadow: 0 6px 16px color-mix(in srgb, black 35%, transparent);
   font-size: 12px;
@@ -4681,11 +4983,7 @@ body {
   height: 8px;
   border-right: 1px solid var(--vscode-widget-border, var(--oc-border));
   border-bottom: 1px solid var(--vscode-widget-border, var(--oc-border));
-  background: color-mix(
-    in srgb,
-    var(--vscode-editorHoverWidget-background, var(--oc-panel)) 94%,
-    black 6%
-  );
+  background: var(--vscode-editor-background, var(--oc-panel));
   transform: rotate(45deg) translateY(-4px);
 }
 
@@ -4693,6 +4991,81 @@ body {
   top: -4px;
   bottom: auto;
   transform: rotate(225deg) translateY(4px);
+}
+
+/* Native `title` tooltips cannot be themed and become transparent against
+   the activity surface in some VS Code webview themes. Keep activity paths
+   readable with an owned tooltip that follows the same panel/border tokens. */
+.oc-activity-path-tooltip {
+  position: relative;
+}
+
+.oc-activity-path-tooltip::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 6px);
+  z-index: 300;
+  display: none;
+  width: max-content;
+  max-width: min(84vw, 720px);
+  padding: 6px 10px;
+  border: 1px solid var(--oc-border);
+  border-radius: 6px;
+  background: var(--vscode-editor-background, var(--oc-panel));
+  color: var(--oc-text);
+  box-shadow: 0 6px 16px color-mix(in srgb, black 35%, transparent);
+  font-family: var(--vscode-editor-font-family, ui-monospace, monospace);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.35;
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  pointer-events: none;
+}
+
+.oc-activity-path-tooltip:hover::after,
+.oc-activity-path-tooltip:focus-visible::after,
+.oc-activity-path-tooltip:focus-within::after {
+  display: block;
+}
+
+/* Use an owned tooltip for the header context meter. Native `title` tooltips
+ * have a noticeable browser delay, which makes a frequently checked meter
+ * feel unresponsive in the VS Code webview. */
+.oc-context-progress-tooltip {
+  position: relative;
+}
+
+.oc-context-progress-tooltip::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  top: calc(100% + 7px);
+  left: 50%;
+  z-index: 300;
+  display: none;
+  width: max-content;
+  max-width: min(80vw, 360px);
+  padding: 6px 9px;
+  border: 1px solid var(--oc-border);
+  border-radius: 6px;
+  background: var(--vscode-editor-background, var(--oc-panel));
+  color: var(--oc-text);
+  box-shadow: 0 6px 16px color-mix(in srgb, black 35%, transparent);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.35;
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+
+.oc-context-progress-tooltip:hover::after,
+.oc-context-progress-tooltip:focus-visible::after,
+.oc-context-progress-tooltip:focus-within::after {
+  display: block;
 }
 
 .oc-refined-file-link-with-tooltip:hover .oc-refined-file-link-tooltip,
@@ -5250,6 +5623,14 @@ body {
   --oc-activity-step-gap: 0.25rem;
 }
 
+/* The shared Stepper is also used outside chat and keeps its neutral utility
+   color by default. Activity rows use the same restrained divider token as
+   the surrounding cards so the connector never appears as a bright white
+   streak against the timeline background. */
+.oc-activity-timeline-compact .oc-stepper-connector {
+  background: var(--oc-surface-divider) !important;
+}
+
 /* Multiple lifecycle-delimited blocks are rendered as sibling Steppers. Keep
    their boundary flush; the rows themselves provide the only vertical rhythm.
    This prevents a completed tool block from leaving an expanding gap before
@@ -5257,22 +5638,6 @@ body {
 .oc-activity-timeline-compact + .oc-activity-timeline-compact {
   margin-top: 0 !important;
   padding-top: 0 !important;
-}
-
-/* Lifecycle markers are intentionally hidden, but they still delimit the
- * event tape into sibling Steppers. The previous Stepper's last row cannot
- * draw inside the next Stepper, so bridge that boundary to the next dot. This
- * is visual-only: it must never be implemented by adding a fake activity row
- * or changing lifecycle identity/deduplication. */
-.oc-activity-timeline-compact + .oc-activity-timeline-compact::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0.625rem;
-  width: 1px;
-  height: 1rem;
-  background: rgb(115 115 115 / 30%);
-  pointer-events: none;
 }
 
 .oc-activity-timeline-compact .oc-refined-stepper-item > :first-child {

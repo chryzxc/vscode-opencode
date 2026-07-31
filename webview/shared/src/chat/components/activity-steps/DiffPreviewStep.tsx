@@ -258,7 +258,10 @@ function DiffPreviewModal({
               Detailed file changes and summary
             </div>
             {filePath ? (
-              <div className="mt-2 flex items-center gap-1.5 font-mono text-xs oc-text-secondary" title={filePath}>
+              <div
+                className="oc-activity-path-tooltip mt-2 flex items-center gap-1.5 font-mono text-xs oc-text-secondary"
+                data-tooltip={filePath}
+              >
                 <ThemeFileIcon filePath={filePath} className="h-3.5 w-3.5" />
                 <span className="truncate">{compactPath(filePath)}</span>
               </div>
@@ -376,7 +379,10 @@ export function DiffPreviewStep({
           {(previewPath || added > 0 || deleted > 0) ? (
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-oc-border-soft bg-oc-bg-soft/40 px-2.5 py-1.5 text-xs">
               {previewPath ? (
-                <span className="flex min-w-0 items-center gap-1.5 font-mono oc-text-secondary" title={resolvedFilePath}>
+                <span
+                  className="oc-activity-path-tooltip flex min-w-0 items-center gap-1.5 font-mono oc-text-secondary"
+                  data-tooltip={resolvedFilePath}
+                >
                   <ThemeFileIcon filePath={resolvedFilePath} className="h-3.5 w-3.5" />
                   <span className="truncate">{previewPath}</span>
                 </span>

@@ -5268,8 +5268,14 @@ export class ChatViewProvider
       const latestAssistantMessage = [...sdkMessages]
         .reverse()
         .find((message) => message.info.role === "assistant");
-      const contextInputTokens = latestAssistantMessage?.info.role === "assistant"
-        ? latestAssistantMessage.info.tokens.input
+      const latestTokens = latestAssistantMessage?.info.role === "assistant"
+        ? latestAssistantMessage.info.tokens
+        : undefined;
+      // OpenCode reports prompt usage as uncached input plus cache reads.
+      // Using only `tokens.input` makes a long cached conversation appear to
+      // contain just the newest uncached prompt fragment.
+      const contextInputTokens = latestTokens
+        ? (latestTokens.input ?? 0) + (latestTokens.cache?.read ?? 0)
         : undefined;
 
       this.logger.debug("[SDK-DEBUG][HOST] loaded_renderable_history", {

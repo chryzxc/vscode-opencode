@@ -94,6 +94,10 @@
         "tests/webview/truncate-large-strings-behavior.test.mjs",
         "tests/webview/toast-events-behavior.test.mjs",
         "tests/webview/subagent-duration-behavior.test.mjs",
+        "tests/webview/rehydrated-activity-output-regression.test.mjs",
+        "tests/webview/activity-timeline-redundant-content-regression.test.mjs",
+        "tests/integration/chat-flow-streaming-regression.test.mjs",
+        "tests/regression/streaming-contract-guard-regression.test.mjs",
         "tests/regression/perf-subagent-modal-poll-thrash-regression.test.mjs"
       ]
     },

@@ -73,6 +73,7 @@ import {
   isProcessingInCurrentSession,
   shouldDeferComposerSendInCurrentSession,
 } from "./lib/sessionProcessing";
+import { resolveContextUsagePct } from "./lib/contextUsage";
 
 import { FileIcon } from "./MessageComponents";
 
@@ -91,6 +92,17 @@ function messageTokenStats(message: Message): {
     write:
       message.tokens?.cache?.write || message.info?.tokens?.cache?.write || 0,
   };
+}
+
+function messageContextInputTokens(message: Message): number | undefined {
+  const tokens = message.tokens ?? message.info?.tokens;
+  const input = tokens?.input;
+  const cacheRead = tokens?.cache?.read;
+  if (typeof input !== "number" && typeof cacheRead !== "number") {
+    return undefined;
+  }
+  return (typeof input === "number" ? input : 0) +
+    (typeof cacheRead === "number" ? cacheRead : 0);
 }
 
 function contextChipDisplayParts(context: ContextItem): {
@@ -116,10 +128,12 @@ function CircularProgress({
   pct,
   size = 16,
   strokeWidth = 2.5,
+  title,
 }: {
   pct: number;
   size?: number;
   strokeWidth?: number;
+  title?: string;
 }) {
   const normalizedPct = Math.max(0, Math.min(100, pct));
   const visiblePct = normalizedPct === 0 ? 2 : normalizedPct;
@@ -131,15 +145,15 @@ function CircularProgress({
     normalizedPct > 90
       ? "var(--oc-red)"
       : normalizedPct > 75
-        ? "var(--oc-yellow)"
-        : "var(--vscode-charts-blue, color-mix(in srgb, var(--oc-text) 72%, var(--oc-accent)))";
+        ? "var(--oc-orange)"
+        : "var(--oc-green)";
 
   return (
     <div
-      className="relative flex items-center justify-center"
+      className="oc-context-progress-tooltip relative flex items-center justify-center"
       style={{ width: size, height: size }}
-      title={`Context usage: ${Math.round(normalizedPct)}%`}
-      aria-label={`Context usage: ${Math.round(normalizedPct)}%`}
+      data-tooltip={title ?? `Context usage: ${Math.round(normalizedPct)}%`}
+      aria-label={title ?? `Context usage: ${Math.round(normalizedPct)}%`}
     >
       <svg
         width={size}
@@ -175,7 +189,7 @@ function CircularProgress({
         />
       </svg>
       {/* Glow effect for high usage */}
-      {pct > 80 && (
+      {pct > 75 && (
         <div
           className="absolute inset-0 rounded-full blur-[4px] opacity-40 animate-pulse"
           style={{ backgroundColor: strokeColor }}
@@ -389,6 +403,9 @@ export const StickyHeader = memo(function StickyHeader() {
     processingSessionIds,
     sessionsList,
     contextUsagePct,
+    contextInputTokens,
+    selectedModel,
+    availableModels,
   } = useAppState(
     (state) => ({
       currentSessionId: state.currentSessionId,
@@ -398,6 +415,9 @@ export const StickyHeader = memo(function StickyHeader() {
       processingSessionIds: state.processingSessionIds,
       sessionsList: state.sessionsList,
       contextUsagePct: state.contextUsagePct,
+      contextInputTokens: state.contextInputTokens,
+      selectedModel: state.selectedModel,
+      availableModels: state.availableModels,
     }),
     shallowEqual,
   );
@@ -407,15 +427,40 @@ export const StickyHeader = memo(function StickyHeader() {
     ? sessionsList.find((s) => s.id === currentSessionId)
     : undefined;
   const sessionTitle = currentSession?.title || "Untitled chat";
+  const headerContextModel = selectedModel
+    ? availableModels.find(
+        (model) =>
+          model.providerID === selectedModel.providerID &&
+          model.modelID === selectedModel.modelID,
+      )
+    : undefined;
+  const headerContextLimit = headerContextModel?.contextLimit ?? 128_000;
+  const headerContextPct = resolveContextUsagePct(
+    contextInputTokens ?? 0,
+    headerContextLimit,
+    contextUsagePct,
+  );
   const hasContextUsage =
-    typeof contextUsagePct === "number" && Number.isFinite(contextUsagePct);
+    contextInputTokens !== undefined ||
+    (typeof contextUsagePct === "number" && Number.isFinite(contextUsagePct));
+  const headerContextLabel = selectedModel
+    ? `${headerContextModel?.providerName ?? selectedModel.providerID} / ${headerContextModel?.name ?? selectedModel.modelID}`
+    : "Model unavailable";
+  const headerContextTooltip = `${headerContextLabel} · ${(
+    contextInputTokens ?? 0
+  ).toLocaleString()} / ${headerContextLimit.toLocaleString()} tokens · ${headerContextPct}%`;
 
   return (
     <div className="oc-header sticky top-0 z-10 flex items-center justify-between border-b border-oc-border-soft px-3 py-1.5 text-xs">
       {/* Left side: Context indicator + Session title */}
       <div className={`oc-header-left flex items-center min-w-0 ${hasContextUsage ? "gap-2" : "gap-0"}`}>
         {hasContextUsage ? (
-          <CircularProgress pct={contextUsagePct} size={18} strokeWidth={2.5} />
+          <CircularProgress
+            pct={headerContextPct}
+            size={18}
+            strokeWidth={2.5}
+            title={headerContextTooltip}
+          />
         ) : null}
         <span className="oc-title text-sm font-medium truncate">{sessionTitle}</span>
       </div>
@@ -535,14 +580,18 @@ function MiniSection({
   title,
   children,
   defaultOpen = true,
+  titleAside,
+  className,
 }: {
   title: string;
   children: React.ReactNode;
   defaultOpen?: boolean;
+  titleAside?: React.ReactNode;
+  className?: string;
 }) {
   const [open, setOpen] = useMiniSectionState(defaultOpen);
   return (
-    <section className="oc-panel-section oc-inspector-section mb-1.5 overflow-hidden p-0">
+    <section className={`oc-panel-section oc-inspector-section mb-1.5 overflow-hidden p-0 ${className ?? ""}`}>
       <Button
         type="button"
         variant="ghost"
@@ -559,6 +608,14 @@ function MiniSection({
         >
           {title}
         </span>
+        {titleAside ? (
+          <span
+            className="min-w-0 truncate text-[10px] font-medium normal-case tracking-normal text-[var(--oc-text-soft)] opacity-60"
+            title={typeof titleAside === "string" ? titleAside : undefined}
+          >
+            {titleAside}
+          </span>
+        ) : null}
         <span
           className={`ml-auto transition-transform ${open ? "rotate-0" : "-rotate-90"
             }`}
@@ -795,18 +852,45 @@ export const ActiveTaskPanel = memo(function ActiveTaskPanel() {
     [sessionStats, effectiveCompactionBaselineStats],
   );
 
+  const hydratedContextInputTokens = useMemo(() => {
+    // During session switches the dedicated SDK context field can briefly be
+    // undefined before chatHistory finishes dispatching. Keep the context
+    // meter backed by the latest hydrated assistant token snapshot instead of
+    // flashing `0` while the transcript already contains a usable value.
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const contextTokens = messageContextInputTokens(messages[index]);
+      if (contextTokens !== undefined) {
+        return contextTokens;
+      }
+    }
+    return undefined;
+  }, [messages]);
+
   const maxContext = selectedModelContextLimit ?? 128_000;
   const usingContextFallback = selectedModelContextLimit === undefined;
+  const contextModelLabel = useMemo(() => {
+    if (!selectedModel) {
+      return "Model unavailable";
+    }
+    const matched = availableModels.find(
+      (model) =>
+        model.providerID === selectedModel.providerID &&
+        model.modelID === selectedModel.modelID,
+    );
+    const provider = matched?.providerName || selectedModel.providerID;
+    const model = matched?.name || selectedModel.modelID;
+    return `${provider} / ${model}`;
+  }, [availableModels, selectedModel]);
   // This must remain SDK-backed. `tokens.input` is the actual context passed
   // to the model for the latest request; sessionStats is cumulative usage and
-  // cannot accurately describe the current context window.
-  const contextUsedTokens = contextInputTokens ?? 0;
-  const pct =
-    typeof contextUsagePct === "number" && Number.isFinite(contextUsagePct)
-      ? Math.max(0, Math.min(100, Math.round(contextUsagePct)))
-      : contextUsedTokens > 0
-        ? Math.min(100, Math.round((contextUsedTokens / maxContext) * 100))
-        : 0;
+  // cannot accurately describe the current context window. The hydrated
+  // message value is only a transition fallback while the SDK field is absent.
+  const contextUsedTokens = contextInputTokens ?? hydratedContextInputTokens ?? 0;
+  const pct = resolveContextUsagePct(
+    contextUsedTokens,
+    maxContext,
+    contextUsagePct,
+  );
   const hasCompactionBaseline =
     !!compactionBaselineStats ||
     (typeof safeCompactionDividerIndex === "number" &&
@@ -897,9 +981,9 @@ export const ActiveTaskPanel = memo(function ActiveTaskPanel() {
 
   return (
     <div className="oc-active-task-panel flex flex-col w-full bg-oc-bg-soft">
-      <div className="oc-active-task-content">
+      <div className="oc-active-task-content flex flex-col">
         {sortedTodoItems.length > 0 ? (
-          <MiniSection title="Active Task">
+          <MiniSection title="Active Task" className="order-2">
             <div className="mb-2 flex items-center justify-between text-[11px] oc-text-secondary">
               <span className="font-medium">
                 {completedTodoCount} / {sortedTodoItems.length} done
@@ -948,7 +1032,7 @@ export const ActiveTaskPanel = memo(function ActiveTaskPanel() {
         ) : null}
         {/* ── Progress Updates: shown only while streaming is active ── */}
         {isActive && (
-          <MiniSection title="Progress Updates">
+          <MiniSection title="Progress Updates" className="order-3">
             {liveProgressSteps.length === 0 ? (
               <div className="flex items-center gap-1.5 py-0.5 text-xs oc-text-secondary opacity-70">
                 <span
@@ -999,7 +1083,7 @@ export const ActiveTaskPanel = memo(function ActiveTaskPanel() {
 
         {/* Context usage and SDK-backed session compaction controls. */}
         {(
-          <MiniSection title="Context">
+          <MiniSection title="Context" titleAside={contextModelLabel} className="order-1">
             {/* Token usage bar */}
             <div className="oc-inspector-context-summary mb-2 rounded-md border border-oc-border-soft bg-oc-panel-soft p-2 transition-colors hover:border-oc-border">
               <div className="mb-1.5 flex flex-col gap-1">
@@ -1054,11 +1138,11 @@ export const ActiveTaskPanel = memo(function ActiveTaskPanel() {
                   style={{
                     width: `${pct}%`,
                     background:
-                      pct > 80
-                        ? "linear-gradient(90deg, #f0883e, #f85149)"
-                        : pct > 50
-                          ? "linear-gradient(90deg, #d29922, #f0883e)"
-                          : "linear-gradient(90deg, var(--oc-accent-soft), var(--oc-accent))",
+                      pct > 90
+                        ? "linear-gradient(90deg, var(--oc-orange), var(--oc-red))"
+                        : pct > 75
+                          ? "linear-gradient(90deg, var(--oc-yellow), var(--oc-orange))"
+                          : "linear-gradient(90deg, color-mix(in srgb, var(--oc-green) 70%, var(--oc-accent)), var(--oc-green))",
                   }}
                 />
               </div>
@@ -1066,20 +1150,23 @@ export const ActiveTaskPanel = memo(function ActiveTaskPanel() {
 
             {/* Compaction Controls */}
             <div className="oc-inspector-compaction mb-2 rounded-md border border-oc-border-soft bg-oc-panel-soft px-2.5 py-1.5 transition-colors hover:border-oc-border">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <span className="text-[10px] uppercase tracking-wider font-medium text-[var(--oc-text-soft)] opacity-90">
+              <div className="oc-compaction-header">
+                <div className="oc-compaction-copy">
+                  <span className="oc-compaction-title text-[10px] uppercase tracking-wider font-medium text-[var(--oc-text-soft)] opacity-90">
                     Session Compaction
                   </span>
-                </div>
-                <div className="flex items-center gap-2">
                   {!isCompacting && compactedAtLabel ? (
-                    <span className="rounded-full bg-oc-border-soft px-1.5 py-0.5 text-[9px] font-medium tracking-wider oc-text-secondary opacity-80">
-                      {compactedAtLabel}
+                    <span className="oc-compaction-meta text-[9px] font-medium tracking-wider oc-text-secondary">
+                      <span className="uppercase opacity-70">Last compact</span>
+                      <time className="tabular-nums" dateTime={new Date(lastCompactedAt!).toISOString()}>
+                        {compactedAtLabel}
+                      </time>
                     </span>
                   ) : null}
+                </div>
+                <div className="oc-compaction-status">
                   {isCompacting ? (
-                    <span className="animate-pulse rounded-full bg-oc-accent-soft px-1.5 py-0.5 text-[9px] font-medium text-oc-accent">
+                    <span className="oc-compaction-state animate-pulse rounded-full bg-oc-accent-soft px-1.5 py-0.5 text-[9px] font-medium text-oc-accent">
                       Compacting...
                     </span>
                   ) : null}
@@ -1087,7 +1174,7 @@ export const ActiveTaskPanel = memo(function ActiveTaskPanel() {
                     type="button"
                     variant="chip"
                     size="chip"
-                    className="h-5 px-1.5 py-0.5 text-[9px] uppercase tracking-wider"
+                    className="oc-compaction-button h-6 px-2 text-[9px] uppercase tracking-wider"
                     disabled={compactDisabled}
                     onClick={() =>
                       vscode.postMessage({
@@ -1166,7 +1253,7 @@ export const ActiveTaskPanel = memo(function ActiveTaskPanel() {
           </MiniSection>
         )}
 
-        <MiniSection title="Runtime">
+        <MiniSection title="Runtime" className="order-4">
           <div className={`oc-inspector-data-list overflow-hidden rounded-md border text-xs ${hasRuntimeMismatch ? "border-yellow-500/50" : "border-oc-border-soft"}`}>
             <div className={`oc-inspector-data-row flex items-center justify-between border-b px-3 py-2 transition-colors ${hasRuntimeMismatch ? "border-yellow-500/30 bg-yellow-500/10 hover:bg-yellow-500/15" : "border-oc-border-soft bg-oc-panel-soft hover:bg-oc-panel"}`}>
               <span className="text-[10px] uppercase tracking-wider font-medium text-[var(--oc-text-soft)] opacity-90">
@@ -1193,7 +1280,7 @@ export const ActiveTaskPanel = memo(function ActiveTaskPanel() {
           </div>
         </MiniSection>
 
-        <MiniSection title="Session">
+        <MiniSection title="Session" className="order-5">
           <div className="oc-inspector-session-grid overflow-hidden rounded-md border border-oc-border-soft text-xs">
             <div className="oc-inspector-data-row flex min-w-0 items-center justify-between gap-3 border-b border-oc-border-soft bg-oc-panel-soft px-3 py-2 transition-colors hover:bg-oc-panel">
               <span className="shrink-0 text-[10px] font-medium uppercase tracking-wider text-[var(--oc-text-soft)] opacity-90">ID</span>
@@ -1248,7 +1335,7 @@ export const ActiveTaskPanel = memo(function ActiveTaskPanel() {
 /** Persistent details inspector for wider chat layouts. */
 export const DesktopRightPanel = memo(function DesktopRightPanel() {
   return (
-    <aside className="oc-right-panel oc-desktop-right-panel min-h-0 w-[320px] shrink-0 overflow-y-auto border-l">
+    <aside className="oc-right-panel oc-desktop-right-panel min-h-0 w-[380px] shrink-0 overflow-y-auto border-l">
       <ActiveTaskPanel />
       <QuotaMonitor />
       <McpPanel />
@@ -1275,9 +1362,6 @@ export const MobileRightSummary = memo(function MobileRightSummary() {
     shallowEqual,
   );
   const dispatch = useAppDispatch();
-  const [activeTab, setActiveTab] = useState<"task" | "quota" | "integrations" | "tools">(
-    "task",
-  );
   const isProcessing = isProcessingInCurrentSession(
     globalIsProcessing,
     currentSessionId,
@@ -1306,7 +1390,7 @@ export const MobileRightSummary = memo(function MobileRightSummary() {
   }
 
   return (
-    <div className="fixed inset-0 z-40">
+    <div className="oc-mobile-details-overlay fixed inset-0 z-40">
       <button
         type="button"
         className="absolute inset-0 bg-oc-bg/35"
@@ -1349,10 +1433,7 @@ export const MobileRightSummary = memo(function MobileRightSummary() {
 
           <div className="oc-details-sheet-body flex-1 overflow-hidden px-3 py-3">
             <Tabs
-              value={activeTab}
-              onValueChange={(value) =>
-                setActiveTab(value as "task" | "quota" | "integrations" | "tools")
-              }
+              defaultValue="task"
               className="flex h-full flex-col gap-0"
             >
               <TabsList className="oc-details-tabs grid h-8 w-full grid-cols-4 border border-oc-border-soft bg-oc-bg-soft/70">
@@ -2977,7 +3058,10 @@ export const InputWrapper = memo(function InputWrapper() {
       console.error("[DEBUG-UI] Dispatching questionReply message to host");
       dispatch({ type: "SET_PROCESSING", payload: false });
       dispatch({ type: "SET_STEERING", payload: false });
-      dispatch({ type: "SET_STREAMING", payload: null });
+      // Keep the currently rendered assistant snapshot mounted while the SDK
+      // accepts the answer. Only the interactive events are dismissed above;
+      // clearing streaming here makes the assistant card disappear between
+      // the popover answer and the continuation event.
       const answers = batch.map((resp) =>
         Array.isArray(resp.text) ? resp.text : [resp.text],
       );
@@ -4055,7 +4139,7 @@ export const QuotaMonitor = memo(function QuotaMonitor() {
             type="button"
             variant="ghost-accent"
             size="sm"
-            className="h-7 px-2 text-xs font-medium normal-case tracking-normal"
+            className="oc-inspector-action h-7 px-2 text-xs font-medium normal-case tracking-normal"
             title="Refresh quota"
             aria-label="Refresh quota"
             disabled={quotaIsRefreshing}
@@ -4075,7 +4159,7 @@ export const QuotaMonitor = memo(function QuotaMonitor() {
             onClick={() => setOpen((v) => !v)}
             variant="ghost"
             size="icon"
-            className="flex items-center gap-1 text-xs text-[var(--oc-text-soft)] opacity-80 hover:text-oc-accent transition-colors p-1"
+            className="oc-collapse-btn oc-inspector-action flex items-center gap-1 text-xs text-[var(--oc-text-soft)] opacity-80 hover:text-oc-accent transition-colors p-1"
           >
             {open ? (
               <ChevronDown className="h-3 w-3" />
@@ -4471,7 +4555,7 @@ export const McpPanel = memo(function McpPanel() {
             onClick={requestRefresh}
             variant="ghost"
             size="icon"
-            className="h-5 w-5 text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
+            className="oc-accent-soft-action oc-inspector-action h-5 w-5 transition-colors"
             title="Refresh MCP server status"
           >
             <RefreshCw className="h-3 w-3" />
@@ -4482,7 +4566,7 @@ export const McpPanel = memo(function McpPanel() {
             onClick={() => setOpen((v) => !v)}
             variant="ghost"
             size="icon"
-            className="oc-collapse-btn h-5 w-5 text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
+            className="oc-collapse-btn oc-accent-soft-action oc-inspector-action h-5 w-5 transition-colors"
           >
             {open ? (
               <ChevronDown className="h-3 w-3" />
@@ -4535,7 +4619,7 @@ export const McpPanel = memo(function McpPanel() {
                         }
                         aria-expanded={isExpanded}
                         onClick={() => toggleServer(server.name)}
-                        className="h-4 w-4 shrink-0 text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
+                        className="oc-detail-row-toggle oc-accent-soft-action oc-inspector-action h-4 w-4 shrink-0 transition-colors"
                       >
                         {isExpanded ? (
                           <ChevronDown className="h-3 w-3" />
@@ -4615,7 +4699,7 @@ export const LspPanel = memo(function LspPanel() {
             onClick={requestRefresh}
             variant="ghost"
             size="icon"
-            className="h-5 w-5 text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
+            className="oc-accent-soft-action oc-inspector-action h-5 w-5 transition-colors"
             title="Refresh LSP server status"
           >
             <RefreshCw className="h-3 w-3" />
@@ -4626,7 +4710,7 @@ export const LspPanel = memo(function LspPanel() {
             onClick={() => setOpen((v) => !v)}
             variant="ghost"
             size="icon"
-            className="oc-collapse-btn h-5 w-5 text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
+            className="oc-collapse-btn oc-accent-soft-action oc-inspector-action h-5 w-5 transition-colors"
           >
             {open ? (
               <ChevronDown className="h-3 w-3" />
@@ -4752,7 +4836,7 @@ export const SkillsPanel = memo(function SkillsPanel() {
             disabled={isRefreshing}
             variant="ghost"
             size="icon"
-            className="h-5 w-5 text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
+            className="oc-accent-soft-action oc-inspector-action h-5 w-5 transition-colors"
           >
             <RefreshCw className={`h-3 w-3 ${isRefreshing ? "animate-spin" : ""}`} />
           </Button>
@@ -4762,7 +4846,7 @@ export const SkillsPanel = memo(function SkillsPanel() {
             onClick={() => setOpen((v) => !v)}
             variant="ghost"
             size="icon"
-            className="oc-collapse-btn h-5 w-5 text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
+            className="oc-collapse-btn oc-accent-soft-action oc-inspector-action h-5 w-5 transition-colors"
           >
             {open ? (
               <ChevronDown className="h-3 w-3" />
@@ -4812,7 +4896,7 @@ export const SkillsPanel = memo(function SkillsPanel() {
                         }
                         aria-expanded={isExpanded}
                         onClick={() => toggleSkill(skill.name)}
-                        className="oc-detail-row-toggle h-4 w-4 shrink-0 text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
+                        className="oc-detail-row-toggle oc-accent-soft-action oc-inspector-action h-4 w-4 shrink-0 transition-colors"
                       >
                         {isExpanded ? (
                           <ChevronDown className="h-3 w-3" />
@@ -4911,7 +4995,7 @@ export const AgentsPanel = memo(function AgentsPanel() {
             disabled={isRefreshing}
             variant="ghost"
             size="icon"
-            className="h-5 w-5 text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
+            className="oc-accent-soft-action oc-inspector-action h-5 w-5 transition-colors"
             title="Refresh agents list"
           >
             <RefreshCw
@@ -4924,7 +5008,7 @@ export const AgentsPanel = memo(function AgentsPanel() {
             onClick={() => setOpen((v) => !v)}
             variant="ghost"
             size="icon"
-            className="oc-collapse-btn h-5 w-5 text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
+            className="oc-collapse-btn oc-accent-soft-action oc-inspector-action h-5 w-5 transition-colors"
           >
             {open ? (
               <ChevronDown className="h-3 w-3" />
@@ -4991,7 +5075,7 @@ export const AgentsPanel = memo(function AgentsPanel() {
                         }
                         aria-expanded={isExpanded}
                         onClick={() => toggleAgent(agent.id)}
-                        className="oc-detail-row-toggle h-4 w-4 shrink-0 text-[var(--oc-text-soft)] hover:text-oc-accent transition-colors"
+                        className="oc-detail-row-toggle oc-accent-soft-action oc-inspector-action h-4 w-4 shrink-0 transition-colors"
                       >
                         {isExpanded ? (
                           <ChevronDown className="h-3 w-3" />
