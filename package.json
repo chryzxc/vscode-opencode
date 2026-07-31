@@ -16,17 +16,15 @@
     "extensionVersion": "0.3.3",
     "sdk": {
       "package": "@opencode-ai/sdk",
-      "supportedRange": ">=1.15.12 <1.16.0",
+      "supportedRange": ">=1.18.0 <1.19.0",
       "testedVersions": [
-        "1.15.12",
-        "1.15.13"
+        "1.18.4"
       ]
     },
     "server": {
-      "supportedRange": ">=1.15.0 <1.16.0",
+      "supportedRange": ">=1.18.0 <1.19.0",
       "testedVersions": [
-        "1.15.12",
-        "1.15.13"
+        "1.18.9"
       ]
     },
     "policy": "warn"
@@ -188,6 +186,11 @@
           "default": 0,
           "description": "Port for OpenCode server (0 = auto-assign)"
         },
+        "opencode.cliPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional absolute path to the OpenCode CLI executable when it is not visible to the VS Code extension host PATH."
+        },
         "opencode.autoStart": {
           "type": "boolean",
           "default": true,
@@ -284,6 +287,7 @@
     "hooks:install": "node scripts/setup-git-hooks.mjs",
     "test:impacted": "node scripts/pre-push-check.mjs --tests-only",
     "guard:prepush": "node scripts/pre-push-check.mjs",
+    "guard:streaming": "node scripts/streaming-contract-check.mjs",
     "test": "node --test tests/**/*.test.mjs",
     "test:ts": "tsx node --test tests/**/*.test.ts",
     "test:integration": "tsx --import tests/integration/helpers/register-vscode-mock.ts node --test 'tests/integration/**/*.test.ts'",
