@@ -5043,7 +5043,7 @@ body {
   content: attr(data-tooltip);
   position: absolute;
   top: calc(100% + 7px);
-  left: 50%;
+  left: 0;
   z-index: 300;
   display: none;
   width: max-content;
@@ -5057,9 +5057,9 @@ body {
   font-size: 10px;
   font-weight: 500;
   line-height: 1.35;
-  white-space: nowrap;
+  white-space: normal;
   pointer-events: none;
-  transform: translateX(-50%);
+  transform: none;
 }
 
 .oc-context-progress-tooltip:hover::after,

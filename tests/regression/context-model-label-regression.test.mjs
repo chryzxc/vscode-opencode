@@ -86,6 +86,14 @@ test("session header exposes SDK context usage through the circular progress too
   assert.match(css, /\.oc-context-progress-tooltip:hover::after/);
 });
 
+test("context tooltip stays inside the header viewport when anchored at the left edge", () => {
+  assert.match(
+    css,
+    /\.oc-context-progress-tooltip::after[\s\S]*left: 0;[\s\S]*white-space: normal;[\s\S]*transform: none;/,
+    "the context tooltip should not center off the clipped left edge of the chat column",
+  );
+});
+
 test("circular context usage uses healthy, warning, and critical colors", () => {
   assert.match(
     source,
