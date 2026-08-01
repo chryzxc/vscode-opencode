@@ -98,8 +98,8 @@ describe('Live-only session status rendering', () => {
     );
     assert.match(
       toastOverlaySource,
-      /const isComposerPlacement = placement === "composer";[\s\S]*?isComposerPlacement \? "px-0" : "px-3"/s,
-      'composer-bound status notifications should remove horizontal padding while top notifications retain it',
+      /const isComposerPlacement = placement === "composer";[\s\S]*?isComposerPlacement \? "pl-0" : "pl-3"/s,
+      'composer-bound status notifications should remove left padding while top notifications retain it',
     );
     assert.match(
       toastOverlaySource,
