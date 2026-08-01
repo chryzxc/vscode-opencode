@@ -84,3 +84,25 @@ test("active task panel renders both versions in the session section", () => {
   assert.match(panelSource, /OpenCode SDK/, "panel should render the SDK version");
   assert.match(panelSource, /sdkVersion,/, "panel should read sdkVersion from app state");
 });
+
+test("compatibility warning waits for numeric SDK and server versions", () => {
+  assert.match(
+    handlerSource,
+    /const sdkParts = sdkLabel\?\.match\(/,
+    "compatibility checks should parse the SDK major/minor version",
+  );
+  assert.match(
+    handlerSource,
+    /if \(!sdkParts \|\| !serverParts\) return null;/,
+    "compatibility warnings must stay hidden until both versions are known",
+  );
+});
+
+test("toast dismiss button is anchored to the banner edge", () => {
+  const toastSource = readSource(
+    [joinFromRoot("webview", "shared", "src", "chat", "ToastOverlay.tsx")],
+    "ToastOverlay.tsx",
+  );
+  assert.match(toastSource, /relative border-l-2 border-oc-border/, "toast should establish a positioning context");
+  assert.match(toastSource, /absolute right-3 top-2 rounded p-1/, "dismiss button should render at the right edge");
+});

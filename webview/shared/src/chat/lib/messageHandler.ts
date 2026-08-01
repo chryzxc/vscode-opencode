@@ -1423,9 +1423,13 @@ function compatibilityWarningToast(
   const serverLabel = serverVersion || warnings.find((item) => item.component === "server")?.version;
   const sdkParts = sdkLabel?.match(/^v?(\d+)\.(\d+)/);
   const serverParts = serverLabel?.match(/^v?(\d+)\.(\d+)/);
+  // Compatibility cannot be evaluated until both sides identify a concrete
+  // numeric release. In particular, an early init snapshot may contain the
+  // server version while SDK detection is still unavailable; showing an
+  // "unknown" mismatch in that state creates a false warning.
+  if (!sdkParts || !serverParts) return null;
   const versionsDiffer = Boolean(
-    sdkParts && serverParts &&
-    (sdkParts[1] !== serverParts[1] || sdkParts[2] !== serverParts[2]),
+    sdkParts[1] !== serverParts[1] || sdkParts[2] !== serverParts[2],
   );
   if (warnings.length === 0 && !versionsDiffer) return null;
 

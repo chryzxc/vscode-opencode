@@ -232,7 +232,7 @@ export function LiveEventBanner({
           <div
             key={activeToast.key}
             className={cn(
-              "pointer-events-auto border-l-2 border-oc-border bg-oc-panel",
+              "pointer-events-auto relative border-l-2 border-oc-border bg-oc-panel",
               isComposerPlacement ? "border-t" : "border-b",
             )}
             style={{
@@ -243,7 +243,7 @@ export function LiveEventBanner({
             role="status"
             aria-live="polite"
           >
-            <div className={cn("flex items-start gap-2.5 py-2", isComposerPlacement ? "px-0" : "px-3")}>
+            <div className={cn("flex items-start gap-2.5 py-2 pr-10", isComposerPlacement ? "pl-0" : "pl-3")}>
               <div className={cn("mt-0.5 flex shrink-0 items-center justify-center", isComposerPlacement ? "h-3.5 w-3.5" : "h-4 w-4")} style={{ color: styles.accent }} aria-hidden="true">
                 <Icon className="h-3.5 w-3.5" />
               </div>
@@ -262,15 +262,6 @@ export function LiveEventBanner({
                       Retrying in {formatRetryCountdown(activeToast.next, toastNow)}
                     </div>
                   ) : null}
-                  <button
-                    type="button"
-                    className="oc-quick-input-icon-btn shrink-0 rounded p-1"
-                    title="Dismiss notification"
-                    aria-label="Dismiss notification"
-                    onClick={dismissActiveToast}
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
                 </div>
                 {activeToast.message ? (
                   <div className={cn(
@@ -282,6 +273,15 @@ export function LiveEventBanner({
                 ) : null}
               </div>
             </div>
+            <button
+              type="button"
+              className="oc-quick-input-icon-btn absolute right-3 top-2 rounded p-1"
+              title="Dismiss notification"
+              aria-label="Dismiss notification"
+              onClick={dismissActiveToast}
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
           </div>
         );
       })()}
