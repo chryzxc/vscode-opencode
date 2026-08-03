@@ -1,6 +1,6 @@
 {
   "name": "opencode-vscode-chryzxc",
-  "displayName": "OpenCode — VS Code Client",
+  "displayName": "OpenCode for VS Code",
   "description": "OpenCode client for VS Code with streaming chat, implementation plans, subagents, diff review, sessions, quota monitoring, and managed MCP servers.",
   "license": "MIT",
   "repository": {
@@ -11,9 +11,9 @@
   "bugs": {
     "url": "https://github.com/chryzxc/vscode-opencode/issues"
   },
-  "version": "0.3.7",
+  "version": "0.3.8",
   "opencodeCompatibility": {
-    "extensionVersion": "0.3.7",
+    "extensionVersion": "0.3.8",
     "sdk": {
       "package": "@opencode-ai/sdk",
       "supportedRange": ">=1.18.0 <1.19.0",
@@ -41,41 +41,16 @@
   },
   "keywords": [
     "opencode",
-    "opencode vscode",
-    "opencode extension",
-    "opencode ai",
-    "opencode cli",
-    "opencode agent",
-    "opencode coding agent",
-    "open code",
-    "ai coding agent",
-    "ai code assistant",
-    "coding agent",
-    "ai pair programmer",
-    "code assistant",
-    "agentic coding",
-    "vscode ai",
-    "vscode chat",
-    "local ai",
-    "open source ai",
-    "coding workflow",
-    "code review",
-    "diff review",
-    "implementation plan",
-    "plan mode",
-    "subagents",
-    "multi agent",
+    "ai",
+    "agent",
+    "chat",
+    "assistant",
     "mcp",
-    "mcp server management",
-    "streamable http",
-    "stdio",
-    "model context protocol",
-    "session management",
-    "quota monitoring",
-    "openai"
+    "subagents",
+    "plan"
   ],
   "categories": [
-    "AI",
+    "Other",
     "Chat"
   ],
   "activationEvents": [
