@@ -1,7 +1,7 @@
 {
   "name": "opencode-vscode-chryzxc",
   "displayName": "OpenCode — VS Code Client",
-  "description": "OpenCode client for VS Code with streaming chat, implementation plans, subagents, diff review, sessions, and quota monitoring.",
+  "description": "OpenCode client for VS Code with streaming chat, implementation plans, subagents, diff review, sessions, quota monitoring, and managed MCP servers.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -66,6 +66,9 @@
     "subagents",
     "multi agent",
     "mcp",
+    "mcp server management",
+    "streamable http",
+    "stdio",
     "model context protocol",
     "session management",
     "quota monitoring",

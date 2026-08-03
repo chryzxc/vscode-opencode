@@ -15681,10 +15681,27 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
                     id.startsWith(`${name}/`) ||
                     id.startsWith(`${name}_`),
                 );
-                return { name, status, error, tools: serverTools };
+                return {
+                  name,
+                  status,
+                  error,
+                  tools: serverTools,
+                  managed: entry?.managed === true,
+                  profileId: asString(entry?.profileId) || undefined,
+                  kind: entry?.kind === "local" || entry?.kind === "remote" ? entry.kind : undefined,
+                };
               },
             );
             dispatch({ type: "SET_MCP_SERVERS", payload: mcpServers });
+          }
+          break;
+        }
+        case "mcpOperationResult": {
+          if (data.success === false) {
+            dispatch({
+              type: "ADD_ERROR_MESSAGE",
+              payload: asString(data.error) || "MCP operation failed.",
+            });
           }
           break;
         }

@@ -110,6 +110,7 @@ import {
 import type { TokenUsage } from "../services/GeminiTokenUsageTracker";
 import { GeminiTokenUsageTracker } from "../services/GeminiTokenUsageTracker";
 import { MessageStreamService } from "../services/MessageStreamService";
+import { McpServerService, type ManagedMcpDraft, type McpClient } from "../services/McpServerService";
 import { ModelCapabilitiesService } from "../services/ModelCapabilitiesService";
 import { OpencodeServerManager } from "../services/OpencodeServerManager";
 import { QuotaService } from "../services/QuotaService";
@@ -885,6 +886,7 @@ export class ChatViewProvider
   private readonly recentUiErrorToastTimestamps = new Map<string, number>();
   private readonly UI_ERROR_TOAST_DEDUPE_WINDOW_MS = 15_000;
   private readonly installedSdkVersion = detectInstalledOpencodeSdkVersion();
+  private readonly mcpServerService: McpServerService;
 
   /** ===== NEW: Module instances ===== */
   private diagnosticsLogger!: DiagnosticsLogger;
@@ -926,6 +928,12 @@ export class ChatViewProvider
     this.streamService = new MessageStreamService(serverManager);
     this.quotaService = new QuotaService();
     this.sessionSnapshotLoader = new SessionSnapshotLoader(serverManager);
+    this.mcpServerService = new McpServerService(
+      context,
+      () => this.getWorkspaceDirectory(),
+      () => this.serverManager.ensureRunning() as Promise<McpClient>,
+      { info: (message, data) => this.logger.info(message, data), warn: (message, data) => this.logger.warn(message, data) },
+    );
     this.subagentTracker = new SubagentTracker(() => this.selectedModel);
     this.configFilesProvider = new ConfigFilesProvider();
     this.skillManager = new SkillManagerService(context);
@@ -4387,6 +4395,54 @@ export class ChatViewProvider
           );
           break;
         }
+        case "addMcpServer":
+        case "connectMcpServer":
+        case "disconnectMcpServer":
+        case "removeMcpServer": {
+          const requestID = typeof message.requestID === "string" ? message.requestID : undefined;
+          const operation = message.type === "addMcpServer"
+            ? "adding"
+            : message.type === "connectMcpServer"
+              ? "connecting"
+              : message.type === "disconnectMcpServer"
+                ? "disconnecting"
+                : "removing";
+          const serverName = typeof message.name === "string" ? message.name.trim() : "";
+          const profileID = typeof message.profileId === "string" ? message.profileId : undefined;
+          if (message.type === "removeMcpServer") {
+            const confirmation = await vscode.window.showWarningMessage(
+              "This disconnects the current server and removes this extension's saved profile. The current OpenCode process may still list it until it restarts.",
+              { modal: true },
+              "Remove",
+            );
+            if (confirmation !== "Remove") break;
+          }
+          this.view?.webview.postMessage({ type: "mcpOperationStarted", requestID, operation, serverName, profileID });
+          try {
+            if (message.type === "addMcpServer") {
+              await this.mcpServerService.add(message.draft as ManagedMcpDraft);
+            } else if (message.type === "connectMcpServer") {
+              await this.mcpServerService.connect(serverName);
+            } else if (message.type === "disconnectMcpServer") {
+              await this.mcpServerService.disconnect(serverName);
+            } else {
+              await this.mcpServerService.remove(serverName, profileID);
+              void vscode.window.showInformationMessage("MCP profile removed. The current OpenCode process may list it until it restarts.");
+            }
+            this.view?.webview.postMessage({ type: "mcpOperationResult", requestID, operation, success: true });
+          } catch (error) {
+            void vscode.window.showErrorMessage("OpenCode could not complete the MCP operation. Check the MCP status for details.");
+            this.view?.webview.postMessage({
+              type: "mcpOperationResult",
+              requestID,
+              operation,
+              success: false,
+              error: "MCP operation failed. Refresh the MCP status and check the server details.",
+            });
+          }
+          await this.handleGetMcpStatus();
+          break;
+        }
         case "getLspStatus": {
           this.handleGetLspStatus().catch((err) =>
             log.error("Failed to handle LSP status request", {
@@ -5060,6 +5116,7 @@ export class ChatViewProvider
         this.postErrorToast(serverError);
       }
       this.broadcastCompatibilityWarnings();
+      if (status === "running") void this.handleGetMcpStatus();
     });
     const serverErrorOutputSubscription = this.serverManager.onServerErrorOutput(
       (snippet) => {
@@ -10026,12 +10083,10 @@ export class ChatViewProvider
       const client = await this.serverManager.ensureRunning();
 
       log.featureStep(flow, 'fetching_mcp_and_tool_data');
-      const [mcpRes, toolIdsRes] = await Promise.all([
-        client.mcp.status(),
+      const [servers, toolIdsRes] = await Promise.all([
+        this.mcpServerService.status(client as McpClient),
         client.tool.ids().catch(() => ({ data: [] })),
       ]);
-
-      const servers = mcpRes.data ?? {};
       const toolIds: string[] = Array.isArray(toolIdsRes?.data)
         ? toolIdsRes.data
         : [];
@@ -10041,9 +10096,26 @@ export class ChatViewProvider
         toolCount: toolIds.length,
       });
 
+      const managedProfiles = new Map(this.mcpServerService.profiles().map((profile) => [profile.name, profile]));
+      const enrichedServers = Object.fromEntries(Object.entries(servers).filter(([name]) => !this.mcpServerService.wasRemoved(name)).map(([name, value]) => {
+        const profile = managedProfiles.get(name);
+        return [name, profile ? { ...(value as Record<string, unknown>), managed: true, profileId: profile.id, kind: profile.kind } : value];
+      }));
+      for (const profile of managedProfiles.values()) {
+        if (!Object.prototype.hasOwnProperty.call(enrichedServers, profile.name)) {
+          enrichedServers[profile.name] = {
+            status: "disconnected",
+            error: "The managed profile is saved but is not currently registered with OpenCode.",
+            managed: true,
+            profileId: profile.id,
+            kind: profile.kind,
+          };
+        }
+      }
+
       this.view?.webview.postMessage({
         type: "mcpStatus",
-        servers,
+        servers: enrichedServers,
         toolIds,
       });
 

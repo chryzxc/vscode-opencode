@@ -1565,6 +1565,163 @@ body {
   padding: 6px 8px;
 }
 
+.oc-mcp-add-form {
+  gap: 8px;
+  background: transparent !important;
+}
+
+.oc-details-sheet .oc-mcp-panel .oc-mcp-add-form:hover,
+.oc-right-panel .oc-mcp-panel .oc-mcp-add-form:hover {
+  background: transparent !important;
+}
+
+.oc-mcp-add-form .oc-mcp-add-field {
+  min-height: 36px;
+  border-color: var(--oc-surface-border-soft);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--oc-text-primary);
+  font-size: 12px;
+}
+
+.oc-mcp-add-form textarea.oc-mcp-add-field {
+  min-height: 56px;
+  line-height: 1.4;
+}
+
+.oc-mcp-add-form .oc-mcp-choice-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid var(--oc-surface-divider);
+  padding-bottom: 4px;
+}
+
+.oc-mcp-add-form .oc-mcp-choice-label {
+  min-width: 64px;
+  color: var(--oc-text-secondary);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.oc-mcp-add-form .oc-mcp-selector {
+  position: relative;
+  min-height: 28px;
+  border: 0;
+  border-radius: 0;
+  color: var(--oc-text-secondary);
+}
+
+.oc-mcp-add-form .oc-mcp-selector:hover,
+.oc-mcp-add-form .oc-mcp-selector:focus-visible {
+  background: transparent;
+  color: var(--oc-text-primary);
+}
+
+.oc-mcp-add-form .oc-mcp-selector.is-selected {
+  background: transparent;
+  color: var(--oc-text-primary);
+}
+
+.oc-mcp-add-form .oc-mcp-selector.is-selected::after {
+  position: absolute;
+  right: 8px;
+  bottom: 0;
+  left: 8px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--oc-accent);
+  content: "";
+}
+
+.oc-mcp-add-form .oc-mcp-object-editor {
+  min-height: 220px;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, Menlo, monospace);
+  line-height: 1.5;
+  white-space: pre;
+}
+
+.oc-mcp-add-form .oc-mcp-form-card {
+  min-width: 0;
+  border: 1px solid var(--oc-surface-border-soft);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--oc-panel-soft) 28%, transparent);
+  padding: 12px;
+}
+
+.oc-mcp-add-form .oc-mcp-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.oc-mcp-add-form .oc-mcp-details-card {
+  display: block;
+}
+
+.oc-mcp-add-form .oc-mcp-details-divider {
+  height: 1px;
+  margin: 12px 0 8px;
+  background: var(--oc-surface-divider);
+}
+
+.oc-mcp-add-form .oc-mcp-form-card > label,
+.oc-mcp-add-form .oc-mcp-type-row > span {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--oc-text-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.oc-mcp-add-form .oc-mcp-type-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.oc-mcp-add-form .oc-mcp-type-row > span {
+  margin: 0;
+}
+
+.oc-mcp-add-form .oc-mcp-repeat-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.oc-mcp-add-form .oc-mcp-repeat-row .oc-mcp-add-field {
+  min-width: 0;
+  flex: 1;
+}
+
+.oc-mcp-add-form .oc-mcp-add-row {
+  width: 100%;
+  margin-top: 8px;
+  color: var(--oc-text-secondary);
+}
+
+.oc-mcp-add-form .oc-mcp-confirmation {
+  align-items: flex-start;
+  max-width: 72ch;
+  line-height: 1.4;
+}
+
+.oc-mcp-add-form .oc-mcp-form-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 4px;
+}
+
+@media (max-width: 520px) {
+  .oc-mcp-add-form .oc-mcp-form-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* Every inspector row uses the same hover surface. Keep this override after
  * the compact-panel rules because Tailwind hover utilities otherwise win by
  * source order and reintroduce theme-dependent dark backgrounds. */
