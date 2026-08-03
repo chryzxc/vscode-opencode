@@ -886,6 +886,10 @@ export interface McpServerInfo {
   error?: string;
   /** Tool IDs belonging to this server (matched by prefix convention) */
   tools: string[];
+  managed?: boolean;
+  profileId?: string;
+  kind?: "local" | "remote";
+  operation?: "adding" | "connecting" | "disconnecting" | "removing" | "authenticating";
 }
 
 export interface LspServerInfo {

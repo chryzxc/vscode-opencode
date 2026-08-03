@@ -4488,6 +4488,13 @@ export const McpPanel = memo(function McpPanel() {
     shallowEqual,
   );
   const dispatch = useAppDispatch();
+  const [showAdd, setShowAdd] = useState(false);
+  const [kind, setKind] = useState<"local" | "remote">("local");
+  const [argumentRows, setArgumentRows] = useState([0]);
+  const [environmentRows, setEnvironmentRows] = useState([0]);
+  const [confirmLocal, setConfirmLocal] = useState(false);
+  const [formError, setFormError] = useState<string | undefined>();
+  const addFormRef = useRef<HTMLFormElement>(null);
 
   function toggleServer(name: string) {
     setExpandedServers((prev) => {
@@ -4504,6 +4511,41 @@ export const McpPanel = memo(function McpPanel() {
   function requestRefresh() {
     dispatch({ type: "SET_MCP_SERVERS", payload: [] });
     vscode.postMessage({ type: "getMcpStatus" });
+  }
+
+  function parseRows(value: string): Record<string, string> {
+    return Object.fromEntries(value.split("\n").map((row) => row.trim()).filter(Boolean).map((row) => {
+      const separator = row.indexOf("=");
+      return [separator > 0 ? row.slice(0, separator).trim() : row, separator > 0 ? row.slice(separator + 1) : ""];
+    }));
+  }
+
+  function submitAdd() {
+    setFormError(undefined);
+    const formData = addFormRef.current ? new FormData(addFormRef.current) : undefined;
+    const value = (key: string) => String(formData?.get(key) ?? "").trim();
+    const timeout = value("timeout");
+    const environment = Object.fromEntries(environmentRows.map((row) => [value(`env-key-${row}`), value(`env-value-${row}`)]).filter(([key]) => key));
+    const command = [value("command"), ...argumentRows.map((row) => value(`argument-${row}`)).filter(Boolean)];
+    const config: Record<string, unknown> = kind === "local"
+      ? { name: value("name"), command, cwd: value("cwd"), environment, timeout: timeout ? Number(timeout) : undefined }
+      : { name: value("name"), url: value("url"), headers: environment, timeout: timeout ? Number(timeout) : undefined };
+    const name = typeof config.name === "string" ? config.name.trim() : "";
+    if (!name) return setFormError("The object must include a name.");
+    if (kind === "local" && !confirmLocal) return setFormError("Confirm the local-process warning before adding this server.");
+    const draft = kind === "local"
+      ? { name, kind, command: config.command, cwd: config.cwd, environment: config.environment ?? {}, timeout: config.timeout }
+      : { name, kind, url: config.url, headers: config.headers ?? {}, oauth: config.oauth, timeout: config.timeout };
+    vscode.postMessage({ type: "addMcpServer", requestID: crypto.randomUUID(), draft });
+    addFormRef.current?.querySelectorAll<HTMLInputElement>('input[name^="env-value-"]').forEach((input) => { input.value = ""; });
+  }
+
+  function runServerAction(server: { name: string; managed?: boolean; profileId?: string; status: string }) {
+    if (server.status === "connected") {
+      vscode.postMessage({ type: "disconnectMcpServer", requestID: crypto.randomUUID(), name: server.name });
+    } else {
+      vscode.postMessage({ type: "connectMcpServer", requestID: crypto.randomUUID(), name: server.name });
+    }
   }
 
   const connectedCount = mcpServers.filter(
@@ -4549,6 +4591,9 @@ export const McpPanel = memo(function McpPanel() {
       <div className="mb-2 flex items-center justify-between">
         <div className="oc-panel-title">MCP Servers</div>
         <div className="flex items-center gap-1">
+          <Button type="button" aria-label="Add MCP server" onClick={() => setShowAdd((value) => !value)} variant="ghost" size="icon" className="oc-accent-soft-action oc-inspector-action h-5 w-5" title="Add MCP server">
+            <Plus className="h-3 w-3" />
+          </Button>
           <Button
             type="button"
             aria-label="Refresh MCP status"
@@ -4579,6 +4624,22 @@ export const McpPanel = memo(function McpPanel() {
 
       {open ? (
         <div className="space-y-1.5">
+          {showAdd && (
+            <form ref={addFormRef} className="oc-mcp-add-form oc-panel-section space-y-2 bg-oc-panel-soft p-2" onSubmit={(event) => { event.preventDefault(); submitAdd(); }}>
+              <div className="flex items-center justify-between"><span className="font-medium">Add server</span><Button type="button" variant="ghost" size="icon" onClick={() => setShowAdd(false)} className="h-5 w-5"><X className="h-3 w-3" /></Button></div>
+              <section className="oc-mcp-form-card oc-mcp-details-card"><label>Name</label><Input className="oc-mcp-add-field" name="name" aria-label="MCP server name" placeholder="MCP server name" /><div className="oc-mcp-details-divider" /><div className="oc-mcp-type-row"><span>Type</span><div className="oc-mcp-selector-group flex gap-1"><Button type="button" size="sm" variant="ghost" className={`oc-mcp-selector ${kind === "local" ? "is-selected" : ""}`} aria-pressed={kind === "local"} onClick={() => setKind("local")}>STDIO</Button><Button type="button" size="sm" variant="ghost" className={`oc-mcp-selector ${kind === "remote" ? "is-selected" : ""}`} aria-pressed={kind === "remote"} onClick={() => setKind("remote")}>Streamable HTTP</Button></div></div></section>
+              {kind === "local" ? <>
+                <section className="oc-mcp-form-card"><label>Command to launch</label><Input className="oc-mcp-add-field" name="command" aria-label="MCP executable" placeholder="Command to launch" /></section>
+                <section className="oc-mcp-form-card"><label>Arguments</label>{argumentRows.map((row) => <div className="oc-mcp-repeat-row" key={row}><Input className="oc-mcp-add-field" name={`argument-${row}`} aria-label={`MCP argument ${row + 1}`} placeholder="Argument" />{argumentRows.length > 1 && <Button type="button" variant="ghost" size="icon" aria-label="Remove argument" onClick={() => setArgumentRows((rows) => rows.filter((item) => item !== row))}><Trash2 className="h-3 w-3" /></Button>}</div>)}<Button type="button" variant="ghost" className="oc-mcp-add-row" onClick={() => setArgumentRows((rows) => [...rows, Math.max(...rows) + 1])}><Plus className="mr-1 h-3 w-3" /> Add argument</Button></section>
+              </> : <section className="oc-mcp-form-card"><label>Streamable HTTP URL</label><Input className="oc-mcp-add-field" name="url" aria-label="MCP URL" placeholder="https://example.com/mcp" /></section>}
+              <section className="oc-mcp-form-card"><label>{kind === "local" ? "Environment variables" : "Headers"}</label>{environmentRows.map((row) => <div className="oc-mcp-repeat-row" key={row}><Input className="oc-mcp-add-field" name={`env-key-${row}`} aria-label="Variable name" placeholder="Key" /><Input className="oc-mcp-add-field" name={`env-value-${row}`} aria-label="Variable value" placeholder="Value" />{environmentRows.length > 1 && <Button type="button" variant="ghost" size="icon" aria-label="Remove variable" onClick={() => setEnvironmentRows((rows) => rows.filter((item) => item !== row))}><Trash2 className="h-3 w-3" /></Button>}</div>)}<Button type="button" variant="ghost" className="oc-mcp-add-row" onClick={() => setEnvironmentRows((rows) => [...rows, Math.max(...rows) + 1])}><Plus className="mr-1 h-3 w-3" /> Add {kind === "local" ? "environment variable" : "header"}</Button></section>
+              {kind === "local" ? <div className="oc-mcp-form-grid"><section className="oc-mcp-form-card"><label>Working directory</label><Input className="oc-mcp-add-field" name="cwd" aria-label="MCP working directory" placeholder="Optional path" /></section>
+              <section className="oc-mcp-form-card"><label>Timeout</label><Input className="oc-mcp-add-field" name="timeout" aria-label="MCP timeout" type="number" min="1" placeholder="Optional, in ms" /></section></div> : <section className="oc-mcp-form-card"><label>Timeout</label><Input className="oc-mcp-add-field" name="timeout" aria-label="MCP timeout" type="number" min="1" placeholder="Optional, in ms" /></section>}
+              {kind === "local" && <label className="oc-mcp-confirmation flex gap-1 text-[10px] text-[var(--oc-text-soft)]"><input type="checkbox" checked={confirmLocal} onChange={(event) => setConfirmLocal(event.target.checked)} /> <span>OpenCode may start this local process with this workspace context.</span></label>}
+              {formError && <div className="text-[var(--oc-red)]">{formError}</div>}
+              <div className="oc-mcp-form-footer"><Button type="submit" size="sm">Add server</Button></div>
+            </form>
+          )}
           {!hasServers ? (
             <div className="py-2 text-center text-xs text-[var(--oc-text-soft)] opacity-60">
               No MCP servers configured
@@ -4607,6 +4668,10 @@ export const McpPanel = memo(function McpPanel() {
                         ? `${server.tools.length} tools`
                         : server.status}
                     </span>
+                    {server.managed && <>
+                      <Button type="button" variant="ghost" size="icon" className="h-5 w-5" aria-label={server.status === "connected" ? `Disable ${server.name}` : `Enable ${server.name}`} title={server.status === "connected" ? `Disable ${server.name} (disconnect MCP server)` : `Enable ${server.name} (connect MCP server)`} onClick={() => runServerAction(server)}>{server.status === "connected" ? <Square className="h-3 w-3" /> : <Play className="h-3 w-3" />}</Button>
+                      <Button type="button" variant="ghost" size="icon" className="h-5 w-5 text-[var(--oc-red)]" aria-label={`Remove ${server.name}`} title="Remove managed MCP server" onClick={() => vscode.postMessage({ type: "removeMcpServer", requestID: crypto.randomUUID(), name: server.name, profileId: server.profileId })}><Trash2 className="h-3 w-3" /></Button>
+                    </>}
                     {hasTools && (
                       <Button
                         type="button"

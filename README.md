@@ -148,6 +148,10 @@ The right sidebar can show:
 
 - MCP server status
 - MCP tool lists
+- Add and manage workspace-scoped MCP server profiles
+- Register local stdio servers with commands, arguments, working directories, environment variables, and timeouts
+- Register remote Streamable HTTP servers with URLs, headers, and timeouts
+- Connect, disconnect, and remove extension-managed MCP profiles
 - LSP server status
 - Slash-command skills
 - Available OpenCode agents
@@ -159,6 +163,19 @@ The right sidebar can show:
 OpenCode UI works with OpenCode plugin-driven workflows, including community plugin collections like **Oh My OpenCode**.
 
 Plugin-provided agents, skills, and capabilities can be surfaced directly inside the extension UI.
+
+### Managing MCP Servers
+
+Open the **MCP Servers** section in the Integrations panel and select **Add server**. Profiles are scoped to the current file-based workspace and are re-registered with OpenCode when the managed OpenCode server reconnects.
+
+Supported connection types:
+
+- **STDIO**: OpenCode starts a local command using a structured executable and argument list.
+- **Streamable HTTP**: OpenCode connects to an HTTPS MCP endpoint with optional headers.
+
+Managed profiles can be connected, disconnected, and removed from the panel. Removing a profile deletes this extension's saved profile and secrets and disconnects the current runtime entry. The pinned SDK does not provide dynamic MCP deletion, so the current OpenCode process may continue to list the entry until it restarts.
+
+The extension stores non-sensitive profile metadata in workspace state. Environment values, HTTP header values, and OAuth client secrets are stored in VS Code `SecretStorage`; they are not included in webview state, status messages, logs, or project files. OAuth authentication controls remain gated until the pinned SDK's authentication callback contract is verified.
 
 ---
 
