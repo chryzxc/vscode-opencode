@@ -19,6 +19,10 @@ const panelComponentsSource = readSource(
   [joinFromRoot('webview', 'shared', 'src', 'chat', 'PanelComponents.tsx')],
   'panel components source',
 );
+const messageComponentsSource = readSource(
+  [joinFromRoot('webview', 'shared', 'src', 'chat', 'MessageComponents.tsx')],
+  'message components source',
+);
 
 test('chat source css keeps active Tailwind directives', () => {
   assert.match(chatCssSource, /^\s*@tailwind\s+base\s*;/m, 'chat source css must include @tailwind base directive');
@@ -133,6 +137,19 @@ test('activity path tooltips use an owned opaque surface', () => {
     chatCssSource,
     /\.oc-refined-file-link-tooltip\s*\{[\s\S]*?background:\s*var\(--vscode-editor-background, var\(--oc-panel\)\);/s,
     'refined file-link tooltips should use an opaque editor surface instead of a translucent mix',
+  );
+});
+
+test('response previews stay contained inside activity cards', () => {
+  assert.match(
+    messageComponentsSource,
+    /const responseSectionClass = hasResponseContent\s*\? "min-w-0 max-w-full overflow-hidden rounded-md border border-oc-border-soft bg-background p-2\.5 shadow-sm"/,
+    'response cards must clip oversized activity output to their own boundary',
+  );
+  assert.match(
+    messageComponentsSource,
+    /"relative min-w-0 max-w-full mt-1\.5 space-y-1\.5",\s*shouldConstrainResponsePreview && "max-h-32 overflow-hidden"/,
+    'the bounded response preview must shrink with its card so its expand control remains visible',
   );
 });
 
