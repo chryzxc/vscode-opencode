@@ -12664,26 +12664,6 @@ const hasVisibleResponseSectionContent =
                   );
                 })}
 
-                {/*
-                 * Keep the live status text attached to the assistant card.
-                 * The ticker used to be mounted only by the session-switch
-                 * spinner, so normal SSE responses could lose the loading
-                 * text while their activity rows were still streaming. It
-                 * must not be rendered in the composer: mounting it here
-                 * preserves the card's ownership and prevents a response
-                 * rerender from moving the scroll target to the user prompt.
-                 */}
-                {shouldShowLiveLoadingText ? (
-                  <div
-                    data-assistant-section="live-loading-text"
-                    className="px-1 py-1"
-                    role="status"
-                    aria-live="polite"
-                  >
-                    <AIStatusTicker />
-                  </div>
-                ) : null}
-
               </section>
             )}
 
@@ -12851,6 +12831,17 @@ const hasVisibleResponseSectionContent =
               parentResponseFinished={isParentResponseFinished}
             />
           )}
+
+          {shouldShowLiveLoadingText ? (
+            <div
+              data-assistant-section="live-loading-text"
+              className="px-1 py-1"
+              role="status"
+              aria-live="polite"
+            >
+              <AIStatusTicker />
+            </div>
+          ) : null}
 
           {/* Block-level pill for the last card in a multi-card block.
               When expanded: shows a single Collapse link at the very end to fold the whole block. */}
