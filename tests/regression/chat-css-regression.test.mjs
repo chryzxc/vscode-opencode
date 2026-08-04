@@ -153,6 +153,14 @@ test('response previews stay contained inside activity cards', () => {
   );
 });
 
+test('expanded response previews retain their collapse control', () => {
+  assert.match(
+    messageComponentsSource,
+    /if \(!preview\) \{\s*setHasResponseOverflow\(false\);\s*return;\s*}\s*if \(!shouldConstrainResponsePreview\) return;/s,
+    'expanding a response must preserve its measured overflow state so Show less remains available',
+  );
+});
+
 // ── Markdown list styling regression tests ───────────────────────────────────────
 
 test('markdown-body ordered lists must display with decimal numbers (not bullets)', () => {

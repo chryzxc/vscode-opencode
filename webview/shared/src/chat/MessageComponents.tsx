@@ -11723,10 +11723,11 @@ const hasVisibleResponseSectionContent =
 
   useEffect(() => {
     const preview = responsePreviewRef.current;
-    if (!preview || !shouldConstrainResponsePreview) {
+    if (!preview) {
       setHasResponseOverflow(false);
       return;
     }
+    if (!shouldConstrainResponsePreview) return;
 
     const updateOverflow = () => {
       const nextHasOverflow = preview.scrollHeight > preview.clientHeight + 1;
