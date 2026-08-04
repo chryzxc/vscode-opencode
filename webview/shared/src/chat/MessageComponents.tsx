@@ -11742,7 +11742,7 @@ const hasVisibleResponseSectionContent =
   }, [responseChunksToRender, shouldConstrainResponsePreview]);
 
   const responseSectionClass = hasResponseContent
-    ? "rounded-md border border-oc-border-soft bg-background p-2.5 shadow-sm"
+    ? "min-w-0 max-w-full overflow-hidden rounded-md border border-oc-border-soft bg-background p-2.5 shadow-sm"
     : "p-0 border-0 bg-transparent shadow-none";
   const hasCopyableResponseContent = (visibleResolvedContent?.trim()?.length ?? 0) > 0;
   const handleCopy = async () => {
@@ -12750,7 +12750,7 @@ const hasVisibleResponseSectionContent =
                 <div
                   ref={responsePreviewRef}
                   className={cn(
-                    "relative mt-1.5 space-y-1.5",
+                    "relative min-w-0 max-w-full mt-1.5 space-y-1.5",
                     shouldConstrainResponsePreview && "max-h-32 overflow-hidden",
                   )}
                 >
