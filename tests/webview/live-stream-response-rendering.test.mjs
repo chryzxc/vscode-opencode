@@ -321,6 +321,17 @@ test("the live response card owns the AI loading text until its response finishe
   );
 });
 
+test("the live loading text follows the response card", () => {
+  const responseSectionIndex = messageSource.lastIndexOf(
+    'data-assistant-section="response"',
+  );
+  const loadingTextIndex = messageSource.indexOf(
+    'data-assistant-section="live-loading-text"',
+  );
+  assert.ok(responseSectionIndex >= 0, "the assistant response section must render");
+  assert.ok(loadingTextIndex > responseSectionIndex, "the loading text must render below the latest response card");
+});
+
 test("active assistant cards do not use intrinsic virtualization height", () => {
   assert.match(
     messageSource,
