@@ -9251,6 +9251,8 @@ function handleStreamEvent(
   knownReasoningPartIDs?: Set<string>,
   pendingRenderableTextPart?: { partID?: string; messageID?: string },
 ): void {
+  if (!payload || typeof payload !== "object") return;
+
   const dispatchProcessingTrue = () => {
     if (!shouldSuppressProcessingBootstrap) {
       dispatch({ type: "SET_IS_PROCESSING", payload: true });
