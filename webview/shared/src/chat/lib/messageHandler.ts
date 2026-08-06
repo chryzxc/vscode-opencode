@@ -14305,7 +14305,11 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         }
         case "streamEvent": {
           const stateBeforeStreamEvent = getState();
-          const payload = asRecord(data.event) ?? data;
+          const payload = asRecord(data.event);
+          if (!payload) {
+            logger.warn("Ignoring stream event with an invalid payload");
+            break;
+          }
           const streamEventType = asString(payload.type) || "unknown";
           const envelopeSessionId =
             asString(data.sessionId) ||
