@@ -14306,7 +14306,7 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         case "streamEvent": {
           const stateBeforeStreamEvent = getState();
           const payload = asRecord(data.event);
-          if (!payload) {
+          if (!payload || Array.isArray(payload)) {
             logger.warn("Ignoring stream event with an invalid payload");
             break;
           }
