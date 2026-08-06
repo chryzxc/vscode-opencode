@@ -73,6 +73,25 @@ describe('extractEventMessageId', () => {
   });
 });
 
+describe('malformed stream events', () => {
+  it('ignores null, undefined, primitive, and array event payloads', () => {
+    let state = { ...initialState, currentSessionId: 'ses-malformed' } as AppState;
+    const dispatch = (action: Parameters<typeof appReducer>[1]) => {
+      state = appReducer(state, action);
+    };
+    const handler = createMessageHandler(dispatch, () => state);
+
+    for (const event of [null, undefined, 'invalid', []]) {
+      handler({
+        data: { type: 'streamEvent', sessionId: 'ses-malformed', event },
+      } as MessageEvent);
+    }
+
+    assert.equal(state.isProcessing, false);
+    assert.equal(state.streaming, null);
+  });
+});
+
 describe('normalizeMessage - responseType handling', () => {
   it('ignores undefined interactive events from an untrusted payload', () => {
     const result = normalizeMessage({

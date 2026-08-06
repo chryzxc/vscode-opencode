@@ -9251,6 +9251,8 @@ function handleStreamEvent(
   knownReasoningPartIDs?: Set<string>,
   pendingRenderableTextPart?: { partID?: string; messageID?: string },
 ): void {
+  if (!payload || typeof payload !== "object") return;
+
   const dispatchProcessingTrue = () => {
     if (!shouldSuppressProcessingBootstrap) {
       dispatch({ type: "SET_IS_PROCESSING", payload: true });
@@ -14303,7 +14305,11 @@ export function createMessageHandler(dispatch: Dispatch<AppAction>, getState: ()
         }
         case "streamEvent": {
           const stateBeforeStreamEvent = getState();
-          const payload = asRecord(data.event) ?? data;
+          const payload = asRecord(data.event);
+          if (!payload || Array.isArray(payload)) {
+            logger.warn("Ignoring stream event with an invalid payload");
+            break;
+          }
           const streamEventType = asString(payload.type) || "unknown";
           const envelopeSessionId =
             asString(data.sessionId) ||
