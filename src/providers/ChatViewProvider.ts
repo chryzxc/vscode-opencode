@@ -2008,7 +2008,7 @@ export class ChatViewProvider
       this.clearSessionTodos(sessionId);
 
       // Restore per-session agent / model / thinking selections
-      await this.modelAndAgentManager.applySessionSettings(sessionId);
+      await this.applySessionSettings(sessionId);
       if (abandonIfStale("applySessionSettings")) return;
 
       // ============================================================================
@@ -9288,7 +9288,9 @@ export class ChatViewProvider
    * Applies session-specific model, agent, and thinking level
    */
   private async applySessionSettings(sessionId: string): Promise<void> {
-    return this.modelAndAgentManager.applySessionSettings(sessionId);
+    await this.modelAndAgentManager.applySessionSettings(sessionId);
+    this.selectedModel = this.modelAndAgentManager.getSelectedModel();
+    this.selectedAgent = this.modelAndAgentManager.getSelectedAgent() ?? "build";
   }
 
   /**
