@@ -151,6 +151,7 @@ function main() {
   const testsOnly = process.argv.includes("--tests-only");
   const changedFiles = getChangedFiles();
 
+  mustSucceed(NODE_BIN, ["scripts/repository-hygiene-check.mjs"]);
   runStreamingContractGuard(changedFiles);
 
   if (!testsOnly) {

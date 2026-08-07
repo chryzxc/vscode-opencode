@@ -48,6 +48,12 @@ jobs:
       - name: Validate Structured Output Contract
         run: npm run structured-output:check
 
+      - name: Validate Repository Hygiene
+        run: npm run repository:hygiene
+
+      - name: Audit Production Dependencies
+        run: npm run audit:prod
+
       - name: Build Extension + Webview
         run: npm run build
 

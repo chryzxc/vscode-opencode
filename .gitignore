@@ -4,6 +4,8 @@ dist/
 *.vsix
 .vscode-test/
 .DS_Store
+*.bak
+*.map
 .serena
 .claude
 .sisyphus

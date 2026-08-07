@@ -92,6 +92,14 @@ jobs:
         if: steps.version.outputs.skip != 'true'
         run: npm --prefix webview/shared ci
 
+      - name: Validate Repository Hygiene
+        if: steps.version.outputs.skip != 'true'
+        run: npm run repository:hygiene
+
+      - name: Audit Production Dependencies
+        if: steps.version.outputs.skip != 'true'
+        run: npm run audit:prod
+
       - name: Build Extension + Webview
         if: steps.version.outputs.skip != 'true'
         run: npm run build
